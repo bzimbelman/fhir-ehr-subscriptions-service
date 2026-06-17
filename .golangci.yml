@@ -1,0 +1,58 @@
+# golangci-lint configuration for fhir-subscriptions-foss.
+# See https://golangci-lint.run/usage/configuration/ for the schema.
+
+run:
+  timeout: 5m
+  go: "1.22"
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - gosec
+    - gocritic
+    - revive
+    - gofmt
+    - goimports
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+  goimports:
+    local-prefixes: github.com/fhir-subscriptions-foss/fhir-subs
+  revive:
+    rules:
+      - name: exported
+        disabled: false
+      - name: package-comments
+        disabled: false
+      - name: var-naming
+        disabled: false
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+    disabled-checks:
+      - ifElseChain
+      - hugeParam
+
+issues:
+  exclude-dirs:
+    - testdata
+    - migrations
+  exclude-rules:
+    # Test files get a little slack.
+    - path: _test\.go
+      linters:
+        - gosec
+        - gocritic
+  max-same-issues: 0
+  max-issues-per-linter: 0
