@@ -149,17 +149,19 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** HL7 messages carry PHI; running plaintext on a hospital network is an OCR / HIPAA finding.
 - **Fix:** Add `cfg.TLS` (min v1.2, AEAD ciphers); optional `RequireAndVerifyClientCert`; wrap with `tls.NewListener`.
 
-#### B-21: HL7 processor decrypts pending pairs with hardcoded `key_version=1` (breaks key rotation)
+#### B-21: HL7 processor decrypts pending pairs with hardcoded `key_version=1` (breaks key rotation) — RESOLVED
 - **File:** `internal/hl7processor/processor.go:545`, `internal/infra/storage/repos/pending_pairs.go:86`
 - **What:** Both call sites pass literal `1` to `Codec.Decrypt`.
 - **Why it matters:** ADR 0010 #7 commits to key rotation. After version bump, every pending row encrypted under the old version becomes undecryptable; held HL7 halves are silently dead-lettered or stuck. Same applies to any other repo that stores ciphertext.
 - **Fix:** Persist `key_version` per row, read it back, pass to `Decrypt`.
+- **Resolution:** Commit `6d0e5a2` (also `07d7be2` on main). `PendingPairsRepo.Insert` now persists `codec.Encrypt`'s returned key_version; `ClaimExpired` reads it back into `PendingPairRow.KeyVersion` and passes it to `Decrypt`. `processor.lockPending` and `reaper.lockPendingForReap` likewise SELECT `key_version` and decrypt with the row's version. E2E test `TestE2E_PendingPairs_DecryptsWithRowKeyVersion` writes a row under key v1, swaps to a codec where v2 is active, and asserts the row still decrypts correctly. Audit of other repos: `hl7_message_queue.go`, `ehr_events.go`, `resource_changes.go` all already use `rec.KeyVersion`; no other hardcoded-`1` callsites remain.
 
-#### B-22: `pending_pairs` migration omits `key_version` column entirely
+#### B-22: `pending_pairs` migration omits `key_version` column entirely — RESOLVED
 - **File:** `migrations/0001_init.sql:99-108`, `internal/infra/storage/repos/pending_pairs.go:32-44`
 - **What:** Schema has no `key_version` column; `Insert` writes encrypted bytes with no version stamp.
 - **Why it matters:** Same root cause as B-21; the rotation contract is unfulfillable.
 - **Fix:** Add migration `ALTER TABLE pending_pairs ADD COLUMN key_version SMALLINT NOT NULL DEFAULT 1`; update `Insert`/`Decrypt`.
+- **Resolution:** Commit `6d0e5a2` (also `07d7be2` on main). New migration `0003_pending_pairs_key_version.sql` adds `key_version int NOT NULL DEFAULT 1` (idempotent via IF NOT EXISTS). Existing rows are stamped with v1 — the only version any deployed instance has used to date — so the migration is forward-compatible without a backfill UPDATE.
 
 #### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence) — RESOLVED
 - **File:** `internal/matcher/matcher.go:286-355`
@@ -182,23 +184,26 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Surface rejected topics to /readyz; add `--strict` startup mode; on operator-validation failure fall back to lower-priority topic; emit `topic_overridden_total`/`topic_rejected_total`.
 - **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `catalog.LoadStrict` is the strict-mode entry point — it returns a non-nil error wrapping every rejection so `--strict-topics` startup wiring can refuse to start. `Load` walks sources in priority order (Operator > Adapter > BuiltIn) and on a higher-priority compile failure falls back to the lower-priority working topic, recording an `Override{URL, Version, FromOrigin, FromSource, ToOrigin, ToSource, Reason}` entry. Both `Rejected` and `Overridden` are surfaced through the `Catalog` handle so /readyz can read them after the `Report` is dropped. Tests: `TestLoadStrictModeRejectsAtStartup`, `TestLoadStrictModeAcceptsValidCatalog`, `TestLoadFallsBackToBuiltInWhenOperatorOverrideRejected` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_strictMode`, `TestMatcher_topicOverride` (`e2e/orchestrator/`).
 
-#### B-26: `nextEventNumber` race — two workers can both insert event_number N+1
+#### B-26: `nextEventNumber` race — two workers can both insert event_number N+1 — RESOLVED
 - **File:** `internal/engine/submatcher/worker.go:337-348`
 - **What:** `SELECT MAX(event_number)+1` inside the tx without a per-subscription advisory lock; `UNIQUE(subscription_id, event_number)` will reject one of the racers but the worker (line 281) doesn't catch SQLSTATE 23505 — it surfaces as a generic insert error and aborts the whole batch.
 - **Why it matters:** Under load the entire batch fails on harmless contention; throughput collapses; deliveries stuck.
 - **Fix:** Per-subscription `pg_advisory_xact_lock`, or sequence per subscription, or catch 23505 and retry.
+- **Resolution:** Commit `1ba1c45` (also `f600d42` on main). New migration `0004_subscriptions_next_event_number.sql` adds `next_event_number bigint NOT NULL DEFAULT 0` and backfills it from `MAX(deliveries.event_number)`. `submatcher.nextEventNumber` now does `UPDATE subscriptions SET next_event_number = next_event_number + 1 ... RETURNING next_event_number`, so Postgres's row-level lock under UPDATE serializes contention naturally — no MAX-from-deliveries lookup. E2E `TestE2E_EventNumber_NoDuplicatesUnderConcurrency` fires 50 concurrent transactions for a single subscription and asserts the resulting deliveries set is exactly 1..50 with no gaps and no duplicates.
 
-#### B-27: Cursor monotonicity assumes deliveries rows are never deleted; retention will reuse event numbers
+#### B-27: Cursor monotonicity assumes deliveries rows are never deleted; retention will reuse event numbers — RESOLVED
 - **File:** `internal/engine/submatcher/worker.go:337-348` (consumer) + `internal/infra/storage/retention/retention.go:78` (deleter)
 - **What:** `nextEventNumber = MAX(event_number)+1`; if retention deletes a high-numbered delivery, the next insert RE-USES that number.
 - **Why it matters:** Subscribers depend on monotonic event numbers for replay/ack semantics; reuse breaks every WebSocket replay scenario.
 - **Fix:** Either keep tombstones, or persist `next_event_number` on the subscription row independent of MAX.
+- **Resolution:** Commit `1ba1c45` (also `f600d42` on main). Same fix as B-26: the cursor lives on `subscriptions.next_event_number` and is advanced via `UPDATE ... RETURNING`. Retention deleting deliveries no longer affects the cursor. E2E `TestE2E_EventNumber_ContinuesAfterRetention` writes 5 deliveries, deletes 3, writes 5 more, and asserts the new event_numbers continue from 6 (rather than reusing low numbers) and that `subscriptions.next_event_number` ends at 10.
 
-#### B-28: Bundle JSON encoding is nondeterministic — breaks any audit-chain hashing of bundle bytes
+#### B-28: Bundle JSON encoding is nondeterministic — breaks any audit-chain hashing of bundle bytes — RESOLVED
 - **File:** `internal/engine/builder/builder.go:174-190`
 - **What:** Bundle assembly uses `map[string]any` → `json.Marshal`. Go map iteration is randomized; map JSON output is therefore non-deterministic.
 - **Why it matters:** Hash-chained audit log over bundle bytes produces different hashes on identical inputs. Any downstream signer (S/MIME plan, P2.3) is broken at the foundation.
 - **Fix:** Use a canonical JSON encoder (sorted keys), a struct, or `json.RawMessage` to preserve byte form.
+- **Resolution:** Commit `0b39e95` (also `b76f1b0` on main). Bundle assembly now uses fixed-shape Go structs (`notificationBundle`, `subscriptionStatus`, `notificationEvent`, `reference`, `bundleEntry`) with explicit JSON struct tags so field order is canonical FHIR order: `resourceType`, `type`, `timestamp`, `entry`. The SubscriptionStatus is encoded once into a `json.RawMessage` so its byte layout is locked before being embedded in the entry list. Unit test `TestBuildBundleDeterminism` and e2e `TestE2E_Builder_BundleBytesAreDeterministic` both build the same job 100 times and assert byte-identical output (sha256 stable across all 100).
 
 #### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe — RESOLVED
 - **File:** `internal/matcher/matcher.go:554, 656`
@@ -213,23 +218,26 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** A hostile peer blasting garbage MSH-9 values creates a new time-series per value; Prometheus OOM.
 - **Fix:** Whitelist label values to configured set; bucket "other" into a single value.
 
-#### B-31: Scheduler shutdown does not drain in-flight deliveries; recovery sweep missing
+#### B-31: Scheduler shutdown does not drain in-flight deliveries; recovery sweep missing — RESOLVED
 - **File:** `internal/engine/scheduler/worker.go:166-234`
 - **What:** Two issues: (1) `Run` returns on `ctx.Done()` without waiting for in-flight `dispatchOne` calls; (2) rows flipped to `'delivering'` by `claimTx` before Commit have no recovery path on worker crash.
 - **Why it matters:** Graceful shutdown silently strands deliveries in `'delivering'`; over time the queue fills with dead rows that no worker will touch.
 - **Fix:** `sync.WaitGroup` for in-flight dispatches; periodic recovery sweep that resets stale `'delivering'` rows past a stuck-threshold to `'pending'`.
+- **Resolution:** Commit `945a160`. `tickOnce` now wraps each `dispatchOne` in `sync.WaitGroup`; `Run` waits up to `cfg.ShutdownGrace` (default 10s) for the WaitGroup before returning. A separate goroutine ticks `recoverStuck` every `cfg.RecoveryInterval` (default 30s); `recoverStuck` flips `'delivering'` rows whose `updated_at < now() - cfg.StuckThreshold` (default 5m) back to `'pending'` and bumps `attempts`. Exposed `RecoverStuckForTest` as a tiny seam. E2E tests cover stuck-row reset, fresh-row not touched, Run-drains-and-returns, and the periodic-sweep-during-Run path.
 
-#### B-32: Retention sweeper SQL construction allows future SQL injection; uses `failed_permanent` status that doesn't exist; physically deletes hash-chained audit rows; runs without ctx deadline or advisory lock
+#### B-32: Retention sweeper SQL construction allows future SQL injection; uses `failed_permanent` status that doesn't exist; physically deletes hash-chained audit rows; runs without ctx deadline or advisory lock — RESOLVED
 - **File:** `internal/infra/storage/retention/retention.go:78-134`
 - **What:** Multiple compounding defects: (a) `fmt.Sprintf` injects `predicate`/`idCol` into SQL with no whitelist; (b) sweeps `'failed_permanent'` which is not in the schema enum (`'failed'` is); (c) sweeps `audit_log` whose hash-chain breaks on any DELETE; (d) no `ORDER BY` so concurrent sweeps starve in lock contention; (e) no `context.WithTimeout` per Exec; (f) no `pg_advisory_lock` so multi-pod sweeps stomp on each other.
 - **Why it matters:** First retention run permanently breaks audit chain (chain-verifier tool from P2.5 will report "chain break at row 0" forever); deliveries marked `failed` linger; bad query plans hang the entire pool.
 - **Fix:** Whitelist `(table, idCol)` against an internal struct; replace `fmt.Sprintf` with bound params; use real schema enum; explicitly EXCLUDE `audit_log` from time-based DELETE (use partition rotation with chain-checkpoint); add `ORDER BY idCol`; per-Tick deadline; advisory lock around the whole sweep.
+- **Resolution:** Commits `e697162` and `52ed074`. (table, idCol, predicate) come from a whitelisted `allowedTargets` map; `sweep()` refuses non-whitelisted tables. Status enum corrected to `'failed'`/`'dead'` (the schema's actual values). `audit_log` removed from the allow-list entirely; `cfg.AuditLog` is silently ignored with a doc comment pointing at partition-rotation as the audit retention strategy. Each chunk DELETE adds `ORDER BY <idCol>` and runs under `context.WithTimeout(ctx, SweepExecTimeout)` (30s). `Tick` acquires a session-level `pg_advisory_lock(retentionAdvisoryLockID)` on a dedicated connection so multi-pod runs serialize. E2E `TestE2E_Retention_DoesNotDeleteAuditLog` seeds 100 audit rows with very-old timestamps, runs `Tick` with `cfg.AuditLog=1ns`, and asserts the row count is unchanged. Audit retention follow-up is tracked separately as future-work P2.5 (partition-rotation-based).
 
-#### B-33: Multi-pod migration race — no advisory lock around `applyAll`; `Concurrent` detection is a substring match
+#### B-33: Multi-pod migration race — no advisory lock around `applyAll`; `Concurrent` detection is a substring match — RESOLVED
 - **File:** `internal/infra/storage/migrate/migrate.go:191-208`
 - **What:** Multiple replicas at rollout time race the migration runner; `CREATE INDEX CONCURRENTLY` detection is `strings.Contains(... "CREATE INDEX CONCURRENTLY")` — a SQL comment with that text trips it.
 - **Why it matters:** "relation already exists" cascades, partial migrations, duplicate `schema_migrations` rows.
 - **Fix:** `pg_advisory_lock(<known constant>)` for the duration of `applyAll`; statement-level parser for concurrency detection.
+- **Resolution:** Commit `52ed074`. `applyAll` now holds `pg_advisory_lock(0xFEEDFACE)` on a dedicated connection for the whole apply pass; concurrent migrators serialize. `detectConcurrent` was rewritten to require an explicit `-- @CONCURRENT` directive on the leading content line of the migration body — comments and string literals containing `CREATE INDEX CONCURRENTLY` no longer trip the heuristic. Unit `TestDetectConcurrentRequiresExplicitDirective` pins the parser; e2e `TestE2E_Migrate_AdvisoryLockSerializesParallelRunners` fires 3 concurrent `migrate.Up` calls against a fresh container and asserts the final `schema_migrations` row count exactly matches the embedded migration set.
 
 #### B-34: Audit log file sink has no fsync; `pgstore` lock leaked on writer panic
 - **File:** `internal/infra/observability/observability.go:282`, `internal/infra/observability/audit/pgstore.go:74-93`
