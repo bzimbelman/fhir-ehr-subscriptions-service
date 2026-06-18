@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func (k *keyMaterial) jwks() map[string]any {
 }
 
 func encodeBigInt(b []byte) string {
-	return jwt.EncodeSegment(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func (k *keyMaterial) sign(t *testing.T, claims jwt.MapClaims) string {
