@@ -89,9 +89,11 @@ func TestE2E_S14_CorrelationIDRejectsHostileHeaders(t *testing.T) {
 	}{
 		{"empty", "", true},
 		{"crlf", "abc\r\nX-Smuggle: 1", true},
-		{"oversize", strings.Repeat("a", correlation.MaxCorrelationIDLen+1), true},
+		{"non_uuid_oversize", strings.Repeat("a", 1024), true},
 		{"valid_uuid", "11111111-1111-4111-8111-111111111111", false},
-		{"valid_dotted", "ord-2026.06.18-abc", false},
+		// Under strict UUID-only validation (S-2.17), legacy non-UUID
+		// shapes like "ord-2026.06.18-abc" are also rejected.
+		{"non_uuid_dotted", "ord-2026.06.18-abc", true},
 	}
 	for _, c := range cases {
 		c := c
