@@ -33,7 +33,7 @@ type Harness struct {
 	DBURL        string
 	MockEHR      *MockEHRHandle
 	MockSub      *MockSubHandle
-	StubListener *StubListener
+	MLLPListener *realMLLPListener
 }
 
 // MockEHRHandle bundles the EHR-side mocks behind one HTTP server.
@@ -222,23 +222,25 @@ func setupHarness(ctx context.Context) (*Harness, func(), error) {
 		SMTP:       smtpSrv,
 	}
 
-	// 4) Stand up the stub MLLP listener (the v1 stand-in for fhir-subs'
-	// real listener). Persistence-then-ACK behavior is implemented locally
-	// against the testcontainer'd Postgres — this is what the smoke
-	// scenarios assert against.
-	stub, err := startStubMLLPListener(ctx, h.DB)
+	// 4) Stand up the real internal/mllp listener bound on 127.0.0.1:0,
+	// pointed at a Postgres-backed Persister. Persistence-then-ACK
+	// behavior is exercised end-to-end through the production code path
+	// — this is what the smoke scenarios assert against. (Earlier
+	// commits used a stub listener; the real one is wired in now that
+	// internal/mllp has merged to main.)
+	listener, err := startRealMLLPListener(ctx, h.DB)
 	if err != nil {
 		cleanup()
-		return nil, cleanup, fmt.Errorf("start stub MLLP listener: %w", err)
+		return nil, cleanup, fmt.Errorf("start real MLLP listener: %w", err)
 	}
-	cleanups = append(cleanups, func() { _ = stub.Close() })
-	h.StubListener = stub
+	cleanups = append(cleanups, func() { _ = listener.Close() })
+	h.MLLPListener = listener
 
 	// 5) Stand up mockehr (FHIR store + change feed + scenario control plane).
 	fhirStore := mockehr.NewFHIRStore()
 	changeFeed := mockehr.NewChangeFeed()
 	cp := mockehr.NewControlPlane(mockehr.ControlPlaneConfig{
-		MLLPTarget: stub.Addr().String(),
+		MLLPTarget: listener.Addr().String(),
 	})
 
 	mux := http.NewServeMux()
