@@ -146,14 +146,14 @@ type NotificationShape struct {
 // Topic is the compiled, immutable in-memory form of a
 // SubscriptionTopic. Matcher reads only this — never the raw JSON.
 type Topic struct {
-	CanonicalURL      string
-	Version           string
-	Title             string
-	Status            string
-	Source            Source
-	Origin            string
-	Triggers          []Trigger
-	EventCodes        []string // legacy: code-only; preserved for callers
+	CanonicalURL string
+	Version      string
+	Title        string
+	Status       string
+	Source       Source
+	Origin       string
+	Triggers     []Trigger
+	EventCodes   []string // legacy: code-only; preserved for callers
 	// EventCodings carries the (system, code) pairs from
 	// eventTrigger so consumers can disambiguate cross-system code
 	// collisions. EventCodes (above) keeps the code-only view for

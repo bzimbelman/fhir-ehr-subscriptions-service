@@ -32,7 +32,7 @@ func TestS12_BuilderTimestampSubSecondPrecision(t *testing.T) {
 
 	envelope, err := bldr.Build(context.Background(), builder.Job{
 		Subscription: repos.SubscriptionRow{
-			ID:         subID,
+			ID:          subID,
 			ChannelType: "rest-hook",
 			Endpoint:    "https://example.com",
 			TopicURL:    "http://example/Topic/foo",
@@ -74,7 +74,7 @@ func TestS12_HandshakeCorrelationIDDeterministic(t *testing.T) {
 	bldr := builder.New(builder.Config{})
 	jobBase := builder.Job{
 		Subscription: repos.SubscriptionRow{
-			ID:         subID,
+			ID:          subID,
 			ChannelType: "rest-hook",
 			Endpoint:    "https://example.com",
 			TopicURL:    "http://example/Topic/foo",
