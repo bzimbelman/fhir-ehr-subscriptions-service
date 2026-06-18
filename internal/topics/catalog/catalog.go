@@ -652,8 +652,22 @@ func compileOne(sch *jsonschema.Schema, raw RawTopic, src Source) (*Topic, *Reje
 		})
 	}
 
-	// 6. notificationShape (one-or-more entries; we collapse to one
-	// shape; downstream consumers care about the list of includes).
+	// 6. notificationShape. The FHIR spec allows an array so a topic
+	// can declare per-resource shape selection (one entry per
+	// resource type). v1's builder honors a single shape only — it
+	// has no per-resource shape selection at delivery prep time. A
+	// silent collapse (last-write-wins on Resource, concatenated
+	// includes) hides the divergence from operators and produces
+	// incorrect Bundles. Reject at load (S-11.3) so the failure is
+	// visible during deploy. Per-entry compile end-to-end is tracked
+	// as future work.
+	if len(parsed.NotificationShape) > 1 {
+		return nil, &Rejection{
+			Origin: raw.Origin,
+			URL:    parsed.URL,
+			Reason: fmt.Sprintf("multi-entry notificationShape is not supported (topic %q declares %d entries; v1 builder honors a single shape only — split into separate topics or wait for per-entry compile)", parsed.URL, len(parsed.NotificationShape)),
+		}
+	}
 	shape := NotificationShape{}
 	for _, ns := range parsed.NotificationShape {
 		shape.Resource = ns.Resource
