@@ -5,11 +5,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 // defaultConfigPath is the canonical config-file location per the configuration LLD.
@@ -100,11 +103,58 @@ func banner(facilityID, adapterID string) string {
 	)
 }
 
-// main is wired in later TDD commits. For now it is a stub so go build passes
-// once the supporting tests/files arrive; commit 8 of this branch replaces it
-// with the real run loop.
+// main is the binary entry point. It parses CLI flags, loads the config,
+// optionally runs --check-config, then hands off to run() with a context
+// that is canceled on SIGTERM or SIGINT.
 func main() {
-	// Placeholder; real wiring lands later in this branch.
-	fmt.Fprintln(os.Stderr, "fhir-subs: main not yet wired")
-	os.Exit(2)
+	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// realMain is main split out so it can be unit-tested with controlled streams
+// and a controlled exit code. A non-zero return becomes the process exit code.
+func realMain(args []string, stdout, stderr io.Writer) int {
+	opts, err := parseFlags(args, stderr)
+	switch {
+	case errors.Is(err, errHelpRequested):
+		// Usage was already printed to stderr by parseFlags.
+		return 0
+	case errors.Is(err, errVersionRequested):
+		fmt.Fprintln(stdout, versionString())
+		return 0
+	case err != nil:
+		fmt.Fprintln(stderr, "error:", err)
+		return 2
+	}
+
+	cfg, err := loadConfig(opts.ConfigPath)
+	if err != nil {
+		fmt.Fprintln(stderr, "error: load config:", err)
+		return 1
+	}
+	if opts.LogLevel != "" {
+		cfg.Deployment.LogLevel = opts.LogLevel
+	}
+	if err := applySets(cfg, opts.Sets); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+
+	if err := cfg.Validate(); err != nil {
+		fmt.Fprintln(stderr, "error: invalid config:", err)
+		return 1
+	}
+
+	if opts.CheckConfig {
+		fmt.Fprintln(stdout, "config ok")
+		return 0
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	if err := run(ctx, cfg, stderr); err != nil {
+		fmt.Fprintln(stderr, "error: run:", err)
+		return 1
+	}
+	return 0
 }
