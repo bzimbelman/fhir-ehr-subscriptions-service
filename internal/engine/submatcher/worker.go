@@ -330,21 +330,28 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 	return nil
 }
 
-// nextEventNumber computes the per-subscription monotonic event_number
-// per ADR 0010 #2: "deliveries.event_number — bigint, per-subscription
-// monotonic, assigned at fanout (Stage 3). Computed as
-// max(deliveries.event_number) + 1 WHERE subscription_id = ?".
+// nextEventNumber returns the next per-subscription monotonic
+// event_number under SELECT FOR UPDATE on subscriptions.next_event_number.
+//
+// Why not MAX(deliveries.event_number)+1: (a) two workers could observe
+// the same MAX and both INSERT N+1, hitting the (subscription_id,
+// event_number) UNIQUE; (b) once retention deletes old deliveries the
+// MAX drops, and the next fanout reuses a number that subscribers have
+// already replayed past. The persistent counter on subscriptions sidesteps
+// both — row-level locking serializes contention and deletion of
+// deliveries cannot regress the cursor (audit B-26, B-27).
 func nextEventNumber(ctx context.Context, tx pgx.Tx, subID uuid.UUID) (int64, error) {
-	var maxEvent *int64
-	if err := tx.QueryRow(ctx,
-		`SELECT MAX(event_number) FROM deliveries WHERE subscription_id = $1`, subID,
-	).Scan(&maxEvent); err != nil {
-		return 0, fmt.Errorf("submatcher: select max event_number: %w", err)
+	const sql = `
+		UPDATE subscriptions
+		   SET next_event_number = next_event_number + 1,
+		       updated_at = now()
+		 WHERE id = $1
+		 RETURNING next_event_number`
+	var n int64
+	if err := tx.QueryRow(ctx, sql, subID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("submatcher: advance next_event_number: %w", err)
 	}
-	if maxEvent == nil {
-		return 1, nil
-	}
-	return *maxEvent + 1, nil
+	return n, nil
 }
 
 // resourceTypeOf reads the top-level resourceType field. Used to fill
