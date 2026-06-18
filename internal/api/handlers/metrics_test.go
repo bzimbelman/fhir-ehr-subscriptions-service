@@ -104,7 +104,10 @@ func TestCreate_BadSchema_RecordsValidationFailureSchema(t *testing.T) {
 	body := `{"resourceType": "WrongType"}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	_, _ = io.ReadAll(resp.Body)
 	if rec.validations["schema"] != 1 {
@@ -128,7 +131,10 @@ func TestCreate_UnknownTopic_RecordsValidationFailureSemantic(t *testing.T) {
 	}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if rec.validations["semantic"] != 1 {
 		t.Errorf("validations{kind=semantic} = %d; want 1", rec.validations["semantic"])
@@ -162,7 +168,10 @@ func TestUpdate_RecordsUpdatedMetric(t *testing.T) {
 	}`
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/Subscription/"+id.String(), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -189,7 +198,10 @@ func TestDelete_RecordsDeletedMetric(t *testing.T) {
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/Subscription/"+id.String(), nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if rec.deleted != 1 {
 		t.Errorf("deleted = %d; want 1", rec.deleted)
@@ -211,7 +223,10 @@ func TestGetWsBindingToken_RecordsIssuedMetric(t *testing.T) {
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription/"+id.String()+"/$get-ws-binding-token", nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if rec.wsTokens != 1 {
 		t.Errorf("wsTokens = %d; want 1", rec.wsTokens)
