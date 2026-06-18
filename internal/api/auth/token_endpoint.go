@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
@@ -345,11 +346,17 @@ func writeOAuthError(w http.ResponseWriter, status int, code, desc string) {
 // jwksCache is a tiny TTL cache of compiled keyfuncs keyed by URL.
 // Sharing a cache between Verifier and TokenEndpoint avoids
 // re-fetching JWKS for every request.
+//
+// All access to entries is gated by mu. Concurrent /token requests
+// otherwise race the map and Go's runtime fatal-errors the process
+// (B-5).
 type jwksCache struct {
 	httpClient *http.Client
 	ttl        time.Duration
 	now        func() time.Time
-	entries    map[string]jwksCacheEntry
+
+	mu      sync.Mutex
+	entries map[string]jwksCacheEntry
 }
 
 type jwksCacheEntry struct {
@@ -367,9 +374,13 @@ func newJwksCache(httpClient *http.Client, ttl time.Duration, now func() time.Ti
 }
 
 func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, error) {
+	c.mu.Lock()
 	if e, ok := c.entries[url]; ok && c.now().Before(e.expires) {
+		c.mu.Unlock()
 		return e.kf, nil
 	}
+	c.mu.Unlock()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, err
@@ -390,6 +401,8 @@ func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, err
 	if err != nil {
 		return nil, err
 	}
+	c.mu.Lock()
 	c.entries[url] = jwksCacheEntry{kf: kf, expires: c.now().Add(c.ttl)}
+	c.mu.Unlock()
 	return kf, nil
 }
