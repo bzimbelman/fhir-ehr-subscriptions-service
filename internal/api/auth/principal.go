@@ -5,33 +5,50 @@ package auth
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
 // Principal is the authenticated caller derived from a verified bearer
 // token plus the registered client's record. It is attached to the
 // request context by the auth middleware.
+//
+// Scopes is the canonical granted-scope slice (preserved for logging
+// and serialization). scopeSet is a lazily-built lookup index used by
+// HasScope/HasAllScopes; without it, lookups were O(n) on every gate
+// (S-3).
 type Principal struct {
 	ClientID string
 	Scopes   []string
 	JTI      string
 	Exp      time.Time
+
+	scopeOnce sync.Once
+	scopeSet  map[string]struct{}
+}
+
+func (p *Principal) buildScopeSet() {
+	p.scopeOnce.Do(func() {
+		set := make(map[string]struct{}, len(p.Scopes))
+		for _, s := range p.Scopes {
+			set[s] = struct{}{}
+		}
+		p.scopeSet = set
+	})
 }
 
 // HasScope reports whether the principal has been granted scope s.
 func (p *Principal) HasScope(s string) bool {
-	for _, granted := range p.Scopes {
-		if granted == s {
-			return true
-		}
-	}
-	return false
+	p.buildScopeSet()
+	_, ok := p.scopeSet[s]
+	return ok
 }
 
 // HasAllScopes reports whether the principal has every scope in needed.
 func (p *Principal) HasAllScopes(needed ...string) bool {
+	p.buildScopeSet()
 	for _, s := range needed {
-		if !p.HasScope(s) {
+		if _, ok := p.scopeSet[s]; !ok {
 			return false
 		}
 	}

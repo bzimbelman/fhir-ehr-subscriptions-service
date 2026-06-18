@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +106,15 @@ type TokenEndpointConfig struct {
 
 	// JWKSFetchTimeout caps each JWKS HTTP fetch. Default 5s (B-12).
 	JWKSFetchTimeout time.Duration
+
+	// RateLimitPerSource configures a per-source-IP token bucket. The
+	// /token endpoint is unauthenticated and CPU-intensive (RSA verify
+	// on user-controlled bytes); without an upstream rate limit, an
+	// attacker can drive RSA-verify CPU exhaustion at line rate (S-3).
+	// Zero (default) disables limiting; production deployments SHOULD
+	// configure a non-zero value or front the endpoint with a rate-
+	// limiting reverse proxy.
+	RateLimitPerSource RateLimit
 }
 
 // TokenEndpoint implements the SMART on FHIR Backend Services token
@@ -114,6 +124,7 @@ type TokenEndpoint struct {
 	cfg       TokenEndpointConfig
 	jwksCache *jwksCache
 	jtiCache  *JTIReplayCache
+	limiter   *rateLimiter
 }
 
 // NewTokenEndpoint validates cfg and returns a ready handler.
@@ -149,7 +160,10 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 		cfg.JWKSCacheTTL = time.Hour
 	}
 	if cfg.ClockSkew == 0 {
-		cfg.ClockSkew = 60 * time.Second
+		// Default to 30s per SMART Backend Services / RFC 7523 guidance:
+		// 60s is generous and widens the JTI replay window. Deployments
+		// can override via config (S-3).
+		cfg.ClockSkew = 30 * time.Second
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -161,11 +175,15 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 		allowInsecure: cfg.AllowInsecureJWKS,
 		allowedHosts:  normalizeHosts(cfg.JWKSAllowedHosts),
 	}
-	return &TokenEndpoint{
+	te := &TokenEndpoint{
 		cfg:       cfg,
 		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now, policy),
 		jtiCache:  NewJTIReplayCache(0, cfg.Now),
-	}, nil
+	}
+	if cfg.RateLimitPerSource.Burst > 0 {
+		te.limiter = newRateLimiter(cfg.RateLimitPerSource, cfg.Now)
+	}
+	return te, nil
 }
 
 // ServeHTTP handles POST /token per RFC 6749 with the SMART Backend
@@ -174,6 +192,23 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		te.fail(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed", "malformed")
 		return
+	}
+	// Per-source rate limit before any expensive work. The endpoint is
+	// unauthenticated and JWT verification is RSA-CPU-bound (S-3).
+	if te.limiter != nil {
+		key := rateLimitKey(r)
+		if ok, retryAfter := te.limiter.Allow(key); !ok {
+			if retryAfter > 0 {
+				secs := int(retryAfter.Seconds())
+				if secs < 1 {
+					secs = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+			}
+			te.fail(w, http.StatusTooManyRequests, "slow_down",
+				"rate limit exceeded", "rate_limited")
+			return
+		}
 	}
 	// Cap the request body before ParseForm consumes it. The endpoint
 	// is unauthenticated, so without this an attacker can flood
@@ -302,7 +337,15 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"missing jti", "malformed")
 		return
 	}
-	assertionExp, _ := claimToTime(vc["exp"])
+	assertionExp, err := claimToTime(vc["exp"])
+	if err != nil {
+		// S-3: a swallowed parse error here causes Put(jti, time.Time{}),
+		// which silently disables replay protection for the issued token.
+		// Fail closed so JTI tracking always carries a real expiry.
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"assertion exp invalid", "malformed")
+		return
+	}
 	if te.jtiCache.Seen(jti) {
 		te.fail(w, http.StatusUnauthorized, "invalid_client",
 			"assertion jti replay", "replayed_jti")

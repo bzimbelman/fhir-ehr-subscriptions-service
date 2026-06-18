@@ -220,7 +220,10 @@ func TestIntegrationRetryAfterRespectedThroughClassification(t *testing.T) {
 }
 
 // TestIntegrationPermanentBodyExcerptIncluded verifies a 4xx response body
-// shows up (truncated) in the Reason field.
+// shows up (truncated) in the Reason field when the operator has opted
+// in via Options.IncludeResponseBodyExcerpt. The default is OFF (S-4):
+// subscriber response bodies may carry PHI and must not be quoted into
+// reason strings without explicit opt-in.
 func TestIntegrationPermanentBodyExcerptIncluded(t *testing.T) {
 	t.Parallel()
 
@@ -232,7 +235,11 @@ func TestIntegrationPermanentBodyExcerptIncluded(t *testing.T) {
 		return http.StatusForbidden, "", body
 	}
 
-	ch, _ := resthook.New(resthook.Options{HTTPClient: rcv.client(), Metrics: newFakeMetrics()})
+	ch, _ := resthook.New(resthook.Options{
+		HTTPClient:                 rcv.client(),
+		Metrics:                    newFakeMetrics(),
+		IncludeResponseBodyExcerpt: true,
+	})
 	out, _ := ch.Deliver(context.Background(), newEnvelope(rcv.url()))
 	if out.Kind != channel.OutcomePermanent {
 		t.Fatalf("expected Permanent; got %v", out.Kind)

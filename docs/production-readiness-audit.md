@@ -355,25 +355,25 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 - **`internal/api/metrics/metrics.go:237-241, 310-327`** — histograms have no bucket-count cap; cardinality validator only catches `subscription_id` and `peer_addr`; `endpoint`, `topic_url`, `client_id`, `correlation_id`, `actor_id` unguarded.
 
 #### S-3: Auth
-- **`internal/api/auth/token_endpoint.go:106-108`** — 60s `ClockSkew` default is generous; widens replay window. Configurable; document <30s prod recommendation.
-- **`internal/api/auth/token_endpoint.go:289-294`** — no rate limit on token endpoint; bursts of bogus assertions DoS the auth path.
-- **`internal/api/handlers/subscription_handlers.go`** (POST /Subscription, $get-ws-binding-token) — no per-client rate limit on subscription creates / WS binding token mints.
-- **`internal/api/auth/token_endpoint.go:232`** — `exp, _ := claimToTime(...)` discards parse error; on zero-time `Put`, JTI replay protection silently disabled for that token.
-- **`internal/api/principal.go:22-28`** — `HasScope` is O(n); minor.
+- **`internal/api/auth/token_endpoint.go:106-108`** — 60s `ClockSkew` default is generous; widens replay window. Configurable; document <30s prod recommendation. — **RESOLVED** (`a2318e9`) — default lowered to 30s; field still configurable via `TokenEndpointConfig.ClockSkew`.
+- **`internal/api/auth/token_endpoint.go:289-294`** — no rate limit on token endpoint; bursts of bogus assertions DoS the auth path. — **RESOLVED** (`a2318e9`) — per-source-IP token-bucket via `TokenEndpointConfig.RateLimitPerSource`; emits 429 + Retry-After. e2e: `auth_rate_limit_test.go`.
+- **`internal/api/handlers/subscription_handlers.go`** (POST /Subscription, $get-ws-binding-token) — no per-client rate limit on subscription creates / WS binding token mints. — **DEFERRED** — out of scope for the auth/channels worktree (lives in `internal/api/handlers/`); the auth package now exports the `RateLimit` primitive a future handlers MR can plug into a chi middleware.
+- **`internal/api/auth/token_endpoint.go:232`** — `exp, _ := claimToTime(...)` discards parse error; on zero-time `Put`, JTI replay protection silently disabled for that token. — **RESOLVED** (`a2318e9`) — fail-closed; returns 401 malformed and never Puts a zero-time JTI.
+- **`internal/api/principal.go:22-28`** — `HasScope` is O(n); minor. — **RESOLVED** (`a2318e9`) — switched to a sync.Once-guarded set; lookups O(1). Unit test: `principal_scope_set_test.go`.
 
 #### S-4: Channels — rest-hook
-- **`internal/channel/resthook/resthook.go:144-161`** — default `*http.Client` has no `Timeout`; only context deadline protects calls. Set `c.http.Timeout`.
-- **`internal/channel/resthook/resthook.go:148-161`** — `MaxIdleConnsPerHost`/`MaxConnsPerHost` hardcoded; no `TLSClientConfig` knob; no min-version pin.
-- **`internal/channel/resthook/resthook.go:213-217`** — no enforced max bundle size; `payload=full-resource` with embedded base64 sends MB per attempt × retries.
-- **`internal/channel/resthook/resthook.go:285-291`** — `allowSubscriberHeader` is default-permit; allowlist lookup is dead code; subscribers can forge `X-Internal-Trust`, `X-Auth-User`, etc.
-- **`internal/channel/resthook/resthook.go:368-374`** — NXDOMAIN classified as `PermanentFailure`; transient DNS conditions get dead-lettered immediately.
-- **`internal/channel/resthook/resthook.go:434-441`** — `readBodyExcerpt` reads up to 256B of subscriber 4xx response into `out.Reason` which is logged; PHI may leak via redaction-bypass.
+- **`internal/channel/resthook/resthook.go:144-161`** — default `*http.Client` has no `Timeout`; only context deadline protects calls. Set `c.http.Timeout`. — **RESOLVED** (`a2318e9`) — default client now carries `Timeout=RequestTimeout` so header-drip subscribers cannot tie up workers past their envelope deadline.
+- **`internal/channel/resthook/resthook.go:148-161`** — `MaxIdleConnsPerHost`/`MaxConnsPerHost` hardcoded; no `TLSClientConfig` knob; no min-version pin. — **RESOLVED** (`a2318e9`) — exposed via `Options.MaxIdleConnsPerHost`, `MaxConnsPerHost`, `TLSMinVersion` (defaults TLS 1.3).
+- **`internal/channel/resthook/resthook.go:213-217`** — no enforced max bundle size; `payload=full-resource` with embedded base64 sends MB per attempt × retries. — **RESOLVED** (`a2318e9`) — `Options.MaxBundleBytes` (default 8 MiB) refuses oversize bundles before any I/O. e2e: `channels_resthook_hardening_test.go`.
+- **`internal/channel/resthook/resthook.go:285-291`** — `allowSubscriberHeader` is default-permit; allowlist lookup is dead code; subscribers can forge `X-Internal-Trust`, `X-Auth-User`, etc. — **RESOLVED** (`a2318e9`) — defense-in-depth deny-list expansion (X-Internal-*, X-Auth-*, X-Trusted-*, X-Real-IP, etc., plus deny-prefixes `x-internal-`, `x-trusted-`, `x-auth-`); legitimate FHIR headers (Prefer, If-Match, etc.) still pass.
+- **`internal/channel/resthook/resthook.go:368-374`** — NXDOMAIN classified as `PermanentFailure`; transient DNS conditions get dead-lettered immediately. — **RESOLVED** (`a2318e9`) — DNS errors all classified Transient; scheduler retry budget is the right backstop.
+- **`internal/channel/resthook/resthook.go:434-441`** — `readBodyExcerpt` reads up to 256B of subscriber 4xx response into `out.Reason` which is logged; PHI may leak via redaction-bypass. — **RESOLVED** (`a2318e9`) — `Options.IncludeResponseBodyExcerpt` opt-in; default OFF. e2e asserts no PHI leakage at default.
 
 #### S-5: Channels — message
-- **`internal/channel/message/message.go:152-175`** — same default-client-no-Timeout as resthook.
-- **`internal/channel/message/message.go:264-266`** — non-`fhir+json` content type fails at delivery time as PermanentFailure rather than being rejected at subscription create.
-- **`internal/channel/message/message.go:319`** — `Bundle.timestamp` uses `time.RFC3339` (second precision); FHIR `instant` expects sub-second.
-- **`internal/channel/message/message.go:359-374`** — same default-permit allowlist semantics as resthook.
+- **`internal/channel/message/message.go:152-175`** — same default-client-no-Timeout as resthook. — **RESOLVED** (`a2318e9`) — mirror of S-4 fix.
+- **`internal/channel/message/message.go:264-266`** — non-`fhir+json` content type fails at delivery time as PermanentFailure rather than being rejected at subscription create. — **RESOLVED** (`a2318e9`) — `Channel.ValidateContentType` exposed for callers (API layer) to reject at subscription-create boundary. e2e: `channels_message_hardening_test.go`.
+- **`internal/channel/message/message.go:319`** — `Bundle.timestamp` uses `time.RFC3339` (second precision); FHIR `instant` expects sub-second. — **RESOLVED** (`a2318e9`) — outer Bundle.timestamp serialized with `time.RFC3339Nano`.
+- **`internal/channel/message/message.go:359-374`** — same default-permit allowlist semantics as resthook. — **RESOLVED** (`a2318e9`) — mirror of the S-4 deny-list expansion.
 
 #### S-6: Channels — email — RESOLVED in `972dda7` (RED tests `5d28940`; e2e in `c8e428e`)
 - **`internal/channel/email/email.go:548-555`** — uses `dialer.Deadline` from ctx but never sets `dialer.Timeout`; stdlib `Deadline` is absolute time so OK in practice but fragile.

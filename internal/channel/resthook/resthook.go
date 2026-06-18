@@ -17,6 +17,7 @@ package resthook
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,17 @@ const (
 	DefaultUserAgent       = "fhir-ehr-subscriptions-service/0.0"
 	DefaultRequestTimeout  = 30 * time.Second
 	DefaultMaxResponseBody = 256 // bytes — bounds the 4xx body excerpt in PermanentFailure.Reason
+
+	// DefaultMaxBundleBytes caps the serialized bundle body the channel
+	// will POST. payload=full-resource with embedded base64 can produce
+	// multi-MB bundles; without a cap the worker spends its retry budget
+	// on hopeless re-deliveries (S-4). 8 MiB is a generous ceiling.
+	DefaultMaxBundleBytes = 8 * 1024 * 1024
+
+	// DefaultMaxIdleConnsPerHost / DefaultMaxConnsPerHost match the
+	// historical hardcoded values; now exposed via Options (S-4).
+	DefaultMaxIdleConnsPerHost = 16
+	DefaultMaxConnsPerHost     = 64
 )
 
 // Metric names emitted by this channel. Wire form follows the
@@ -79,7 +91,11 @@ var allowedFHIRHeaders = map[string]struct{}{
 
 // Headers always rejected from Subscription.parameter[], even if they
 // match the validity regex. The channel sets these itself or they would
-// allow request smuggling / forging.
+// allow request smuggling / forging or downstream privilege confusion.
+//
+// The "internal trust" / "auth user" / "real ip" entries below close
+// the S-4 default-permit gap: subscribers must never be able to forge
+// headers a downstream reverse proxy or service mesh might trust.
 var deniedHeaders = map[string]struct{}{
 	"host":              {},
 	"content-length":    {},
@@ -93,22 +109,47 @@ var deniedHeaders = map[string]struct{}{
 	"trace-parent":      {},
 	"trace-state":       {},
 	"server":            {},
+	"x-internal-trust":  {},
+	"x-auth-user":       {},
+	"x-auth-token":      {},
+	"x-auth-roles":      {},
+	"x-auth-role":       {},
+	"x-auth-tenant":     {},
+	"x-trusted-user":    {},
+	"x-trusted-roles":   {},
+	"x-shibboleth-user": {},
+	"remote-user":       {},
+	"x-remote-user":     {},
+	"x-original-url":    {},
+	"x-rewrite-url":     {},
+	"x-client-cert":     {},
+	"x-ssl-client-cert": {},
+	"x-real-ip":         {},
 }
 
 // Reserved header-name prefixes that subscribers must never be able to
 // forge (these are commonly trusted by reverse proxies).
+//
+// "x-internal-" / "x-trusted-" / "x-auth-" cover the S-4 forging
+// surface for any header in those families a downstream layer might
+// trust without the channel needing to know each name in advance.
 var deniedPrefixes = []string{
 	"x-forwarded-",
 	"x-real-",
 	"x-server-",
 	"proxy-",
+	"x-internal-",
+	"x-trusted-",
+	"x-auth-",
 }
 
 // Options configures a resthook Channel at construction time. Zero values
 // fall back to package defaults.
 type Options struct {
 	// HTTPClient is the HTTP client used for outbound POST requests. If
-	// nil, http.DefaultClient is used. Tests inject httptest.Server.Client().
+	// nil, a default client with a wall-clock Timeout is built from the
+	// pool / TLS knobs below. Tests inject httptest.Server.Client(); any
+	// caller-supplied client is used as-is.
 	HTTPClient *http.Client
 	// Metrics receives counter increments. If nil, channel.NopMetrics is used.
 	Metrics channel.MetricsEmitter
@@ -119,29 +160,77 @@ type Options struct {
 	UserAgent string
 	// RequestTimeout is the per-attempt total wall-clock budget when
 	// envelope.Deadline is zero. Zero falls back to DefaultRequestTimeout.
+	// Also used as the default-client's wall-clock Timeout (S-4).
 	RequestTimeout time.Duration
+
+	// MaxIdleConnsPerHost overrides the default-client's pool setting
+	// (S-4). Zero falls back to DefaultMaxIdleConnsPerHost.
+	MaxIdleConnsPerHost int
+	// MaxConnsPerHost overrides the default-client's pool cap (S-4).
+	// Zero falls back to DefaultMaxConnsPerHost.
+	MaxConnsPerHost int
+	// TLSMinVersion is the minimum TLS version the default client will
+	// negotiate (S-4). Zero falls back to tls.VersionTLS12 (Go default).
+	// Production deployments SHOULD set tls.VersionTLS13.
+	TLSMinVersion uint16
+	// MaxBundleBytes caps the serialized bundle the channel will POST.
+	// Zero falls back to DefaultMaxBundleBytes (S-4). A bundle larger
+	// than this is permanently failed before any network I/O.
+	MaxBundleBytes int
+
+	// IncludeResponseBodyExcerpt controls whether subscriber 4xx response
+	// bytes are quoted into DeliveryOutcome.Reason. Default false — the
+	// excerpt is a PHI exfiltration / log-injection vector (S-4). Set
+	// true only in dev / staging where the operator owns both ends.
+	IncludeResponseBodyExcerpt bool
 }
 
 // Channel implements the rest-hook delivery channel. Construct with New;
 // Channel is safe for concurrent use.
 type Channel struct {
-	http      *http.Client
-	metrics   channel.MetricsEmitter
-	logger    *slog.Logger
-	userAgent string
-	timeout   time.Duration
+	http               *http.Client
+	transport          *http.Transport // nil if caller-supplied HTTPClient
+	metrics            channel.MetricsEmitter
+	logger             *slog.Logger
+	userAgent          string
+	timeout            time.Duration
+	maxBundleBytes     int
+	includeBodyExcerpt bool
 }
 
 // New constructs a rest-hook Channel.
 func New(opts Options) (*Channel, error) {
 	c := &Channel{
-		http:      opts.HTTPClient,
-		metrics:   opts.Metrics,
-		logger:    opts.Logger,
-		userAgent: opts.UserAgent,
-		timeout:   opts.RequestTimeout,
+		http:               opts.HTTPClient,
+		metrics:            opts.Metrics,
+		logger:             opts.Logger,
+		userAgent:          opts.UserAgent,
+		timeout:            opts.RequestTimeout,
+		maxBundleBytes:     opts.MaxBundleBytes,
+		includeBodyExcerpt: opts.IncludeResponseBodyExcerpt,
+	}
+	if c.timeout <= 0 {
+		c.timeout = DefaultRequestTimeout
+	}
+	if c.maxBundleBytes <= 0 {
+		c.maxBundleBytes = DefaultMaxBundleBytes
 	}
 	if c.http == nil {
+		maxIdle := opts.MaxIdleConnsPerHost
+		if maxIdle <= 0 {
+			maxIdle = DefaultMaxIdleConnsPerHost
+		}
+		maxConns := opts.MaxConnsPerHost
+		if maxConns <= 0 {
+			maxConns = DefaultMaxConnsPerHost
+		}
+		minTLS := opts.TLSMinVersion
+		if minTLS == 0 {
+			// TLS 1.3 by default — gosec G402 flags <1.3, and FHIR
+			// subscribers are first-party integrations that can be
+			// expected to support modern TLS (S-4).
+			minTLS = tls.VersionTLS13
+		}
 		// Default transport with a bounded DNS/connect timeout so a slow
 		// system resolver cannot stall a delivery attempt past its deadline.
 		// Per docs/low-level-design/channels.md §4.1 connection-pool defaults.
@@ -150,14 +239,19 @@ func New(opts Options) (*Channel, error) {
 				Timeout:   5 * time.Second,
 				KeepAlive: 90 * time.Second,
 			}).DialContext,
-			MaxIdleConnsPerHost:   16,
-			MaxConnsPerHost:       64,
+			MaxIdleConnsPerHost:   maxIdle,
+			MaxConnsPerHost:       maxConns,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			ForceAttemptHTTP2:     true,
+			TLSClientConfig:       &tls.Config{MinVersion: minTLS}, //nolint:gosec // configurable; defaults to TLS 1.3
 		}
-		c.http = &http.Client{Transport: tr}
+		c.transport = tr
+		// Wall-clock Timeout bounds the entire request — a hostile
+		// subscriber dripping response headers cannot tie up the worker
+		// past its envelope deadline (S-4).
+		c.http = &http.Client{Transport: tr, Timeout: c.timeout}
 	}
 	if c.metrics == nil {
 		c.metrics = channel.NopMetrics{}
@@ -168,11 +262,16 @@ func New(opts Options) (*Channel, error) {
 	if c.userAgent == "" {
 		c.userAgent = DefaultUserAgent
 	}
-	if c.timeout <= 0 {
-		c.timeout = DefaultRequestTimeout
-	}
 	return c, nil
 }
+
+// HTTPClientForTest exposes the constructed http.Client to tests without
+// shipping it as a public method.
+func (c *Channel) HTTPClientForTest() *http.Client { return c.http }
+
+// TransportForTest exposes the default transport (nil if a caller
+// supplied an HTTPClient) so tests can assert pool / TLS configuration.
+func (c *Channel) TransportForTest() *http.Transport { return c.transport }
 
 // Deliver POSTs the envelope's bundle to the subscriber's endpoint and
 // classifies the response into a DeliveryOutcome.
@@ -204,6 +303,13 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 	if parsed.Scheme != "https" {
 		c.metrics.Inc(MetricNonHTTPSEndpointTotal, map[string]string{"channel": channelName})
 		return channel.PermanentFailure("non-https endpoint")
+	}
+	if len(env.BundleBytes) > c.maxBundleBytes {
+		// S-4: refuse oversize bundles before any I/O. Retry budget is
+		// finite; a 50MB payload-full-resource bundle that 413s on every
+		// retry is hopeless from the first attempt.
+		return channel.PermanentFailure(fmt.Sprintf("bundle too large: %d > %d",
+			len(env.BundleBytes), c.maxBundleBytes))
 	}
 
 	// Apply per-attempt deadline.
@@ -269,6 +375,14 @@ func (c *Channel) composeHeaders(req *http.Request, env channel.NotificationEnve
 
 // allowSubscriberHeader applies the deny + allowlist + validity rules
 // from docs/low-level-design/channels.md §4.1.
+//
+// Subscriber-supplied custom headers default-permit AFTER passing the
+// expanded deny list and validity regex. The S-4 fix is the deny-list
+// expansion (X-Internal-*, X-Trusted-*, X-Auth-*, X-Real-IP, etc.) plus
+// the prefix list (x-internal-, x-trusted-, x-auth-): downstream
+// reverse proxies and service meshes commonly trust these, so even if
+// allowlist lookup is bypassable, the deny list is the load-bearing
+// boundary.
 func (c *Channel) allowSubscriberHeader(name string) bool {
 	lower := strings.ToLower(name)
 	if !validHeaderName(name) {
@@ -343,10 +457,17 @@ func (c *Channel) classifyHTTPResponse(resp *http.Response) channel.DeliveryOutc
 		}
 	default:
 		// Other 4xx — permanent.
-		excerpt := readBodyExcerpt(resp.Body, DefaultMaxResponseBody)
 		reason := fmt.Sprintf("%d %s", status, http.StatusText(status))
-		if excerpt != "" {
-			reason = fmt.Sprintf("%s: %s", reason, excerpt)
+		// S-4: subscriber response bodies may contain PHI (a 400
+		// rejecting a duplicate Patient is a likely path). Quoting them
+		// into the Reason — which is logged and surfaced via FHIR
+		// OperationOutcome — risks bypassing redaction. Default off;
+		// operators opt in via Options.IncludeResponseBodyExcerpt only
+		// in environments where they own both ends.
+		if c.includeBodyExcerpt {
+			if excerpt := readBodyExcerpt(resp.Body, DefaultMaxResponseBody); excerpt != "" {
+				reason = fmt.Sprintf("%s: %s", reason, excerpt)
+			}
 		}
 		return channel.DeliveryOutcome{
 			Kind:       channel.OutcomePermanent,
@@ -364,12 +485,14 @@ func (c *Channel) classifyNetworkError(err error) channel.DeliveryOutcome {
 		return channel.TransientFailure(0, "context canceled: "+err.Error())
 	}
 
-	// DNS errors: NXDOMAIN is permanent; SERVFAIL/TIMEOUT/temporary are transient.
+	// DNS errors are transient. NXDOMAIN at the resolver level often
+	// reflects propagation lag (recursive resolver hiccup, SOA refresh
+	// in flight) — a misconfigured subscriber endpoint will keep
+	// resolving NXDOMAIN until the operator fixes it, and the scheduler
+	// will eventually exhaust its retry budget and dead-letter (S-4).
+	// Treating NXDOMAIN as permanent dead-lettered transient failures.
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		if dnsErr.IsNotFound {
-			return channel.PermanentFailure("dns nxdomain: " + dnsErr.Name)
-		}
 		return channel.TransientFailure(0, "dns: "+dnsErr.Err)
 	}
 
