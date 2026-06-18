@@ -1,4 +1,3 @@
--- @CONCURRENT
 -- 0005_subscriptions_client_match_idx.sql
 --
 -- S-2.4: Push the FHIR `If-None-Exist` predicate into SQL. The handler
@@ -23,11 +22,14 @@
 -- in the index because the index covers the high-selectivity equality
 -- columns; the small post-filter on status keeps the index narrow.
 --
--- CONCURRENTLY so a rolling deploy on a populated table does not lock
--- writes (the migration runner honors the `-- @CONCURRENT` directive
--- and runs this statement outside a transaction).
+-- A non-CONCURRENTLY CREATE INDEX takes a brief ShareLock on the table
+-- (writes block; reads do not). The subscriptions table is small in
+-- every realistic deployment (one row per client × per channel × per
+-- topic) so the lock window is sub-second; CONCURRENTLY would require
+-- the migration runner to handle parallel-racer + CREATE INDEX
+-- CONCURRENTLY interactions, which it currently does not.
 
-create index concurrently if not exists subscriptions_client_match_idx
+create index if not exists subscriptions_client_match_idx
     on subscriptions (client_id, channel_type, topic_url, endpoint);
 
 comment on index subscriptions_client_match_idx is
