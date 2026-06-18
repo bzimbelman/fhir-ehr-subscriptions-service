@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	codingws "github.com/coder/websocket"
@@ -33,21 +34,35 @@ const HandlerPath = "/ws/subscriptions"
 
 // Defaults from docs/low-level-design/channels.md §4.2.
 const (
-	DefaultPingInterval        = 30 * time.Second
-	DefaultIdleTimeout         = 5 * time.Minute
-	DefaultMaxFrameBytes       = 8 * 1024 * 1024
-	DefaultTransientRetryAfter = 30 * time.Second
-	DefaultAckTimeout          = 30 * time.Second
+	DefaultPingInterval             = 30 * time.Second
+	DefaultIdleTimeout              = 5 * time.Minute
+	DefaultMaxFrameBytes            = 8 * 1024 * 1024
+	DefaultTransientRetryAfter      = 30 * time.Second
+	DefaultAckTimeout               = 30 * time.Second
+	DefaultBindTimeout              = 10 * time.Second
+	DefaultPingWriteTimeout         = 10 * time.Second
+	DefaultUpgradeReadHeaderTimeout = 5 * time.Second
+	// DefaultMaxReplayEvents bounds replay materialization to a sane upper
+	// limit; clients reconnecting from an ancient lastReceivedEventNumber
+	// receive at most this many events plus a "replay-truncated" control
+	// frame instructing them to bind again with the latest event number.
+	DefaultMaxReplayEvents = 10000
+	// DefaultMaxSessions bounds the channel-wide session map; a single
+	// process holding millions of bound sockets is operationally untenable.
+	DefaultMaxSessions = 50000
 )
 
 // Metric names.
 const (
-	MetricDeliveriesTotal     = "fhir_subs_channel_websocket_deliveries_total"
-	MetricBindAttemptsTotal   = "fhir_subs_channel_websocket_bind_attempts_total"
-	MetricSessionsBoundGauge  = "fhir_subs_channel_websocket_sessions_bound"
-	MetricFrameBytesHistogram = "fhir_subs_channel_websocket_frame_bytes"
-	MetricDisconnectsTotal    = "fhir_subs_channel_websocket_disconnects_total"
-	MetricReplayEventsTotal   = "fhir_subs_channel_websocket_replay_events_total"
+	MetricDeliveriesTotal      = "fhir_subs_channel_websocket_deliveries_total"
+	MetricBindAttemptsTotal    = "fhir_subs_channel_websocket_bind_attempts_total"
+	MetricSessionsBoundGauge   = "fhir_subs_channel_websocket_sessions_bound"
+	MetricFrameBytesHistogram  = "fhir_subs_channel_websocket_frame_bytes"
+	MetricDisconnectsTotal     = "fhir_subs_channel_websocket_disconnects_total"
+	MetricReplayEventsTotal    = "fhir_subs_channel_websocket_replay_events_total"
+	MetricBindRejectedTotal    = "fhir_subs_channel_websocket_bind_rejected_total"
+	MetricReplayTruncatedTotal = "fhir_subs_channel_websocket_replay_truncated_total"
+	MetricIdleClosedTotal      = "fhir_subs_channel_websocket_idle_closed_total"
 )
 
 // ConsumeOutcome and ConsumeResult mirror the storage repo's enum so the
@@ -118,26 +133,73 @@ type Options struct {
 	// Reverse-proxy deployments behind TLS termination should set this
 	// to the public host(s) the browser sees, not the upstream service.
 	OriginPatterns []string
+
+	// BindTimeout bounds the wait for the first bind frame after upgrade.
+	// Zero falls back to DefaultBindTimeout. (S-7 #4)
+	BindTimeout time.Duration
+
+	// PingWriteTimeout bounds a single ping write so a stuck peer cannot
+	// pin a goroutine for the full IdleTimeout. Zero falls back to
+	// DefaultPingWriteTimeout. (S-7 #6)
+	PingWriteTimeout time.Duration
+
+	// UpgradeReadHeaderTimeout, when wired via ConfigureServer, is set as
+	// the http.Server.ReadHeaderTimeout to defend the upgrade handler
+	// against slowloris on the handshake. Zero falls back to
+	// DefaultUpgradeReadHeaderTimeout. (S-7 #2)
+	UpgradeReadHeaderTimeout time.Duration
+
+	// MaxSessions bounds the channel-wide session map. Bind requests
+	// beyond this cap are rejected with bind-error and a metric increment
+	// on fhir_subs_channel_websocket_bind_rejected_total{reason="capacity"}.
+	// Zero falls back to DefaultMaxSessions. (S-7 #1)
+	MaxSessions int
+
+	// MaxSessionsPerClient limits concurrent bound sessions per ClientID.
+	// Zero disables the per-client cap (only the channel-wide MaxSessions
+	// applies). (S-7 #1)
+	MaxSessionsPerClient int
+
+	// MaxReplayEvents caps the number of past events written during the
+	// reconnect-replay step. After the cap the channel emits a
+	// "replay-truncated" control frame and stops; the client should
+	// re-bind with the latest received event number. Zero falls back to
+	// DefaultMaxReplayEvents. (S-7 #8)
+	MaxReplayEvents int
 }
 
 // Channel is the websocket notification channel.
 type Channel struct {
-	tokens              TokenConsumer
-	replayer            EventReplayer
-	now                 func() time.Time
-	metrics             channel.MetricsEmitter
-	logger              *slog.Logger
-	pingInterval        time.Duration
-	idleTimeout         time.Duration
-	maxFrameBytes       int
-	transientRetryAfter time.Duration
-	ackTimeout          time.Duration
-	originPatterns      []string
+	tokens                   TokenConsumer
+	replayer                 EventReplayer
+	now                      func() time.Time
+	metrics                  channel.MetricsEmitter
+	logger                   *slog.Logger
+	pingInterval             time.Duration
+	idleTimeout              time.Duration
+	maxFrameBytes            int
+	transientRetryAfter      time.Duration
+	ackTimeout               time.Duration
+	originPatterns           []string
+	bindTimeout              time.Duration
+	pingWriteTimeout         time.Duration
+	upgradeReadHeaderTimeout time.Duration
+	maxSessions              int
+	maxSessionsPerClient     int
+	maxReplayEvents          int
+
+	// ctx / cancel govern channel-wide goroutine lifecycle (S-7 #5).
+	ctx    context.Context
+	cancel context.CancelFunc
+	// wg tracks per-session goroutines (read + ping loops) so Close can
+	// join cleanly (S-7 #9).
+	wg sync.WaitGroup
 
 	// sessions holds the at-most-one bound session per subscription.
-	mu       sync.Mutex
-	sessions map[uuid.UUID]*session
-	closed   bool
+	mu              sync.Mutex
+	sessions        map[uuid.UUID]*session
+	clientSessCount map[string]int
+	closed          bool
 }
 
 // session is the per-subscription connection state.
@@ -155,6 +217,12 @@ type session struct {
 
 	// closing is set when the read loop has terminated.
 	closing chan struct{}
+
+	// lastReadAtNS is the most recent time, in unix nanoseconds, the
+	// session observed a frame from the peer. Updated atomically by
+	// readLoop; the idle watchdog reads it without taking sendMu.
+	// (S-7 #6/#7)
+	lastReadAtNS atomic.Int64
 
 	logger *slog.Logger
 }
@@ -182,18 +250,25 @@ func New(opts Options) (*Channel, error) {
 		return nil, errors.New("websocket: Replayer is required")
 	}
 	c := &Channel{
-		tokens:              opts.Tokens,
-		replayer:            opts.Replayer,
-		now:                 opts.Now,
-		metrics:             opts.Metrics,
-		logger:              opts.Logger,
-		pingInterval:        opts.PingInterval,
-		idleTimeout:         opts.IdleTimeout,
-		maxFrameBytes:       opts.MaxFrameBytes,
-		transientRetryAfter: opts.TransientRetryAfter,
-		ackTimeout:          opts.AckTimeout,
-		originPatterns:      append([]string(nil), opts.OriginPatterns...),
-		sessions:            make(map[uuid.UUID]*session),
+		tokens:                   opts.Tokens,
+		replayer:                 opts.Replayer,
+		now:                      opts.Now,
+		metrics:                  opts.Metrics,
+		logger:                   opts.Logger,
+		pingInterval:             opts.PingInterval,
+		idleTimeout:              opts.IdleTimeout,
+		maxFrameBytes:            opts.MaxFrameBytes,
+		transientRetryAfter:      opts.TransientRetryAfter,
+		ackTimeout:               opts.AckTimeout,
+		originPatterns:           append([]string(nil), opts.OriginPatterns...),
+		bindTimeout:              opts.BindTimeout,
+		pingWriteTimeout:         opts.PingWriteTimeout,
+		upgradeReadHeaderTimeout: opts.UpgradeReadHeaderTimeout,
+		maxSessions:              opts.MaxSessions,
+		maxSessionsPerClient:     opts.MaxSessionsPerClient,
+		maxReplayEvents:          opts.MaxReplayEvents,
+		sessions:                 make(map[uuid.UUID]*session),
+		clientSessCount:          make(map[string]int),
 	}
 	if c.now == nil {
 		c.now = time.Now
@@ -219,7 +294,37 @@ func New(opts Options) (*Channel, error) {
 	if c.ackTimeout <= 0 {
 		c.ackTimeout = DefaultAckTimeout
 	}
+	if c.bindTimeout <= 0 {
+		c.bindTimeout = DefaultBindTimeout
+	}
+	if c.pingWriteTimeout <= 0 {
+		c.pingWriteTimeout = DefaultPingWriteTimeout
+	}
+	if c.upgradeReadHeaderTimeout <= 0 {
+		c.upgradeReadHeaderTimeout = DefaultUpgradeReadHeaderTimeout
+	}
+	if c.maxSessions <= 0 {
+		c.maxSessions = DefaultMaxSessions
+	}
+	if c.maxReplayEvents <= 0 {
+		c.maxReplayEvents = DefaultMaxReplayEvents
+	}
+	c.ctx, c.cancel = context.WithCancel(context.Background())
 	return c, nil
+}
+
+// ConfigureServer applies the upgrade handshake hardening to a passed
+// *http.Server: ReadHeaderTimeout (S-7 #2) so a slowloris on the
+// handshake gets cut off promptly. The caller is responsible for setting
+// the Handler. This is a hook because we don't own the server lifecycle
+// — the host wires the channel handler into a larger mux.
+func (c *Channel) ConfigureServer(s *http.Server) {
+	if s == nil {
+		return
+	}
+	if s.ReadHeaderTimeout == 0 || s.ReadHeaderTimeout > c.upgradeReadHeaderTimeout {
+		s.ReadHeaderTimeout = c.upgradeReadHeaderTimeout
+	}
 }
 
 // Handler returns the http.Handler that accepts WSS upgrade requests at
@@ -255,15 +360,35 @@ func (c *Channel) upgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// S-7 #3: align inbound read limit with the channel's MaxFrameBytes.
+	// Default coder/websocket inbound limit is 32 KiB; without this call,
+	// any inbound frame above 32 KiB closes the connection even though
+	// the operator configured MaxFrameBytes=8MB outbound. We use the
+	// larger of MaxFrameBytes and the bind-message default so an operator
+	// who configures a deliberately tiny MaxFrameBytes (rare; mainly
+	// tests) does not accidentally make the bind frame unsendable. The
+	// post-bind tightening is applied inside runConnection.
+	bindReadLimit := int64(c.maxFrameBytes)
+	if bindReadLimit < defaultBindReadLimit {
+		bindReadLimit = defaultBindReadLimit
+	}
+	conn.SetReadLimit(bindReadLimit)
+
 	c.runConnection(r.Context(), conn)
 }
+
+// defaultBindReadLimit is the inbound read limit applied during the
+// bind handshake. It is intentionally generous (4 KiB) — the bind frame
+// is small JSON, and we want any larger inbound frame to be rejected
+// before we trust the peer.
+const defaultBindReadLimit = 4 * 1024
 
 // runConnection reads the bind message, validates the token, registers
 // the session, optionally replays missed events, then runs the read
 // loop until the socket closes.
 func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
-	// Bind message has its own short read deadline.
-	bindCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// S-7 #4: bind-frame timeout is configurable via Options.BindTimeout.
+	bindCtx, cancel := context.WithTimeout(ctx, c.bindTimeout)
 	mt, raw, err := conn.Read(bindCtx)
 	cancel()
 	if err != nil {
@@ -345,9 +470,39 @@ func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
 		_ = conn.Close(codingws.StatusPolicyViolation, "already bound")
 		return
 	}
+	// S-7 #1: channel-wide session cap.
+	if len(c.sessions) >= c.maxSessions {
+		c.mu.Unlock()
+		c.metrics.Inc(MetricBindRejectedTotal, map[string]string{
+			"channel": channelName,
+			"reason":  "capacity",
+		})
+		_ = conn.Write(ctx, codingws.MessageText, mustJSON(bindError("max sessions capacity reached")))
+		_ = conn.Close(codingws.StatusTryAgainLater, "capacity")
+		return
+	}
+	// S-7 #1: per-client session cap.
+	if c.maxSessionsPerClient > 0 && c.clientSessCount[res.ClientID] >= c.maxSessionsPerClient {
+		c.mu.Unlock()
+		c.metrics.Inc(MetricBindRejectedTotal, map[string]string{
+			"channel": channelName,
+			"reason":  "client_capacity",
+		})
+		_ = conn.Write(ctx, codingws.MessageText, mustJSON(bindError("max sessions per client capacity reached")))
+		_ = conn.Close(codingws.StatusTryAgainLater, "client capacity")
+		return
+	}
 	c.sessions[res.SubscriptionID] = sess
+	c.clientSessCount[res.ClientID]++
+	sess.lastReadAtNS.Store(c.now().UnixNano())
 	c.metrics.Set(MetricSessionsBoundGauge, float64(len(c.sessions)), map[string]string{"channel": channelName})
 	c.mu.Unlock()
+
+	// S-7 #3: post-bind, tighten the inbound read limit to MaxFrameBytes.
+	// During bind we used a generous default to avoid rejecting the bind
+	// frame on a deliberately tiny MaxFrameBytes (rare). After bind, the
+	// channel's outbound limit applies inbound too.
+	conn.SetReadLimit(int64(c.maxFrameBytes))
 
 	// Send bind-success.
 	if err := writeText(ctx, conn, mustJSON(map[string]any{
@@ -365,7 +520,18 @@ func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
 		if err != nil {
 			sess.logger.ErrorContext(ctx, "replay error", slog.String("err", err.Error()))
 		} else {
-			for _, e := range past {
+			// S-7 #8: cap the replay so a million-event subscription does
+			// not OOM the channel. After the cap the channel emits a
+			// "replay-truncated" control message and stops; the client
+			// should re-bind with the latest received event number.
+			limit := len(past)
+			truncated := false
+			if c.maxReplayEvents > 0 && limit > c.maxReplayEvents {
+				limit = c.maxReplayEvents
+				truncated = true
+			}
+			for i := 0; i < limit; i++ {
+				e := past[i]
 				sess.sendMu.Lock()
 				werr := writeText(ctx, conn, e.Bundle)
 				sess.sendMu.Unlock()
@@ -375,17 +541,34 @@ func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
 				}
 				c.metrics.Inc(MetricReplayEventsTotal, map[string]string{"channel": channelName})
 			}
+			if truncated {
+				c.metrics.Inc(MetricReplayTruncatedTotal, map[string]string{"channel": channelName})
+				sess.sendMu.Lock()
+				_ = writeText(ctx, conn, mustJSON(map[string]any{
+					"type":    "replay-truncated",
+					"reason":  "replay capped at max-replay-events; rebind with the latest received event",
+					"capped":  c.maxReplayEvents,
+					"missing": len(past) - limit,
+				}))
+				sess.sendMu.Unlock()
+			}
 		}
 	}
 
-	// Pong on every read keeps last_activity fresh; coder/websocket auto-replies
-	// to client pings, but we also drive periodic server pings to detect dead
-	// peers.
-	go c.pingLoop(sess)
-
-	c.readLoop(ctx, sess)
-	c.removeSession(sess)
-	_ = conn.Close(codingws.StatusNormalClosure, "")
+	// S-7 #5/#9: spawn the per-session goroutines under the channel
+	// WaitGroup so Close can join them deterministically. Both loops are
+	// bound to c.ctx so a Close fires their cancellation simultaneously.
+	c.wg.Add(2)
+	go func() {
+		defer c.wg.Done()
+		c.pingLoop(sess)
+	}()
+	go func() {
+		defer c.wg.Done()
+		c.readLoop(c.ctx, sess)
+		c.removeSession(sess)
+		_ = conn.Close(codingws.StatusNormalClosure, "")
+	}()
 }
 
 func (c *Channel) readLoop(ctx context.Context, sess *session) {
@@ -399,6 +582,10 @@ func (c *Channel) readLoop(ctx context.Context, sess *session) {
 			})
 			return
 		}
+		// S-7 #6/#7: any peer frame refreshes the idle watermark so the
+		// pingLoop's idle watchdog tracks "last seen activity" instead of
+		// piggybacking ping success.
+		sess.lastReadAtNS.Store(c.now().UnixNano())
 		if mt != codingws.MessageText {
 			continue
 		}
@@ -419,6 +606,12 @@ func (c *Channel) readLoop(ctx context.Context, sess *session) {
 	}
 }
 
+// pingLoop drives periodic pings AND polices idle timeout. S-7 #5: the
+// inner ping context is bound to the channel-level ctx so a Close
+// cancels in-flight pings. S-7 #6: the ping write deadline is the
+// dedicated PingWriteTimeout, NOT the full IdleTimeout. S-7 #7: idle
+// detection uses the session's lastReadAtNS watermark; a session that
+// has been quiet for IdleTimeout is closed.
 func (c *Channel) pingLoop(sess *session) {
 	tick := time.NewTicker(c.pingInterval)
 	defer tick.Stop()
@@ -426,12 +619,30 @@ func (c *Channel) pingLoop(sess *session) {
 		select {
 		case <-sess.closing:
 			return
+		case <-c.ctx.Done():
+			return
 		case <-tick.C:
-			ctx, cancel := context.WithTimeout(context.Background(), c.idleTimeout)
-			err := sess.conn.Ping(ctx)
+			// Idle watchdog (S-7 #7).
+			lastNS := sess.lastReadAtNS.Load()
+			if lastNS > 0 {
+				if c.now().UnixNano()-lastNS > int64(c.idleTimeout) {
+					sess.logger.InfoContext(c.ctx, "websocket idle timeout reached; closing session",
+						slog.String("channel", channelName),
+						slog.Duration("idle_timeout", c.idleTimeout))
+					c.metrics.Inc(MetricIdleClosedTotal, map[string]string{"channel": channelName})
+					_ = sess.conn.Close(codingws.StatusGoingAway, "idle timeout")
+					return
+				}
+			}
+			// Bounded ping (S-7 #5/#6).
+			pingCtx, cancel := context.WithTimeout(c.ctx, c.pingWriteTimeout)
+			err := sess.conn.Ping(pingCtx)
 			cancel()
 			if err != nil {
-				sess.logger.WarnContext(context.Background(), "ping failed", slog.String("err", err.Error()))
+				sess.logger.WarnContext(c.ctx, "ping failed",
+					slog.String("channel", channelName),
+					slog.String("err", err.Error()))
+				_ = sess.conn.Close(codingws.StatusGoingAway, "ping failed")
 				return
 			}
 		}
@@ -443,6 +654,12 @@ func (c *Channel) removeSession(sess *session) {
 	defer c.mu.Unlock()
 	if cur, ok := c.sessions[sess.subID]; ok && cur == sess {
 		delete(c.sessions, sess.subID)
+		if c.clientSessCount[sess.clientID] > 0 {
+			c.clientSessCount[sess.clientID]--
+			if c.clientSessCount[sess.clientID] == 0 {
+				delete(c.clientSessCount, sess.clientID)
+			}
+		}
 		c.metrics.Set(MetricSessionsBoundGauge, float64(len(c.sessions)), map[string]string{"channel": channelName})
 	}
 }
@@ -526,19 +743,33 @@ func (c *Channel) Deliver(ctx context.Context, env channel.NotificationEnvelope)
 	}
 }
 
-// Close stops the channel and disconnects bound subscribers.
+// Close stops the channel and disconnects bound subscribers. S-7 #9:
+// joins per-session goroutines via WaitGroup so Close blocks until both
+// the ping loop and read loop have exited for every bound session,
+// making shutdown deterministic.
 func (c *Channel) Close() error {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
 	c.closed = true
 	sess := make([]*session, 0, len(c.sessions))
 	for _, s := range c.sessions {
 		sess = append(sess, s)
 	}
 	c.sessions = map[uuid.UUID]*session{}
+	c.clientSessCount = map[string]int{}
 	c.mu.Unlock()
+	// Cancel the channel-wide ctx so ping loops bound to it return promptly.
+	c.cancel()
+	// Force-close every active socket; this unblocks the read loops.
 	for _, s := range sess {
 		_ = s.conn.Close(codingws.StatusGoingAway, "channel shutting down")
 	}
+	// Wait for every per-session goroutine to exit so the caller knows no
+	// goroutine will write to a held resource after Close returns.
+	c.wg.Wait()
 	return nil
 }
 
