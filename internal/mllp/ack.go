@@ -14,7 +14,11 @@ type ackCode string
 const (
 	ackAA ackCode = "AA" // application accept
 	ackAE ackCode = "AE" // application error (NACK)
-	ackAR ackCode = "AR" // application reject (rare; reserved for malformed framing)
+	// AR (application reject) is intentionally NOT defined. Malformed-
+	// framing dead-letter concerns live downstream of the listener;
+	// when framing fails we drop the connection without writing an MSH
+	// ACK at all (LLD §8). A never-called AR constant would mislead
+	// readers about the listener's actual behavior.
 )
 
 // buildACK constructs the framed MLLP ACK bytes for the given inbound MSH.
