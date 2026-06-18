@@ -50,6 +50,12 @@ const (
 	// well-formed v2 header are NOT counted here (they pass through to
 	// the normal HL7 read loop).
 	MetricProxyHeaderRejectedTotal = "fhir_subs_mllp_proxy_header_rejected_total"
+	// MetricFrameDeadlineExceeded counts connections dropped because a
+	// single inter-marker frame failed to assemble within
+	// FrameAssemblyTimeout (S-9.1). High counts indicate slow / hostile
+	// peers, mid-frame TCP stalls, or — at the host level — too tight a
+	// FrameAssemblyTimeout.
+	MetricFrameDeadlineExceeded = "fhir_subs_mllp_frame_deadline_exceeded"
 )
 
 // Outcome label values for MetricMessagesAckedTotal.

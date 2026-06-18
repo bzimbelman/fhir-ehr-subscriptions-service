@@ -96,8 +96,12 @@ type MLLPConfig struct {
 	// MaxMessageBytes overrides the per-message body cap (default 1
 	// MiB).
 	MaxMessageBytes int `yaml:"max_message_bytes"`
-	// PersistTimeout bounds the per-message Persist call.
+	// PersistTimeout bounds the per-message Persist call. Must be ≤
+	// ShutdownDrainGrace (S-9.2) — Validate enforces the cap.
 	PersistTimeout time.Duration `yaml:"persist_timeout"`
+	// FrameAssemblyTimeout bounds how long a single inter-marker frame
+	// may take to assemble (S-9.1). Default 30s.
+	FrameAssemblyTimeout time.Duration `yaml:"frame_assembly_timeout"`
 	// MaxConnections caps total concurrent connections across all
 	// endpoints (B-19).
 	MaxConnections int `yaml:"max_connections"`

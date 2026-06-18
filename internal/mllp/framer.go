@@ -128,6 +128,16 @@ func (f *Framer) pendingExceeded() bool {
 	return f.maxBody > 0 && len(f.pending) > 2*f.maxBody
 }
 
+// AssemblyInProgress reports whether the framer is currently mid-frame —
+// that is, the start byte 0x0B has been observed but the frame's end
+// pair (0x1C 0x0D) has not yet arrived. The connection-level read loop
+// uses this to arm the FrameAssemblyTimeout (S-9.1): the deadline runs
+// only while we are actively assembling a frame, not while the
+// connection is idle between frames.
+func (f *Framer) AssemblyInProgress() bool {
+	return f.state == stateOpen || len(f.buf) > 0
+}
+
 // Next returns the next event. Callers must keep calling Next until it
 // returns a NeedMoreEvent or a MalformedEvent.
 func (f *Framer) Next() FramerEvent {

@@ -91,8 +91,22 @@ type ListenerConfig struct {
 	ReadIdleTimeout time.Duration
 
 	// PersistTimeout bounds the per-message Persist call. Default 5s.
-	// Must be strictly less than the host's storage.statement_timeout.
+	// Must be strictly less than the host's storage.statement_timeout, and
+	// MUST be ≤ ShutdownDrainGrace — the supervisor's drain budget has to
+	// cover at least one full persist or the in-flight Persist call (which
+	// LLD §5.7 deliberately decouples from request ctx so it can finish
+	// after shutdown begins) will outlive the drain window. Validate
+	// enforces the cap (S-9.2).
 	PersistTimeout time.Duration
+
+	// FrameAssemblyTimeout bounds how long a single inter-marker frame may
+	// take to assemble end-to-end. The deadline starts when the framer
+	// transitions to in-flight (first 0x0B for a given frame) and resets
+	// on every successfully delivered FrameEvent. Default 30s. Implements
+	// S-9.1 — without this knob a peer that streams a partial frame can
+	// hold a connection slot until the framer's pending-byte cap (S-9.4)
+	// trips, which is up to 2× MaxMessageBytes of bandwidth.
+	FrameAssemblyTimeout time.Duration
 
 	// AckWriteTimeout bounds a single ACK/NACK frame write back to the
 	// peer. Default 2s. The previous code hardcoded the 2s deadline
@@ -168,6 +182,18 @@ func (c ListenerConfig) Validate() error {
 	if c.PersistTimeout <= 0 {
 		return errors.New("mllp listener: persist_timeout must be > 0")
 	}
+	// S-9.2: a misconfigured operator with PersistTimeout >
+	// ShutdownDrainGrace causes the supervisor to force-close in-flight
+	// connections while their persists are still running, leaking work.
+	// We compare only when ShutdownDrainGrace is set; the zero/negative
+	// case is normalized in withDefaults but Validate runs first.
+	if c.ShutdownDrainGrace > 0 && c.PersistTimeout > c.ShutdownDrainGrace {
+		return fmt.Errorf("mllp listener: persist_timeout (%s) must be <= shutdown_drain_grace (%s)",
+			c.PersistTimeout, c.ShutdownDrainGrace)
+	}
+	if c.FrameAssemblyTimeout < 0 {
+		return errors.New("mllp listener: frame_assembly_timeout must be >= 0")
+	}
 	if c.NackThenDropAfter <= 0 {
 		return errors.New("mllp listener: nack_then_drop_after must be > 0")
 	}
@@ -202,6 +228,12 @@ func (c ListenerConfig) withDefaults() ListenerConfig {
 	}
 	if c.PersistTimeout <= 0 {
 		c.PersistTimeout = 5 * time.Second
+	}
+	if c.FrameAssemblyTimeout < 0 {
+		c.FrameAssemblyTimeout = 0
+	}
+	if c.FrameAssemblyTimeout == 0 {
+		c.FrameAssemblyTimeout = 30 * time.Second
 	}
 	if c.AckWriteTimeout <= 0 {
 		c.AckWriteTimeout = 2 * time.Second
