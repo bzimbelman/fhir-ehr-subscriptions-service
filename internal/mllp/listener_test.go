@@ -675,6 +675,94 @@ func TestListener_InflightCap_DirectGate(t *testing.T) {
 	}
 }
 
+// Inflight gauge is emitted on every frame (Set on inc, Set on dec).
+// LLD §7 lists fhir_subs_mllp_inflight_per_connection as a gauge.
+func TestMetrics_InflightPerConnection_Gauge(t *testing.T) {
+	persistEntered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	gaugeSeenInflight := int64(0)
+
+	p := &fakePersister{
+		persistFn: func(ctx context.Context, _ QueueRow) error {
+			select {
+			case persistEntered <- struct{}{}:
+			default:
+			}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	m := &snoopingMetrics{
+		fakeMetrics: newFakeMetrics(),
+		onSet: func(name string, value float64) {
+			if name == MetricInflightPerConnection && value > 0 {
+				atomic.StoreInt64(&gaugeSeenInflight, 1)
+			}
+		},
+	}
+	ep := EndpointConfig{Name: "adt-feed"}
+	cfg := defaultConfig(ep)
+	cfg.PersistTimeout = 10 * time.Second
+
+	server, client := net.Pipe()
+	defer client.Close()
+
+	go HandleConnection(context.Background(), server, ep, cfg, p, m, "127.0.0.1:5060")
+
+	if _, err := client.Write(frameBytes(sampleORU)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	select {
+	case <-persistEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("persist never entered")
+	}
+
+	// While persist is in flight the gauge must already have been Set to 1.
+	if atomic.LoadInt64(&gaugeSeenInflight) != 1 {
+		t.Fatalf("expected inflight gauge to be Set with value > 0 while persist in flight")
+	}
+
+	// Release; the gauge will Set back to 0 on dec.
+	close(release)
+
+	_ = readFrame(t, client)
+
+	// Gauge value should now be 0 with listener_endpoint label only.
+	// Drive a tiny wait until the deferred dec ran.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.fakeMetrics.mu.Lock()
+		v, present := m.fakeMetrics.gauges[metricKey(MetricInflightPerConnection,
+			map[string]string{"listener_endpoint": "adt-feed"})]
+		m.fakeMetrics.mu.Unlock()
+		if present && v == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("inflight gauge did not return to 0 after persist completed")
+}
+
+// snoopingMetrics wraps fakeMetrics so tests can observe Set events
+// synchronously (e.g., to assert the gauge fires while the persist is
+// still in flight).
+type snoopingMetrics struct {
+	*fakeMetrics
+	onSet func(name string, value float64)
+}
+
+func (s *snoopingMetrics) Set(name string, v float64, labels map[string]string) {
+	s.fakeMetrics.Set(name, v, labels)
+	if s.onSet != nil {
+		s.onSet(name, v)
+	}
+}
+
 // LLD §5.7: during graceful shutdown drain, do NOT NACK on persist
 // failure. Drop silently and exit. The EHR will reconnect.
 //
