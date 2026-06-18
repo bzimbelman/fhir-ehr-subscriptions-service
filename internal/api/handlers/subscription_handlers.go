@@ -92,6 +92,66 @@ func parseUUID(s string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// readCappedBody reads up to limit+1 bytes; returns oversize=true when
+// the body exceeds the cap, so the caller can answer 413 (S-2.2).
+// limit of 0 falls back to DefaultMaxBodyBytes.
+func readCappedBody(r *http.Request, limit int64) (body []byte, err error, oversize bool) {
+	if limit <= 0 {
+		limit = DefaultMaxBodyBytes
+	}
+	body, err = io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return nil, err, false
+	}
+	if int64(len(body)) > limit {
+		return nil, nil, true
+	}
+	return body, nil, false
+}
+
+// logActivateError emits a warn-level log when a database / audit /
+// channel call inside the fire-and-forget activation goroutine fails
+// (S-2.7). Nil logger is a no-op so existing tests / callers that
+// don't wire a logger keep working.
+func (s *server) logActivateError(op string, id uuid.UUID, err error) {
+	if s.deps.Logger == nil || err == nil {
+		return
+	}
+	s.deps.Logger.Warn(op, "subscription_id", id.String(), "err", err.Error())
+}
+
+// parseEventNumberParam parses an optional event-number query
+// parameter. Empty means 0 (unbounded). Returns ok=false on a
+// malformed or negative value so the handler can answer 400 instead
+// of silently treating it as unbounded (S-2.10).
+func parseEventNumberParam(raw string) (int64, bool) {
+	if raw == "" {
+		return 0, true
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// capDiagnostic shortens diagnostics text so a pathological JSON body
+// can't push a multi-megabyte error message into the FHIR
+// OperationOutcome (S-2.3). limit of 0 means DefaultMaxSchemaErrorBytes.
+func capDiagnostic(s string, limit int) string {
+	if limit <= 0 {
+		limit = DefaultMaxSchemaErrorBytes
+	}
+	if len(s) <= limit {
+		return s
+	}
+	const suffix = "... (truncated)"
+	if limit <= len(suffix) {
+		return s[:limit]
+	}
+	return s[:limit-len(suffix)] + suffix
+}
+
 // createSubscription is POST /Subscription.
 func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	p := mustPrincipal(w, r)
@@ -101,7 +161,12 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	if !requireScopes(w, p, "system/Subscription.c") {
 		return
 	}
-	body, readErr := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, readErr, oversize := readCappedBody(r, s.deps.MaxBodyBytes)
+	if oversize {
+		fhirerror.WriteError(w, http.StatusRequestEntityTooLarge, fhirerror.CodeValue,
+			"request body exceeds limit")
+		return
+	}
 	if readErr != nil {
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
 			"could not read body")
@@ -110,7 +175,7 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	if vErr := schemas.ValidateSubscription(body); vErr != nil {
 		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
-			vErr.Error())
+			capDiagnostic(vErr.Error(), s.deps.MaxSchemaErrorBytes))
 		return
 	}
 	internal, parseErr := parseInternalFromBody(body)
@@ -217,16 +282,24 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 // activate runs the channel's on_subscription_activated handshake and
-// flips the subscription status accordingly. Errors are recorded; the
-// subscription is left in `error` on failure.
+// flips the subscription status accordingly. DB / channel / audit
+// errors are routed to the dep-injected logger so an operator can spot
+// silent activation failures (S-2.7); previously every error was
+// dropped to `_`.
 func (s *server) activate(ctx context.Context, id uuid.UUID) {
 	sub, err := s.deps.Subscriptions.GetByID(ctx, id)
-	if err != nil || sub == nil {
+	if err != nil {
+		s.logActivateError("activate.get_subscription", id, err)
+		return
+	}
+	if sub == nil {
 		return
 	}
 	channel, ok := s.deps.Channels[sub.ChannelType]
 	if !ok {
-		_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, "no channel registered")
+		if uErr := s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, "no channel registered"); uErr != nil {
+			s.logActivateError("activate.no_channel.update_status", id, uErr)
+		}
 		return
 	}
 	outcome, err := channel.ActivateSubscription(ctx, *sub)
@@ -242,12 +315,20 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 		if bookkeepingCtx.Err() != nil {
 			bookkeepingCtx = context.Background()
 		}
-		_ = s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason)
-		_ = s.deps.Audit.Append(bookkeepingCtx, "subscription.handshake.fail", id.String(), "failure", nil, nil)
+		if uErr := s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason); uErr != nil {
+			s.logActivateError("activate.handshake_fail.update_status", id, uErr)
+		}
+		if aErr := s.deps.Audit.Append(bookkeepingCtx, "subscription.handshake.fail", id.String(), "failure", nil, nil); aErr != nil {
+			s.logActivateError("activate.handshake_fail.audit", id, aErr)
+		}
 		return
 	}
-	_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, "")
-	_ = s.deps.Audit.Append(ctx, "subscription.handshake.ok", id.String(), "success", nil, nil)
+	if err := s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, ""); err != nil {
+		s.logActivateError("activate.success.update_status", id, err)
+	}
+	if err := s.deps.Audit.Append(ctx, "subscription.handshake.ok", id.String(), "success", nil, nil); err != nil {
+		s.logActivateError("activate.success.audit", id, err)
+	}
 }
 
 // matchingSubscriptions returns this client's subscriptions whose
@@ -397,22 +478,31 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+		// FHIR optimistic-concurrency requires the weak ETag form
+		// (`W/"<version>"`); a bare UUID is no longer accepted because
+		// then the version is the resource id and lost-update detection
+		// is impossible (S-2.6).
 		expected := `W/"` + existing.ID.String() + `"`
-		if ifMatch != expected && ifMatch != existing.ID.String() {
+		if ifMatch != expected {
 			fhirerror.WriteError(w, http.StatusConflict, fhirerror.CodeConflict,
 				"version mismatch")
 			return
 		}
 	}
 
-	body, readErr := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, readErr, oversize := readCappedBody(r, s.deps.MaxBodyBytes)
+	if oversize {
+		fhirerror.WriteError(w, http.StatusRequestEntityTooLarge, fhirerror.CodeValue,
+			"request body exceeds limit")
+		return
+	}
 	if readErr != nil {
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, "could not read body")
 		return
 	}
 	if vErr := schemas.ValidateSubscription(body); vErr != nil {
 		s.recordValidationFailure("schema")
-		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, vErr.Error())
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, capDiagnostic(vErr.Error(), s.deps.MaxSchemaErrorBytes))
 		return
 	}
 	newDoc, err := parseInternalFromBody(body)
@@ -582,7 +672,7 @@ func (s *server) opStatusSingle(w http.ResponseWriter, r *http.Request) {
 			"no such subscription")
 		return
 	}
-	statusResource := s.buildSubscriptionStatus(sub, "query-status", nil)
+	statusResource := s.buildSubscriptionStatus(r.Context(), sub, "query-status", nil)
 	bundle := wrapSearchset([]any{statusResource})
 	body, _ := json.Marshal(bundle)
 	writeJSON(w, http.StatusOK, body)
@@ -603,6 +693,13 @@ func (s *server) opStatusBulk(w http.ResponseWriter, r *http.Request) {
 			"id parameter required")
 		return
 	}
+	// Cap fan-out so an attacker cannot pin the DB pool with one
+	// request (S-2.11).
+	if len(ids) > s.deps.MaxStatusBulkIDs {
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+			"too many id parameters")
+		return
+	}
 	entries := make([]any, 0, len(ids))
 	for _, raw := range ids {
 		id, ok := parseUUID(raw)
@@ -615,7 +712,7 @@ func (s *server) opStatusBulk(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, makeOutcomeEntry(raw, "not-found"))
 			continue
 		}
-		entries = append(entries, s.buildSubscriptionStatus(sub, "query-status", nil))
+		entries = append(entries, s.buildSubscriptionStatus(r.Context(), sub, "query-status", nil))
 	}
 	bundle := wrapSearchset(entries)
 	body, _ := json.Marshal(bundle)
@@ -648,8 +745,18 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	since, _ := strconv.ParseInt(r.URL.Query().Get("eventsSinceNumber"), 10, 64)
-	until, _ := strconv.ParseInt(r.URL.Query().Get("eventsUntilNumber"), 10, 64)
+	since, ok := parseEventNumberParam(r.URL.Query().Get("eventsSinceNumber"))
+	if !ok {
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+			"eventsSinceNumber must be a non-negative integer")
+		return
+	}
+	until, ok := parseEventNumberParam(r.URL.Query().Get("eventsUntilNumber"))
+	if !ok {
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+			"eventsUntilNumber must be a non-negative integer")
+		return
+	}
 
 	events, err := s.deps.Events.ListByTopicAndRange(r.Context(), sub.TopicURL, since, until)
 	if err != nil {
@@ -663,17 +770,17 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 		ev := &events[i]
 		entry := map[string]any{
 			"eventNumber": ev.EventNumber,
-			"timestamp":   ev.OccurredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			"timestamp":   ev.OccurredAt.UTC().Format(instantFormat),
 			"focus":       map[string]any{"reference": ev.Focus},
 		}
 		notificationEvents = append(notificationEvents, entry)
 	}
 
-	statusResource := s.buildSubscriptionStatus(sub, "query-event", notificationEvents)
+	statusResource := s.buildSubscriptionStatus(r.Context(), sub, "query-event", notificationEvents)
 	bundle := map[string]any{
 		"resourceType": "Bundle",
 		"type":         "subscription-notification",
-		"timestamp":    s.deps.Now().UTC().Format("2006-01-02T15:04:05Z07:00"),
+		"timestamp":    s.deps.Now().UTC().Format(instantFormat),
 		"entry": []any{
 			map[string]any{"resource": statusResource},
 		},
@@ -738,7 +845,7 @@ func (s *server) opGetWsBindingToken(w http.ResponseWriter, r *http.Request) {
 		"resourceType": "Parameters",
 		"parameter": []any{
 			map[string]any{"name": "token", "valueString": token},
-			map[string]any{"name": "expiration", "valueDateTime": expires.UTC().Format("2006-01-02T15:04:05Z07:00")},
+			map[string]any{"name": "expiration", "valueDateTime": expires.UTC().Format(instantFormat)},
 			map[string]any{"name": "subscription", "valueReference": map[string]any{"reference": "Subscription/" + id.String()}},
 			map[string]any{"name": "websocket-url", "valueUrl": wsURL},
 		},
@@ -805,20 +912,36 @@ func (s *server) readTopic(w http.ResponseWriter, r *http.Request) {
 	fhirerror.WriteError(w, http.StatusNotFound, fhirerror.CodeNotFound, "no such topic")
 }
 
-// getCapabilityStatement is GET /metadata.
+// getCapabilityStatement is GET /metadata when mounted behind the
+// authenticated surface (RegisterRoutes).
 func (s *server) getCapabilityStatement(w http.ResponseWriter, r *http.Request) {
 	if mustPrincipal(w, r) == nil {
 		return
 	}
+	s.writeCapabilityStatement(w, r)
+}
+
+// getCapabilityStatementPublic serves /metadata on the pre-auth
+// surface (RegisterPublicRoutes). FHIR conformance probes hit
+// /metadata without a bearer token (S-2.1).
+func (s *server) getCapabilityStatementPublic(w http.ResponseWriter, r *http.Request) {
+	s.writeCapabilityStatement(w, r)
+}
+
+func (s *server) writeCapabilityStatement(w http.ResponseWriter, r *http.Request) {
 	cs := s.buildCapabilityStatement(r.Context())
 	body, _ := json.Marshal(cs)
 	writeJSON(w, http.StatusOK, body)
 }
 
 // buildSubscriptionStatus assembles a SubscriptionStatus resource per
-// the spec.
-func (s *server) buildSubscriptionStatus(sub *repos.SubscriptionRow, kind string, events []map[string]any) map[string]any {
-	last, _ := s.deps.Deliveries.LastDeliveredEventNumber(context.Background(), sub.ID)
+// the spec. ctx is the caller's request context so deadline / cancel
+// propagate to the deliveries lookup (S-2.12).
+func (s *server) buildSubscriptionStatus(ctx context.Context, sub *repos.SubscriptionRow, kind string, events []map[string]any) map[string]any {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	last, _ := s.deps.Deliveries.LastDeliveredEventNumber(ctx, sub.ID)
 	out := map[string]any{
 		"resourceType":                 "SubscriptionStatus",
 		"status":                       string(sub.Status),
@@ -880,7 +1003,7 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 	return map[string]any{
 		"resourceType": "CapabilityStatement",
 		"status":       "active",
-		"date":         s.deps.Now().UTC().Format("2006-01-02T15:04:05Z07:00"),
+		"date":         s.deps.Now().UTC().Format(instantFormat),
 		"kind":         "instance",
 		"software": map[string]any{
 			"name":    "fhir-ehr-subscriptions-service",
@@ -890,7 +1013,7 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 			"description": "FHIR Subscriptions Bridge",
 			"url":         s.deps.BaseURL,
 		},
-		"fhirVersion": "5.0.0",
+		"fhirVersion": s.deps.FHIRVersion,
 		"format":      []any{"application/fhir+json"},
 		"rest": []any{
 			map[string]any{

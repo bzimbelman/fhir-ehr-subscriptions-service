@@ -230,16 +230,41 @@ func (m *Metrics) RequestMiddleware() func(http.Handler) http.Handler {
 	}
 }
 
+// unmatchedRouteLabel is the constant `route` label used when the chi
+// router did not resolve a registered pattern. Returning this constant
+// instead of `r.URL.Path` keeps Prometheus cardinality bounded — a
+// scanner pinging hundreds of distinct URLs no longer multiplies the
+// fhir_subs_api_requests_total series (S-2.19).
+const unmatchedRouteLabel = "<unmatched>"
+
 func routePattern(r *http.Request) string {
 	if rctx := chi.RouteContext(r.Context()); rctx != nil {
 		if pat := rctx.RoutePattern(); pat != "" {
 			return pat
 		}
 	}
-	if r.URL != nil {
-		return r.URL.Path
+	return unmatchedRouteLabel
+}
+
+// AuthGuard returns a chi-friendly middleware that gates a handler
+// behind a fixed bearer token. Intended for the /metrics endpoint
+// (S-2.18); production deployments pass the bearer secret via a
+// kube-secret. An empty bearer disables the guard so dev / e2e setups
+// keep working without configuration.
+func AuthGuard(bearer string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if bearer == "" {
+			return next
+		}
+		expected := "Bearer " + bearer
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != expected {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
-	return "unknown"
 }
 
 // statusRecorder captures the HTTP status the handler wrote so the

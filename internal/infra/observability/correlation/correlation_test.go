@@ -135,26 +135,50 @@ func TestExtractFromHeaders_RejectsCRLF(t *testing.T) {
 	}
 }
 
+// TestExtractFromHeaders_RejectsOversize: with strict UUID validation
+// (S-2.17), any non-UUID is rejected — including very long strings.
 func TestExtractFromHeaders_RejectsOversize(t *testing.T) {
 	t.Parallel()
 	req, _ := http.NewRequest("GET", "/", nil)
-	huge := strings.Repeat("a", correlation.MaxCorrelationIDLen+1)
+	huge := strings.Repeat("a", 1024)
 	req.Header.Set("X-Correlation-ID", huge)
 	ctx := correlation.ExtractFromHeaders(req.Context(), req.Header)
 	got := correlation.IDFromContext(ctx)
 	if got == huge {
 		t.Fatalf("expected oversize id rejected; was forwarded verbatim")
 	}
+	if _, err := uuid.Parse(got); err != nil {
+		t.Fatalf("expected fresh uuid fallback; got %q", got)
+	}
 }
 
-func TestExtractFromHeaders_AcceptsAllowedShape(t *testing.T) {
+// TestExtractFromHeaders_AcceptsValidUUID: only RFC4122-shape UUIDs are
+// honored; non-UUID values are dropped (S-2.17).
+func TestExtractFromHeaders_AcceptsValidUUID(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "/", nil)
+	id := "5be4d3c1-5e7f-4d63-9b2e-9b5f9e3a7c11"
+	req.Header.Set("X-Correlation-ID", id)
+	ctx := correlation.ExtractFromHeaders(req.Context(), req.Header)
+	got := correlation.IDFromContext(ctx)
+	if got != id {
+		t.Fatalf("expected to keep valid UUID id; got %q", got)
+	}
+}
+
+// TestExtractFromHeaders_RejectsNonUUID: legacy custom-shape ids are
+// no longer accepted under strict UUID validation (S-2.17).
+func TestExtractFromHeaders_RejectsNonUUID(t *testing.T) {
 	t.Parallel()
 	req, _ := http.NewRequest("GET", "/", nil)
 	req.Header.Set("X-Correlation-ID", "ord-2026.06.18-abc_123")
 	ctx := correlation.ExtractFromHeaders(req.Context(), req.Header)
 	got := correlation.IDFromContext(ctx)
-	if got != "ord-2026.06.18-abc_123" {
-		t.Fatalf("expected to keep allowed-shape id; got %q", got)
+	if got == "ord-2026.06.18-abc_123" {
+		t.Fatalf("expected non-UUID id rejected; was forwarded verbatim")
+	}
+	if _, err := uuid.Parse(got); err != nil {
+		t.Fatalf("expected fresh uuid fallback; got %q", got)
 	}
 }
 

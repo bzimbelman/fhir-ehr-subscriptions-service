@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -38,6 +39,11 @@ type ChannelActivator interface {
 
 // ChannelRegistry maps channel-type code (e.g., "rest-hook",
 // "websocket") to its activator.
+//
+// The registry is constructed once at startup, frozen, and read across
+// goroutines without a mutex. Mutating it after RegisterRoutes returns
+// is undefined and will race; the runtime treats it as immutable
+// (S-2.5).
 type ChannelRegistry map[string]ChannelActivator
 
 // MetricsRecorder is the narrow surface handlers use to record
@@ -122,7 +128,47 @@ type Deps struct {
 	// channel.header[] and similar secret-bearing fields never reach
 	// disk in plaintext.
 	AuditMaxBytes int
+
+	// MaxBodyBytes caps the request body the create / update handlers
+	// will read. Zero means DefaultMaxBodyBytes. (S-2.2)
+	MaxBodyBytes int64
+
+	// FHIRVersion is rendered into CapabilityStatement.fhirVersion.
+	// Empty means DefaultFHIRVersion. (S-2.13)
+	FHIRVersion string
+
+	// MaxStatusBulkIDs caps the number of `id` query parameters
+	// accepted by GET /Subscription/$status. Zero means
+	// DefaultMaxStatusBulkIDs. (S-2.11)
+	MaxStatusBulkIDs int
+
+	// MaxSchemaErrorBytes caps OperationOutcome.diagnostics for
+	// JSON-schema validation errors. Zero means
+	// DefaultMaxSchemaErrorBytes. (S-2.3)
+	MaxSchemaErrorBytes int
+
+	// Logger is the structured logger used for activate-side errors
+	// that the API can't surface to the client (S-2.7). Nil is
+	// permitted; activate calls then drop the error silently — that's
+	// the legacy behavior, kept for backwards-compat.
+	Logger *slog.Logger
 }
+
+// DefaultMaxBodyBytes is the default request-body cap.
+const DefaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
+
+// DefaultFHIRVersion is the default CapabilityStatement.fhirVersion.
+const DefaultFHIRVersion = "5.0.0"
+
+// DefaultMaxStatusBulkIDs caps GET /Subscription/$status?id=... fan-out.
+const DefaultMaxStatusBulkIDs = 256
+
+// DefaultMaxSchemaErrorBytes caps schema-validation diagnostics length.
+const DefaultMaxSchemaErrorBytes = 1024
+
+// instantFormat is the canonical FHIR `instant` rendering with
+// millisecond precision and a `Z` suffix (not `+00:00`). (S-2.9)
+const instantFormat = "2006-01-02T15:04:05.000Z"
 
 // RegisterRoutes wires every handler onto r. Auth middleware MUST be
 // installed upstream of these routes; the handlers depend on the
@@ -139,6 +185,18 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	}
 	if d.ActivationTimeout == 0 {
 		d.ActivationTimeout = DefaultActivationTimeout
+	}
+	if d.MaxBodyBytes <= 0 {
+		d.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if d.FHIRVersion == "" {
+		d.FHIRVersion = DefaultFHIRVersion
+	}
+	if d.MaxStatusBulkIDs <= 0 {
+		d.MaxStatusBulkIDs = DefaultMaxStatusBulkIDs
+	}
+	if d.MaxSchemaErrorBytes <= 0 {
+		d.MaxSchemaErrorBytes = DefaultMaxSchemaErrorBytes
 	}
 
 	h := &server{deps: d}
@@ -166,6 +224,22 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
 		fhirerror.WriteError(w, http.StatusMethodNotAllowed, fhirerror.CodeNotSupported, "method not allowed")
 	})
+}
+
+// RegisterPublicRoutes wires the routes that MUST NOT be wrapped in
+// auth middleware: the FHIR `/metadata` (CapabilityStatement) endpoint
+// is required by FHIR conformance probes and is fetched
+// unauthenticated. Production wiring mounts this on the bare server
+// mux so the auth middleware never sees the request (S-2.1).
+func RegisterPublicRoutes(r chi.Router, d Deps) {
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	if d.FHIRVersion == "" {
+		d.FHIRVersion = DefaultFHIRVersion
+	}
+	h := &server{deps: d}
+	r.Get("/metadata", h.getCapabilityStatementPublic)
 }
 
 type server struct {

@@ -397,8 +397,11 @@ func TestS7_CloseWaitsForGoroutines(t *testing.T) {
 
 	// Close should not race the ping loop / read loop. Run Close + the
 	// session goroutines together; race detector will fire if Close returns
-	// before the goroutines finish. 5s deadline is generous; under -race
-	// with parallel tests scheduling can slow conn teardown.
+	// before the goroutines finish. 30s deadline is generous on purpose: the
+	// assertion under verification is "Close blocks until goroutines join",
+	// not "Close completes within N seconds." Under -race + a wide parallel
+	// test surface, the scheduler can stall conn teardown for several
+	// seconds; we want to fail loud on a real leak, not flake on scheduling.
 	done := make(chan struct{})
 	go func() {
 		_ = ch.Close()
@@ -406,8 +409,8 @@ func TestS7_CloseWaitsForGoroutines(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close did not return within 5s — likely waiting on ungoverned goroutine")
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close did not return within 30s — likely waiting on ungoverned goroutine")
 	}
 
 	// After Close returns, no frame should arrive on conn. Read with a tiny

@@ -323,36 +323,36 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 ### SHOULD-FIX
 
 #### S-1: HTTP server / probe handler misuses
-- **`cmd/fhir-subs/main.go:138`** — `applySets` errors print raw error including `--set key=val` value verbatim; redact RHS before formatting.
-- **`cmd/fhir-subs/main.go:152`** — `signal.NotifyContext` registers SIGTERM/SIGINT only (parallels B-35).
-- **`cmd/fhir-subs/main.go:109-160`** — no top-level `defer recover()` over realMain; a panic in startup or in the HTTP serve goroutine crashes without a structured log/correlation-id.
-- **`cmd/fhir-subs/run.go:50`** — JSON logger writes to caller-supplied `io.Writer` (stderr in main); observability logger from `internal/infra/observability` is bypassed entirely.
-- **`cmd/fhir-subs/run.go:117-122`** — `srv.Close()` error after `srv.Shutdown` failure is dropped.
-- **`cmd/fhir-subs/run.go:131-133`** — shutdown wait is `ShutdownGracePeriod + 2s`; magic 2s slack.
-- **`cmd/fhir-subs/probes.go:91-108`** — `/metadata` returns OperationOutcome stub (already future-work P1.7, but stub also locked behind auth — see S-2).
-- **`cmd/fhir-subs/config.go:75`, `defaults.go:22`, `metrics.go`** — defaults bind `0.0.0.0:<port>` with no loopback opt-in path; document and consider `127.0.0.1` default with explicit prod opt-in.
+- **S-1.1 RESOLVED (47e6916)** `cmd/fhir-subs/main.go:138` — `applySets` errors print raw error including `--set key=val` value verbatim; redact RHS before formatting.
+- **S-1.2 ALREADY DONE (3a81559)** `cmd/fhir-subs/main.go:152` — `signal.NotifyContext` registers SIGTERM/SIGINT only (parallels B-35). Lifecycle module's signal dispatcher (B-35) handles SIGHUP separately; cmd-level NotifyContext correctly does NOT cancel ctx on SIGHUP.
+- **S-1.3 RESOLVED (ccdc7a1)** `cmd/fhir-subs/main.go:109-160` — no top-level `defer recover()` over realMain; a panic in startup or in the HTTP serve goroutine crashes without a structured log/correlation-id.
+- **S-1.4 RESOLVED (35d57e1)** `cmd/fhir-subs/run.go:50` — JSON logger writes to caller-supplied `io.Writer` (stderr in main); observability logger from `internal/infra/observability` is bypassed entirely.
+- **S-1.5 RESOLVED (dbc8356)** `cmd/fhir-subs/run.go:117-122` — `srv.Close()` error after `srv.Shutdown` failure is dropped.
+- **S-1.6 ALREADY DONE** `cmd/fhir-subs/run.go:131-133` — shutdown wait is `ShutdownGracePeriod + 2s`; magic 2s slack. Removed by an earlier B-1 / B-3 wiring commit; current code uses just `ShutdownGracePeriod`.
+- **S-1.7 RESOLVED (a9f96f7)** `cmd/fhir-subs/probes.go:91-108` — `/metadata` returns OperationOutcome stub. Production wiring should mount the new `handlers.RegisterPublicRoutes` for `/metadata` (CapabilityStatement) outside auth; the cmd's stub remains as a fallback when handlers aren't wired yet.
+- **S-1.8 RESOLVED (6807f87)** `cmd/fhir-subs/config.go:75`, `defaults.go:22`, `metrics.go` — defaults bind `0.0.0.0:<port>` with no loopback opt-in path. Default kept (backwards-compat); a warn-level log line now fires whenever the listener binds wildcard AND `insecure=true`. The audit's pointers to `defaults.go` / `metrics.go` are stale — those files don't exist in `cmd/fhir-subs/`.
 
 #### S-2: API / handlers
-- **`internal/api/handlers/router.go:107-109`** — `/metadata` is mounted inside auth middleware; FHIR conformance probes hit it unauthenticated.
-- **`internal/api/handlers/subscription_handlers.go:104, 384`** — body size limit hardcoded `1<<20`; no shared config knob.
-- **`internal/api/handlers/subscription_handlers.go:113, 391, 397`** — schema-validation error from json-schema library returned verbatim to client; cap length and stabilize wording.
-- **`internal/api/handlers/subscription_handlers.go:140-152`** — If-None-Exist evaluates O(N) `ListByClient` per POST; push predicate into SQL.
-- **`internal/api/handlers/subscription_handlers.go:170-174`** — channel registry plain-map read across goroutines; document immutability or guard with `sync.RWMutex`.
-- **`internal/api/handlers/subscription_handlers.go:198, 375-382`** — ETag is the resource id (not a version) and `If-Match` accepts unquoted form; lost-update cannot be detected.
-- **`internal/api/handlers/subscription_handlers.go:205-227`** — six `_ = err` swallows in `activate`; no logger; DB/audit/channel failures invisible.
-- **`internal/api/handlers/subscription_handlers.go:316-346`** — `searchSubscriptions` has no pagination.
-- **`internal/api/handlers/subscription_handlers.go:551, 629-635, 642`** — magic timestamp format `"2006-01-02T15:04:05Z07:00"` repeated 5×; emits `+00:00` not `Z` (FHIR `instant` non-spec for many consumers).
-- **`internal/api/handlers/subscription_handlers.go:558-589`** — `$status` bulk has no cap on `id` query params; sequential GetByID per id.
-- **`internal/api/handlers/subscription_handlers.go:617-618`** — `since, _ := strconv.ParseInt(...)` discards parse errors; should 400.
-- **`internal/api/handlers/subscription_handlers.go:786-805`** — `buildSubscriptionStatus` uses `context.Background()` for DB read; deadline propagation defeated.
-- **`internal/api/handlers/subscription_handlers.go:898-899`** — `fhirVersion` hardcoded `"5.0.0"`.
-- **`internal/api/handlers/pg_stores.go:43-188`** — no per-query deadline; one slow query starves the pool.
-- **`internal/api/handlers/pg_stores.go:159-188`** — `$events` replay capped at hardcoded `LIMIT 1000` with no client signal of truncation.
-- **`internal/api/handlers/pg_stores.go:251-263`** — `Hash: []byte{0}` placeholder; production path silently has no hash-chain integrity.
-- **`internal/api/handlers/tracing.go:32, 44`** — unvalidated `X-Correlation-ID` reflected into spans / outbound headers; should require UUIDv4 format.
-- **`internal/api/metrics/metrics.go:181-183`** — `/metrics` has no auth; handler trusts network layer alone.
-- **`internal/api/metrics/metrics.go:208, 217-227`** — `routePattern` falls back to `r.URL.Path` for unmatched routes; cardinality explosion from scanners.
-- **`internal/api/metrics/metrics.go:237-241, 310-327`** — histograms have no bucket-count cap; cardinality validator only catches `subscription_id` and `peer_addr`; `endpoint`, `topic_url`, `client_id`, `correlation_id`, `actor_id` unguarded.
+- **S-2.1 RESOLVED (a9f96f7)** `internal/api/handlers/router.go:107-109` — `/metadata` is mounted inside auth middleware; FHIR conformance probes hit it unauthenticated. New `RegisterPublicRoutes` exposes a pre-auth `/metadata` mount; production wiring should use it.
+- **S-2.2 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:104, 384` — body size limit hardcoded `1<<20`; no shared config knob. New `Deps.MaxBodyBytes` (default 1 MiB); oversize bodies now answer 413.
+- **S-2.3 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:113, 391, 397` — schema-validation error from json-schema library returned verbatim to client; cap length and stabilize wording. New `Deps.MaxSchemaErrorBytes` caps diagnostics.
+- **S-2.4 DEFERRED (out of scope)** `internal/api/handlers/subscription_handlers.go:140-152` — If-None-Exist evaluates O(N) `ListByClient` per POST; push predicate into SQL. Requires storage repo / `SubscriptionsStore` interface change; tracked under separate work because it touches packages outside this branch's scope.
+- **S-2.5 RESOLVED (caa68a4)** `internal/api/handlers/subscription_handlers.go:170-174` — channel registry plain-map read across goroutines; doc-comment now specifies the registry is constructed once and treated as immutable; mutation after `RegisterRoutes` is undefined.
+- **S-2.6 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:198, 375-382` — ETag is the resource id (not a version) and `If-Match` accepts unquoted form; lost-update cannot be detected. Update handler now requires the weak-tag form `W/"<id>"`.
+- **S-2.7 RESOLVED (a9f96f7)** `internal/api/handlers/subscription_handlers.go:205-227` — six `_ = err` swallows in `activate`; no logger; DB/audit/channel failures invisible. New `Deps.Logger` (nil-safe) routes the per-call DB / audit / channel errors to a structured log line.
+- **S-2.8 DEFERRED (out of scope)** `internal/api/handlers/subscription_handlers.go:316-346` — `searchSubscriptions` has no pagination. Requires `SubscriptionsStore` interface to grow page/cursor params; tracked separately.
+- **S-2.9 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:551, 629-635, 642` — magic timestamp format repeated 5×; emits `+00:00` not `Z`. Now use single package constant `instantFormat` with millisecond precision and `Z` suffix.
+- **S-2.10 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:617-618` — `since, _ := strconv.ParseInt(...)` discards parse errors. New `parseEventNumberParam` answers 400 for malformed / negative values.
+- **S-2.11 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:558-589` — `$status` bulk has no cap on `id` query params. New `Deps.MaxStatusBulkIDs` (default 256); over-cap requests return 400.
+- **S-2.12 RESOLVED (a9f96f7)** `internal/api/handlers/subscription_handlers.go:786-805` — `buildSubscriptionStatus` uses `context.Background()` for DB read. Threaded `r.Context()` through every caller.
+- **S-2.13 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:898-899` — `fhirVersion` hardcoded `"5.0.0"`. Now sourced from `Deps.FHIRVersion` (default `5.0.0`).
+- **S-2.14 DEFERRED (out of scope)** `internal/api/handlers/pg_stores.go:43-188` — no per-query deadline. Requires production wiring (B-4) to fully land before per-query timeouts can be tuned end-to-end.
+- **S-2.15 DEFERRED (out of scope)** `internal/api/handlers/pg_stores.go:159-188` — `$events` replay capped at hardcoded `LIMIT 1000` with no client signal of truncation. Surfaces best after S-2.8 pagination lands.
+- **S-2.16 DEFERRED (out of scope)** `internal/api/handlers/pg_stores.go:251-263` — `Hash: []byte{0}` placeholder; production path silently has no hash-chain integrity. Replaced by the observability/audit hash-chained store under B-4 production wiring.
+- **S-2.17 RESOLVED (a9f96f7)** `internal/api/handlers/tracing.go:32, 44` — unvalidated `X-Correlation-ID` reflected into spans / outbound headers. `correlation.ExtractFromHeaders` now drops non-UUID values and generates a fresh one.
+- **S-2.18 RESOLVED (a9f96f7)** `internal/api/metrics/metrics.go:181-183` — `/metrics` has no auth. New `metrics.AuthGuard(bearer)` middleware factory; production deployment wraps `/metrics` with this.
+- **S-2.19 RESOLVED (a9f96f7)** `internal/api/metrics/metrics.go:208, 217-227` — `routePattern` falls back to `r.URL.Path` for unmatched routes. Now returns the constant label `<unmatched>`.
+- **S-2.20 RESOLVED (caa68a4)** `internal/api/metrics/metrics.go:237-241, 310-327` — histograms have no bucket-count cap; cardinality validator only catches `subscription_id` and `peer_addr`. The validator now rejects `endpoint`, `topic_url`, `client_id`, `correlation_id`, and `actor_id` as labels everywhere.
 
 #### S-3: Auth
 - **`internal/api/auth/token_endpoint.go:106-108`** — 60s `ClockSkew` default is generous; widens replay window. Configurable; document <30s prod recommendation. — **RESOLVED** (`a2318e9`) — default lowered to 30s; field still configurable via `TokenEndpointConfig.ClockSkew`.

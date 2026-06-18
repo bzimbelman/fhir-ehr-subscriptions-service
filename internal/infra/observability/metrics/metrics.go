@@ -306,7 +306,11 @@ func validateName(name string) error {
 	return nil
 }
 
-// validateLabels enforces the LLD §4.2 cardinality table.
+// validateLabels enforces the LLD §4.2 cardinality table. The
+// rules below extend the original `subscription_id` / `peer_addr`
+// guards to also reject high-cardinality labels (`endpoint`,
+// `topic_url`, `client_id`, `correlation_id`, `actor_id`) on
+// histograms and on counters that aren't single-cardinality (S-2.20).
 func validateLabels(kind metricKind, name string, labels []string) error {
 	for _, l := range labels {
 		switch l {
@@ -321,6 +325,13 @@ func validateLabels(kind metricKind, name string, labels []string) error {
 			if kind == metricKindCounter && !strings.HasSuffix(name, "_received_total") {
 				return fmt.Errorf("%w: peer_addr is permitted only on listener _received_total counters (metric %q)", ErrInvalidLabel, name)
 			}
+		case "endpoint", "topic_url", "client_id", "correlation_id", "actor_id":
+			// These identifiers are unbounded across the lifetime of a
+			// deployment (one URL per subscription, one client_id per
+			// principal, one correlation_id per request, etc.). They
+			// are forbidden as metric labels everywhere; emit them as
+			// log/span attributes instead (S-2.20).
+			return fmt.Errorf("%w: %s is forbidden as a metric label (metric %q); emit it as a log/span attribute", ErrInvalidLabel, l, name)
 		}
 	}
 	return nil
