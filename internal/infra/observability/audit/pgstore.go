@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"sync"
 
 	"github.com/google/uuid"
@@ -23,12 +22,25 @@ type PgStoreOptions struct {
 	Schema string
 }
 
+// AuditChainAdvisoryLockID is the documented Postgres advisory lock key
+// used to serialize chain appends. Reserved exclusively for the audit
+// chain; do not reuse this value for any other advisory lock in the
+// service.
+//
+// The value is the FNV-1a 64-bit hash of the string "audit_chain_serial"
+// truncated to int64. Captured here as a constant so a future operator
+// can audit which advisory_lock owners are competing for which numeric
+// key without grep'ing for the literal string everywhere (N-1).
+//
+// If you ever need to change this, also rev a migration that releases
+// any stranded session-level locks under the old id.
+const AuditChainAdvisoryLockID int64 = -1971033306967946433
+
 // PgStore is the durable Postgres-backed audit Store.
 //
 // Writes serialize through a Postgres advisory lock per LLD §8.2 so
-// concurrent appenders see a linear chain. The lock key is a 64-bit
-// hash of "audit_chain_serial" — a single, well-known constant — taken
-// at module init.
+// concurrent appenders see a linear chain. The lock key is the
+// documented [AuditChainAdvisoryLockID] constant.
 //
 // The lock is held with pg_advisory_xact_lock so it is automatically
 // released on commit, rollback, OR connection loss; this avoids the
@@ -55,10 +67,7 @@ func NewPgStore(pool *pgxpool.Pool, opts PgStoreOptions) (*PgStore, error) {
 	if pool == nil {
 		return nil, errors.New("audit: pool is required")
 	}
-	h := fnv.New64a()
-	_, _ = h.Write([]byte("audit_chain_serial"))
-	lockID := int64(h.Sum64()) //nolint:gosec // intentional truncation; pg lock keys are int64
-	return &PgStore{pool: pool, schema: opts.Schema, lockID: lockID}, nil
+	return &PgStore{pool: pool, schema: opts.Schema, lockID: AuditChainAdvisoryLockID}, nil
 }
 
 // Migrate creates the audit_log table per LLD §8.1.

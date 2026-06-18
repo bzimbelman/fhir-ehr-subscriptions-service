@@ -25,6 +25,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -194,9 +195,35 @@ func (w *Writer) genesisHash() []byte {
 // place the audit DB next to the API pods to shrink the round-trip;
 // the chain itself cannot be parallelized without breaking the LLD
 // §8 invariant.
+//
+// # Sink failure semantics
+//
+// The durable Postgres write is the source of truth. The real-time Sink
+// (stdout / file / syslog / OTLP) is best-effort: a Sink.Emit failure
+// does NOT unwind the durable row. The OnSinkFailure callback fires so
+// the metrics layer can increment fhir_subs_audit_sink_failures_total.
+// There is no internal buffer or queue — operators who need replay must
+// rebuild from the durable table. This is fail-open by design: a noisy
+// downstream syslog must not block PHI write-throughput (N-1).
+//
+// # Payload aliasing
+//
+// Emit takes a defensive copy of evt.Payload before the durable write
+// runs so a caller that mutates its map after Emit returns cannot
+// corrupt the canonicalized chain bytes that may still be cached for
+// the sink stage. The copy is shallow — nested maps/slices are not
+// deep-copied; callers that share inner state with concurrent mutators
+// must serialize themselves (N-1).
 func (w *Writer) Emit(ctx context.Context, evt Event) (retErr error) {
 	if evt.OccurredAt.IsZero() {
 		evt.OccurredAt = w.clock()
+	}
+	if evt.Payload != nil {
+		cp := make(map[string]any, len(evt.Payload))
+		for k, v := range evt.Payload {
+			cp[k] = v
+		}
+		evt.Payload = cp
 	}
 
 	release, err := w.store.AcquireChainLock(ctx)
@@ -308,7 +335,7 @@ func VerifyChainWithGenesis(ctx context.Context, store Store, literal string) er
 	prior := GenesisHashFromLiteral(literal)
 	idx := 0
 	return store.IterateRows(ctx, func(row Row) error {
-		if !bytesEqual(row.PriorHash, prior) {
+		if !bytes.Equal(row.PriorHash, prior) {
 			return fmt.Errorf("audit: chain break at row %d: prior_hash mismatch", idx)
 		}
 		evt := Event{
@@ -327,25 +354,13 @@ func VerifyChainWithGenesis(ctx context.Context, store Store, literal string) er
 			return err
 		}
 		sum := sha256.Sum256(expected)
-		if !bytesEqual(sum[:], row.ChainHash) {
+		if !bytes.Equal(sum[:], row.ChainHash) {
 			return fmt.Errorf("audit: chain break at row %d: chain_hash mismatch", idx)
 		}
 		prior = row.ChainHash
 		idx++
 		return nil
 	})
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // stdoutSink writes one JSON event per line to os.Stdout.
