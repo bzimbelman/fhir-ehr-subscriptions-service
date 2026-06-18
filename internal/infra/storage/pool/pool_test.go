@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package pool_test
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/pool"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/pool"
 )
 
 func TestConfigDefaults(t *testing.T) {

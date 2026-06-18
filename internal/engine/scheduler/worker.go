@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package scheduler
@@ -15,10 +15,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/engine/builder"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/correlation"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/builder"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/correlation"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // Config tunes the scheduler claim/dispatch loop.

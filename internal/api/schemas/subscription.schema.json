@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://fhir-subscriptions-foss/schemas/subscription-r4b-backport.json",
+  "$id": "https://fhir-ehr-subscriptions-service/schemas/subscription-r4b-backport.json",
   "title": "FHIR Subscription (R4B Backport / R5)",
   "description": "Project-defined validation schema for Subscription resources accepted by the Subscriptions API. Covers the fields the LLD references; structural-only checks. Profile-level validation is deferred per ADR 0010 #8.",
   "type": "object",

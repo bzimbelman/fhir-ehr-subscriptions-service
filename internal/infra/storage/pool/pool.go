@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package pool wraps pgxpool with the storage layer's tuning, defaults,
@@ -40,7 +40,7 @@ type Config struct {
 	// HealthCheckInterval — background SELECT 1 cadence. Default 30s.
 	HealthCheckInterval time.Duration
 	// ApplicationName is forwarded to libpq via the connection string.
-	// Default "fhir-subscriptions-foss".
+	// Default "fhir-ehr-subscriptions-service".
 	ApplicationName string
 }
 
@@ -69,7 +69,7 @@ func (c *Config) ApplyDefaults() {
 		c.HealthCheckInterval = 30 * time.Second
 	}
 	if c.ApplicationName == "" {
-		c.ApplicationName = "fhir-subscriptions-foss"
+		c.ApplicationName = "fhir-ehr-subscriptions-service"
 	}
 }
 

@@ -1,4 +1,4 @@
-# Contributing to fhir-subscriptions-foss
+# Contributing to fhir-ehr-subscriptions-service
 
 Thank you for your interest in contributing. This project is a healthcare
 integration server built to a published, spec-driven design. The contribution

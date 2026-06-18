@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package handlers
@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/correlation"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/correlation"
 )
 
 // TracingMiddleware returns chi-friendly middleware that opens an

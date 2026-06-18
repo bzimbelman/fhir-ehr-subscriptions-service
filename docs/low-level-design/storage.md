@@ -111,7 +111,7 @@ struct PoolConfig {
     acquire_timeout: Duration,            // default 5s; how long callers wait before erroring
     health_check_interval: Duration,      // default 30s; background SELECT 1 against an idle
                                           // conn to evict broken ones
-    application_name: String,             // "fhir-subscriptions-foss"
+    application_name: String,             // "fhir-ehr-subscriptions-service"
 }
 ```
 
@@ -571,7 +571,7 @@ storage:
       idle_timeout: "5m"
       max_connection_lifetime: "30m"
       health_check_interval: "30s"
-      application_name: "fhir-subscriptions-foss"
+      application_name: "fhir-ehr-subscriptions-service"
   encryption:
     mode: "whole-database"                    # whole-database | column-level
     at_rest_active_version: 1                 # required when mode = column-level

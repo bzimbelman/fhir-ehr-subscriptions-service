@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package handlers_test
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // LLD §4.2: If-Match must enforce optimistic concurrency. A stale ETag

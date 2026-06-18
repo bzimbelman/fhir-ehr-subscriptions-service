@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package audit_test
@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/audit"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 )
 
 // JCS canonicalization (RFC 8785, ADR 0010 #3) — sort keys, no whitespace.
@@ -325,10 +325,10 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// Sanity: the genesis hash is exactly SHA-256("fhir-subscriptions-foss audit chain genesis").
+// Sanity: the genesis hash is exactly SHA-256("fhir-ehr-subscriptions-service audit chain genesis").
 func TestGenesisHash(t *testing.T) {
 	t.Parallel()
-	want := sha256.Sum256([]byte("fhir-subscriptions-foss audit chain genesis"))
+	want := sha256.Sum256([]byte("fhir-ehr-subscriptions-service audit chain genesis"))
 	got := audit.GenesisHash()
 	if hex.EncodeToString(got) != hex.EncodeToString(want[:]) {
 		t.Fatalf("genesis hash mismatch: %x vs %x", got, want[:])

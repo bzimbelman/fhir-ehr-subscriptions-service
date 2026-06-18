@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package hl7processor
@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // TestDeriveClassifyExt_NoKey: empty correlation key never participates.

@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-    svc["fhir-subscriptions-foss"]
+    svc["fhir-ehr-subscriptions-service"]
     prom["Prometheus<br/>scrape /metrics"]
     otel["OTLP collector"]
     log["stdout / file / syslog"]

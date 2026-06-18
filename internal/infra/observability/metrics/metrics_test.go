@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package metrics_test
@@ -11,7 +11,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/metrics"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/metrics"
 )
 
 // LLD §4: every metric must use the fhir_subs_ prefix (ADR 0008 #10).

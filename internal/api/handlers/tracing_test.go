@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package handlers_test
@@ -13,7 +13,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 )
 
 func newRecordingTracerProvider() (*sdktrace.TracerProvider, *tracetest.SpanRecorder) {

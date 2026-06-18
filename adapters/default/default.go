@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package defaultadapter is the no-vendor reference adapter. It exists to
@@ -17,8 +17,8 @@ package defaultadapter
 import (
 	"context"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/registry"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // Adapter is the default reference EHR adapter.
@@ -48,7 +48,7 @@ func NewRegistered() *registry.Registry {
 func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
 		ID:                   "default",
-		Vendor:               "fhir-subscriptions-foss",
+		Vendor:               "fhir-ehr-subscriptions-service",
 		Description:          "Reference adapter: passes HL7 v2 through unchanged; FHIR scan plan empty by default.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{

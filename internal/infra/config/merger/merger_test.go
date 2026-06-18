@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package merger_test
@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/merger"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/merger"
 )
 
 // TestPrecedenceCLIOverEverything: CLI > env > file > defaults. Last argument

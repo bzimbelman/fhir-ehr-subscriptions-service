@@ -13,7 +13,7 @@ flowchart LR
     file["Config file<br/>(YAML / TOML)"]
     def["Built-in defaults"]
 
-    subgraph host["fhir-subscriptions-foss process"]
+    subgraph host["fhir-ehr-subscriptions-service process"]
         direction TB
         loader["Layered loader"]
         validator["Schema validator<br/>(per-domain + adapter manifest +<br/>channel manifests)"]

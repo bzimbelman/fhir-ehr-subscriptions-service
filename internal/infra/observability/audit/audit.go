@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package audit implements the append-only, hash-chained audit log per
@@ -20,7 +20,7 @@
 //
 // The hash chain links rows by prior_hash = SHA-256(JCS(prior_row's
 // canonical input)). Genesis is the SHA-256 of the literal string
-// "fhir-subscriptions-foss audit chain genesis" so the chain is
+// "fhir-ehr-subscriptions-service audit chain genesis" so the chain is
 // reproducible across deployments.
 package audit
 
@@ -40,7 +40,7 @@ import (
 )
 
 // genesisLiteral is the human-readable string hashed to seed the chain.
-const genesisLiteral = "fhir-subscriptions-foss audit chain genesis"
+const genesisLiteral = "fhir-ehr-subscriptions-service audit chain genesis"
 
 // GenesisHash returns the SHA-256 of the genesis literal (LLD §8.1).
 func GenesisHash() []byte {

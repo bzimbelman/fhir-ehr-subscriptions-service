@@ -82,7 +82,7 @@ adapter:
 
 channels:
   rest_hook:
-    user_agent: "fhir-subscriptions-foss/1.0"
+    user_agent: "fhir-ehr-subscriptions-service/1.0"
     request_timeout: "30s"
     max_retries: 8
     backoff: "exponential"

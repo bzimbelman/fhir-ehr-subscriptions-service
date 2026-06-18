@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package handlers
@@ -11,8 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/auth"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // PgSubscriptionsStore wraps repos.SubscriptionsRepo with a pool plus

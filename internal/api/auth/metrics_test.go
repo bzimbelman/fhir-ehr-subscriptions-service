@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package auth_test
@@ -16,7 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/auth"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 )
 
 type tokenFormData struct {

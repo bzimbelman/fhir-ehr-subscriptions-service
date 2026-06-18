@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package loader_test
@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/loader"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/loader"
 )
 
 // TestParseCLIFlags asserts that --set dotted.key=value entries become a sparse

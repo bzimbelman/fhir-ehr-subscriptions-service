@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package config is the layered configuration loader. It owns the boot path
@@ -28,15 +28,15 @@ import (
 	"sync"
 	"time"
 
-	configtypes "github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/config_types"
-	effectivestore "github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/effective_store"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/loader"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/merger"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/reload"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/secrets"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/validator"
+	configtypes "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/config_types"
+	effectivestore "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/effective_store"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/loader"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/merger"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/reload"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/secrets"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/validator"
 )
 
 // CliArgs is the parsed command-line surface. See loader.CLIArgs for source

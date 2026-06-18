@@ -25,11 +25,11 @@ RUN go build \
 # ---- Runtime stage --------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
-LABEL org.opencontainers.image.title="fhir-subscriptions-foss"
+LABEL org.opencontainers.image.title="fhir-ehr-subscriptions-service"
 LABEL org.opencontainers.image.description="FHIR Subscriptions server bridging FHIR Subscriptions on the subscriber side and EHR systems on the back side."
-LABEL org.opencontainers.image.source="https://github.com/fhir-subscriptions-foss/fhir-subs"
+LABEL org.opencontainers.image.source="https://github.com/bzimbelman/fhir-ehr-subscriptions-service"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
-LABEL org.opencontainers.image.vendor="fhir-subscriptions-foss"
+LABEL org.opencontainers.image.vendor="fhir-ehr-subscriptions-service"
 
 COPY --from=build /out/fhir-subs /fhir-subs
 

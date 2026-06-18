@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package catalog_test
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/topics/catalog"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
 // minimalTopic is a compact, syntactically valid SubscriptionTopic

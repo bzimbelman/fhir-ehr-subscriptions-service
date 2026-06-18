@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package metrics_test
@@ -12,7 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	apimetrics "github.com/fhir-subscriptions-foss/fhir-subs/internal/api/metrics"
+	apimetrics "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics"
 )
 
 func TestNew_RegistersAllMetrics(t *testing.T) {

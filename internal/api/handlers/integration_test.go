@@ -1,6 +1,6 @@
 //go:build integration
 
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Integration tests for the API handlers package. Spins up a real
@@ -33,10 +33,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/auth"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/handlers"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/migrate"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // integration encapsulates the running test stack.

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package logging_test
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/logging"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 )
 
 // LLD §6.2: at info+ the logger drops fields named resource, bundle, body,

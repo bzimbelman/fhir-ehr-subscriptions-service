@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package secrets_test
@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/secrets"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/secrets"
 )
 
 // TestResolveEnvPlaceholder asserts ${env:VAR} substitution and that the path

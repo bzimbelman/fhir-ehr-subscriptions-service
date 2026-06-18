@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package tracing_test
@@ -11,7 +11,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/tracing"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing"
 )
 
 // LLD §5: tracer must support root spans at the four entry points

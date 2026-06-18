@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package effectivestore holds the published effective configuration snapshot
@@ -13,7 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
 )
 
 // Effective is the typed, immutable, post-validation, post-resolution snapshot

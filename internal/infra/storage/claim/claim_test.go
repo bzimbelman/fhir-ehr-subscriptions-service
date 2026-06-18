@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package claim_test
@@ -11,7 +11,7 @@ import (
 
 	"github.com/pashagolub/pgxmock/v3"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/claim"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/claim"
 )
 
 type fakeRow struct {

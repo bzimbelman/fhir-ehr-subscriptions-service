@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package migrate_test
@@ -7,7 +7,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
 )
 
 func TestMigrationsEmbedded(t *testing.T) {

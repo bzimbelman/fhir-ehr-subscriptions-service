@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package schemas_test
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/schemas"
 )
 
 func TestValidateSubscription_HappyPath_R5Style(t *testing.T) {

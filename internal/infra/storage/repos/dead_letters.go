@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package repos
@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 )
 
 // DeadLettersRepo wraps the dead_letters table.

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build e2e
@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/mllp"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/mllp"
 )
 
 // realMLLPListener wraps the production MLLP listener (internal/mllp) so

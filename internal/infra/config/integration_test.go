@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package config_test
@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
 )
 
 // TestIntegrationLoadsArchitectureExampleYAML walks the entire boot path on

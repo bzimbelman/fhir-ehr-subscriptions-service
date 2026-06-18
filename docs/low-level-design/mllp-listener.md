@@ -9,7 +9,7 @@
 ```mermaid
 flowchart LR
     ehr["EHR interface engine<br/>(MLLP/TCP per feed)"]
-    subgraph host["fhir-subscriptions-foss process"]
+    subgraph host["fhir-ehr-subscriptions-service process"]
         direction TB
         sup["Supervisor"]
         ep["Endpoint task<br/>(accept loop, one per endpoint)"]

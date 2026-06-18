@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package matcher is Stage 2 of the pipeline: it consumes
@@ -29,9 +29,9 @@ import (
 	"golang.org/x/text/transform"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/correlation"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/topics/catalog"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/correlation"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
 // ResourceChange is the matcher's input view of one resource_changes

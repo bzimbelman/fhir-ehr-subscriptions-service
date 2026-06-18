@@ -1,6 +1,6 @@
 //go:build integration
 
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Integration tests for the submatcher worker. Requires Docker. Skips
@@ -21,9 +21,9 @@ import (
 	"github.com/google/uuid"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/engine/submatcher"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/submatcher"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 func startPostgres(t *testing.T) string {

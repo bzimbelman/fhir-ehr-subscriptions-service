@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package reload_test
@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/reload"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/reload"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
 )
 
 // TestComputeDiffSimpleScalar: a changed scalar surfaces one diff with its path.

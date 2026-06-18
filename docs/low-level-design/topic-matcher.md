@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The Topic Matcher is the Stage 2 component of the `fhir-subscriptions-foss` pipeline. It reads `resource_changes` rows produced by the EHR adapter, evaluates each row against the active `SubscriptionTopic` catalog, and writes one `ehr_events` row per matching topic. This document specifies the internal structure of that worker: catalog load and pre-compile, the per-row claim and match, sandboxed evaluation of search-parameter expressions and FHIRPath, hot-reload semantics, and per-failure-mode handling. It is the implementation companion to `../high-level-design/domains/topic-matcher.md`, the architecture document's "Topic Matcher" section, and ADR `../high-level-design/decisions/0006-no-cql-no-regex.md`.
+The Topic Matcher is the Stage 2 component of the `fhir-ehr-subscriptions-service` pipeline. It reads `resource_changes` rows produced by the EHR adapter, evaluates each row against the active `SubscriptionTopic` catalog, and writes one `ehr_events` row per matching topic. This document specifies the internal structure of that worker: catalog load and pre-compile, the per-row claim and match, sandboxed evaluation of search-parameter expressions and FHIRPath, hot-reload semantics, and per-failure-mode handling. It is the implementation companion to `../high-level-design/domains/topic-matcher.md`, the architecture document's "Topic Matcher" section, and ADR `../high-level-design/decisions/0006-no-cql-no-regex.md`.
 
 The LLD is implementation-language-neutral. Pseudo-code is async, single-language, ASCII. Names are notional; shapes, invariants, and failure envelopes are stable.
 

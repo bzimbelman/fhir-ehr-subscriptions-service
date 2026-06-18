@@ -6,7 +6,7 @@
 
 ## Context
 
-A single deployment of `fhir-subscriptions-foss` is **single-tenant** — one container per facility, one EHR. The architecture's first stated constraint is operational simplicity: "A deployment is one container plus Postgres. No leader election, no replica coordination, no cross-service choreography. If the service falls behind, it catches up from durable state."
+A single deployment of `fhir-ehr-subscriptions-service` is **single-tenant** — one container per facility, one EHR. The architecture's first stated constraint is operational simplicity: "A deployment is one container plus Postgres. No leader election, no replica coordination, no cross-service choreography. If the service falls behind, it catches up from durable state."
 
 Common reflexes for production systems include running multiple replicas behind a load balancer with a coordination layer (leader election via etcd / Consul / Postgres advisory locks, distributed locks for shared work, replicated in-memory state). Those reflexes are appropriate when:
 

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package defaultadapter_test
@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
-	defaultadapter "github.com/fhir-subscriptions-foss/fhir-subs/adapters/default"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/registry"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	defaultadapter "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/default"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // The default adapter is the no-vendor reference: it satisfies the SPI shape,

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package validator_test
@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/validator"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/validator"
 )
 
 // TestStructuralBeforeSecret: an unset env var referenced by a placeholder is

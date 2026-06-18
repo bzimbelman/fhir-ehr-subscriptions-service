@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package auth
@@ -6,7 +6,7 @@ package auth
 import (
 	"net/http"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/fhirerror"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
 )
 
 func writeAuthFailure(w http.ResponseWriter, status int, reason string) {

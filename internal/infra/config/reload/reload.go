@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package reload computes the diff between two configuration trees, partitions
@@ -14,7 +14,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
 )
 
 // Outcome enumerates the reload report classifications LLD §8 commits.

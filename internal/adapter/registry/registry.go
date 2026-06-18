@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package registry is the bundled-adapter registry the host uses to select
@@ -15,7 +15,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // Factory constructs a fresh EhrAdapter instance. The registry calls the

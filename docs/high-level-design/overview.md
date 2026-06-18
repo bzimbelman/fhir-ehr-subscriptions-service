@@ -6,7 +6,7 @@
 
 ## What it is
 
-`fhir-subscriptions-foss` is an open-source server that bridges **FHIR Subscriptions** on the subscriber side and an **EHR** (Epic, Meditech, Oracle Health, etc.) on the EHR side. It is a single-tenant deployment: one container per facility, bound to one EHR. State lives in a single Postgres database. There is no leader election, no replica coordination, no external message broker.
+`fhir-ehr-subscriptions-service` is an open-source server that bridges **FHIR Subscriptions** on the subscriber side and an **EHR** (Epic, Meditech, Oracle Health, etc.) on the EHR side. It is a single-tenant deployment: one container per facility, bound to one EHR. State lives in a single Postgres database. There is no leader election, no replica coordination, no external message broker.
 
 Subscribers register `Subscription` resources against `SubscriptionTopic` resources the deployment publishes. Whenever the EHR signals a clinical change — over HL7 v2 MLLP, over FHIR REST, or over a vendor change feed — the server translates it into a vendor-neutral resource change, matches it against the topic catalog, fans it out to interested subscriptions, builds a `subscription-notification` Bundle, and delivers via the subscriber's chosen channel.
 
@@ -19,7 +19,7 @@ flowchart LR
     ehr["EHR<br/>(HL7 v2,<br/>FHIR REST,<br/>vendor APIs)"]
     sub["Subscribers<br/>(rest-hook,<br/>websocket,<br/>email,<br/>message,<br/>custom)"]
 
-    subgraph S["fhir-subscriptions-foss<br/>(one container + Postgres)"]
+    subgraph S["fhir-ehr-subscriptions-service<br/>(one container + Postgres)"]
         direction TB
         ehrside["EHR side:<br/>MLLP listener<br/>EHR adapter"]
         store[("Postgres")]

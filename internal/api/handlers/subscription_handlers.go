@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package handlers
@@ -19,10 +19,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/auth"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/fhirerror"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/schemas"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // recordCreated, recordUpdated, recordDeleted, recordWsTokenIssued, and
@@ -853,7 +853,7 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 		"date":         s.deps.Now().UTC().Format("2006-01-02T15:04:05Z07:00"),
 		"kind":         "instance",
 		"software": map[string]any{
-			"name":    "fhir-subscriptions-foss",
+			"name":    "fhir-ehr-subscriptions-service",
 			"version": s.deps.ServerVersion,
 		},
 		"implementation": map[string]any{

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package outbox_test
@@ -10,7 +10,7 @@ import (
 
 	"github.com/pashagolub/pgxmock/v3"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/outbox"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/outbox"
 )
 
 func TestRunOutboxCommitsOnSuccess(t *testing.T) {

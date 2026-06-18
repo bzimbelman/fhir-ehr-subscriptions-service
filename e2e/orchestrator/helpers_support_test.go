@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 //go:build e2e
@@ -17,7 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/e2e/mocksub"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mocksub"
 )
 
 // RegisterSubscriberOptions parameterizes RegisterSubscriber.

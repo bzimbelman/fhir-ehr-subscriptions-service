@@ -1,6 +1,6 @@
 //go:build integration
 
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Integration tests for the storage module. Requires Docker. Skips
@@ -22,13 +22,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/codec"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/migrate"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/outbox"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/partition"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/retention"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/outbox"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/partition"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/retention"
 )
 
 // startPostgres returns a connection URL for a Postgres 16 container,

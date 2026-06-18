@@ -514,7 +514,7 @@ The host constructs a single HTTP client and injects it into both components via
 - Timeouts: connect 5s, request 30s; per-call override via `http.with_timeout(...)`.
 - Connection pool: keepalive on, idle timeout 60s, max idle per host 16. Shared across both components.
 - Retry policy for idempotent verbs (GET, HEAD): three retries with exponential backoff (0.2s, 0.4s, 0.8s) on connection errors and 502/503/504. Non-idempotent verbs are not retried by the client; the application layer decides.
-- Headers: `User-Agent: fhir-subscriptions-foss/<version> adapter/<id>`, `Accept: application/fhir+json` for FHIR callers.
+- Headers: `User-Agent: fhir-ehr-subscriptions-service/<version> adapter/<id>`, `Accept: application/fhir+json` for FHIR callers.
 - OpenTelemetry: every request is a span; trace context propagated via `traceparent`.
 
 Vendor subclasses MUST NOT construct their own HTTP client — that bypasses the budget governor and auth cache, and is caught in adapter conformance tests.

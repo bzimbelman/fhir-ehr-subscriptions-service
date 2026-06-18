@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package validator runs the per-domain JSON Schema and semantic checks against
@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
 )
 
 // Report is the result of one or more validation passes.

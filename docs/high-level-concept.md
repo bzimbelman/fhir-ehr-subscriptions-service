@@ -2,7 +2,7 @@
 
 ## Overview
 
-`fhir-subscriptions-foss` is a free and open source server that bridges **FHIR Subscriptions** on one side and **Electronic Health Record (EHR) systems** on the other. It allows external applications, registries, and analytics platforms to subscribe to clinical events in an EHR using the standard FHIR Subscriptions API, even when the underlying EHR does not natively expose FHIR Subscriptions, or only supports them in a limited way.
+`fhir-ehr-subscriptions-service` is a free and open source server that bridges **FHIR Subscriptions** on one side and **Electronic Health Record (EHR) systems** on the other. It allows external applications, registries, and analytics platforms to subscribe to clinical events in an EHR using the standard FHIR Subscriptions API, even when the underlying EHR does not natively expose FHIR Subscriptions, or only supports them in a limited way.
 
 The server speaks the FHIR Subscriptions protocol upstream and translates downstream into whatever the EHR actually provides — typically HL7 v2 messaging, FHIR REST APIs, and/or vendor-proprietary APIs. It watches for record changes on the EHR side and fires the appropriate subscription notifications on the FHIR side.
 

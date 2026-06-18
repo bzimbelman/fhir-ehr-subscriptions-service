@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package versionshim_test
@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/versionshim"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/versionshim"
 )
 
 func TestNegotiate_DefaultsToR5(t *testing.T) {

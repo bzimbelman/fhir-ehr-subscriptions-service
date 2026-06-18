@@ -65,7 +65,7 @@ Adapter-contributed topics are returned by the active adapter's `manifest()` (se
 
 The adapter is responsible for emitting the resource changes the topic needs (typically via the `Vendor API Client` sub-component that knows how to consume the relevant change feed and tag the resource with the right event code).
 
-Naming: adapter topics use a canonical URL under the adapter's namespace (e.g., `http://fhir-subscriptions-foss.org/topics/adapter/epic/order-status-detailed`). Vendor adapters MUST NOT contribute topics that shadow the canonical URL of a built-in topic.
+Naming: adapter topics use a canonical URL under the adapter's namespace (e.g., `http://fhir-ehr-subscriptions-service.org/topics/adapter/epic/order-status-detailed`). Vendor adapters MUST NOT contribute topics that shadow the canonical URL of a built-in topic.
 
 ### 3. Operator-supplied topics
 

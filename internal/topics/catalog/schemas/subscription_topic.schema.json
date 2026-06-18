@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://fhir-subscriptions-foss.org/schemas/subscription_topic.schema.json",
-  "title": "SubscriptionTopic (subset enforced by fhir-subscriptions-foss)",
-  "description": "Validates the subset of FHIR R5 SubscriptionTopic that the fhir-subscriptions-foss catalog can compile. Anything beyond the subset is rejected at catalog load (ADR 0006).",
+  "$id": "https://fhir-ehr-subscriptions-service.org/schemas/subscription_topic.schema.json",
+  "title": "SubscriptionTopic (subset enforced by fhir-ehr-subscriptions-service)",
+  "description": "Validates the subset of FHIR R5 SubscriptionTopic that the fhir-ehr-subscriptions-service catalog can compile. Anything beyond the subset is rejected at catalog load (ADR 0006).",
   "type": "object",
   "required": ["resourceType", "url", "version", "status"],
   "properties": {

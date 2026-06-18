@@ -1,6 +1,6 @@
 //go:build integration
 
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Integration tests for the HL7 Message Processor. Requires Docker.
@@ -20,10 +20,10 @@ import (
 	"github.com/google/uuid"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/hl7processor"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/hl7processor"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // startPostgres returns a connection URL for a Postgres 16 container

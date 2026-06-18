@@ -2,7 +2,7 @@
 
 ## 1. Purpose and Reader's Prerequisites
 
-This document is the implementation-level design of the subscriber-facing Management API for `fhir-subscriptions-foss`. It is the contract between "what the spec and the HLD say" and "what the running code does." It tells an implementor how to wire up HTTP handlers, the SMART on FHIR Backend Services authentication middleware, the FHIR version shim, request validation, the activation handshake trigger, the spec-defined operations (`$status`, `$events`, `$get-ws-binding-token`), the dynamic `CapabilityStatement` builder, and the OperationOutcome-shaped error model. It does not describe the engine, channel modules, or EHR adapter — those are separate domains with their own LLDs.
+This document is the implementation-level design of the subscriber-facing Management API for `fhir-ehr-subscriptions-service`. It is the contract between "what the spec and the HLD say" and "what the running code does." It tells an implementor how to wire up HTTP handlers, the SMART on FHIR Backend Services authentication middleware, the FHIR version shim, request validation, the activation handshake trigger, the spec-defined operations (`$status`, `$events`, `$get-ws-binding-token`), the dynamic `CapabilityStatement` builder, and the OperationOutcome-shaped error model. It does not describe the engine, channel modules, or EHR adapter — those are separate domains with their own LLDs.
 
 A reader should already have absorbed:
 
@@ -646,7 +646,7 @@ fn build_capability_statement() -> Cached {
         status: "active",
         date:   build_time,
         kind:   "instance",
-        software: { name: "fhir-subscriptions-foss", version: build_version },
+        software: { name: "fhir-ehr-subscriptions-service", version: build_version },
         implementation: { description: deployment.facility_id, url: deployment.base_url },
         fhirVersion: primary_fhir_version(),
         format: ["application/fhir+json", "application/fhir+xml"],
