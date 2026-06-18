@@ -235,7 +235,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.3 | Email channel S/MIME + Direct SMTP | PARTIAL (extension point) | PARTIAL ⚠ | feat/future-work-p2-batch | `email.Signer` SPI accepted at New; bundled production signer + ModeDirect deferred |
 | future | P2.4 | R4B/R5 wire negotiation completeness | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | Subscription R5→R4B conversion on read; SubscriptionTopic + Bundle conversions deferred |
 | future | P2.5 | Audit chain verifier CLI | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | `audit.VerifyChainReport` + `cmd/fhir-subs audit verify --from --to` subcommand |
-| future | P2.6 | Heartbeats and handshakes | (no status) | OPEN ✗ | — | scheduler doesn't emit heartbeats |
+| future | P2.6 | Heartbeats and handshakes | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/engine/heartbeat/` Worker scheduler MVP; production wiring + state machine + ws/email activators deferred |
 | future | P2.7 | Auth re-check at delivery prep | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | SPI + cached wrapper + submatcher hook landed; production auth-store integration deferred |
 | future | P2.8 | OpenTelemetry trace export configuration | RESOLVED | RESOLVED ✓ | 9e7fa45 (S-14.9) + P2 batch recipe docs | configuration surface at `internal/infra/observability/tracing/tracing.go:54-65`; recipe docs at `docs/operations/otel-exporter-recipes.md` |
 | future | P2.9 | Webhook ingress (vendor push) | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/webhook/` HMAC-SHA256 receiver landed; production wiring deferred until per-adapter secret config is added |

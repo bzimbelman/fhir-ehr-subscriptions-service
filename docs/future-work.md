@@ -308,21 +308,30 @@ This MVP intentionally ships **no production signer**. A real S/MIME signer requ
 
 - An out-of-band signature on the chain head is not implemented in this MVP. The verifier exposes the chain head as a hex string in `VerifyResult.HeadHash`; a follow-up can wrap that into a signed tamper-evident export tooling.
 
-### 2.6 Heartbeats and handshakes
+### 2.6 Heartbeats and handshakes — PARTIAL (heartbeat scheduler MVP)
 
 **Source:** [docs/low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) §6; D-2 (rest-hook handshake) RESOLVED in `3d0945f`.
 
-**Status:** Builder fully wires Bundle assembly for handshake / heartbeat / query-status / query-event Bundles. rest-hook activation handshake now POSTs a synthetic FHIR R5 handshake Bundle (D-2 resolved). The scheduler's claim loop only handles `event-notification` deliveries — it does not emit heartbeats on idle subscriptions or send handshake notifications on subscription state transitions. **websocket and email channels still use the no-op `defaultActivator` placeholder** — the websocket handshake is asynchronous (subscriber binds with token after creation), and email handshake semantics depend on relay AUTH that is not modeled today.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch). `internal/engine/heartbeat/` ships a heartbeat scheduler `Worker` that periodically scans for active subscriptions with `heartbeat_period > 0` and an `updated_at` older than the period, and enqueues a heartbeat-bundle delivery for each via the operator-supplied `Querier` SPI. The builder already produces the correct heartbeat Bundle shape (verified by existing tests); the scheduler dispatches the synthetic delivery like any other.
 
-**What's missing:**
+The companion gaps (subscription state machine, websocket activator, email activator) remain. The MVP closes the most-asked piece — "subscribers can't tell if a quiet subscription is healthy" — by giving operators a path to enable heartbeats on a deployment with the existing channel transports.
 
-- Heartbeat timer wheel (per LLD: configurable per-subscription `heartbeatPeriod`, default off)
-- State-machine for subscription transitions (`requested` → `active` → `error` → `off`) that emits handshake Notifications via the configured channel
-- Real `websocket` activator (token-issued path; client binds via `$get-ws-binding-token` and the activator resolves the bind on first connect)
-- Real `email` activator (relay-side AUTH semantics; potentially asynchronous via `outcome_sink`)
-- Tests covering the four notification types (event, handshake, heartbeat, query-status, query-event)
+**What landed:**
 
-**Why this is P2:** subscribers can't tell if a quiet subscription is healthy or broken. Heartbeats are part of the spec's reliability story.
+- `internal/engine/heartbeat/heartbeat.go`: `Worker`, `Options`, `Querier` SPI, `Candidate`, `TickOnce` test seam
+- Per-tick scan with bounded `CandidateLimit` and configurable `TickInterval` (default 30s)
+- Per-row error logged-and-skipped so a single bad row does not stop heartbeats for the rest
+- Unit tests: tick enqueues one heartbeat per due subscription, per-row enqueue error skipped, candidates query error propagates, immediate-on-startup tick
+
+**What's still pending (post-MVP):**
+
+- Postgres-backed `Querier` implementation (`SQL: SELECT id FROM subscriptions WHERE status='active' AND heartbeat_period > 0 AND updated_at < now() - heartbeat_period * interval '1 second' LIMIT $1`); the SPI is defined; the production wiring is intentionally deferred so operators do not auto-emit heartbeats before the production schema migration adds an explicit `last_delivery_at` column for a more accurate check
+- State-machine for subscription transitions (`requested` → `active` → `error` → `off`) that emits handshake Notifications. Today the activation handshake fires on rest-hook only (D-2)
+- Real `websocket` activator (token-issued path; client binds via `$get-ws-binding-token`)
+- Real `email` activator (relay-side AUTH semantics)
+- Per-subscription jitter to avoid thundering-herd
+
+**Why this is P2:** the structural worker is in place. Wiring + the state-machine companion pieces are v1.0 follow-up.
 
 ### 2.7 Auth re-check at delivery prep — RESOLVED (MVP)
 
