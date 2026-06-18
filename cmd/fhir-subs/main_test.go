@@ -117,6 +117,39 @@ func TestParseFlags_AllFlags(t *testing.T) {
 	}
 }
 
+// TestRealMain_RecoversTopLevelPanic forces a panic inside the realMain
+// path (via a nil os.Args parser would not panic, so we instead inject a
+// stub via the panicProbe hook the binary exports for tests). It
+// asserts:
+//   - realMain returns a non-zero exit code instead of crashing the
+//     process,
+//   - the stderr stream receives a structured "panic recovered" line
+//     containing the panic value so an operator can correlate the crash.
+//
+// Regression guard for S-1.3.
+func TestRealMain_RecoversTopLevelPanic(t *testing.T) {
+	// Cannot t.Parallel: mutates testPanicProbe.
+	prev := testPanicProbe
+	t.Cleanup(func() { testPanicProbe = prev })
+
+	testPanicProbe = func() {
+		panic("boom-test")
+	}
+
+	var stdout, stderr bytes.Buffer
+	rc := realMain([]string{"--version"}, &stdout, &stderr)
+	if rc == 0 {
+		t.Fatalf("expected non-zero exit code on panic, got %d", rc)
+	}
+	se := stderr.String()
+	if !strings.Contains(se, "panic recovered") {
+		t.Fatalf("stderr should report panic recovery: %q", se)
+	}
+	if !strings.Contains(se, "boom-test") {
+		t.Fatalf("stderr should contain the panic value: %q", se)
+	}
+}
+
 // TestBannerContains asserts the startup banner mentions the load-bearing
 // identifiers. It mutates Version/Commit so cannot run in parallel.
 func TestBannerContains(t *testing.T) {
