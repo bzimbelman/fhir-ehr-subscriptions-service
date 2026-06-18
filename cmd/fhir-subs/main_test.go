@@ -42,10 +42,10 @@ func TestParseFlags_Version(t *testing.T) {
 	}
 }
 
-// TestVersionString asserts the formatted version output.
+// TestVersionString asserts the formatted version output. It mutates the
+// package-level Version/Commit globals so it cannot run in parallel with
+// any other test that reads them.
 func TestVersionString(t *testing.T) {
-	t.Parallel()
-
 	prevV, prevC := Version, Commit
 	t.Cleanup(func() { Version, Commit = prevV, prevC })
 
@@ -117,10 +117,9 @@ func TestParseFlags_AllFlags(t *testing.T) {
 	}
 }
 
-// TestBannerContains asserts the startup banner mentions the load-bearing identifiers.
+// TestBannerContains asserts the startup banner mentions the load-bearing
+// identifiers. It mutates Version/Commit so cannot run in parallel.
 func TestBannerContains(t *testing.T) {
-	t.Parallel()
-
 	prevV, prevC := Version, Commit
 	t.Cleanup(func() { Version, Commit = prevV, prevC })
 	Version = "9.9.9"
