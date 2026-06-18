@@ -244,20 +244,29 @@ These items are not strictly required to deploy, but they materially limit the s
 - Production wiring into `buildProductionRuntime` (one Worker per adapter that declares `VendorAPIClient` capability) — the package is import-ready
 - e2e scenario `TestScenario_VendorChangeFeedEmitsResourceChange` activation
 
-### 2.3 Email channel S/MIME + Direct SMTP support
+### 2.3 Email channel S/MIME + Direct SMTP support — PARTIAL (MVP — extension point only)
 
 **Source:** ADR 0010 #5 ("v1 ships SMTP-only; S/MIME and Direct deferred to v2"); [docs/low-level-design/channels.md](low-level-design/channels.md) §"Email channel"
 
-**Status:** v1 ships clear-SMTP only with STARTTLS. Real healthcare deployments often require S/MIME signing or Direct SMTP for HIPAA-compliant clinical messaging.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP extension-point only). The email channel now accepts `Mode=ModeSMIME` when an operator-supplied `Config.Signer` (the new `email.Signer` SPI) is wired. The SPI has a single method, `Sign(message []byte) ([]byte, error)`, that returns a `multipart/signed` envelope wrapping the unsigned MIME bytes; the channel calls it after `buildMIME` and before SMTP DATA.
 
-**What's missing:**
+This MVP intentionally ships **no production signer**. A real S/MIME signer requires careful PKCS#7 SignedData encoding, certificate-store integration, and trust-bundle validation that is outside the scope of this batch (and benefits from a third-party library audit). Operators that need S/MIME today implement `Signer` themselves (e.g., wrapping `github.com/digitorus/pkcs7`) and inject it via Config; the channel handles routing.
 
-- S/MIME signing/encryption layer atop the existing SMTP path
-- Direct SMTP profile (DTAAP-compliant message encoding, Direct-trust-bundle validation)
-- Configurable S/MIME cert/key resolution from the secret store
+**What landed:**
+
+- `internal/channel/email/smime.go`: `Signer` SPI, `ErrSignerRequired`, `applySMIMESignature` hook
+- `email.New` accepts `ModeSMIME` when `Config.Signer != nil`; rejects with `ErrSignerRequired` otherwise
+- `Channel.Deliver` runs `applySMIMESignature` after `buildMIME` when `Mode=ModeSMIME`
+- Unit tests: ModeSMIME requires Signer, ModeSMIME accepts with Signer, ModeDirect still rejected, unknown mode rejected
+
+**What's still pending (post-MVP):**
+
+- A bundled production `Signer` implementation (PKCS#7 SignedData with hardware-token + file-based PKCS#12 keystores)
+- `ModeDirect` (DTAAP-compliant message encoding, Direct-trust-bundle validation, MDN handling) — currently still rejected at `New`
+- Encryption (S/MIME enveloped data) on top of signing
 - Tests against a fake Direct receiver
 
-**Why this is P2:** without these, the email channel is unusable for HIPAA-compliant clinical workflows in the US.
+**Why this is P2:** the structural extension point unblocks operators that have an existing S/MIME stack to integrate. A bundled production signer + Direct support is a v1.0 follow-up.
 
 ### 2.4 R4B/R5 wire negotiation completeness — PARTIAL (MVP)
 
