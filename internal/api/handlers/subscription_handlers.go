@@ -235,8 +235,15 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 		if err != nil {
 			reason = err.Error()
 		}
-		_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, reason)
-		_ = s.deps.Audit.Append(ctx, "subscription.handshake.fail", id.String(), "failure", nil, nil)
+		// If the per-call ctx is dead (timeout / lifecycle cancel),
+		// fall back to a fresh background ctx so the row does not stay
+		// stuck at `requested` (B-10).
+		bookkeepingCtx := ctx
+		if bookkeepingCtx.Err() != nil {
+			bookkeepingCtx = context.Background()
+		}
+		_ = s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason)
+		_ = s.deps.Audit.Append(bookkeepingCtx, "subscription.handshake.fail", id.String(), "failure", nil, nil)
 		return
 	}
 	_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, "")

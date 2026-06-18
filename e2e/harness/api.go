@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -72,6 +73,27 @@ type APIServerConfig struct {
 	// WSHandlerPath is the route at which to mount WSHandler. Empty
 	// uses /ws/subscriptions (the channel's HandlerPath constant).
 	WSHandlerPath string
+
+	// URLValidator is the optional SSRF guard the API runs against
+	// channel.endpoint at create / update time (B-11). Tests that
+	// exercise the SSRF path inject a configured validator; tests that
+	// don't care leave this nil and the handler skips the check.
+	URLValidator handlers.URLValidator
+
+	// LifecycleCtx, ActivationTimeout, ActivationWaitGroup plumb
+	// through to handlers.Deps so e2e tests can join in-flight
+	// activation goroutines (B-10).
+	LifecycleCtx        context.Context
+	ActivationTimeout   time.Duration
+	ActivationWaitGroup *sync.WaitGroup
+
+	// AuditMaxBytes plumbs through to handlers.Deps.AuditMaxBytes for
+	// B-13 redaction tests.
+	AuditMaxBytes int
+
+	// Metrics is the optional MetricsRecorder e2e tests inject to
+	// observe RecordActivatePanic counter increments (B-10).
+	Metrics handlers.MetricsRecorder
 }
 
 // APIServer wraps an in-process HTTP server hosting the Subscriptions
@@ -128,18 +150,24 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	}
 
 	deps := handlers.Deps{
-		Subscriptions: handlers.NewPgSubscriptionsStore(cfg.Pool),
-		Topics:        handlers.NewPgTopicsStore(cfg.Pool),
-		Events:        handlers.NewPgEventsStore(cfg.Pool),
-		Deliveries:    handlers.NewPgDeliveriesStore(cfg.Pool),
-		WsTokens:      handlers.NewPgWsBindingTokensStore(cfg.Pool),
-		Audit:         handlers.NewPgAuditStore(cfg.Pool),
-		Channels:      channels,
-		Now:           func() time.Time { return time.Now().UTC() },
-		WSBindingTTL:  5 * time.Minute,
-		BaseURL:       cfg.BaseURL,
-		WSBaseURL:     cfg.WSBaseURL,
-		ServerVersion: "harness",
+		Subscriptions:       handlers.NewPgSubscriptionsStore(cfg.Pool),
+		Topics:              handlers.NewPgTopicsStore(cfg.Pool),
+		Events:              handlers.NewPgEventsStore(cfg.Pool),
+		Deliveries:          handlers.NewPgDeliveriesStore(cfg.Pool),
+		WsTokens:            handlers.NewPgWsBindingTokensStore(cfg.Pool),
+		Audit:               handlers.NewPgAuditStore(cfg.Pool),
+		Channels:            channels,
+		Now:                 func() time.Time { return time.Now().UTC() },
+		WSBindingTTL:        5 * time.Minute,
+		BaseURL:             cfg.BaseURL,
+		WSBaseURL:           cfg.WSBaseURL,
+		ServerVersion:       "harness",
+		URLValidator:        cfg.URLValidator,
+		LifecycleCtx:        cfg.LifecycleCtx,
+		ActivationTimeout:   cfg.ActivationTimeout,
+		ActivationWaitGroup: cfg.ActivationWaitGroup,
+		AuditMaxBytes:       cfg.AuditMaxBytes,
+		Metrics:             cfg.Metrics,
 	}
 
 	r := chi.NewRouter()
