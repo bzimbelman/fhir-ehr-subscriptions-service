@@ -107,47 +107,54 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Strip secret-bearing fields (Authorization headers etc.) before persisting; cap canonical size; consider hashing.
 - **Resolved:** `759c3a8` (impl), `3587d52` (RED tests), `2ec4de9` (e2e: api_audit_redaction_test.go). New `RedactSubscriptionForAudit` (`internal/api/handlers/audit_redact.go`) replaces values of secret-named JSON keys (`header`, `headers`, `authorization`, `token`, `apikey`, `privatekey`, `secret`, `password`, ...) with `[REDACTED]`, scrubs JWT-shape / PEM-armored / long-base64 substrings, and caps canonical bytes at `Deps.AuditMaxBytes` (default 16 KiB) with a parseable truncation envelope. `createSubscription` and `updateSubscription` route the request body through the redactor before `Audit.Append`.
 
-#### B-14: Email STARTTLS default is `Preferred` (cleartext fallback) for a healthcare service
+#### B-14: Email STARTTLS default is `Preferred` (cleartext fallback) for a healthcare service — RESOLVED
 - **File:** `internal/channel/email/email.go:79-80, 213-220`
 - **What:** Default STARTTLS policy is "Preferred" — falls back to plaintext when not advertised.
 - **Why it matters:** PHI in cleartext over public network is a HIPAA breach (MITM strip-STARTTLS attack).
 - **Fix:** Default to `STARTTLSRequired`; require operator opt-in to Preferred.
+- **Resolution:** Commit `a6a36aa` (RED tests `25b54e2`, GREEN `a6a36aa`, merged via `d3f2a4b`). `email.New` now defaults `cfg.STARTTLS` to `STARTTLSRequired` and emits a startup `WARN` log when an operator opts into `Preferred` (strip-STARTTLS risk) or `Disabled`. Tests: `TestNewDefaultsToSTARTTLSRequired` (`internal/channel/email/security_test.go`), e2e `TestE2E_Email_STARTTLSRequired_RelayDoesNotAdvertise_PermanentFailure` (`e2e/orchestrator/channels_email_starttls_required_test.go`).
 
-#### B-15: SMTP PLAIN/LOGIN allowed over plaintext (credential leak)
+#### B-15: SMTP PLAIN/LOGIN allowed over plaintext (credential leak) — RESOLVED
 - **File:** `internal/channel/email/email.go:600-622`
 - **What:** With `STARTTLSDisabled` or `Preferred`-with-no-advertise, PLAIN/LOGIN AUTH ships base64-encoded credentials in cleartext. The `host != "localhost"` guard in `loginAuth.Start` misses `127.0.0.1`, `::1`, link-local.
 - **Why it matters:** SMTP relay password lifted off the wire.
 - **Fix:** Refuse to construct the channel if `STARTTLS=Disabled && AuthMechanism!=AuthNone`; require explicit `AllowCleartextAuth` flag.
+- **Resolution:** Commit `a6a36aa` (merged via `d3f2a4b`). `email.New` now refuses construction when `cfg.STARTTLS == STARTTLSDisabled && cfg.AuthMechanism != AuthNone` unless `cfg.AllowCleartextAuth` is set; the error explicitly references the opt-in. Tests: `TestNewRefusesCleartextAuth` (5 subtests covering PLAIN/LOGIN/CRAM-MD5/AuthNone/Required combinations), `TestNewAllowsCleartextAuthWhenExplicitlyOptedIn`, e2e `TestE2E_Email_CleartextAuth_NewRefusesConstruction` (`e2e/orchestrator/channels_email_cleartext_auth_blocked_test.go`).
 
-#### B-16: Email header injection via `CorrelationID`
+#### B-16: Email header injection via `CorrelationID` — RESOLVED
 - **File:** `internal/channel/email/email.go:407-412, 489-499`
 - **What:** `env.CorrelationID` is written verbatim into `Message-ID` and `X-Correlation-ID` headers via `writeHeader`; no CRLF rejection. `newMessageID` also doesn't sanitize.
 - **Why it matters:** A CRLF in correlation ID forges arbitrary SMTP headers / smuggles message body. Combined with the unvalidated correlation ID accepted from `X-Correlation-ID` HTTP header (B-39), this is end-to-end attacker-controllable.
 - **Fix:** Reject any `corr` containing `\r` or `\n` (and ideally non-ASCII / non-RFC2822-token chars) at `writeHeader`.
+- **Resolution:** Commit `a6a36aa` (merged via `d3f2a4b`). Primary control: `validateHeaderToken` rejects CR / LF / NUL / C0 controls / DEL in `env.CorrelationID` at the start of `deliverInner` and returns `PermanentFailure` before any wire I/O. Defense-in-depth: `writeHeader` strips CR/LF from header values via `stripCRLF`. Tests: `TestDeliverRejectsCRLFInCorrelationID` (3 subtests), `TestDeliverRejectsCRLFInCorrelationIDViaMessageID`, e2e `TestE2E_Email_CorrelationID_CRLF_RejectedPermanent` (`e2e/orchestrator/channels_email_correlation_crlf_rejected_test.go`).
 
-#### B-17: WebSocket upgrade is `InsecureSkipVerify=true` — Origin not verified (CSWSH)
+#### B-17: WebSocket upgrade is `InsecureSkipVerify=true` — Origin not verified (CSWSH) — RESOLVED
 - **File:** `internal/channel/websocket/websocket.go:213-225`
 - **What:** `coder/websocket.Accept` is called with `InsecureSkipVerify: true`, skipping the Origin header check.
 - **Why it matters:** A reverse proxy does NOT check WS Origin — application must. Cross-Site WebSocket Hijacking lets a malicious origin in a victim's browser bind any token.
 - **Fix:** Take an `OriginPatterns []string` option; default-deny cross-origin.
+- **Resolution:** Commit `a0360e4` (RED tests `7b7f300`, GREEN `a0360e4`, merged via `d3f2a4b`). `Options.OriginPatterns` is wired through to `codingws.AcceptOptions.OriginPatterns`; `InsecureSkipVerify` removed entirely. Default (nil/empty) denies cross-origin upgrades with HTTP 403; the rejected `Origin` is now logged on accept failure for SRE visibility. Tests: `TestUpgradeRejectsCrossOriginByDefault`, `TestUpgradeAllowsConfiguredOrigin`, `TestUpgradeRejectsUnlistedOriginWhenPatternsConfigured` (`internal/channel/websocket/security_test.go`), e2e `TestE2E_WebSocket_OriginRejected` (`e2e/orchestrator/channels_websocket_origin_check_test.go`).
 
-#### B-18: WebSocket ack-channel close-of-closed-channel race
+#### B-18: WebSocket ack-channel close-of-closed-channel race — RESOLVED
 - **File:** `internal/channel/websocket/websocket.go:471-553`
 - **What:** `defer sess.cancelAck(env.Sequence)` on Deliver path and `deliverAck` (line 553 `close(ch)`) can both fire under concurrent ack-arrival + delivery-timeout — closing an already-closed channel panics.
 - **Why it matters:** Server-wide panic from a single misbehaving subscriber's timing.
 - **Fix:** Single-owner close (use `sync.Once`, or guard with mutex; deliverAck marks delivered, waiter closes).
+- **Resolution:** Commit `a0360e4` (merged via `d3f2a4b`). The per-sequence ack waiter is now an `ackWaiter` struct that wraps `chan struct{}` with a `sync.Once` (`closeOnce`). Both `deliverAck` and the Deliver-path cleanup call `closeOnce`; the close is therefore single-owner regardless of arrival order. `registerAck` deduplicates duplicate-sequence registers so concurrent Deliver calls share the same waiter. Tests: `TestAckRaceDoesNotPanic` (200 iterations of deliver/ack/duplicate-ack under `-race`), `TestConcurrentAckCancelDoesNotCloseClosedChannel`, e2e `TestE2E_WebSocket_AckRace_NoPanic_NoLeak` (`e2e/orchestrator/channels_websocket_ack_race_test.go`).
 
-#### B-19: MLLP listener has no max-connection cap, no per-IP rate limit, no admission semaphore
+#### B-19: MLLP listener has no max-connection cap, no per-IP rate limit, no admission semaphore — RESOLVED
 - **File:** `internal/mllp/endpoint.go:43-93`
 - **What:** Every accepted TCP conn spawns an unbounded goroutine with read buffer + framer state; `connsWG` only counts.
 - **Why it matters:** Trivial accept-flood DoS; goroutine + memory exhaustion.
 - **Fix:** `cfg.MaxConnections` (semaphore-gated accept); `cfg.MaxConnectionsPerIP` (token bucket).
+- **Resolution:** Commit `b8c1209` (RED tests `74c8403`, GREEN `b8c1209`, merged via `d3f2a4b`). `Listener` now owns a cross-endpoint admission semaphore (`MaxConnections`) and a per-IP counter map (`MaxConnectionsPerIP`); `endpoint.run` consults `Listener.admitConnection` for every accepted socket and closes refused connections immediately. The release closure is bound to the handler goroutine's defer so a slot is reclaimed on disconnect even on panic. New metric `fhir_subs_mllp_connections_refused_total` and `mllp_connection_refused` WARN log line. Tests: `TestListener_MaxConnections_RefusesExcess`, `TestListener_MaxConnectionsPerIP_RefusesExcess` (`internal/mllp/security_test.go`), e2e `TestE2E_MLLP_MaxConnections_Refuses` (`e2e/orchestrator/mllp_max_connections_test.go`).
 
-#### B-20: MLLP listener has no TLS / MTLS support — HL7 (PHI) over plaintext
+#### B-20: MLLP listener has no TLS / MTLS support — HL7 (PHI) over plaintext — RESOLVED
 - **File:** `internal/mllp/endpoint.go:43-51`
 - **What:** Plain `net.Listen("tcp", ...)`. No `tls.Config`, no client cert verification. Operators have no way to opt in.
 - **Why it matters:** HL7 messages carry PHI; running plaintext on a hospital network is an OCR / HIPAA finding.
 - **Fix:** Add `cfg.TLS` (min v1.2, AEAD ciphers); optional `RequireAndVerifyClientCert`; wrap with `tls.NewListener`.
+- **Resolution:** Commit `b8c1209` (merged via `d3f2a4b`). New `mllp.TLSConfig` carries `*tls.Config` plus optional `RequireAndVerifyClientCert` + `ClientCAs` for mTLS. `endpoint.bind` wraps the TCP listener with `tls.NewListener` when `ListenerConfig.TLS != nil`; `tlsServerConfig` enforces a TLS 1.2 floor and applies `ClientAuth = RequireAndVerifyClientCert` for mTLS deployments. `Validate()` rejects mTLS configurations that omit `ClientCAs`. Tests: `TestListener_TLS_RequiresTLSHandshake`, `TestListener_TLS_MTLS_RequiresClientCert` (`internal/mllp/security_test.go`), e2e `TestE2E_MLLP_TLS_PlaintextRejected` and `TestE2E_MLLP_MTLS_RequiresClientCert` (`e2e/orchestrator/mllp_tls_test.go`, `e2e/orchestrator/mllp_mtls_test.go`).
 
 #### B-21: HL7 processor decrypts pending pairs with hardcoded `key_version=1` (breaks key rotation) — RESOLVED
 - **File:** `internal/hl7processor/processor.go:545`, `internal/infra/storage/repos/pending_pairs.go:86`
