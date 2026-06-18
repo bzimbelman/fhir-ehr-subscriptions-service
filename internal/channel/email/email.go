@@ -448,7 +448,12 @@ func addressOnly(s string) string {
 // payloads) the message is multipart/mixed with a text/plain summary
 // and the bundle as a base64-encoded attachment.
 func (c *Channel) buildMIME(env channel.NotificationEnvelope, rcpt string) ([]byte, error) {
-	subject := c.cfg.SubjectTemplate
+	// N-1: today SubjectTemplate is used verbatim, but when template
+	// substitution lands the inputs may carry CRLF that would inject
+	// arbitrary headers. Strip them defensively so future changes
+	// cannot regress into a header-injection (mirrors the B-16
+	// CorrelationID treatment for the same class of bug).
+	subject := stripCRLF(c.cfg.SubjectTemplate)
 	msgID, err := newMessageID(env.CorrelationID, c.cfg.From)
 	if err != nil {
 		return nil, err

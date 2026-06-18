@@ -538,14 +538,22 @@ func parseRetryAfter(v string) time.Duration {
 
 // formatTraceparent renders an envelope's correlation id as a W3C
 // traceparent value. We use the correlation id as the trace-id when
-// present, padding/truncating to 32 hex chars. If the correlation id is
-// not a UUID, we still emit a syntactically-valid traceparent so
-// subscribers receiving the header get a stable ID to log against.
+// present, padding/truncating to 32 hex chars. The output is
+// guaranteed-hex per the traceparent grammar: any non-hex character is
+// dropped before length normalization so a non-UUID correlation id
+// (e.g., a vendor ULID) cannot produce an invalid traceparent that
+// downstream W3C-compliant parsers would reject (N-1).
 func formatTraceparent(corrID string) string {
-	traceID := strings.ToLower(strings.ReplaceAll(corrID, "-", ""))
-	if len(traceID) > 32 {
-		traceID = traceID[:32]
+	lower := strings.ToLower(corrID)
+	hex := make([]byte, 0, 32)
+	for i := 0; i < len(lower) && len(hex) < 32; i++ {
+		c := lower[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
+			hex = append(hex, c)
+		}
 	}
+	traceID := string(hex)
 	for len(traceID) < 32 {
 		traceID += "0"
 	}
