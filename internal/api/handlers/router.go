@@ -321,7 +321,7 @@ func RegisterRoutes(r chi.Router, d Deps) {
 		r.Use(d.Auth)
 
 		r.Route("/Subscription", func(r chi.Router) {
-			r.Post("/", h.createSubscription)
+			r.With(d.SubscriptionCreateRateLimit.Middleware()).Post("/", h.createSubscription)
 			r.Get("/", h.searchSubscriptions)
 			r.Get("/{id}", h.readSubscription)
 			r.Put("/{id}", h.updateSubscription)
@@ -329,7 +329,7 @@ func RegisterRoutes(r chi.Router, d Deps) {
 			r.Get("/{id}/$status", h.opStatusSingle)
 			r.Get("/$status", h.opStatusBulk)
 			r.Get("/{id}/$events", h.opEvents)
-			r.Post("/{id}/$get-ws-binding-token", h.opGetWsBindingToken)
+			r.With(d.WSBindingTokenRateLimit.Middleware()).Post("/{id}/$get-ws-binding-token", h.opGetWsBindingToken)
 		})
 
 		r.Get("/SubscriptionTopic", h.searchTopics)

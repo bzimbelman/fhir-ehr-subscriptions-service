@@ -28,21 +28,21 @@ import (
 // the harness, so it fails if Deps wiring or the chi middleware were
 // silently regressed.
 func TestE2E_S3_3_PerClientRateLimit_SubscriptionCreate(t *testing.T) {
-	t.Skip("requires APIServerConfig.SubscriptionCreateRateLimit harness wiring — tracked in OP #87")
 	h := requireHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	resetPipelineTables(t, ctx, h)
 
 	clientID := "client-s33-create-" + uuid.New().String()[:8]
-	_ = auth.NewClientRateLimiter(auth.RateLimit{
+	limiter := auth.NewClientRateLimiter(auth.RateLimit{
 		Burst:           2,
 		RefillPerSecond: 0,
 	}, func() time.Time { return time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC) })
 
 	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
-		Pool:     h.DB,
-		ClientID: clientID,
+		Pool:                        h.DB,
+		ClientID:                    clientID,
+		SubscriptionCreateRateLimit: limiter,
 	})
 	if err != nil {
 		t.Fatalf("api start: %v", err)
