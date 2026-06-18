@@ -190,9 +190,9 @@ func TestAdapterManifestValidate(t *testing.T) {
 		Description:          "no-vendor reference adapter",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{
-			HL7Processor:    true,
-			FhirScanRunner:  true,
-			VendorAPIClient: false,
+			HL7Processor:     true,
+			FhirScanRunner:   true,
+			VendorAPIClient:  false,
 			HydrationService: true,
 		},
 		ConfigSchema:      []byte(`{"type":"object"}`),

@@ -109,8 +109,8 @@ func TestDefaultHl7ProcessorPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify = %v, want nil", err)
 	}
-	if err := cls.Kind.Validate(); err != nil {
-		t.Errorf("Classify.Kind invalid: %v", err)
+	if vErr := cls.Kind.Validate(); vErr != nil {
+		t.Errorf("Classify.Kind invalid: %v", vErr)
 	}
 
 	resource, err := p.MapToFHIR(parsed, cls)
@@ -189,4 +189,3 @@ func TestDefaultLifecycleHooks(t *testing.T) {
 		t.Errorf("OnShutdown = %v, want nil", err)
 	}
 }
-

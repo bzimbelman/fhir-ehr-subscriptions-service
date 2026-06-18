@@ -139,7 +139,7 @@ func (v VersionSpec) Satisfies(pin string) bool {
 
 // parseVersion returns (lowerBound, isAny, ok). Lower bound is a slice of ints
 // from "X.Y" or "X.Y.Z"; isAny is true for "*".
-func parseVersion(s string) (lower []int, isAny bool, ok bool) {
+func parseVersion(s string) (lower []int, isAny, ok bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil, false, false
