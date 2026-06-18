@@ -336,19 +336,26 @@ These items are not strictly required to deploy, but they materially limit the s
 - Plumbed end-to-end so `observability.Start` honors operator-supplied OTLP transport settings
 - Recipe docs for the four most common back-ends (P2 batch)
 
-### 2.9 Webhook ingress (vendor push)
+### 2.9 Webhook ingress (vendor push) — PARTIAL (MVP)
 
 **Source:** ADR 0008 #1 ("Deferred to a future release. v1 ships without a webhook ingress path.")
 
-**Status:** Explicitly out of scope for v1.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/webhook/` ships a chi-mountable HTTP receiver that vendors POST to at `/webhooks/{adapter}`. The receiver validates the request via HMAC-SHA256 (shared per-adapter secret) compared in constant time against the `X-Hub-Signature-256` header (the convention GitHub, Stripe, and Cerner Code share), optionally enforces an `X-Webhook-Timestamp` skew window to prevent replay, parses the JSON body into the canonical `ResourceChange` shape, and persists a row through `repos.ResourceChangesRepo` so the matcher worker picks it up on next tick. 1 MiB body cap, exit codes: 202 on accept, 401 on signature/timestamp failure, 404 on unknown adapter, 400 on malformed body, 503 when storage is not wired.
 
-**What's missing:**
+**What landed:**
 
-- Host-provided HTTP receiver that vendors can POST to
-- Per-vendor authentication (HMAC, mTLS, shared secret rotation)
-- Mapping from inbound HTTP body to `hl7_message_queue` or directly to `resource_changes`
+- `internal/webhook/webhook.go`: `Handler`, `Deps`, `SecretResolver`/`SecretMap`, HMAC-SHA256 verify, optional timestamp-skew enforcement, body cap, JSON parse, ResourceChange insert
+- Unit tests: missing signature, unknown adapter, wrong secret, unsupported scheme, stale timestamp, malformed JSON, no-repo-wired
 
-**Why this is P2:** unblocks adapters for any vendor that pushes via webhook (Cerner Code, Epic SmartLite, etc.).
+**What's still pending (post-MVP):**
+
+- Wiring into the production HTTP server (`buildProductionRuntime`) and config schema for per-adapter `webhook_secret`. The package is import-ready; the wiring layer is intentionally not changed in this batch so the receiver does not auto-mount before operators have configured a secret.
+- mTLS-only authentication (alternate to HMAC for vendors that prefer client-cert)
+- Vendor-specific shape adapters (translate inbound non-FHIR webhook → FHIR resource). Today the receiver requires the vendor to push a FHIR-shaped body.
+- Per-vendor secret rotation with overlapping windows
+- Backpressure / dead-letter on persistent insert failure
+
+**Why this is P2:** the structural ingress is in place. Wiring + per-vendor mapping happens per adapter as the integration list grows.
 
 ### 2.10 Multi-instance / horizontal scale
 
