@@ -182,6 +182,78 @@ func TestFramer_StartByteMidFrame_Malformed(t *testing.T) {
 	}
 }
 
+// LLD §4 enumerates four MalformedReason values:
+//
+//	OversizedMessage, UnexpectedStartByteMidFrame, EndBeforeStart,
+//	StartWithoutEnd
+//
+// The first two are surfaced by Framer.Next; this test pins the constants
+// for the remaining two so the enum stays complete.
+func TestFramer_MalformedReason_EnumComplete(t *testing.T) {
+	if string(ReasonEndBeforeStart) != "end_before_start" {
+		t.Fatalf("ReasonEndBeforeStart = %q, want end_before_start", ReasonEndBeforeStart)
+	}
+	if string(ReasonStartWithoutEnd) != "start_without_end" {
+		t.Fatalf("ReasonStartWithoutEnd = %q, want start_without_end", ReasonStartWithoutEnd)
+	}
+}
+
+// 0x1C 0x0D appearing in the byte stream BEFORE any 0x0B is per LLD a
+// distinct malformed reason ("EndBeforeStart"). The framer surfaces it
+// rather than silently swallowing it as ordinary noise.
+func TestFramer_EndBeforeStart_Malformed(t *testing.T) {
+	f := NewFramer(1024)
+	got := drainFramer(t, f, []byte{endByte1, endByte2})
+	if len(got) == 0 {
+		t.Fatalf("expected at least one event")
+	}
+	last := got[len(got)-1]
+	if last.kind != "malformed" {
+		t.Fatalf("end-before-start must be malformed; got %#v", got)
+	}
+	if last.reason != ReasonEndBeforeStart {
+		t.Fatalf("reason = %q, want %q", last.reason, ReasonEndBeforeStart)
+	}
+}
+
+// Peer disconnect mid-frame (start byte received, no end bytes yet) is
+// surfaced as Malformed(StartWithoutEnd) when the framer is asked to
+// finalize. The connection task already increments
+// MetricDisconnectMidFrame on EOF; Finalize is the framer's terminal
+// classification surface for the same condition.
+func TestFramer_StartWithoutEnd_Finalize(t *testing.T) {
+	f := NewFramer(1024)
+	body := []byte("MSH|^~\\&|S|F|||20240101||ADT^A01|MID|P|2.5\r")
+	wire := append([]byte{startByte}, body...)
+	f.Append(wire)
+	for {
+		ev := f.Next()
+		if _, ok := ev.(NeedMoreEvent); ok {
+			break
+		}
+		if mal, ok := ev.(MalformedEvent); ok {
+			t.Fatalf("unexpected Malformed before Finalize: %v", mal)
+		}
+	}
+	ev := f.Finalize()
+	mal, ok := ev.(MalformedEvent)
+	if !ok {
+		t.Fatalf("Finalize on open frame must return Malformed; got %T", ev)
+	}
+	if mal.Reason != ReasonStartWithoutEnd {
+		t.Fatalf("reason = %q, want %q", mal.Reason, ReasonStartWithoutEnd)
+	}
+}
+
+// Finalize on a closed framer (no in-flight body) is a no-op: returns
+// NeedMore so callers can use it generically without special-casing.
+func TestFramer_Finalize_OnClosed_NoOp(t *testing.T) {
+	f := NewFramer(1024)
+	if _, ok := f.Finalize().(NeedMoreEvent); !ok {
+		t.Fatalf("Finalize on closed framer must return NeedMore")
+	}
+}
+
 func TestFramer_ByteByByte(t *testing.T) {
 	f := NewFramer(1024)
 	body := []byte("MSH|^~\\&|A|B|||20240101||ADT^A01|MSG-X|P|2.5\r")
