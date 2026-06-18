@@ -25,8 +25,28 @@ type SubscriptionsStore interface {
 	Insert(ctx context.Context, row repos.SubscriptionRow) (uuid.UUID, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*repos.SubscriptionRow, error)
 	ListByClient(ctx context.Context, clientID string) ([]repos.SubscriptionRow, error)
+	// FindByClientAndCriteria runs the If-None-Exist (LLD §4.1) match in
+	// SQL: every supplied predicate (topic / channel type / endpoint) is
+	// folded into the WHERE clause along with `client_id = $1` and
+	// `status <> 'off'`. The database returns at most one row even when
+	// many subscriptions exist for the client (S-2.4 — predicate is
+	// pushed into the index instead of materializing the entire client
+	// list in Go).
+	FindByClientAndCriteria(ctx context.Context, clientID string, criteria SubscriptionMatchCriteria) ([]repos.SubscriptionRow, error)
 	UpdateResource(ctx context.Context, id uuid.UUID, row repos.SubscriptionRow) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status repos.SubscriptionStatus, errMsg string) error
+}
+
+// SubscriptionMatchCriteria carries the LLD §4.1 search parameters that
+// participate in the If-None-Exist evaluation. Empty fields mean "do
+// not constrain on this column" so the same struct can express any
+// subset the client supplied. All comparisons are strict equality
+// (FHIR-search `:exact` semantics) — case-folding lives one layer above
+// in the parser when the underlying field is case-insensitive.
+type SubscriptionMatchCriteria struct {
+	Topic       string
+	ChannelType string
+	Endpoint    string
 }
 
 // AuthClientsStore is the narrow interface the handlers need from

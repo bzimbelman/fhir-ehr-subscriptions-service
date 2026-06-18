@@ -28,10 +28,45 @@ import (
 type memSubs struct {
 	mu   sync.Mutex
 	rows map[uuid.UUID]repos.SubscriptionRow
+
+	// Counters / capture for S-2.4 If-None-Exist tests.
+	listByClientCount      int
+	findByCriteriaCount    int
+	lastFindCriteria       *handlers.SubscriptionMatchCriteria
 }
 
 func newMemSubs() *memSubs {
 	return &memSubs{rows: map[uuid.UUID]repos.SubscriptionRow{}}
+}
+
+func (m *memSubs) resetCounters() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.listByClientCount = 0
+	m.findByCriteriaCount = 0
+	m.lastFindCriteria = nil
+}
+
+func (m *memSubs) findByClientAndCriteriaCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.findByCriteriaCount
+}
+
+func (m *memSubs) listByClientCallsForIfNoneExist() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.listByClientCount
+}
+
+func (m *memSubs) lastCriteria() *handlers.SubscriptionMatchCriteria {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastFindCriteria == nil {
+		return nil
+	}
+	c := *m.lastFindCriteria
+	return &c
 }
 
 func (m *memSubs) Insert(_ context.Context, row repos.SubscriptionRow) (uuid.UUID, error) {
@@ -58,13 +93,43 @@ func (m *memSubs) GetByID(_ context.Context, id uuid.UUID) (*repos.SubscriptionR
 
 func (m *memSubs) ListByClient(_ context.Context, clientID string) ([]repos.SubscriptionRow, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.listByClientCount++
 	out := []repos.SubscriptionRow{}
 	for _, r := range m.rows {
 		if r.ClientID == clientID {
 			out = append(out, r)
 		}
 	}
+	m.mu.Unlock()
+	return out, nil
+}
+
+func (m *memSubs) FindByClientAndCriteria(_ context.Context, clientID string, criteria handlers.SubscriptionMatchCriteria) ([]repos.SubscriptionRow, error) {
+	m.mu.Lock()
+	m.findByCriteriaCount++
+	c := criteria
+	m.lastFindCriteria = &c
+	out := []repos.SubscriptionRow{}
+	for _, r := range m.rows {
+		if r.ClientID != clientID {
+			continue
+		}
+		if r.Status == repos.SubOff {
+			continue
+		}
+		if criteria.Topic != "" && r.TopicURL != criteria.Topic {
+			continue
+		}
+		if criteria.ChannelType != "" && r.ChannelType != criteria.ChannelType {
+			continue
+		}
+		if criteria.Endpoint != "" && r.Endpoint != criteria.Endpoint {
+			continue
+		}
+		out = append(out, r)
+		break // mimic LIMIT 1 in SQL
+	}
+	m.mu.Unlock()
 	return out, nil
 }
 
