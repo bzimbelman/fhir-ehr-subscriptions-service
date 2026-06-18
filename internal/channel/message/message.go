@@ -22,6 +22,7 @@ package message
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +53,11 @@ const (
 	DefaultUserAgent       = "fhir-ehr-subscriptions-service/0.0"
 	DefaultRequestTimeout  = 30 * time.Second
 	DefaultMaxResponseBody = 256
+
+	// DefaultMaxIdleConnsPerHost / DefaultMaxConnsPerHost match rest-hook
+	// (S-5; exposed via Options).
+	DefaultMaxIdleConnsPerHost = 16
+	DefaultMaxConnsPerHost     = 64
 )
 
 // Metric names emitted by this channel. Per LLD §9.
@@ -89,7 +95,8 @@ var allowedFHIRHeaders = map[string]struct{}{
 }
 
 // Headers always rejected — the channel sets these or they would allow
-// request smuggling / forging (LLD §4.1 rule 1).
+// request smuggling / forging or downstream privilege confusion
+// (LLD §4.1 rule 1; S-5 expansion to close default-permit forging gap).
 var deniedHeaders = map[string]struct{}{
 	"host":              {},
 	"content-length":    {},
@@ -103,21 +110,42 @@ var deniedHeaders = map[string]struct{}{
 	"trace-parent":      {},
 	"trace-state":       {},
 	"server":            {},
+	"x-internal-trust":  {},
+	"x-auth-user":       {},
+	"x-auth-token":      {},
+	"x-auth-roles":      {},
+	"x-auth-role":       {},
+	"x-auth-tenant":     {},
+	"x-trusted-user":    {},
+	"x-trusted-roles":   {},
+	"x-shibboleth-user": {},
+	"remote-user":       {},
+	"x-remote-user":     {},
+	"x-original-url":    {},
+	"x-rewrite-url":     {},
+	"x-client-cert":     {},
+	"x-ssl-client-cert": {},
+	"x-real-ip":         {},
 }
 
-// Reserved-prefix deny — proxies trust these (LLD §4.1 rule 2).
+// Reserved-prefix deny — proxies trust these (LLD §4.1 rule 2; S-5
+// expansion).
 var deniedPrefixes = []string{
 	"x-forwarded-",
 	"x-real-",
 	"x-server-",
 	"proxy-",
+	"x-internal-",
+	"x-trusted-",
+	"x-auth-",
 }
 
 // Options configures a message Channel at construction time. Zero values
 // fall back to package defaults.
 type Options struct {
 	// HTTPClient is the HTTP client used for outbound POST requests. If
-	// nil, a default client with bounded dial/keep-alive timeouts is used.
+	// nil, a default client with a wall-clock Timeout is built from the
+	// pool / TLS knobs below.
 	HTTPClient *http.Client
 	// Metrics receives counter and histogram samples. If nil, channel.NopMetrics.
 	Metrics channel.MetricsEmitter
@@ -126,19 +154,31 @@ type Options struct {
 	// UserAgent overrides the User-Agent header. Empty -> DefaultUserAgent.
 	UserAgent string
 	// RequestTimeout is the per-attempt total wall-clock budget when
-	// envelope.Deadline is zero. Zero -> DefaultRequestTimeout.
+	// envelope.Deadline is zero. Zero -> DefaultRequestTimeout. Also
+	// used as the default-client's wall-clock Timeout (S-5).
 	RequestTimeout time.Duration
 	// ServerEndpoint is the URI placed in MessageHeader.source.endpoint.
 	// Per LLD §4.4 this is "the server's identity URI
 	// (config.deployment.facility_id lifted into a URI)". Empty omits
 	// MessageHeader.source.endpoint.
 	ServerEndpoint string
+
+	// MaxIdleConnsPerHost overrides the default-client's pool setting
+	// (S-5). Zero falls back to DefaultMaxIdleConnsPerHost.
+	MaxIdleConnsPerHost int
+	// MaxConnsPerHost overrides the default-client's pool cap (S-5).
+	// Zero falls back to DefaultMaxConnsPerHost.
+	MaxConnsPerHost int
+	// TLSMinVersion is the minimum TLS version the default client will
+	// negotiate (S-5). Zero falls back to tls.VersionTLS12.
+	TLSMinVersion uint16
 }
 
 // Channel implements the FHIR messaging delivery channel. Construct with
 // New; safe for concurrent use.
 type Channel struct {
 	http           *http.Client
+	transport      *http.Transport // nil if caller-supplied HTTPClient
 	metrics        channel.MetricsEmitter
 	logger         *slog.Logger
 	userAgent      string
@@ -156,7 +196,25 @@ func New(opts Options) (*Channel, error) {
 		timeout:        opts.RequestTimeout,
 		serverEndpoint: opts.ServerEndpoint,
 	}
+	if c.timeout <= 0 {
+		c.timeout = DefaultRequestTimeout
+	}
 	if c.http == nil {
+		maxIdle := opts.MaxIdleConnsPerHost
+		if maxIdle <= 0 {
+			maxIdle = DefaultMaxIdleConnsPerHost
+		}
+		maxConns := opts.MaxConnsPerHost
+		if maxConns <= 0 {
+			maxConns = DefaultMaxConnsPerHost
+		}
+		minTLS := opts.TLSMinVersion
+		if minTLS == 0 {
+			// TLS 1.3 by default — gosec G402 flags <1.3, and FHIR
+			// subscribers are first-party integrations that can be
+			// expected to support modern TLS (S-5).
+			minTLS = tls.VersionTLS13
+		}
 		// Default transport with a bounded DNS/connect timeout. Mirrors
 		// resthook's defaults — same connection-pool envelope (LLD §4.1).
 		tr := &http.Transport{
@@ -164,14 +222,19 @@ func New(opts Options) (*Channel, error) {
 				Timeout:   5 * time.Second,
 				KeepAlive: 90 * time.Second,
 			}).DialContext,
-			MaxIdleConnsPerHost:   16,
-			MaxConnsPerHost:       64,
+			MaxIdleConnsPerHost:   maxIdle,
+			MaxConnsPerHost:       maxConns,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			ForceAttemptHTTP2:     true,
+			TLSClientConfig:       &tls.Config{MinVersion: minTLS}, //nolint:gosec // configurable; defaults to TLS 1.3
 		}
-		c.http = &http.Client{Transport: tr}
+		c.transport = tr
+		// Wall-clock Timeout bounds the entire request — header-drip
+		// from a hostile subscriber cannot tie up the worker past its
+		// envelope deadline (S-5).
+		c.http = &http.Client{Transport: tr, Timeout: c.timeout}
 	}
 	if c.metrics == nil {
 		c.metrics = channel.NopMetrics{}
@@ -182,10 +245,26 @@ func New(opts Options) (*Channel, error) {
 	if c.userAgent == "" {
 		c.userAgent = DefaultUserAgent
 	}
-	if c.timeout <= 0 {
-		c.timeout = DefaultRequestTimeout
-	}
 	return c, nil
+}
+
+// HTTPClientForTest exposes the constructed http.Client to tests.
+func (c *Channel) HTTPClientForTest() *http.Client { return c.http }
+
+// TransportForTest exposes the default transport (nil if caller supplied
+// an HTTPClient).
+func (c *Channel) TransportForTest() *http.Transport { return c.transport }
+
+// ValidateContentType reports whether ct is acceptable on a Subscription
+// targeting this channel. The API layer SHOULD call this at create time
+// so non-fhir+json subscriptions fail-closed at the boundary rather than
+// running through the scheduler retry budget before being permanently
+// failed at first delivery (S-5).
+func (c *Channel) ValidateContentType(ct channel.ContentType) error {
+	if ct != channel.ContentTypeFHIRJSON {
+		return fmt.Errorf("content type %q not supported by message channel in v1 (json only)", ct)
+	}
+	return nil
 }
 
 // Deliver wraps the envelope's bundle as a Bundle.type=message and POSTs
@@ -316,8 +395,11 @@ func (c *Channel) wrapInMessageBundle(env channel.NotificationEnvelope) ([]byte,
 	outer := map[string]interface{}{
 		"resourceType": "Bundle",
 		"type":         "message",
-		"timestamp":    time.Now().UTC().Format(time.RFC3339),
-		"entry":        outerEntries,
+		// FHIR `instant` requires sub-second precision. RFC3339 (second
+		// precision) parses but mis-shapes the value; use RFC3339Nano so
+		// the outer Bundle.timestamp validates cleanly as `instant` (S-5).
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
+		"entry":     outerEntries,
 	}
 
 	return json.Marshal(outer)
