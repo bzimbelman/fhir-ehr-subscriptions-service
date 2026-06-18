@@ -83,6 +83,13 @@ type ShutdownHook struct {
 // LifecycleConfig holds the resolved configuration for the lifecycle
 // module. Values come from `lifecycle.*` and `server.http.probe_bind` in
 // the validated configuration; Start fills in defaults.
+//
+// The name intentionally repeats "Lifecycle" — the LLD §3 surface uses
+// it explicitly so callers in cmd/fhir-subs read as
+// `lifecycle.LifecycleConfig{...}`, mirroring how the configuration
+// loader's typed config and the rest of the project's host bundles look.
+//
+//revive:disable-next-line:exported
 type LifecycleConfig struct {
 	// ProbeBind is the host:port for a dedicated probe listener. Empty
 	// means "no dedicated listener — the host mounts ProbeHandlers on its
@@ -124,6 +131,8 @@ type PhaseBudgets struct {
 }
 
 // LifecycleContext is the host-supplied dependency bundle.
+//
+//revive:disable-next-line:exported
 type LifecycleContext struct {
 	// Logger is the structured logger. Nil falls back to slog.Default().
 	Logger *slog.Logger
@@ -153,6 +162,8 @@ type ShutdownReport struct {
 }
 
 // LifecycleModule is the runtime handle returned by Start.
+//
+//revive:disable-next-line:exported
 type LifecycleModule struct {
 	cfg  LifecycleConfig
 	lctx LifecycleContext

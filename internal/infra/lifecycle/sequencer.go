@@ -44,17 +44,21 @@ func newModule(cfg LifecycleConfig, lctx LifecycleContext, bindProbeListener boo
 		Startup: newStartupHandler(reg, lctx.Metrics, cfg.ReadinessCheckTimeout),
 	}
 
+	// Initialize the startup-complete gauge to 0 so dashboards see the
+	// metric immediately at boot. MarkStartupComplete flips it to 1.
+	lctx.Metrics.Set(MetricStartupComplete, 0, nil)
+
 	// Sequencer goroutine: waits for a request, runs the phases, signals
 	// exitDone. Any panic inside the sequencer flips panic_signaled and
 	// still closes exitDone so WaitForExit unblocks.
 	go mod.sequencerLoop()
 
-	if bindProbeListener && cfg.ProbeBind != "" {
-		// Production probe listener wiring lives in Start; tests use
-		// newModuleForTest which sets bindProbeListener=false.
-		// Implementation detail: kept out of the test path so unit
-		// tests don't bind ports.
-	}
+	// Production probe listener wiring lives in Start (which calls
+	// maybeStartProbeListener). Tests use newModuleForTest with
+	// bindProbeListener=false; the parameter is kept here so production
+	// and test code paths stay aligned even though Start owns the
+	// actual bind.
+	_ = bindProbeListener
 
 	return mod, nil
 }
