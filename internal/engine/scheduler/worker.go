@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,6 +46,11 @@ type Config struct {
 	// StuckThreshold is the minimum age a 'delivering' row must reach
 	// before the recovery sweep flips it back to 'pending'. Default 5m.
 	StuckThreshold time.Duration
+	// DispatchConcurrency bounds how many dispatchOne calls per batch
+	// run in parallel. Default 1 (legacy serial behavior). Increase
+	// to amortize one slow channel.Deliver across the rest of the
+	// batch (S-8.1). Capped at the batch size internally.
+	DispatchConcurrency int
 }
 
 // applyDefaults fills zero values per the LLD's "Configuration knobs".
@@ -69,6 +75,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.StuckThreshold == 0 {
 		c.StuckThreshold = 5 * time.Minute
+	}
+	if c.DispatchConcurrency <= 0 {
+		c.DispatchConcurrency = 1
 	}
 	c.Retry.applyDefaults()
 }
@@ -278,15 +287,25 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("scheduler: commit claim: %w", err)
 	}
 
-	// 2. Dispatch each claimed row. Per-row work is ordered;
-	//    horizontal scaling comes from running multiple workers and
-	//    relying on SKIP LOCKED. We register each call on the in-flight
-	//    WaitGroup so a Run shutdown can wait for them to commit before
-	//    returning (audit B-31).
+	// 2. Dispatch each claimed row. Per-row work runs concurrently
+	//    bounded by DispatchConcurrency so one slow channel call cannot
+	//    head-of-line-block sibling rows in the same batch (S-8.1). We
+	//    register each call on the in-flight WaitGroup so a Run
+	//    shutdown can wait for them to commit before returning (B-31).
+	concurrency := w.cfg.DispatchConcurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > len(rows) {
+		concurrency = len(rows)
+	}
+	sem := make(chan struct{}, concurrency)
 	for i := range rows {
 		w.inflight.Add(1)
-		func(r *repos.DeliveryRow) {
+		sem <- struct{}{}
+		go func(r *repos.DeliveryRow) {
 			defer w.inflight.Done()
+			defer func() { <-sem }()
 			w.dispatchOne(ctx, r)
 		}(&rows[i])
 	}
@@ -357,10 +376,17 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 	cctx := correlation.WithID(ctx, row.CorrelationID.String())
 
 	sub, err := w.subs.GetByID(cctx, w.pool, row.SubscriptionID)
+	// S-8.2: a not-found subscription (sub == nil with no err) is
+	// permanent — the row has been deleted, retry cannot recover it.
+	// A pure DB error (err != nil, sub == nil) stays transient.
 	if err != nil || sub == nil {
 		w.logger.ErrorContext(cctx, "scheduler: load subscription failed",
 			slog.String("delivery_id", row.ID.String()), slog.Any("err", err))
-		w.requeueAsTransient(cctx, row, "subscription_unavailable")
+		if err == nil && sub == nil {
+			w.requeueWithReason(cctx, row, ReasonSubscriptionUnavailable)
+		} else {
+			w.requeueAsTransient(cctx, row, "subscription_load_error")
+		}
 		return
 	}
 
@@ -368,7 +394,11 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 	if err != nil || ev == nil {
 		w.logger.ErrorContext(cctx, "scheduler: load ehr_event failed",
 			slog.String("delivery_id", row.ID.String()), slog.Any("err", err))
-		w.requeueAsTransient(cctx, row, "ehr_event_unavailable")
+		if err == nil && ev == nil {
+			w.requeueWithReason(cctx, row, ReasonEhrEventUnavailable)
+		} else {
+			w.requeueAsTransient(cctx, row, "ehr_event_load_error")
+		}
 		return
 	}
 
@@ -386,9 +416,14 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 	if err != nil {
 		w.logger.ErrorContext(cctx, "scheduler: build envelope failed",
 			slog.String("delivery_id", row.ID.String()), slog.Any("err", err))
-		// Build failure is treated as transient by default; a build
-		// path that always fails (e.g., missing topic) escalates via
-		// max_attempts.
+		// S-8.3: deterministic build errors (missing/empty subscription
+		// id, malformed resource) will never succeed on retry. Today
+		// the only deterministic build error is "subscription has nil
+		// id" — anything else falls through as transient.
+		if isPermanentBuildError(err) {
+			w.applyBuildDecision(cctx, row, ClassifyBuildError(BuildErrorPermanent, w.cfg.Retry, row.Attempts+1), "build_error_permanent: "+err.Error())
+			return
+		}
 		w.requeueAsTransient(cctx, row, "build_error: "+err.Error())
 		return
 	}
@@ -416,7 +451,7 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 
 	outcome := FromChannelOutcome(chOutcome)
 	postAttempts := row.Attempts + 1
-	decision := ClassifyOutcome(outcome, w.cfg.Retry, postAttempts)
+	decision := ClassifyOutcomeForChannel(outcome, w.cfg.Retry, sub.ChannelType, postAttempts)
 	w.metrics.Outcome(sub.ChannelType, decision.Action)
 
 	if err := w.applyDecision(cctx, row, sub, outcome, decision, postAttempts); err != nil {
@@ -578,6 +613,107 @@ func (w *Worker) requeueAsTransient(ctx context.Context, row *repos.DeliveryRow,
 		return
 	}
 	committed = true
+}
+
+// requeueWithReason is the bail-out path for known reasons that require
+// classification: subscription/ehr_event not found is permanent, others
+// are transient (S-8.2).
+func (w *Worker) requeueWithReason(ctx context.Context, row *repos.DeliveryRow, reason string) {
+	postAttempts := row.Attempts + 1
+	decision := ClassifyRequeueReason(reason, w.cfg.Retry, postAttempts)
+	w.applyBailoutDecision(ctx, row, decision, postAttempts, reason)
+}
+
+// applyBuildDecision applies a Decision produced by ClassifyBuildError.
+func (w *Worker) applyBuildDecision(ctx context.Context, row *repos.DeliveryRow, decision Decision, fullReason string) {
+	postAttempts := row.Attempts + 1
+	if decision.Reason != "" && fullReason != "" {
+		decision.Reason = fullReason
+	}
+	w.applyBailoutDecision(ctx, row, decision, postAttempts, fullReason)
+}
+
+// applyBailoutDecision is the shared dead-letter / reschedule writer
+// for paths where we never reached the channel.
+func (w *Worker) applyBailoutDecision(ctx context.Context, row *repos.DeliveryRow, decision Decision, postAttempts int32, fallbackReason string) {
+	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		w.logger.ErrorContext(ctx, "scheduler: begin requeue tx failed", slog.Any("err", err))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	switch decision.Action {
+	case ActionRescheduleTransient:
+		nextAt := w.clock().Add(ComputeBackoff(w.cfg.Retry, postAttempts-1, 0, w.rng))
+		if _, err := tx.Exec(ctx,
+			`UPDATE deliveries
+			    SET status = 'pending', attempts = $2, next_attempt_at = $3,
+			        last_error = $4, updated_at = now()
+			  WHERE id = $1`,
+			row.ID, postAttempts, nextAt, decision.Reason,
+		); err != nil {
+			w.logger.ErrorContext(ctx, "scheduler: requeue update failed", slog.Any("err", err))
+			return
+		}
+	case ActionDeadLetter:
+		reason := decision.Reason
+		if reason == "" {
+			reason = fallbackReason
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE deliveries
+			    SET status = 'dead', attempts = $2, last_error = $3, updated_at = now()
+			  WHERE id = $1`,
+			row.ID, postAttempts, reason,
+		); err != nil {
+			w.logger.ErrorContext(ctx, "scheduler: deadletter update failed", slog.Any("err", err))
+			return
+		}
+		subID := row.SubscriptionID
+		corr := row.CorrelationID
+		if _, err := w.dl.Insert(ctx, tx, repos.DeadLetterRow{
+			Kind:           "delivery_exhausted",
+			SourceTable:    "deliveries",
+			SourceID:       row.ID,
+			SubscriptionID: &subID,
+			Reason:         reason,
+			CorrelationID:  &corr,
+		}); err != nil {
+			w.logger.ErrorContext(ctx, "scheduler: dead_letter insert failed", slog.Any("err", err))
+			return
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		w.logger.ErrorContext(ctx, "scheduler: requeue commit failed", slog.Any("err", err))
+		return
+	}
+	committed = true
+}
+
+// isPermanentBuildError matches deterministic build-time conditions
+// that will never succeed on retry (S-8.3).
+func isPermanentBuildError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range []string{
+		"subscription has nil id",
+		"decode focus resource",
+		"marshal status",
+		"marshal bundle",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // loadEhrEvent reads one ehr_events row by id via the repo's GetByID

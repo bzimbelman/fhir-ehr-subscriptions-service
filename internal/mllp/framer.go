@@ -113,10 +113,29 @@ func (f *Framer) Append(p []byte) {
 	f.pending = append(f.pending, p...)
 }
 
+// pendingExceeded reports whether pending has grown past 2× maxBody;
+// callers (Next) treat that as a slowloris signal and emit Malformed
+// (S-9.4). A non-positive maxBody disables the cap.
+func (f *Framer) pendingExceeded() bool {
+	return f.maxBody > 0 && len(f.pending) > 2*f.maxBody
+}
+
 // Next returns the next event. Callers must keep calling Next until it
 // returns a NeedMoreEvent or a MalformedEvent.
 func (f *Framer) Next() FramerEvent {
 	for {
+		// S-9.4: bound pending growth across calls. A peer that
+		// streams junk faster than Next can drain it (or that holds
+		// a frame mid-body indefinitely) cannot grow pending without
+		// limit. We reuse the OversizedMessage classification so
+		// existing callers (which drop the connection on Malformed)
+		// already handle it.
+		if f.pendingExceeded() {
+			f.state = stateClosed
+			f.buf = f.buf[:0]
+			f.pending = f.pending[:0]
+			return MalformedEvent{Reason: ReasonOversizedMessage}
+		}
 		switch f.state {
 		case stateClosed:
 			// Find 0x0B; bytes before it are noise (per LLD section 5.4),

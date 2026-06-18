@@ -490,9 +490,24 @@ func isTimeoutErr(err error) bool {
 }
 
 func isClosedConnErr(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, net.ErrClosed) {
 		return true
 	}
-	// net.Pipe surfaces "io: read/write on closed pipe".
-	return strings.Contains(err.Error(), "closed")
+	// net.Pipe surfaces specific sentinel strings; we match those
+	// narrowly rather than any error containing the word "closed"
+	// (S-9.3) — vendor errors like "JWKS host closed for maintenance"
+	// would otherwise be misclassified.
+	msg := err.Error()
+	for _, marker := range []string{
+		"io: read/write on closed pipe",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }

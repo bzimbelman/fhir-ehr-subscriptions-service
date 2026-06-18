@@ -26,6 +26,9 @@ const (
 	DefaultClaimBatchSize        = 16
 	DefaultClaimIdlePollInterval = 1 * time.Second
 	DefaultReaperTickInterval    = 5 * time.Second
+	// DefaultReaperBatchSize bounds how many expired pending_pairs the
+	// reaper sweeps per tick. Was hardcoded inline; now a knob (S-9.6).
+	DefaultReaperBatchSize = 64
 )
 
 // Config tunes processor behavior. Zero values fall back to package
@@ -47,6 +50,12 @@ type Config struct {
 	// Default [DefaultReaperTickInterval].
 	ReaperTickInterval time.Duration
 
+	// ReaperBatchSize bounds how many expired pending_pairs rows the
+	// reaper processes per tick. Default [DefaultReaperBatchSize].
+	// Operators with very high pair throughput want a larger value;
+	// the previous inline LIMIT of 64 was hardcoded (S-9.6).
+	ReaperBatchSize int32
+
 	// CorrelationHoldWindow overrides the SPI default (30s) when non-zero.
 	// Per-resource-type tuning is the SPI's job; this is the framework
 	// fallback when the adapter does not specialize.
@@ -65,6 +74,9 @@ func (c Config) withDefaults() Config {
 	}
 	if out.ReaperTickInterval <= 0 {
 		out.ReaperTickInterval = DefaultReaperTickInterval
+	}
+	if out.ReaperBatchSize <= 0 {
+		out.ReaperBatchSize = DefaultReaperBatchSize
 	}
 	return out
 }
@@ -196,6 +208,10 @@ func (p *Processor) runClaimLoop(ctx context.Context) {
 		}
 
 		if err := p.claimAndProcessOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			p.metrics().Inc(MetricClaimCycleErrors, map[string]string{
+				"adapter_id": p.cfg.AdapterID,
+				"loop":       "claim",
+			})
 			p.deps.Logger.ErrorContext(ctx, "hl7processor: claim cycle error",
 				slog.String("component", "hl7_processor"),
 				slog.String("adapter_id", p.cfg.AdapterID),
@@ -404,7 +420,14 @@ func (p *Processor) decideOutcome(ctx context.Context, tx pgx.Tx, row repos.Hl7M
 	resourceType := tr.resource.ResourceType
 	ext := deriveClassifyExt(tr.classify, resourceType)
 
+	// S-9.10: prefer MSH-7 (sender's stamped time) when the parsed
+	// message carries it. The vendor ParsedHL7Message can expose it
+	// via the optional MessageDateTime field; if absent or unparseable
+	// we fall back to "now()".
 	occurred := p.deps.Now()
+	if t, ok := messageDateTime(tr.parsed); ok {
+		occurred = t
+	}
 	if ext.CorrelationKey == "" {
 		return processingOutcome{
 			kind:    outcomeEmitted,
@@ -483,6 +506,12 @@ func (p *Processor) decideOutcome(ctx context.Context, tx pgx.Tx, row repos.Hl7M
 	if mergeErr != nil {
 		// Same-kind defensive case — emit the arriving message plain;
 		// leave the held row alone for the reaper.
+		p.metrics().Inc(MetricSameKindCollision, map[string]string{
+			"adapter_id":    p.cfg.AdapterID,
+			"resource_type": ext.ResourceType,
+			"held_kind":     string(existing.PendingKind),
+			"arriving_kind": string(ext.Kind),
+		})
 		p.deps.Logger.ErrorContext(ctx, "hl7processor: same-kind pair under correlation key",
 			slog.String("component", "hl7_processor"),
 			slog.String("adapter_id", p.cfg.AdapterID),
@@ -792,4 +821,60 @@ func (p *Processor) metrics() MetricsEmitter {
 		return nopMetrics{}
 	}
 	return p.deps.Metrics
+}
+
+// messageDateTime parses MSH-7 (sender's date/time) from the parsed
+// message Raw bytes and returns the resulting time.Time. Returns (zero,
+// false) when MSH-7 is absent or unparseable. Used by processOne to
+// source `occurred` from the EHR's stamp rather than the framework's
+// wall clock (S-9.10).
+func messageDateTime(parsed spi.ParsedHL7Message) (time.Time, bool) {
+	if len(parsed.Raw) == 0 {
+		return time.Time{}, false
+	}
+	// First segment up to 0x0D.
+	first := parsed.Raw
+	for i, b := range parsed.Raw {
+		if b == 0x0D {
+			first = parsed.Raw[:i]
+			break
+		}
+	}
+	if len(first) < 4 || first[0] != 'M' || first[1] != 'S' || first[2] != 'H' {
+		return time.Time{}, false
+	}
+	sep := first[3]
+	rest := first[3:]
+	field := 0
+	start := 0
+	var msh7 string
+	for i := 0; i < len(rest); i++ {
+		if rest[i] == sep {
+			if field == 6 {
+				msh7 = string(rest[start:i])
+				break
+			}
+			field++
+			start = i + 1
+		}
+	}
+	if msh7 == "" {
+		return time.Time{}, false
+	}
+	// HL7 v2 timestamp formats: YYYYMMDDHHMMSS or shorter prefixes.
+	// Try each layout in turn.
+	layouts := []string{
+		"20060102150405",
+		"200601021504",
+		"2006010215",
+		"20060102",
+		"200601",
+		"2006",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, msh7); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }

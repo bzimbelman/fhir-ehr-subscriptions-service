@@ -24,6 +24,17 @@ type MSHFields struct {
 	MessageType string
 	// MessageControlID is MSH-10 verbatim. Empty when MSH-10 is absent.
 	MessageControlID string
+	// MessageDateTime is MSH-7 verbatim — the message date/time as the
+	// EHR stamped it. Empty when MSH-7 is absent. Surfaced so the
+	// HL7 processor can record `occurred = MSH-7` instead of
+	// "now()" (S-9.10).
+	MessageDateTime string
+	// Charset is MSH-18 verbatim — the message character set as
+	// declared by the sender (e.g., "UNICODE UTF-8"). Empty when
+	// MSH-18 is absent. Surfaced so callers can log / metric the
+	// encoding rather than silently treating non-ASCII content as
+	// ASCII (S-9.5).
+	Charset string
 }
 
 // ExtractMSH reads the first segment of body up to MSH-9 and MSH-10. It does
@@ -59,8 +70,8 @@ func ExtractMSH(body []byte) (MSHFields, error) {
 	// Field n in HL7 numbering corresponds to fieldSlice[n-1].
 	rest := first[3:]
 	// Walk the rest segmenting by sep.
-	// We only need fields up to MSH-10 (slice index 9), so cap at 11 fields.
-	const maxFields = 11
+	// We need fields up to MSH-18 (slice index 17), so cap at 19 fields.
+	const maxFields = 19
 	fields := make([][]byte, 0, maxFields)
 	start := 0
 	for i := 0; i < len(rest); i++ {
@@ -77,6 +88,9 @@ func ExtractMSH(body []byte) (MSHFields, error) {
 	}
 
 	out := MSHFields{}
+	if len(fields) > 6 {
+		out.MessageDateTime = string(fields[6])
+	}
 	if len(fields) > 8 {
 		// MSH-9 is fields[8]. Root type is the first ^-component.
 		raw := fields[8]
@@ -91,6 +105,9 @@ func ExtractMSH(body []byte) (MSHFields, error) {
 	}
 	if len(fields) > 9 {
 		out.MessageControlID = string(fields[9])
+	}
+	if len(fields) > 17 {
+		out.Charset = string(fields[17])
 	}
 
 	return out, nil

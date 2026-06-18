@@ -29,6 +29,12 @@ func (p *Processor) runReaper(ctx context.Context) {
 		case <-tick.C:
 		}
 		if err := p.reapOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			// S-9.7: surface reaper-cycle errors as a metric so
+			// operators can alert on repeated failures.
+			p.metrics().Inc(MetricClaimCycleErrors, map[string]string{
+				"adapter_id": p.cfg.AdapterID,
+				"loop":       "reaper",
+			})
 			p.deps.Logger.ErrorContext(ctx, "hl7processor: reaper cycle error",
 				slog.String("component", "hl7_processor"),
 				slog.String("adapter_id", p.cfg.AdapterID),
@@ -73,7 +79,7 @@ func (p *Processor) peekExpired(ctx context.Context) ([]pendingKey, error) {
 		FROM pending_pairs
 		WHERE expires_at <= $1
 		ORDER BY expires_at ASC
-		LIMIT 64`, p.deps.Now())
+		LIMIT $2`, p.deps.Now(), p.cfg.ReaperBatchSize)
 	if err != nil {
 		return nil, err
 	}

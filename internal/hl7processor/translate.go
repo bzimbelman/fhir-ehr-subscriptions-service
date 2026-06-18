@@ -28,16 +28,29 @@ type translatedMessage struct {
 func translate(p spi.Hl7MessageProcessor, raw []byte, _ string) (translatedMessage, error) {
 	parsed, err := callLex(p, raw)
 	if err != nil {
+		// S-9.12: a panic in vendor Lex is a bug, not a parse error.
+		// Surface it as ErrorClassUnexpected so it routes to the
+		// "unparseable" dead-letter bucket but is logged as a vendor
+		// bug, not user data.
+		if isPanicError(err) {
+			return translatedMessage{}, &translateError{Class: ErrorClassUnexpected, Err: err}
+		}
 		return translatedMessage{}, &translateError{Class: ErrorClassParse, Err: err}
 	}
 
 	classified, err := callClassify(p, parsed)
 	if err != nil {
+		if isPanicError(err) {
+			return translatedMessage{}, &translateError{Class: ErrorClassUnexpected, Err: err}
+		}
 		return translatedMessage{}, &translateError{Class: ErrorClassClassify, Err: err}
 	}
 
 	resource, err := callMap(p, parsed, classified)
 	if err != nil {
+		if isPanicError(err) {
+			return translatedMessage{}, &translateError{Class: ErrorClassUnexpected, Err: err}
+		}
 		return translatedMessage{}, &translateError{Class: ErrorClassMap, Err: err}
 	}
 
@@ -48,12 +61,31 @@ func translate(p spi.Hl7MessageProcessor, raw []byte, _ string) (translatedMessa
 	return translatedMessage{parsed: parsed, classify: classified, resource: resource}, nil
 }
 
-// callLex invokes Lex with panic recovery. A panic surfaces as
-// ErrorClassUnexpected per LLD §9. Returned errors carry their own class.
+// vendorPanicError is the marker error type returned by callLex /
+// callClassify / callMap when the vendor code panicked. translate
+// recognizes it via isPanicError to route to ErrorClassUnexpected
+// (S-9.12).
+type vendorPanicError struct {
+	stage string
+	cause any
+}
+
+func (e *vendorPanicError) Error() string {
+	return fmt.Sprintf("vendor %s panic: %v", e.stage, e.cause)
+}
+
+func isPanicError(err error) bool {
+	var p *vendorPanicError
+	return errors.As(err, &p)
+}
+
+// callLex invokes Lex with panic recovery. A panic surfaces as a
+// *vendorPanicError so translate can tag it ErrorClassUnexpected per
+// LLD §9. Returned errors carry their own class.
 func callLex(p spi.Hl7MessageProcessor, raw []byte) (parsed spi.ParsedHL7Message, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("vendor lex panic: %v", r)
+			err = &vendorPanicError{stage: "lex", cause: r}
 		}
 	}()
 	return p.Lex(raw)
@@ -63,7 +95,7 @@ func callLex(p spi.Hl7MessageProcessor, raw []byte) (parsed spi.ParsedHL7Message
 func callClassify(p spi.Hl7MessageProcessor, parsed spi.ParsedHL7Message) (c spi.Classification, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("vendor classify panic: %v", r)
+			err = &vendorPanicError{stage: "classify", cause: r}
 		}
 	}()
 	return p.Classify(parsed)
@@ -73,7 +105,7 @@ func callClassify(p spi.Hl7MessageProcessor, parsed spi.ParsedHL7Message) (c spi
 func callMap(p spi.Hl7MessageProcessor, parsed spi.ParsedHL7Message, c spi.Classification) (r spi.FhirResource, err error) {
 	defer func() {
 		if r2 := recover(); r2 != nil {
-			err = fmt.Errorf("vendor map panic: %v", r2)
+			err = &vendorPanicError{stage: "map", cause: r2}
 		}
 	}()
 	return p.MapToFHIR(parsed, c)
