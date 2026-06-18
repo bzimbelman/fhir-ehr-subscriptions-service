@@ -32,6 +32,19 @@ const channelName = "websocket"
 // HandlerPath is the URL path the channel registers its upgrade handler at.
 const HandlerPath = "/ws/subscriptions"
 
+// SubprotocolBindPrefix is the well-known Sec-WebSocket-Protocol prefix
+// the spec settled on for the FHIR R5 WebSocket Subscription transport
+// (P1.9). A subscriber that wants to deliver the bind token via the
+// upgrade handshake (rather than the in-band JSON form) sets the
+// header to:
+//
+//	Sec-WebSocket-Protocol: fhirsubscriptions.v1.<base64url-token>
+//
+// The server negotiates back the same value; the bind frame then omits
+// the "token" field and the server uses the header-derived token.
+// Backward compatibility with the in-band JSON form is preserved.
+const SubprotocolBindPrefix = "fhirsubscriptions.v1."
+
 // Defaults from docs/low-level-design/channels.md §4.2.
 const (
 	DefaultPingInterval             = 30 * time.Second
@@ -347,6 +360,27 @@ func (c *Channel) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Channel) upgrade(w http.ResponseWriter, r *http.Request) {
+	// P1.9: subscribers that follow the spec's recommended transport
+	// (Sec-WebSocket-Protocol header carrying the bind token) advertise
+	// a subprotocol of the form "fhirsubscriptions.v1.<token>". We
+	// extract the offered subprotocols, find any that match the prefix,
+	// and pass them to AcceptOptions.Subprotocols so the negotiation
+	// honors the client's choice. The bind handler reads the negotiated
+	// protocol back via conn.Subprotocol() and uses the embedded token
+	// in lieu of the in-band JSON token field.
+	offered := r.Header.Values("Sec-WebSocket-Protocol")
+	var allow []string
+	for _, header := range offered {
+		// Header may carry comma-separated values per RFC 6455; the
+		// underlying library splits per call to Header.Values when each
+		// is supplied separately, so accept both shapes.
+		for _, p := range splitProtocolList(header) {
+			if len(p) > len(SubprotocolBindPrefix) && p[:len(SubprotocolBindPrefix)] == SubprotocolBindPrefix {
+				allow = append(allow, p)
+			}
+		}
+	}
+
 	// B-17: enforce Origin checking. Default-deny cross-origin
 	// upgrades; operators opt in via Options.OriginPatterns. The
 	// underlying coder/websocket library rejects with HTTP 403 when an
@@ -355,6 +389,7 @@ func (c *Channel) upgrade(w http.ResponseWriter, r *http.Request) {
 	// the application must.
 	conn, err := codingws.Accept(w, r, &codingws.AcceptOptions{
 		OriginPatterns: c.originPatterns,
+		Subprotocols:   allow,
 	})
 	if err != nil {
 		c.logger.WarnContext(r.Context(), "websocket accept failed",
@@ -420,6 +455,14 @@ func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
 		_ = conn.Write(ctx, codingws.MessageText, mustJSON(bindError("unexpected message type: "+msg.Type)))
 		_ = conn.Close(codingws.StatusPolicyViolation, "expected bind")
 		return
+	}
+
+	// P1.9: if the upgrade negotiated the fhirsubscriptions.v1.<token>
+	// subprotocol, prefer the header-derived token over any in-band one
+	// the bind frame happened to carry. The frame still owns the
+	// subscriptionId (and optional lastReceivedEventNumber).
+	if proto := conn.Subprotocol(); len(proto) > len(SubprotocolBindPrefix) && proto[:len(SubprotocolBindPrefix)] == SubprotocolBindPrefix {
+		msg.Token = proto[len(SubprotocolBindPrefix):]
 	}
 
 	claimed, err := uuid.Parse(msg.SubscriptionID)
@@ -926,6 +969,44 @@ func outcomeLabel(k channel.OutcomeKind) string {
 	default:
 		return "unknown"
 	}
+}
+
+// splitProtocolList splits a Sec-WebSocket-Protocol header value into
+// individual subprotocol tokens, trimming whitespace. RFC 6455 §11.3.4
+// allows comma-separated lists per header line; the spec for clients
+// is ambiguous so we accept both shapes (caller already iterates over
+// Header.Values, this handles within-line commas).
+func splitProtocolList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := make([]string, 0, 1)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] != ',' {
+			continue
+		}
+		token := trimASCIIWhitespace(s[start:i])
+		if token != "" {
+			out = append(out, token)
+		}
+		start = i + 1
+	}
+	last := trimASCIIWhitespace(s[start:])
+	if last != "" {
+		out = append(out, last)
+	}
+	return out
+}
+
+func trimASCIIWhitespace(s string) string {
+	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
+		s = s[1:]
+	}
+	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func classifyClose(err error) string {
