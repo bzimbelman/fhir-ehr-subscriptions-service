@@ -244,6 +244,52 @@ func TestLoadHappyPath(t *testing.T) {
 	}
 }
 
+// P1.10: a manifest whose ConfigSchema does not compile as a JSON
+// Schema is rejected at Load.
+func TestLoadRejectsInvalidConfigSchema(t *testing.T) {
+	t.Parallel()
+	r := registry.New()
+	m := goodManifest("default")
+	m.ConfigSchema = []byte(`{"type": 12345}`) // type must be a string
+	_ = r.Register("default", newStubFactory(m))
+
+	_, err := r.Load(context.Background(), registry.LoadConfig{
+		AdapterID:  "default",
+		HostSpiVer: spi.SemVer{Major: 1, Minor: 0, Patch: 0},
+	})
+	if err == nil {
+		t.Fatal("Load with invalid config_schema = nil, want error")
+	}
+	var cse *registry.ManifestConfigSchemaError
+	if !errors.As(err, &cse) {
+		t.Fatalf("err = %v, want *ManifestConfigSchemaError", err)
+	}
+}
+
+// P1.10: an adapter that contributes two topics with the same canonical
+// URL is rejected at Load.
+func TestLoadRejectsContributedTopicURLCollision(t *testing.T) {
+	t.Parallel()
+	r := registry.New()
+	m := goodManifest("default")
+	t1 := []byte(`{"resourceType":"SubscriptionTopic","url":"http://example.org/x","version":"1"}`)
+	t2 := []byte(`{"resourceType":"SubscriptionTopic","url":"http://example.org/x","version":"2"}`)
+	m.ContributedTopics = [][]byte{t1, t2}
+	_ = r.Register("default", newStubFactory(m))
+
+	_, err := r.Load(context.Background(), registry.LoadConfig{
+		AdapterID:  "default",
+		HostSpiVer: spi.SemVer{Major: 1, Minor: 0, Patch: 0},
+	})
+	if err == nil {
+		t.Fatal("Load with colliding contributed topics = nil, want error")
+	}
+	var cce *registry.ManifestContributedTopicCollisionError
+	if !errors.As(err, &cce) {
+		t.Fatalf("err = %v, want *ManifestContributedTopicCollisionError", err)
+	}
+}
+
 // HostSPIVersion is the constant the registry compares adapter manifests
 // against. Verify it is exposed and non-zero so the host can pass it.
 func TestHostSPIVersionExposed(t *testing.T) {
