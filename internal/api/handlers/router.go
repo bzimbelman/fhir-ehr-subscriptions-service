@@ -114,6 +114,14 @@ type Deps struct {
 	// for backward-compatibility with existing tests; production
 	// wiring MUST set this.
 	URLValidator URLValidator
+
+	// AuditMaxBytes caps the canonical request body persisted to
+	// audit_log on create / update (B-13). Zero means
+	// DefaultAuditMaxBytes (16 KiB). All requests are also passed
+	// through RedactSubscriptionForAudit before truncation so that
+	// channel.header[] and similar secret-bearing fields never reach
+	// disk in plaintext.
+	AuditMaxBytes int
 }
 
 // RegisterRoutes wires every handler onto r. Auth middleware MUST be

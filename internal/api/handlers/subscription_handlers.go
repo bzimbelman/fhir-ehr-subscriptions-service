@@ -194,7 +194,8 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row.ID = id
-	_ = s.deps.Audit.Append(r.Context(), "subscription.create", id.String(), "success", nil, body)
+	auditBody, _ := RedactSubscriptionForAudit(body, AuditRedactConfig{MaxBytes: s.deps.AuditMaxBytes})
+	_ = s.deps.Audit.Append(r.Context(), "subscription.create", id.String(), "success", nil, auditBody)
 	s.recordCreated()
 
 	// Activation handshake — non-blocking. The 201 returns immediately
@@ -455,7 +456,8 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 			"update failed")
 		return
 	}
-	_ = s.deps.Audit.Append(r.Context(), "subscription.update", id.String(), "success", nil, body)
+	auditBody, _ := RedactSubscriptionForAudit(body, AuditRedactConfig{MaxBytes: s.deps.AuditMaxBytes})
+	_ = s.deps.Audit.Append(r.Context(), "subscription.update", id.String(), "success", nil, auditBody)
 	s.recordUpdated()
 
 	switch classification {
