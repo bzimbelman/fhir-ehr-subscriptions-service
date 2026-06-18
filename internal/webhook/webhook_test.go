@@ -65,7 +65,10 @@ func TestWebhook_UnknownAdapterRejected(t *testing.T) {
 	body := []byte(`{}`)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhooks/vendorB", bytes.NewReader(body))
 	req.Header.Set(webhook.SignatureHeader, sign(body, "shh"))
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status: want 404, got %d", resp.StatusCode)
@@ -84,7 +87,10 @@ func TestWebhook_WrongSecretRejected(t *testing.T) {
 	body := []byte(`{"resourceType":"ServiceRequest","changeKind":"create","resource":{}}`)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhooks/vendorA", bytes.NewReader(body))
 	req.Header.Set(webhook.SignatureHeader, sign(body, "wrong-secret"))
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status: want 401, got %d", resp.StatusCode)
@@ -103,7 +109,10 @@ func TestWebhook_UnsupportedSchemeRejected(t *testing.T) {
 	body := []byte(`{}`)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhooks/vendorA", bytes.NewReader(body))
 	req.Header.Set(webhook.SignatureHeader, "md5=abcd")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status: want 401, got %d", resp.StatusCode)
@@ -127,7 +136,10 @@ func TestWebhook_StaleTimestampRejected(t *testing.T) {
 	req.Header.Set(webhook.SignatureHeader, sign(body, "shh"))
 	// 10 minutes old.
 	req.Header.Set("X-Webhook-Timestamp", now.Add(-10*time.Minute).Format(time.RFC3339))
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status: want 401 on stale timestamp, got %d", resp.StatusCode)
@@ -146,7 +158,10 @@ func TestWebhook_MalformedJSONRejected(t *testing.T) {
 	body := []byte(`not json`)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhooks/vendorA", bytes.NewReader(body))
 	req.Header.Set(webhook.SignatureHeader, sign(body, "shh"))
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status: want 400, got %d", resp.StatusCode)
@@ -168,7 +183,10 @@ func TestWebhook_NoRepoConfiguredReturns503(t *testing.T) {
 	body := []byte(`{"resourceType":"ServiceRequest","changeKind":"create","resource":{}}`)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhooks/vendorA", bytes.NewReader(body))
 	req.Header.Set(webhook.SignatureHeader, sign(body, "shh"))
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status: want 503, got %d", resp.StatusCode)
