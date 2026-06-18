@@ -367,7 +367,18 @@ func TestHandshakeBundleKindOmitsEventNumber(t *testing.T) {
 
 func TestDNSNXDomainPermanent(t *testing.T) {
 	t.Parallel()
-	ch, _ := resthook.New(resthook.Options{Metrics: newFakeMetrics()})
+	if testing.Short() {
+		t.Skip("DNS resolution behavior varies by platform; skipping in -short mode")
+	}
+	// Use an HTTP client whose Transport has an explicit DialContext with a
+	// short timeout so the test can never block on a slow system resolver.
+	tr := &http.Transport{
+		DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+	}
+	ch, _ := resthook.New(resthook.Options{
+		HTTPClient: &http.Client{Transport: tr, Timeout: 5 * time.Second},
+		Metrics:    newFakeMetrics(),
+	})
 	env := newEnvelope("https://this-domain-must-not-exist-12345.invalid/webhook")
 	env.Deadline = time.Now().Add(3 * time.Second)
 	out, _ := ch.Deliver(context.Background(), env)
@@ -391,18 +402,31 @@ func TestDeliveredMetricIncremented(t *testing.T) {
 	out, _ := ch.Deliver(context.Background(), newEnvelope(srv.URL))
 	requireDelivered(t, out)
 
-	if got := m.get("fhir_subs_channel_resthook_deliveries_total", map[string]string{"outcome": "delivered"}); got != 1 {
-		t.Errorf("expected 1 delivered counter, got %v", got)
+	if got := m.get("fhir_subs_channel_resthook_deliveries_total",
+		map[string]string{"channel": "resthook", "outcome": "delivered"}); got != 1 {
+		t.Errorf("expected 1 delivered counter, got %v (counters=%+v)", got, m.counters)
 	}
 }
 
 func TestContextCanceledDuringSendIsTransient(t *testing.T) {
 	t.Parallel()
-	// Server hangs forever on the request.
+	// Server delays a long-but-finite time so that:
+	//   1. The client's context cancel triggers a transient outcome, AND
+	//   2. The httptest.Server.Close cleanup is not blocked on a never-
+	//      ending handler. The test asserts the outcome before the handler
+	//      finishes; the handler then completes naturally.
+	stop := make(chan struct{})
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		select {
+		case <-r.Context().Done():
+		case <-stop:
+		case <-time.After(2 * time.Second):
+		}
 	}))
-	defer srv.Close()
+	t.Cleanup(func() {
+		close(stop)
+		srv.Close()
+	})
 
 	ch, _ := resthook.New(resthook.Options{HTTPClient: srv.Client(), Metrics: newFakeMetrics()})
 	ctx, cancel := context.WithCancel(context.Background())
