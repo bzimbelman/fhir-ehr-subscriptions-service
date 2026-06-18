@@ -1,0 +1,144 @@
+// Copyright the fhir-subscriptions-foss authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package mllp
+
+import (
+	"context"
+	"errors"
+	"net"
+	"sync"
+	"time"
+)
+
+// endpoint owns one TCP accept loop and the set of in-flight connections
+// for one EndpointConfig. It is created and managed by Listener; nothing
+// outside the package constructs one directly.
+type endpoint struct {
+	cfg       EndpointConfig
+	listenCfg ListenerConfig
+	persister Persister
+	metrics   MetricsEmitter
+	logger    Logger
+
+	listener net.Listener
+
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
+	connsWG sync.WaitGroup
+}
+
+func newEndpoint(cfg EndpointConfig, lcfg ListenerConfig, p Persister, m MetricsEmitter, log Logger) *endpoint {
+	return &endpoint{
+		cfg:       cfg,
+		listenCfg: lcfg,
+		persister: p,
+		metrics:   m,
+		logger:    log,
+		conns:     map[net.Conn]struct{}{},
+	}
+}
+
+// bind opens the TCP listening socket. Must be called before run.
+func (e *endpoint) bind() error {
+	l, err := net.Listen("tcp", e.cfg.Bind)
+	if err != nil {
+		return err
+	}
+	e.listener = l
+	e.metrics.Set(MetricActiveConnections, 0, map[string]string{"listener_endpoint": e.cfg.Name})
+	return nil
+}
+
+// addr returns the bound address. Useful for tests using ":0".
+func (e *endpoint) addr() net.Addr {
+	if e.listener == nil {
+		return nil
+	}
+	return e.listener.Addr()
+}
+
+// run drives the accept loop. It returns when ctx is canceled or the
+// listening socket is closed.
+func (e *endpoint) run(ctx context.Context) {
+	endpointLabels := map[string]string{"listener_endpoint": e.cfg.Name}
+	for {
+		conn, err := e.listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
+			}
+			e.metrics.Inc(MetricAcceptErrorsTotal, endpointLabels)
+			e.logger.Warn("mllp_accept_error", map[string]any{
+				"listener_endpoint": e.cfg.Name,
+				"error":             err.Error(),
+			})
+			// brief backoff to avoid an accept tight loop
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			continue
+		}
+
+		e.trackConn(conn)
+		e.connsWG.Add(1)
+		go func(c net.Conn) {
+			defer e.connsWG.Done()
+			defer e.untrackConn(c)
+			HandleConnection(ctx, c, e.cfg, e.listenCfg, e.persister, e.metrics, c.RemoteAddr().String())
+		}(conn)
+	}
+}
+
+func (e *endpoint) trackConn(c net.Conn) {
+	e.connsMu.Lock()
+	e.conns[c] = struct{}{}
+	count := len(e.conns)
+	e.connsMu.Unlock()
+	e.metrics.Set(MetricActiveConnections, float64(count),
+		map[string]string{"listener_endpoint": e.cfg.Name})
+}
+
+func (e *endpoint) untrackConn(c net.Conn) {
+	e.connsMu.Lock()
+	delete(e.conns, c)
+	count := len(e.conns)
+	e.connsMu.Unlock()
+	e.metrics.Set(MetricActiveConnections, float64(count),
+		map[string]string{"listener_endpoint": e.cfg.Name})
+}
+
+// stopAccepting closes the listening socket. Existing connections continue.
+func (e *endpoint) stopAccepting() {
+	if e.listener != nil {
+		_ = e.listener.Close()
+	}
+}
+
+// closeAllConns force-closes every tracked connection. Used on hard
+// shutdown after the drain deadline elapses.
+func (e *endpoint) closeAllConns() {
+	e.connsMu.Lock()
+	conns := make([]net.Conn, 0, len(e.conns))
+	for c := range e.conns {
+		conns = append(conns, c)
+	}
+	e.connsMu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+// activeConnCount returns the number of in-flight connections.
+func (e *endpoint) activeConnCount() int {
+	e.connsMu.Lock()
+	defer e.connsMu.Unlock()
+	return len(e.conns)
+}
+
+// waitForDrain blocks until all per-connection goroutines exit.
+func (e *endpoint) waitForDrain() {
+	e.connsWG.Wait()
+}
