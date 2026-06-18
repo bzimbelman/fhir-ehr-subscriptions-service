@@ -148,7 +148,13 @@ func NewWriter(opts WriterOptions) (*Writer, error) {
 // Emit appends evt to the durable store and to the configured sink. The
 // durable write is the source of truth; sink failures are observable via
 // OnSinkFailure but do not unwind the durable row.
-func (w *Writer) Emit(ctx context.Context, evt Event) error {
+//
+// The durable path runs under the chain advisory lock. A `defer recover`
+// wraps the lock holder so a panic in InsertAuditRow / LastChainHash /
+// canonicalChainInput releases the lock before the panic propagates
+// (B-34). Without this, a panic between AcquireChainLock and the manual
+// release leaks the lock forever and every subsequent Emit blocks.
+func (w *Writer) Emit(ctx context.Context, evt Event) (retErr error) {
 	if evt.OccurredAt.IsZero() {
 		evt.OccurredAt = w.clock()
 	}
@@ -157,9 +163,24 @@ func (w *Writer) Emit(ctx context.Context, evt Event) error {
 	if err != nil {
 		return fmt.Errorf("audit: acquire chain lock: %w", err)
 	}
+	released := false
+	releaseOnce := func() {
+		if released {
+			return
+		}
+		released = true
+		_ = release()
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			releaseOnce()
+			retErr = fmt.Errorf("audit: panic in durable write path: %v", r)
+		}
+	}()
+
 	prior, err := w.store.LastChainHash(ctx)
 	if err != nil {
-		_ = release()
+		releaseOnce()
 		return fmt.Errorf("audit: read prior chain hash: %w", err)
 	}
 	if prior == nil {
@@ -168,7 +189,7 @@ func (w *Writer) Emit(ctx context.Context, evt Event) error {
 
 	chainInput, err := canonicalChainInput(evt, prior)
 	if err != nil {
-		_ = release()
+		releaseOnce()
 		return fmt.Errorf("audit: canonicalize: %w", err)
 	}
 	sum := sha256.Sum256(chainInput)
@@ -190,12 +211,14 @@ func (w *Writer) Emit(ctx context.Context, evt Event) error {
 		ChainHash:     chainHash,
 	}
 	if err := w.store.InsertAuditRow(ctx, row); err != nil {
-		_ = release()
+		releaseOnce()
 		return fmt.Errorf("audit: insert: %w", err)
 	}
 	if err := release(); err != nil {
+		released = true
 		return fmt.Errorf("audit: release lock: %w", err)
 	}
+	released = true
 
 	// Sink emit is best-effort; durable row already committed.
 	if err := w.sink.Emit(ctx, evt); err != nil && w.onSinkFailure != nil {

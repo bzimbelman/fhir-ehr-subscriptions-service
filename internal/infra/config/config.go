@@ -80,14 +80,30 @@ type Handle interface {
 	Subscribe(domain string, cb func(Effective)) effectivestore.SubscriptionID
 }
 
-// ReloadTrigger identifies what initiated a reload. Currently only SIGHUP is
-// recognized per ADR 0008 #9 (no admin API).
+// ReloadTrigger identifies what initiated a reload. SIGHUP is the
+// operator-driven path (ADR 0008 #9). file_mtime is the polling path
+// added in B-35 — when secret-files mtime moves the module reloads
+// without an explicit signal so vault-agent / cert-manager rotation
+// does not require signaling rights.
 type ReloadTrigger int
 
 // ReloadTrigger constants.
 const (
 	TriggerSIGHUP ReloadTrigger = iota
+	TriggerFileMtime
 )
+
+// String returns the lower-snake-case label used for metrics.
+func (t ReloadTrigger) String() string {
+	switch t {
+	case TriggerSIGHUP:
+		return "sighup"
+	case TriggerFileMtime:
+		return "file_mtime"
+	default:
+		return "unknown"
+	}
+}
 
 // ReloadReport is the structured outcome of a reload.
 type ReloadReport struct {
@@ -108,6 +124,18 @@ type Module struct {
 	priorTree map[string]interface{} // post-resolution tree from the last successful boot/reload
 	logger    *slog.Logger
 	closed    bool
+
+	// Reload trigger observers (B-35). Hooks fire after every reload —
+	// the host wires this to the fhir_subs_config_reload_total{trigger}
+	// metric counter.
+	reloadHooksMu sync.Mutex
+	reloadHooks   []func(trigger string)
+
+	// secretFilesMu guards secretFiles. Updated on every successful
+	// reload so the mtime watcher tracks the current set of resolved
+	// ${file:...} placeholders, even when the config gains/drops them.
+	secretFilesMu sync.Mutex
+	secretFiles   []string
 }
 
 // Start runs the boot path and publishes the first effective snapshot.
@@ -142,7 +170,7 @@ func Start(_ context.Context, args CliArgs, cctx Context) (*Module, Handle, erro
 		return nil, nil, fmt.Errorf("config validation failed:\n%s", r.Error())
 	}
 
-	resolved, rmap, err := secrets.Resolve(tree, rmap)
+	resolved, rmap, secretFiles, err := secrets.ResolveWithFilePaths(tree, rmap)
 	if err != nil {
 		return nil, nil, fmt.Errorf("secret resolution failed: %w", err)
 	}
@@ -171,12 +199,13 @@ func Start(_ context.Context, args CliArgs, cctx Context) (*Module, Handle, erro
 	store.Publish(&effectivestore.Effective{Tree: resolved, Redaction: rmap})
 
 	mod := &Module{
-		cliArgs:   args,
-		cctx:      cctx,
-		registry:  registry,
-		store:     store,
-		priorTree: resolved,
-		logger:    cctx.Logger,
+		cliArgs:     args,
+		cctx:        cctx,
+		registry:    registry,
+		store:       store,
+		priorTree:   resolved,
+		logger:      cctx.Logger,
+		secretFiles: secretFiles,
 	}
 	cctx.Logger.Info("config loaded",
 		slog.String("config_path", args.ConfigPath),
@@ -210,15 +239,25 @@ func (m *Module) RegisterDomainSchema(domain string, schemaJSON []byte) error {
 	return m.registry.Register(domain, schemaJSON)
 }
 
-// Reload re-reads the file and applies only the reloadable subset. SIGHUP is
-// the only trigger.
+// Reload re-reads the file and applies only the reloadable subset.
+// SIGHUP and file_mtime polling are the recognized triggers (B-35).
+//
+// Every reload — accepted or rejected — fans out to registered OnReload
+// hooks with the trigger label. Hosts use this to bump the
+// fhir_subs_config_reload_total{trigger} metric.
 func (m *Module) Reload(_ context.Context, trigger ReloadTrigger) ReloadReport {
-	if trigger != TriggerSIGHUP {
+	if trigger != TriggerSIGHUP && trigger != TriggerFileMtime {
 		return ReloadReport{
 			Outcome: "rejected_validation",
-			Error:   fmt.Errorf("reload trigger %d not recognized; only SIGHUP", trigger),
+			Error:   fmt.Errorf("reload trigger %d not recognized", trigger),
 		}
 	}
+	report := m.doReload()
+	m.notifyReloadHooks(trigger.String())
+	return report
+}
+
+func (m *Module) doReload() ReloadReport {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -239,7 +278,7 @@ func (m *Module) Reload(_ context.Context, trigger ReloadTrigger) ReloadReport {
 	for _, p := range m.registry.SensitivePaths() {
 		rmap.TagSensitive(p)
 	}
-	resolved, rmap, err := secrets.Resolve(tree, rmap)
+	resolved, rmap, secretFiles, err := secrets.ResolveWithFilePaths(tree, rmap)
 	if err != nil {
 		return ReloadReport{Outcome: "rejected_validation", Error: err}
 	}
@@ -251,6 +290,9 @@ func (m *Module) Reload(_ context.Context, trigger ReloadTrigger) ReloadReport {
 	}
 
 	plan := reload.Plan(m.priorTree, resolved, m.registry)
+	// Refresh tracked secret-file paths so the mtime watcher follows
+	// any add/remove on the next tick.
+	m.setSecretFiles(secretFiles)
 	switch plan.Outcome {
 	case reload.OutcomeRejectedImmutable:
 		m.logger.Warn("config reload rejected: immutable fields changed",
@@ -271,6 +313,110 @@ func (m *Module) Reload(_ context.Context, trigger ReloadTrigger) ReloadReport {
 		}
 	}
 	return ReloadReport{Outcome: "rejected_validation", Error: errors.New("unknown plan outcome")}
+}
+
+// OnReload registers a hook that fires after every reload attempt
+// (applied or rejected). Trigger label values: "sighup" | "file_mtime".
+// The host wires this to the fhir_subs_config_reload_total{trigger}
+// metric counter (B-35). Safe under concurrent calls.
+func (m *Module) OnReload(fn func(trigger string)) {
+	if fn == nil {
+		return
+	}
+	m.reloadHooksMu.Lock()
+	m.reloadHooks = append(m.reloadHooks, fn)
+	m.reloadHooksMu.Unlock()
+}
+
+func (m *Module) notifyReloadHooks(trigger string) {
+	m.reloadHooksMu.Lock()
+	hooks := make([]func(string), len(m.reloadHooks))
+	copy(hooks, m.reloadHooks)
+	m.reloadHooksMu.Unlock()
+	for _, fn := range hooks {
+		fn(trigger)
+	}
+}
+
+func (m *Module) setSecretFiles(paths []string) {
+	m.secretFilesMu.Lock()
+	defer m.secretFilesMu.Unlock()
+	m.secretFiles = paths
+}
+
+func (m *Module) snapshotSecretFiles() []string {
+	m.secretFilesMu.Lock()
+	defer m.secretFilesMu.Unlock()
+	out := make([]string, len(m.secretFiles))
+	copy(out, m.secretFiles)
+	return out
+}
+
+// WatchSecretFiles starts a background goroutine that polls the mtime
+// of every resolved ${file:...} placeholder and triggers a
+// TriggerFileMtime reload when any file changes (B-35). Returns
+// immediately; the goroutine exits when ctx fires.
+//
+// interval <= 0 defaults to 60s. interval == 0 with ctx that never
+// fires is fine — the host can also disable polling by simply never
+// calling WatchSecretFiles.
+//
+// Safe to call multiple times — each call starts an independent
+// watcher. The host should call once at startup.
+func (m *Module) WatchSecretFiles(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+	go m.runSecretFileWatcher(ctx, interval)
+}
+
+func (m *Module) runSecretFileWatcher(ctx context.Context, interval time.Duration) {
+	mtimes := captureMtimes(m.snapshotSecretFiles())
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			paths := m.snapshotSecretFiles()
+			next := captureMtimes(paths)
+			if mtimesChanged(mtimes, next) {
+				m.Reload(ctx, TriggerFileMtime)
+				// Refresh the tracked mtimes from the post-reload set
+				// (Reload may have rotated which paths are tracked).
+				mtimes = captureMtimes(m.snapshotSecretFiles())
+			} else {
+				mtimes = next
+			}
+		}
+	}
+}
+
+func captureMtimes(paths []string) map[string]time.Time {
+	out := make(map[string]time.Time, len(paths))
+	for _, p := range paths {
+		fi, err := os.Stat(p)
+		if err != nil {
+			out[p] = time.Time{}
+			continue
+		}
+		out[p] = fi.ModTime()
+	}
+	return out
+}
+
+func mtimesChanged(a, b map[string]time.Time) bool {
+	if len(a) != len(b) {
+		return true
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok || !va.Equal(vb) {
+			return true
+		}
+	}
+	return false
 }
 
 // Shutdown releases module-held resources. The store remains accessible for

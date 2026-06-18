@@ -23,20 +23,22 @@ func NewPendingPairsRepo(c *codec.Codec) *PendingPairsRepo {
 	return &PendingPairsRepo{codec: c}
 }
 
-// Insert writes a pending pair row. The pending_resource is encrypted.
+// Insert writes a pending pair row. The pending_resource is encrypted
+// with the codec's active key version, which is persisted alongside the
+// row so a future Decrypt can use the same key even after rotation.
 func (r *PendingPairsRepo) Insert(ctx context.Context, q Querier, row PendingPairRow) error {
-	enc, _, err := r.codec.Encrypt(row.PendingResource)
+	enc, kv, err := r.codec.Encrypt(row.PendingResource)
 	if err != nil {
 		return fmt.Errorf("pending_pairs: encrypt: %w", err)
 	}
 	const sql = `
 		INSERT INTO pending_pairs
 			(correlation_key, listener_endpoint, pending_resource, pending_kind,
-			 source_message_id, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`
+			 source_message_id, expires_at, key_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	_, err = q.Exec(ctx, sql,
 		row.CorrelationKey, row.ListenerEndpoint, enc, string(row.PendingKind),
-		row.SourceMessageID, row.ExpiresAt,
+		row.SourceMessageID, row.ExpiresAt, kv,
 	)
 	if err != nil {
 		return fmt.Errorf("pending_pairs: insert: %w", err)
@@ -61,7 +63,7 @@ func (r *PendingPairsRepo) Delete(ctx context.Context, q Querier, correlationKey
 func (r *PendingPairsRepo) ClaimExpired(ctx context.Context, tx pgx.Tx, limit int32, now time.Time) ([]PendingPairRow, error) {
 	const sql = `
 		SELECT correlation_key, listener_endpoint, pending_resource, pending_kind,
-		       source_message_id, expires_at, created_at
+		       source_message_id, expires_at, created_at, key_version
 		FROM pending_pairs
 		WHERE expires_at <= $1
 		ORDER BY expires_at ASC
@@ -79,11 +81,11 @@ func (r *PendingPairsRepo) ClaimExpired(ctx context.Context, tx pgx.Tx, limit in
 		var kind string
 		if err := rows.Scan(
 			&rec.CorrelationKey, &rec.ListenerEndpoint, &enc, &kind,
-			&rec.SourceMessageID, &rec.ExpiresAt, &rec.CreatedAt,
+			&rec.SourceMessageID, &rec.ExpiresAt, &rec.CreatedAt, &rec.KeyVersion,
 		); err != nil {
 			return nil, fmt.Errorf("pending_pairs: scan: %w", err)
 		}
-		body, err := r.codec.Decrypt(enc, 1)
+		body, err := r.codec.Decrypt(enc, rec.KeyVersion)
 		if err != nil {
 			return nil, fmt.Errorf("pending_pairs: decrypt: %w", err)
 		}

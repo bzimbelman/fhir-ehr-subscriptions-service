@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -28,10 +29,25 @@ type PgStoreOptions struct {
 // concurrent appenders see a linear chain. The lock key is a 64-bit
 // hash of "audit_chain_serial" — a single, well-known constant — taken
 // at module init.
+//
+// The lock is held with pg_advisory_xact_lock so it is automatically
+// released on commit, rollback, OR connection loss; this avoids the
+// pre-B-34 hazard where a session-level pg_advisory_lock could leak if
+// the writer panicked between INSERT and the manual unlock (LLD §8.2,
+// audit B-34).
 type PgStore struct {
 	pool   *pgxpool.Pool
 	schema string
 	lockID int64
+
+	// activeTx threads the transaction that AcquireChainLock opened
+	// through to InsertAuditRow / LastChainHash on the same goroutine.
+	// The store interface is contracted to be called single-threaded
+	// per Acquire/Insert/release cycle (Writer.Emit serializes through
+	// the chain lock); we still guard with a mutex so a stray
+	// concurrent caller fails loudly rather than corrupts the chain.
+	txMu     sync.Mutex
+	activeTx pgx.Tx
 }
 
 // NewPgStore builds a PgStore.
@@ -68,37 +84,73 @@ CREATE TABLE IF NOT EXISTS %s (
 	return err
 }
 
-// AcquireChainLock takes a session-level advisory lock and returns a
-// release that frees it. The release also closes the underlying
-// connection back to the pool.
+// AcquireChainLock begins a transaction and takes a transaction-scoped
+// advisory lock (pg_advisory_xact_lock). The returned release commits
+// the transaction, which auto-releases the lock.
+//
+// Transaction-scoped (rather than session-scoped) means a panic, a
+// rollback, OR a lost connection all release the lock without manual
+// intervention — this is the B-34 fix: the prior session-level
+// pg_advisory_lock could leak forever if the writer panicked between
+// INSERT and the manual unlock.
 func (s *PgStore) AcquireChainLock(ctx context.Context) (func() error, error) {
-	conn, err := s.pool.Acquire(ctx)
+	s.txMu.Lock()
+	if s.activeTx != nil {
+		s.txMu.Unlock()
+		return nil, errors.New("audit/pg: chain lock already held; concurrent Acquire is a contract violation")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("audit/pg: acquire conn: %w", err)
+		s.txMu.Unlock()
+		return nil, fmt.Errorf("audit/pg: begin tx: %w", err)
 	}
-	if _, err := conn.Exec(ctx, "SELECT pg_advisory_lock($1)", s.lockID); err != nil {
-		conn.Release()
-		return nil, fmt.Errorf("audit/pg: advisory lock: %w", err)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", s.lockID); err != nil {
+		_ = tx.Rollback(ctx)
+		s.txMu.Unlock()
+		return nil, fmt.Errorf("audit/pg: advisory xact lock: %w", err)
 	}
+	s.activeTx = tx
+	s.txMu.Unlock()
+
 	released := false
 	return func() error {
+		s.txMu.Lock()
+		defer s.txMu.Unlock()
 		if released {
 			return nil
 		}
 		released = true
-		_, err := conn.Exec(ctx, "SELECT pg_advisory_unlock($1)", s.lockID)
-		conn.Release()
-		return err
+		active := s.activeTx
+		s.activeTx = nil
+		if active == nil {
+			return nil
+		}
+		// Commit releases the xact-scoped advisory lock. If commit
+		// fails, fall back to rollback — both flavors release the
+		// lock.
+		if err := active.Commit(ctx); err != nil {
+			_ = active.Rollback(ctx)
+			return fmt.Errorf("audit/pg: commit chain tx: %w", err)
+		}
+		return nil
 	}, nil
 }
 
 // LastChainHash returns the most recent row's chain_hash, or nil when
-// the table is empty.
+// the table is empty. When the chain transaction is active (between
+// AcquireChainLock and the matching release) the read runs inside that
+// transaction so the lock + read + insert sequence is atomic.
 func (s *PgStore) LastChainHash(ctx context.Context) ([]byte, error) {
+	tx := s.currentTx()
 	var h []byte
-	err := s.pool.QueryRow(ctx,
-		"SELECT chain_hash FROM "+s.qualified("audit_log")+" ORDER BY seq DESC LIMIT 1",
-	).Scan(&h)
+	stmt := "SELECT chain_hash FROM " + s.qualified("audit_log") + " ORDER BY seq DESC LIMIT 1"
+	var row pgx.Row
+	if tx != nil {
+		row = tx.QueryRow(ctx, stmt)
+	} else {
+		row = s.pool.QueryRow(ctx, stmt)
+	}
+	err := row.Scan(&h)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -108,7 +160,15 @@ func (s *PgStore) LastChainHash(ctx context.Context) ([]byte, error) {
 	return h, nil
 }
 
-// InsertAuditRow persists a row.
+func (s *PgStore) currentTx() pgx.Tx {
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	return s.activeTx
+}
+
+// InsertAuditRow persists a row. When the chain transaction is active
+// (between AcquireChainLock and release) the insert runs inside that
+// transaction; otherwise it runs against the pool directly.
 func (s *PgStore) InsertAuditRow(ctx context.Context, row Row) error {
 	payload, err := json.Marshal(row.Payload)
 	if err != nil {
@@ -118,11 +178,12 @@ func (s *PgStore) InsertAuditRow(ctx context.Context, row Row) error {
 	if cid == (uuid.UUID{}) {
 		cid = uuid.New()
 	}
-	_, err = s.pool.Exec(ctx, `
-INSERT INTO `+s.qualified("audit_log")+` (
+	stmt := `
+INSERT INTO ` + s.qualified("audit_log") + ` (
     occurred_at, actor_kind, actor_id, action, target_kind, target_id,
     outcome, correlation_id, payload, prior_hash, chain_input, chain_hash
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)`,
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)`
+	args := []any{
 		row.OccurredAt,
 		row.ActorKind,
 		row.ActorID,
@@ -135,7 +196,13 @@ INSERT INTO `+s.qualified("audit_log")+` (
 		row.PriorHash,
 		row.ChainInput,
 		row.ChainHash,
-	)
+	}
+	tx := s.currentTx()
+	if tx != nil {
+		_, err = tx.Exec(ctx, stmt, args...)
+	} else {
+		_, err = s.pool.Exec(ctx, stmt, args...)
+	}
 	return err
 }
 

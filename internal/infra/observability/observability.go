@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,6 +61,18 @@ type LoggingConfig struct {
 type AuditConfig struct {
 	Sink     string // "stdout" (default) | "file" | "syslog" | "otlp"
 	FilePath string // used when Sink == "file"
+
+	// FileSyncMode controls fsync behavior of the file sink:
+	//   - "every_write" (default): fsync after each Emit (safe; loses
+	//     no rows under power loss).
+	//   - "batched": fsync on a timer / at Close (higher throughput;
+	//     trades durability — operators must opt in explicitly).
+	// Empty string is treated as "every_write".
+	FileSyncMode string
+
+	// FileBatchInterval is the periodic fsync interval used in
+	// batched mode. Defaults to 1s when batched mode is selected.
+	FileBatchInterval time.Duration
 }
 
 // Config is the top-level observability config.
@@ -123,6 +136,7 @@ type ObservabilityModule struct {
 	logger    *slog.Logger
 	audit     *audit.Writer
 	auditFile *os.File
+	auditSink *fileSink // non-nil only when Sink == "file"; lifecycle owns Close
 }
 
 // auditAdapter adapts the audit.Writer to the AuditWriter shape exposed
@@ -189,7 +203,7 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 	if sinkName == "" {
 		sinkName = "stdout"
 	}
-	sink, file, err := buildAuditSink(sinkName, cfg.Audit.FilePath)
+	sink, file, fSink, err := buildAuditSink(sinkName, cfg.Audit)
 	if err != nil {
 		return nil, Handles{}, fmt.Errorf("observability: audit sink: %w", err)
 	}
@@ -222,6 +236,7 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 		logger:    logger,
 		audit:     w,
 		auditFile: file,
+		auditSink: fSink,
 	}
 	return mod, Handles{
 		Metrics: em,
@@ -232,10 +247,17 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 }
 
 // Shutdown drains the tracer and closes any file-backed audit sink.
+// The file sink's Close flushes any pending writes (final fsync) before
+// the underlying file handle is closed.
 func (m *ObservabilityModule) Shutdown(ctx context.Context) error {
 	var firstErr error
 	if m.tracer != nil {
 		if err := m.tracer.Shutdown(ctx); err != nil {
+			firstErr = err
+		}
+	}
+	if m.auditSink != nil {
+		if err := m.auditSink.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -270,31 +292,160 @@ func parseLevel(level string) slog.Level {
 
 // buildAuditSink builds the configured sink. When sink is "file" the
 // returned *os.File is the open append-mode handle; the module closes
-// it on Shutdown.
-func buildAuditSink(sink, path string) (audit.Sink, *os.File, error) {
+// it on Shutdown. The returned *fileSink is non-nil only for file sinks
+// — Shutdown calls Close on it before closing the file handle so any
+// pending batched data is fsync'd.
+func buildAuditSink(sink string, cfg AuditConfig) (audit.Sink, *os.File, *fileSink, error) {
 	switch sink {
 	case "stdout", "":
-		return audit.NewStdoutSink(), nil, nil
+		return audit.NewStdoutSink(), nil, nil, nil
 	case "file":
-		if path == "" {
-			return nil, nil, errors.New("observability: audit.file_path is required when sink is file")
+		if cfg.FilePath == "" {
+			return nil, nil, nil, errors.New("observability: audit.file_path is required when sink is file")
 		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(cfg.FilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return &fileSink{f: f}, f, nil
+		mode, err := parseFileSyncMode(cfg.FileSyncMode)
+		if err != nil {
+			_ = f.Close()
+			return nil, nil, nil, err
+		}
+		fs := newFileSinkWithSyncer(f, fileSinkOptions{
+			Mode:          mode,
+			BatchInterval: cfg.FileBatchInterval,
+		})
+		return fs, f, fs, nil
 	default:
-		return nil, nil, fmt.Errorf("observability: unsupported audit sink %q", sink)
+		return nil, nil, nil, fmt.Errorf("observability: unsupported audit sink %q", sink)
 	}
 }
 
-// fileSink writes JSON audit lines to a file. It defers serialization to
-// audit.NewWriterSink so the wire format matches stdout.
+// fileSyncMode enumerates the fsync policies for the file sink.
+type fileSyncMode int
+
+const (
+	fileSyncEveryWrite fileSyncMode = iota // safe default — fsync per Emit
+	fileSyncBatched                        // periodic fsync; opt-in (LLD §observability)
+)
+
+// parseFileSyncMode resolves the configured string into a typed mode.
+// Empty string defaults to every_write.
+func parseFileSyncMode(s string) (fileSyncMode, error) {
+	switch strings.ToLower(s) {
+	case "", "every_write", "sync":
+		return fileSyncEveryWrite, nil
+	case "batched":
+		return fileSyncBatched, nil
+	default:
+		return 0, fmt.Errorf("observability: unsupported audit.file_sync_mode %q (want every_write|batched)", s)
+	}
+}
+
+// writeSyncer is the seam the file sink writes through. *os.File
+// satisfies it in production; tests use a fake to count Sync calls.
+type writeSyncer interface {
+	io.Writer
+	Sync() error
+}
+
+// fileSinkOptions configures fileSink construction.
+type fileSinkOptions struct {
+	Mode          fileSyncMode
+	BatchInterval time.Duration // batched mode only; defaults to 1s
+}
+
+// fileSink writes JSON audit lines to a file with a configurable fsync
+// policy (B-34).
+//
+// every_write mode fsyncs on each Emit so Emit-return implies the row
+// is on disk. batched mode trades durability for throughput: writes go
+// to the page cache and a background ticker fsyncs every BatchInterval.
+// Close drains and fsyncs once before returning so a clean shutdown
+// loses nothing even in batched mode.
 type fileSink struct {
-	f io.Writer
+	mu       sync.Mutex
+	w        writeSyncer
+	mode     fileSyncMode
+	closed   bool
+	stopCh   chan struct{}
+	doneCh   chan struct{}
+	tickEach time.Duration
+}
+
+// newFileSinkWithSyncer wraps a writeSyncer (production: *os.File;
+// tests: a fake counter). Caller owns the underlying handle's Close.
+func newFileSinkWithSyncer(w writeSyncer, opts fileSinkOptions) *fileSink {
+	tick := opts.BatchInterval
+	if tick <= 0 {
+		tick = time.Second
+	}
+	fs := &fileSink{
+		w:        w,
+		mode:     opts.Mode,
+		tickEach: tick,
+	}
+	if opts.Mode == fileSyncBatched {
+		fs.stopCh = make(chan struct{})
+		fs.doneCh = make(chan struct{})
+		go fs.tickLoop()
+	}
+	return fs
 }
 
 func (s *fileSink) Emit(ctx context.Context, evt audit.Event) error {
-	return audit.NewWriterSink("file", nil, s.f).Emit(ctx, evt)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("observability: file sink is closed")
+	}
+	if err := audit.NewWriterSink("file", nil, s.w).Emit(ctx, evt); err != nil {
+		return err
+	}
+	if s.mode == fileSyncEveryWrite {
+		return s.w.Sync()
+	}
+	return nil
+}
+
+// tickLoop runs in batched mode and fsyncs on each tick. Exits cleanly
+// on stopCh.
+func (s *fileSink) tickLoop() {
+	defer close(s.doneCh)
+	t := time.NewTicker(s.tickEach)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			s.mu.Lock()
+			if !s.closed {
+				_ = s.w.Sync()
+			}
+			s.mu.Unlock()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+// Close stops the batch ticker (if any) and performs a final fsync so
+// the durability guarantee holds for a clean shutdown.
+func (s *fileSink) Close() error {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closed = true
+	stop := s.stopCh
+	done := s.doneCh
+	syncErr := s.w.Sync()
+	s.mu.Unlock()
+
+	if stop != nil {
+		close(stop)
+		<-done
+	}
+	return syncErr
 }
