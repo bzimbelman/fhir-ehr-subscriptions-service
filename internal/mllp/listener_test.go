@@ -194,6 +194,86 @@ func defaultConfig(eps ...EndpointConfig) ListenerConfig {
 
 // ----- Tests -----
 
+// Metric names must carry the fhir_subs_mllp_ prefix per ADR 0008 #10
+// and the LLD §7 enumeration. Labels carry endpoint only; peer_addr is
+// log-line metadata, not a metric label (high-cardinality).
+func TestMetrics_Names_FHIRSubsPrefix(t *testing.T) {
+	want := map[string]string{
+		"MetricMessagesReceivedTotal": "fhir_subs_mllp_received_total",
+		"MetricMessagesAckedTotal":    "fhir_subs_mllp_ack_total",
+		"MetricMessageBytes":          "fhir_subs_mllp_message_bytes",
+		"MetricMalformedTotal":        "fhir_subs_mllp_malformed_total",
+		"MetricNackTotal":             "fhir_subs_mllp_nack_total",
+		"MetricPersistDurationMS":     "fhir_subs_mllp_persist_duration_ms",
+		"MetricActiveConnections":     "fhir_subs_mllp_active_connections",
+		"MetricInflightPerConnection": "fhir_subs_mllp_inflight_per_connection",
+		"MetricAcceptErrorsTotal":     "fhir_subs_mllp_accept_errors",
+		"MetricReadErrorsTotal":       "fhir_subs_mllp_read_errors",
+		"MetricDisconnectMidFrame":    "fhir_subs_mllp_disconnect_mid_frame",
+		"MetricDropForPersistFails":   "fhir_subs_mllp_drop_for_persist_failures",
+	}
+	got := map[string]string{
+		"MetricMessagesReceivedTotal": MetricMessagesReceivedTotal,
+		"MetricMessagesAckedTotal":    MetricMessagesAckedTotal,
+		"MetricMessageBytes":          MetricMessageBytes,
+		"MetricMalformedTotal":        MetricMalformedTotal,
+		"MetricNackTotal":             MetricNackTotal,
+		"MetricPersistDurationMS":     MetricPersistDurationMS,
+		"MetricActiveConnections":     MetricActiveConnections,
+		"MetricInflightPerConnection": MetricInflightPerConnection,
+		"MetricAcceptErrorsTotal":     MetricAcceptErrorsTotal,
+		"MetricReadErrorsTotal":       MetricReadErrorsTotal,
+		"MetricDisconnectMidFrame":    MetricDisconnectMidFrame,
+		"MetricDropForPersistFails":   MetricDropForPersistFails,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("%s = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
+// Received-total label set is exactly {listener_endpoint}. peer_addr is
+// log-line metadata, not a metric label — emitting it would explode
+// cardinality in production.
+func TestMetrics_ReceivedTotal_NoPeerAddrLabel(t *testing.T) {
+	p := &fakePersister{}
+	m := newFakeMetrics()
+	ep := EndpointConfig{Name: "adt-feed"}
+	cfg := defaultConfig(ep)
+
+	server, client := net.Pipe()
+	defer client.Close()
+
+	go HandleConnection(context.Background(), server, ep, cfg, p, m, "10.0.0.1:1234")
+	if _, err := client.Write(frameBytes(sampleORU)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = readFrame(t, client)
+
+	// The expected key has only listener_endpoint as a label.
+	if got := m.counter(MetricMessagesReceivedTotal,
+		map[string]string{"listener_endpoint": "adt-feed"}); got != 1 {
+		t.Fatalf("expected received_total{listener_endpoint=adt-feed} = 1; got %v", got)
+	}
+	// No emission key may carry peer_addr.
+	for k := range m.counters {
+		if strings.Contains(k, "peer_addr=") {
+			t.Fatalf("metric counter key contains peer_addr label: %q", k)
+		}
+	}
+	for k := range m.hist {
+		if strings.Contains(k, "peer_addr=") {
+			t.Fatalf("metric histogram key contains peer_addr label: %q", k)
+		}
+	}
+	for k := range m.gauges {
+		if strings.Contains(k, "peer_addr=") {
+			t.Fatalf("metric gauge key contains peer_addr label: %q", k)
+		}
+	}
+}
+
 // Single round-trip via in-memory pipe: send framed message, receive ACK,
 // assert persister was called and the row carries the right metadata.
 func TestListener_HandleConn_RoundTrip(t *testing.T) {
