@@ -12,7 +12,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -1014,13 +1016,68 @@ func makeOutcomeEntry(refID, code string) map[string]any {
 func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 	rows, _ := s.deps.Topics.ListActive(ctx)
 	channelCodes := make([]any, 0, len(s.deps.Channels))
+	channelTypeCSV := make([]string, 0, len(s.deps.Channels))
 	for code := range s.deps.Channels {
 		channelCodes = append(channelCodes, map[string]any{"code": code})
+		channelTypeCSV = append(channelTypeCSV, code)
 	}
+	sort.Strings(channelTypeCSV)
 	topicURLs := make([]any, 0, len(rows))
 	for i := range rows {
 		topicURLs = append(topicURLs, map[string]any{"url": rows[i].URL, "version": rows[i].Version})
 	}
+
+	// SMART-on-FHIR security service. Per the FHIR Backport IG / R5
+	// Subscriptions module, the conformance probe locates the OAuth
+	// token endpoint and JWKS via the standard
+	// http://fhir-registry.smarthealthit.org/CodeSystem/smart-codes
+	// extension on rest.security.service. P1.7.
+	security := map[string]any{
+		"service": []any{
+			map[string]any{
+				"coding": []any{
+					map[string]any{
+						"system": "http://terminology.hl7.org/CodeSystem/restful-security-service",
+						"code":   "SMART-on-FHIR",
+					},
+				},
+			},
+		},
+	}
+	smartExt := []any{}
+	if s.deps.TokenEndpointURL != "" {
+		smartExt = append(smartExt, map[string]any{
+			"url":      "token",
+			"valueUri": s.deps.TokenEndpointURL,
+		})
+	}
+	if s.deps.JWKSURL != "" {
+		smartExt = append(smartExt, map[string]any{
+			"url":      "jwks",
+			"valueUri": s.deps.JWKSURL,
+		})
+	}
+	if len(smartExt) > 0 {
+		security["extension"] = []any{
+			map[string]any{
+				"url":       "http://fhir-registry.smarthealthit.org/StructureDefinition/oauth-uris",
+				"extension": smartExt,
+			},
+		}
+	}
+
+	// Multi-version disclosure: the Accept-header negotiation in
+	// versionshim supports more than one wire form. Surface them so a
+	// conformance probe can pick the right form.
+	versions := s.deps.SupportedFHIRVersions
+	if len(versions) == 0 {
+		versions = []string{s.deps.FHIRVersion}
+	}
+	versionExt := make([]any, 0, len(versions))
+	for _, v := range versions {
+		versionExt = append(versionExt, map[string]any{"valueCode": v})
+	}
+
 	return map[string]any{
 		"resourceType": "CapabilityStatement",
 		"status":       "active",
@@ -1054,24 +1111,14 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 						"interaction": []any{map[string]any{"code": "read"}, map[string]any{"code": "search-type"}},
 					},
 				},
-				"security": map[string]any{
-					"service": []any{
-						map[string]any{
-							"coding": []any{
-								map[string]any{
-									"system": "http://terminology.hl7.org/CodeSystem/restful-security-service",
-									"code":   "SMART-on-FHIR",
-								},
-							},
-						},
-					},
-				},
+				"security": security,
 			},
 		},
 		"extension": []any{
-			map[string]any{"url": "supported-channels", "valueCode": "rest-hook,websocket"},
+			map[string]any{"url": "supported-channels", "valueString": strings.Join(channelTypeCSV, ",")},
 			map[string]any{"url": "supported-topics", "extension": topicURLs},
 			map[string]any{"url": "supported-channel-set", "extension": channelCodes},
+			map[string]any{"url": "supported-fhir-versions", "extension": versionExt},
 		},
 	}
 }

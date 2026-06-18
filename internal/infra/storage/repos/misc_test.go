@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +23,63 @@ import (
 func hashTokenForTest(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// P1.12: every successful dead-letter Insert fires the registered
+// reporter exactly once with the row's Kind. Wiring uses this to bump
+// a fhir_subs_dead_letters_total{reason} counter. The reporter is a
+// global function pointer so this test cannot run concurrently with
+// other dead_letters Inserts in the same package — left non-Parallel.
+func TestDeadLettersReporterFires(t *testing.T) {
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	id := uuid.New()
+	srcID := uuid.New()
+	pool.ExpectQuery("INSERT INTO dead_letters").
+		WithArgs(anyArgs(8)...).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
+
+	var (
+		mu          sync.Mutex
+		calls       int
+		seenReason  string
+		seenForKind = "delivery_exhausted"
+	)
+	repos.SetDeadLetterReporter(func(reason string) {
+		mu.Lock()
+		defer mu.Unlock()
+		// Only count the call for the unique kind we issued from this
+		// test. Other parallel repo tests insert different kinds; the
+		// global reporter sees them too, which is fine — we just don't
+		// count them.
+		if reason == seenForKind {
+			calls++
+			seenReason = reason
+		}
+	})
+	t.Cleanup(func() { repos.SetDeadLetterReporter(nil) })
+
+	repo := repos.NewDeadLettersRepo(newCodec(t))
+	if _, err := repo.Insert(context.Background(), pool, repos.DeadLetterRow{
+		Kind:        seenForKind,
+		SourceTable: "deliveries",
+		SourceID:    srcID,
+		Reason:      "max attempts",
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("reporter call count for %q: want 1, got %d", seenForKind, calls)
+	}
+	if seenReason != seenForKind {
+		t.Errorf("reporter reason: want %q, got %q", seenForKind, seenReason)
+	}
 }
 
 func TestDeadLettersInsert(t *testing.T) {

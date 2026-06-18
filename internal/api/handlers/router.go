@@ -161,6 +161,39 @@ type Deps struct {
 	// permitted; activate calls then drop the error silently — that's
 	// the legacy behavior, kept for backwards-compat.
 	Logger *slog.Logger
+
+	// TokenEndpointURL, when non-empty, is rendered into the
+	// CapabilityStatement's SMART-on-FHIR security extension (P1.7).
+	// Empty means the SMART extension lists only the security service
+	// without absolute URLs.
+	TokenEndpointURL string
+
+	// JWKSURL is the absolute URL of the server's JWKS document. Wiring
+	// usually sets this to {BaseURL}/jwks.json. Rendered into the
+	// CapabilityStatement (P1.7).
+	JWKSURL string
+
+	// SupportedFHIRVersions lists every FHIR version the server can
+	// negotiate via the Accept header. Defaults to [DefaultFHIRVersion].
+	// Rendered into a versionshim extension on the CapabilityStatement
+	// so subscribers can discover the negotiable set without speaking
+	// the wire (P1.7).
+	SupportedFHIRVersions []string
+
+	// AdminToken, when non-empty, enables the read-only admin operator
+	// surface mounted at AdminPathPrefix (default `/admin`). The token
+	// is the only auth gate; network-level scoping is the operator's
+	// responsibility (P1.6). Empty means the admin surface is disabled
+	// at the router layer — the routes do not exist.
+	AdminToken string
+
+	// AdminPathPrefix overrides the default `/admin` mount point. Empty
+	// means DefaultAdminPathPrefix.
+	AdminPathPrefix string
+
+	// DeadLetters is the read-only dead-letters list adapter the admin
+	// surface needs. Nil disables /admin/dead_letters (returns 503).
+	DeadLetters DeadLettersListStore
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.

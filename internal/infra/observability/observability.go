@@ -37,6 +37,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/metrics"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // MetricsConfig is the metrics-layer config block.
@@ -182,6 +183,14 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 	if err != nil {
 		return nil, Handles{}, fmt.Errorf("observability: register inventory: %w", err)
 	}
+	// Wire the dead-letter reporter: every successful repos.DeadLettersRepo
+	// Insert bumps fhir_subs_dead_letters_total{reason} (P1.12). The
+	// reporter is a process-global function pointer; we install it once
+	// per Start and clear in Shutdown so a second Start (testing) gets
+	// the correct counter handle.
+	repos.SetDeadLetterReporter(func(reason string) {
+		inv.DeadLettersTotal.Inc(prometheus.Labels{"reason": reason})
+	})
 
 	// 2. Tracing.
 	tr, err := tracing.New(tracing.Options{
@@ -265,6 +274,10 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 // The file sink's Close flushes any pending writes (final fsync) before
 // the underlying file handle is closed.
 func (m *ObservabilityModule) Shutdown(ctx context.Context) error {
+	// Clear the global dead-letter reporter so a subsequent test Start
+	// installs its own handle without pointing at the prior process's
+	// inventory (P1.12).
+	repos.SetDeadLetterReporter(nil)
 	var firstErr error
 	if m.tracer != nil {
 		if err := m.tracer.Shutdown(ctx); err != nil {

@@ -246,6 +246,35 @@ func TestGetCapabilityStatement_HappyPath(t *testing.T) {
 	}
 }
 
+// P1.7: when wired with TokenEndpointURL + JWKSURL, the
+// CapabilityStatement carries the SMART OAuth metadata.
+func TestGetCapabilityStatement_DiscloseSMARTOAuthEndpoints(t *testing.T) {
+	t.Parallel()
+	deps := defaultDeps(t)
+	deps.TokenEndpointURL = "https://example.org/token"
+	deps.JWKSURL = "https://example.org/jwks.json"
+	deps.SupportedFHIRVersions = []string{"5.0.0", "4.3.0"}
+	srv := newTestServer(t, defaultPrincipal(), deps)
+	resp, err := http.Get(srv.URL + "/metadata")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	got := string(body)
+	for _, want := range []string{
+		"https://example.org/token",
+		"https://example.org/jwks.json",
+		"oauth-uris",
+		"supported-fhir-versions",
+		"4.3.0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("CapabilityStatement missing %q in: %s", want, got)
+		}
+	}
+}
+
 func TestGetCapabilityStatement_AdvertisesEmptyTopicCatalog(t *testing.T) {
 	t.Parallel()
 	deps := defaultDeps(t)

@@ -106,6 +106,25 @@ type AuthConfig struct {
 	ClientRegistry []AuthClient        `yaml:"client_registry" toml:"client_registry" json:"client_registry"`
 }
 
+// AdminConfig — `admin.*` (P1.6).
+//
+// The admin surface is a read-only operator API mounted at `/admin/*`.
+// It is disabled by default. To enable, set `admin.token` to a strong
+// shared secret; clients then authenticate by passing
+// `Authorization: Bearer <token>` on each request.
+//
+// Token (when set) MUST be at least 32 bytes — the wiring rejects
+// shorter values at startup. The admin surface bypasses the FHIR auth
+// verifier so the token is the ONLY gate. Operators are expected to
+// scope network access (allow-list / private VPC) on top.
+//
+// PathPrefix lets an operator move the admin routes off `/admin` if
+// the public router shares the namespace. Empty means `/admin`.
+type AdminConfig struct {
+	Token      string `yaml:"token"       toml:"token"       json:"token"`
+	PathPrefix string `yaml:"path_prefix" toml:"path_prefix" json:"path_prefix"`
+}
+
 // TopicsConfig — `topics.*`.
 type TopicsConfig struct {
 	CatalogDir   string `yaml:"catalog_dir"    toml:"catalog_dir"    json:"catalog_dir"`

@@ -9,11 +9,15 @@
 package registry
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
@@ -135,7 +139,101 @@ func (r *Registry) Load(_ context.Context, cfg LoadConfig) (spi.EhrAdapter, erro
 		return nil, fmt.Errorf("registry: invalid manifest for %q: %w", cfg.AdapterID, err)
 	}
 
+	// P1.10: stateful manifest validations.
+	if err := validateConfigSchema(cfg.AdapterID, manifest.ConfigSchema); err != nil {
+		return nil, err
+	}
+	if err := validateContributedTopicsUnique(cfg.AdapterID, manifest.ContributedTopics); err != nil {
+		return nil, err
+	}
+
 	return adapter, nil
+}
+
+// validateConfigSchema compiles manifest.ConfigSchema as a JSON Schema
+// and returns a structured error if it doesn't compile. An empty schema
+// is allowed (treated as "no validation"); a non-empty schema must
+// compile (P1.10).
+func validateConfigSchema(adapterID string, raw []byte) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	// jsonschema/v5 requires we add the resource to a compiler then
+	// compile by URL. Use a synthetic URL keyed on the adapter id so a
+	// compile error names the offending adapter.
+	c := jsonschema.NewCompiler()
+	url := "mem://adapter/" + adapterID + "/config_schema.json"
+	if err := c.AddResource(url, bytes.NewReader(raw)); err != nil {
+		return &ManifestConfigSchemaError{AdapterID: adapterID, Cause: err}
+	}
+	if _, err := c.Compile(url); err != nil {
+		return &ManifestConfigSchemaError{AdapterID: adapterID, Cause: err}
+	}
+	return nil
+}
+
+// validateContributedTopicsUnique ensures every contributed topic
+// declares a distinct canonical URL. A topic is rejected at the
+// catalog layer if duplicates make it through, but per the LLD the
+// adapter framework should refuse to start when the same adapter
+// declares colliding URLs in its own manifest (P1.10).
+func validateContributedTopicsUnique(adapterID string, topics [][]byte) error {
+	if len(topics) < 2 {
+		return nil
+	}
+	seen := map[string]string{}
+	for i, raw := range topics {
+		var doc struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			// Malformed topic JSON is its own LLD failure, but the catalog
+			// will surface it; here we only enforce URL uniqueness when the
+			// JSON parses.
+			continue
+		}
+		if doc.URL == "" {
+			continue
+		}
+		if prior, dup := seen[doc.URL]; dup {
+			return &ManifestContributedTopicCollisionError{
+				AdapterID: adapterID,
+				URL:       doc.URL,
+				FirstAt:   prior,
+				SecondAt:  fmt.Sprintf("contributed_topics[%d]", i),
+			}
+		}
+		seen[doc.URL] = fmt.Sprintf("contributed_topics[%d]", i)
+	}
+	return nil
+}
+
+// ManifestConfigSchemaError is returned when an adapter manifest's
+// config_schema does not compile as a JSON Schema (P1.10).
+type ManifestConfigSchemaError struct {
+	AdapterID string
+	Cause     error
+}
+
+func (e *ManifestConfigSchemaError) Error() string {
+	return fmt.Sprintf("registry: adapter %q config_schema does not compile: %v", e.AdapterID, e.Cause)
+}
+
+func (e *ManifestConfigSchemaError) Unwrap() error { return e.Cause }
+
+// ManifestContributedTopicCollisionError is returned when an adapter
+// manifest declares two contributed topics with the same canonical URL
+// (P1.10).
+type ManifestContributedTopicCollisionError struct {
+	AdapterID string
+	URL       string
+	FirstAt   string
+	SecondAt  string
+}
+
+func (e *ManifestContributedTopicCollisionError) Error() string {
+	return fmt.Sprintf("registry: adapter %q declares colliding contributed topic url %q (%s and %s)",
+		e.AdapterID, e.URL, e.FirstAt, e.SecondAt)
 }
 
 // idsLocked is IDs() without re-acquiring the read lock. The caller must hold

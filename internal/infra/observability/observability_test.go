@@ -65,6 +65,7 @@ func TestStart_DefaultsAreSane(t *testing.T) {
 		"fhir_subs_audit_chain_invalid_total",
 		"fhir_subs_audit_sink_failures_total",
 		"fhir_subs_logging_phi_dropped_total",
+		"fhir_subs_dead_letters_total",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("/metrics missing %q in: %s", want, body)

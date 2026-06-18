@@ -237,6 +237,59 @@ func TestBindWithValidTokenSucceeds(t *testing.T) {
 	}
 }
 
+// P1.9: subscribers may deliver the bind token via the standard
+// Sec-WebSocket-Protocol header instead of in-band JSON. The server
+// negotiates back the offered subprotocol and uses the embedded token
+// in lieu of (or alongside) the bind-frame's "token" field.
+func TestBindWithSecWebSocketProtocolToken(t *testing.T) {
+	t.Parallel()
+
+	now := func() time.Time { return time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC) }
+	tokens := newFakeTokens(now)
+	subID := uuid.New()
+	tokens.Mint("header-token", subID, "client-h", now().Add(60*time.Second))
+
+	ch, err := websocket.New(websocket.Options{
+		Tokens:   tokens,
+		Replayer: newFakeReplayer(),
+		Now:      now,
+		Metrics:  newFakeMetrics(),
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	srv := httptest.NewServer(ch.Handler())
+	defer srv.Close()
+	defer ch.Close()
+
+	u := strings.Replace(srv.URL, "http://", "ws://", 1) + "/ws/subscriptions"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, _, derr := codingws.Dial(ctx, u, &codingws.DialOptions{
+		HTTPClient:   srv.Client(),
+		Subprotocols: []string{websocket.SubprotocolBindPrefix + "header-token"},
+	})
+	if derr != nil {
+		t.Fatalf("dial: %v", derr)
+	}
+	defer conn.Close(codingws.StatusNormalClosure, "")
+
+	if got := conn.Subprotocol(); got != websocket.SubprotocolBindPrefix+"header-token" {
+		t.Fatalf("negotiated subprotocol = %q", got)
+	}
+
+	// Bind frame omits the token field — the server uses the
+	// header-derived token.
+	writeBind(t, conn, `{"type":"bind","subscriptionId":"`+subID.String()+`"}`)
+	mt, data := readText(t, conn, 2*time.Second)
+	if mt != codingws.MessageText {
+		t.Fatalf("type = %v", mt)
+	}
+	if !strings.Contains(string(data), `"bind-success"`) {
+		t.Errorf("bind reply = %s", data)
+	}
+}
+
 func TestBindWithConsumedTokenIsRejected(t *testing.T) {
 	t.Parallel()
 

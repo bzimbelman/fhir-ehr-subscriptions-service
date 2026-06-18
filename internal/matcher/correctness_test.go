@@ -11,9 +11,12 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
 )
 
-// B-24: An unrecognized FHIRPath expression must default to fail-CLOSED.
-// A topic whose only criterion is `Patient.deceased.empty()` must NOT
-// match any change until the sandboxed evaluator lands.
+// B-24 / P1.2: An unrecognized FHIRPath expression must default to
+// fail-CLOSED. P1.2 widened the recognized shapes to .exists(),
+// .empty(), and bare equality on any field; anything else still fails
+// closed. A topic whose only criterion is `Patient.name.where(use =
+// 'official').exists()` must NOT match any change until the sandboxed
+// evaluator lands.
 
 const fhirpathFailClosedTopic = `{
   "resourceType": "SubscriptionTopic",
@@ -23,7 +26,7 @@ const fhirpathFailClosedTopic = `{
   "resourceTrigger": [{
     "resource": "Patient",
     "supportedInteraction": ["create", "update"],
-    "fhirPathCriteria": "Patient.deceased.empty()"
+    "fhirPathCriteria": "Patient.name.where(use = 'official').exists()"
   }]
 }`
 
@@ -39,6 +42,73 @@ func TestEvaluateFHIRPathUnknownExpressionFailsClosed(t *testing.T) {
 	got := matcher.Evaluate(cat, row)
 	if len(got) != 0 {
 		t.Errorf("unknown FHIRPath must default to fail-CLOSED (no match); got %d matches", len(got))
+	}
+}
+
+// P1.2: .empty() is now recognized — a topic whose criterion is
+// `<Resource>.<field>.empty()` fires when the field is absent and does
+// NOT fire when it's present.
+func TestEvaluateFHIRPathEmptyShapeRecognized(t *testing.T) {
+	t.Parallel()
+	const topic = `{
+		"resourceType": "SubscriptionTopic",
+		"url": "http://example.org/topics/empty-shape",
+		"version": "1.0.0",
+		"status": "active",
+		"resourceTrigger": [{
+			"resource": "Patient",
+			"supportedInteraction": ["create"],
+			"fhirPathCriteria": "Patient.deceased.empty()"
+		}]
+	}`
+	cat := loadCatalog(t, topic)
+
+	// Without deceased -> .empty() is true -> match.
+	row := matcher.ResourceChange{
+		ResourceType: "Patient",
+		ChangeKind:   "create",
+		Resource:     []byte(`{"resourceType":"Patient","id":"a"}`),
+	}
+	if got := matcher.Evaluate(cat, row); len(got) != 1 {
+		t.Errorf("expected 1 match for absent deceased; got %d", len(got))
+	}
+
+	// With deceased=true -> .empty() is false -> no match.
+	row.Resource = []byte(`{"resourceType":"Patient","id":"a","deceased":true}`)
+	if got := matcher.Evaluate(cat, row); len(got) != 0 {
+		t.Errorf("expected 0 matches when deceased present; got %d", len(got))
+	}
+}
+
+// P1.2: bare equality on ANY field is recognized (was previously
+// limited to `.status`). `Patient.gender = 'female'` now works.
+func TestEvaluateFHIRPathBareEqualityWidened(t *testing.T) {
+	t.Parallel()
+	const topic = `{
+		"resourceType": "SubscriptionTopic",
+		"url": "http://example.org/topics/gender-eq",
+		"version": "1.0.0",
+		"status": "active",
+		"resourceTrigger": [{
+			"resource": "Patient",
+			"supportedInteraction": ["create"],
+			"fhirPathCriteria": "Patient.gender = 'female'"
+		}]
+	}`
+	cat := loadCatalog(t, topic)
+
+	row := matcher.ResourceChange{
+		ResourceType: "Patient",
+		ChangeKind:   "create",
+		Resource:     []byte(`{"resourceType":"Patient","id":"a","gender":"female"}`),
+	}
+	if got := matcher.Evaluate(cat, row); len(got) != 1 {
+		t.Errorf("expected match for gender=female; got %d", len(got))
+	}
+
+	row.Resource = []byte(`{"resourceType":"Patient","id":"a","gender":"male"}`)
+	if got := matcher.Evaluate(cat, row); len(got) != 0 {
+		t.Errorf("expected no match for gender=male; got %d", len(got))
 	}
 }
 
