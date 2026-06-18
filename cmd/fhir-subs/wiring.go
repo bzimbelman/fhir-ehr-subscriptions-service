@@ -76,13 +76,23 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 	rt.pool = pool
 
-	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	if err := pool.Ping(pingCtx); err != nil {
-		cancel()
+	// Ping under a tight bound so a misconfigured DB at startup fails
+	// fast and the orchestrator restarts the pod, instead of hanging
+	// the listener registration past the operator's startup probe.
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	pingErr := make(chan error, 1)
+	go func() { pingErr <- pool.Ping(pingCtx) }()
+	select {
+	case err := <-pingErr:
+		if err != nil {
+			rt.shutdown(context.Background())
+			return nil, fmt.Errorf("database: ping: %w", err)
+		}
+	case <-pingCtx.Done():
 		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("database: ping: %w", err)
+		return nil, fmt.Errorf("database: ping: %w", pingCtx.Err())
 	}
-	cancel()
 
 	migCtx, cancelMig := context.WithTimeout(ctx, 60*time.Second)
 	if err := migrate.Up(migCtx, pool); err != nil {

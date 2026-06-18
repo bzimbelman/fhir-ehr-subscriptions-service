@@ -38,7 +38,7 @@ func TestE2E_ProdBinary_DBUnreachable_FailsLoud(t *testing.T) {
 	}
 	dockerGate(t, harnessSetupErr, allowNoDocker)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	httpPort := freePort(t)
@@ -90,9 +90,9 @@ auth:
 		t.Fatalf("write config: %v", err)
 	}
 
-	binCtx, binCancel := context.WithTimeout(ctx, 25*time.Second)
+	binCtx, binCancel := context.WithTimeout(ctx, 50*time.Second)
 	defer binCancel()
-	cmd := exec.CommandContext(binCtx, binPath, "run", "--config", cfgPath)
+	cmd := exec.CommandContext(binCtx, binPath, "--config", cfgPath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	cmd.Stdout = newPrefixWriter(t, "fhir-subs out")

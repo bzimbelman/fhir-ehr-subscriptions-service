@@ -186,7 +186,7 @@ pipeline:
 	}
 
 	binCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(binCtx, binPath, "run", "--config", cfgPath)
+	cmd := exec.CommandContext(binCtx, binPath, "--config", cfgPath)
 	cmd.Stdout = newPrefixWriter(t, "fhir-subs out")
 	cmd.Stderr = newPrefixWriter(t, "fhir-subs err")
 	if err := cmd.Start(); err != nil {
