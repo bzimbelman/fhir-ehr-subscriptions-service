@@ -7,8 +7,6 @@ package orchestrator
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,18 +28,6 @@ import (
 // interface. The two types' Outcome enums are layout-compatible (per
 // docs/low-level-design/channels.md §4.2) but distinct, so we
 // translate at this seam.
-//
-// Production-bug bridge: the API's $get-ws-binding-token stores
-// sha256(token) (subscription_handlers.go:689) while
-// repos.WsBindingTokensRepo.Consume queries by raw token. The WS
-// channel passes the bind frame's token through to Consume verbatim,
-// so a cleartext-token lookup against a hashed-stored row never
-// matches in production either. This e2e test pre-hashes here so the
-// rest of the WSS pipeline (bind handshake, frame send, ack) is
-// exercised end-to-end. The mismatch must be fixed in production —
-// either the API stores cleartext (matches the LLD's "single-use
-// random token" rather than a hashed token) or the channel must hash
-// before lookup.
 type pipelineTokenConsumer struct {
 	pipe *hpipe.Pipeline
 }
@@ -49,10 +35,7 @@ type pipelineTokenConsumer struct {
 func (a *pipelineTokenConsumer) Consume(
 	ctx context.Context, token string, now time.Time,
 ) (wschan.ConsumeResult, error) {
-	// Bridge production sha256 storage; see type comment.
-	sum := sha256.Sum256([]byte(token))
-	hashed := hex.EncodeToString(sum[:])
-	r, err := a.pipe.WsBindingTokens().Consume(ctx, a.pipe.Pool(), hashed, now)
+	r, err := a.pipe.WsBindingTokens().Consume(ctx, a.pipe.Pool(), token, now)
 	if err != nil {
 		return wschan.ConsumeResult{}, err
 	}

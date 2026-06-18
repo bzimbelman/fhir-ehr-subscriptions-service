@@ -11,6 +11,13 @@
 alter table ws_binding_tokens
     add column if not exists consumed_at timestamptz;
 
+-- The `token` column stores sha256(cleartext-token) hex-encoded; cleartext
+-- is only ever returned to the subscriber in the $get-ws-binding-token
+-- response. Both Insert and Consume in repos.WsBindingTokensRepo hash
+-- before touching this column, so a database leak never yields a usable
+-- bind credential.
+comment on column ws_binding_tokens.token is 'sha256(token), hex-encoded; cleartext is never persisted.';
+
 -- Lookups during bind hit (token, consumed_at IS NULL) heavily; partial index.
 create index if not exists ws_binding_tokens_unconsumed_idx
     on ws_binding_tokens (token)
