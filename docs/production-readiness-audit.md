@@ -513,42 +513,43 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 
 ### NICE-TO-HAVE
 
-#### N-1: Polish
-- **`internal/api/auth/principal.go:22-28`** — `HasScope` is O(n); cache as `map[string]struct{}`.
-- **`internal/api/handlers/subscription_handlers.go:480-490`** — `equalJSON` swallows unmarshal errors and treats malformed JSON as equal.
-- **`internal/api/handlers/subscription_handlers.go:680-686`** — `crypto/rand.Read` failure increments only HTTP 500 counter; add a `rand_failures_total` metric.
-- **`internal/api/handlers/router.go:111-117`** — `NotFound`/`MethodNotAllowed` rely on upstream auth wiring; mount auth as `chi.Middleware` for compile-time guarantee.
-- **`internal/channel/email/email.go:392`** — `subject := c.cfg.SubjectTemplate` — when template substitution lands, sanitize each substituted value for CRLF.
-- **`internal/channel/resthook/resthook.go:421-431`** — `formatTraceparent` doesn't validate hex; non-hex correlation IDs produce invalid trace-id silently.
-- **`internal/channel/websocket/websocket.go:381-388`** — ack handling doesn't validate that eventNumber is in the sent-set.
-- **`internal/channel/websocket/websocket.go:418-484`** — Deliver / Close race: Deliver writes to a closing conn; document or refcount per-session.
-- **`internal/channel/message/message.go:263-323`** — `wrapInMessageBundle` re-marshals via `map[string]any`; non-deterministic byte output (downstream signing concern).
-- **`internal/engine/scheduler/scheduler.go:107-114`** — `ComputeBackoff` doubling loop is O(log Max/Initial); cap iteration at 64 explicitly.
-- **`internal/engine/scheduler/worker.go:289-299`** — channel setup-error retries forever; consider classify-as-permanent on Nth consecutive same-subscription occurrence.
-- **`internal/hl7processor/processor.go:425-468`** — pending_kind enum reuses `create` to mean "held replacement"; rename or split.
-- **`internal/hl7processor/processor.go:614-635`** — `adapter_id × resource_type × change_kind` 3-way label cross-product; cap `adapter_id` cardinality.
-- **`internal/hl7processor/translate.go`** — no charset normalization at translate; document contract that adapters must transcode pre-translate.
-- **`internal/matcher/matcher.go:572-588`** — backoff state has no `matcher_backoff_seconds` gauge.
-- **`internal/matcher/matcher.go:670-679`** — `committed=true` variable name lies about the rollback path.
-- **`internal/topics/catalog/catalog.go:240-282`** — document immutability contract on Catalog; rename providers to make swap-pointer-on-reload explicit.
-- **`internal/topics/catalog/catalog.go:415-417`** — `RawJSON` in-memory copy of every topic body; lazy-load from disk for large catalogs.
-- **`internal/topics/catalog/catalog.go:271-282`** — emit structured override-log when operator topic shadows built-in.
-- **`internal/mllp/connection.go:119-145`** — `readBuf` 8192 hardcoded; per-read `append([]byte(nil), buf...)` allocates per Read; pool buffers.
-- **`internal/mllp/connection.go:296`** — body double-copy (framer already returns fresh).
-- **`internal/mllp/connection.go:430-435`** — write deadline 2s hardcoded.
-- **`internal/mllp/framer.go:225-236`** — `scanEndPair` is O(n) per Append; track scan offset.
-- **`internal/mllp/listener.go:148-174`** — `time.After` (timer leak) on shutdown.
-- **`internal/mllp/endpoint.go:90`** — no PROXY protocol v2; behind LB every conn appears from same IP.
-- **`internal/infra/lifecycle/sequencer.go:285-306`** — `time.After` timer leaks on early phase return.
-- **`internal/infra/observability/audit/audit.go:264-274`** — `bytesEqual` reinvented; use `bytes.Equal`.
-- **`internal/infra/observability/audit/audit.go:298-339`** — sink failure has no buffer/queue; document fail-open.
-- **`internal/infra/observability/audit/audit.go:57-65`** — `Event.Payload` taken by reference; defensive copy at Emit entry.
-- **`internal/infra/observability/audit/pgstore.go:43-44`** — advisory lock id is FNV truncation; reserve a documented integer constant.
-- **`internal/infra/storage/codec/codec.go`** — envelope format hardcoded `0x01`; add envelope-version log on Decrypt mismatch.
-- **`internal/infra/storage/repos/deliveries.go:53-95`** — no tiebreaker in `ORDER BY next_attempt_at ASC`; non-deterministic claim ordering.
-- **`internal/infra/storage/repos/subscription_topics.go:60-87`** — `ListByStatus` has no LIMIT.
-- **`internal/infra/storage/claim/claim.go:40`** — substring match for "FOR UPDATE"/"SKIP LOCKED" can be tricked by SQL comments.
-- **`internal/infra/storage/partition/partition.go:33-65`** — `Run` captures `cfg.RunInterval` once; ignores reload changes.
+#### N-1: Polish — RESOLVED 2026-06-18 (commits c1ff9eb, 6649d9b, 2c8e258, 79921ca, ffe847b)
+
+- **ALREADY RESOLVED (a2318e9)** `internal/api/auth/principal.go:22-28` — `HasScope` switched to a `sync.Once`-built `map[string]struct{}` set; lookups O(1). Resolved during S-3 work.
+- **RESOLVED (6649d9b)** `internal/api/handlers/subscription_handlers.go:480-490` — `equalJSON` no longer Marshal(nil)'s malformed inputs to "null"; falls back to `bytes.Equal` on parse failure. Test: `TestN1_EqualJSONMalformedFallsBackToBytes`.
+- **RESOLVED (6649d9b)** `internal/api/handlers/subscription_handlers.go:680-686` — new `RandFailureRecorder` interface + `Metrics.RandFailuresTotal` counter; `$get-ws-binding-token` calls it on `crypto/rand.Read` failure.
+- **DEFERRED (out of scope)** `internal/api/handlers/router.go:111-117` — chi.Middleware compile-time guarantee for auth requires changing the public Deps surface and is broader than polish; tracked for the next router refactor.
+- **RESOLVED (2c8e258)** `internal/channel/email/email.go:392` — `Subject` header now flows through `stripCRLF` before write. Test: `TestN1_BuildMIMEStripsCRLFFromSubject`.
+- **RESOLVED (2c8e258)** `internal/channel/resthook/resthook.go:421-431` — `formatTraceparent` drops non-hex bytes pre-pad, guaranteeing W3C-valid output. Test: `TestN1_FormatTraceparentEmitsHexOnly`.
+- **RESOLVED (79921ca)** `internal/channel/websocket/websocket.go:381-388` — `deliverAck` now returns whether eventNumber was in the sent-set; readLoop emits new `MetricUnknownAckTotal` on rogue acks.
+- **RESOLVED (79921ca)** `internal/channel/websocket/websocket.go:418-484` — `Deliver` doc-block now spells out the Deliver/Close concurrency contract (transient on race; underlying conn library guards double-close).
+- **DEFERRED — see `## Reclassified` below** `internal/channel/message/message.go:263-323` — `wrapInMessageBundle` deterministic byte output requires a JCS-canonicalizer or an opinionated map-keys-sorted JSON writer; non-trivial scope.
+- **RESOLVED (79921ca)** `internal/engine/scheduler/scheduler.go:107-114` — `maxBackoffDoublingSteps = 64` constant explicitly caps the doubling loop. Test: `TestN1_ComputeBackoffIterationCap`.
+- **DOCUMENTED (ffe847b)** `internal/engine/scheduler/worker.go:289-299` — already retried under `RetryConfig.MaxAttempts`; doc-block now states the budget is responsible. Classify-as-permanent on N consecutive setup errors is a follow-up.
+- **DOCUMENTED (ffe847b)** `internal/hl7processor/processor.go:425-468` — pending_kind `create` overload documented as a known schema constraint; rename is a migration outside polish scope.
+- **DOCUMENTED (ffe847b)** `internal/hl7processor/processor.go:614-635` — cardinality contract documented in `metrics.go`. All three label values are deployment-bound (closed sets); no runtime cap is needed because no user-supplied input flows in.
+- **DOCUMENTED (ffe847b)** `internal/hl7processor/translate.go` — charset normalization contract spelled out: adapters MUST transcode to UTF-8 before calling translate.
+- **RESOLVED (ffe847b)** `internal/matcher/matcher.go:572-588` — new `SetBackoffReporter` optional gauge; `Worker.Run` fires it on every transient retry and clears it on a healthy tick. Test: `TestN1_SetBackoffReporterStoresAndUnsetsCallback`.
+- **RESOLVED (ffe847b)** `internal/matcher/matcher.go:670-679` — variable renamed `committed` → `txDone` to honestly describe both the commit and rollback paths.
+- **RESOLVED (ffe847b)** `internal/topics/catalog/catalog.go:240-282` — Catalog immutability + RawJSON lifetime contracts now spelled out in the type doc; AtomicCatalogProvider's swap-pointer-on-reload semantics already explicit at its call sites.
+- **DOCUMENTED (ffe847b)** `internal/topics/catalog/catalog.go:415-417` — RawJSON lifetime documented as intentional; lazy-load is a follow-up if a 10k+ topic deployment ever materializes.
+- **RESOLVED (ffe847b)** `internal/topics/catalog/catalog.go:271-282` — new `Override.LogFields()` returns a structured map for slog/logr emitters so the wiring layer can emit one record per override.
+- **RESOLVED (79921ca, ffe847b)** `internal/mllp/connection.go:119-145` — `ListenerConfig.ReadBufBytes` knob (default 8192). Per-read `append` is unchanged because the per-conn copy is required to ferry bytes across the goroutine boundary into `readResult.buf`; pooling buffers across connections is a separate optimization.
+- **RESOLVED (ffe847b)** `internal/mllp/connection.go:296` — `Body: append([]byte(nil), body...)` removed; framer already returns a fresh slice.
+- **RESOLVED (79921ca)** `internal/mllp/connection.go:430-435` — `ListenerConfig.AckWriteTimeout` (default 2s) replaces the inline hardcode; threaded through `writeACK` / `writeNACK`.
+- **RESOLVED (ffe847b)** `internal/mllp/framer.go:225-236` — `closedScanned` offset added; new `scanEndPairRange(b, from, to)` windowed helper. Avoids O(n²) re-scan on pre-frame noise.
+- **RESOLVED (79921ca)** `internal/mllp/listener.go:148-174` — `time.After` swapped for `time.NewTimer + defer Stop`.
+- **DEFERRED — see `## Reclassified` below** `internal/mllp/endpoint.go:90` — PROXY protocol v2 requires an additional dependency (proxyproto.Listener) and a configuration surface; scope larger than N-1.
+- **RESOLVED (ffe847b)** `internal/infra/lifecycle/sequencer.go:285-306` — probeWindow path now uses `time.NewTimer + Stop` to release the timer slot on early `parent.Done()`. (The deadline-path Timer was already correct from S-15.)
+- **RESOLVED (c1ff9eb)** `internal/infra/observability/audit/audit.go:264-274` — `bytesEqual` reinvented helper deleted; switched to `bytes.Equal`.
+- **DOCUMENTED (c1ff9eb)** `internal/infra/observability/audit/audit.go:298-339` — `Writer.Emit` doc-block now spells out fail-open sink semantics and the rationale (no internal queue; durable row is the source of truth).
+- **RESOLVED (c1ff9eb)** `internal/infra/observability/audit/audit.go:57-65` — `Writer.Emit` now takes a defensive shallow copy of `evt.Payload` at entry. Test: `TestN1_EmitDefensiveCopiesPayload`.
+- **RESOLVED (c1ff9eb)** `internal/infra/observability/audit/pgstore.go:43-44` — `AuditChainAdvisoryLockID` int64 constant published; FNV-1a runtime hash removed. Test: `TestN1_AuditChainAdvisoryLockIDIsDocumented`.
+- **DOCUMENTED (ffe847b)** `internal/infra/storage/codec/codec.go` — envelope format byte `0x01` documented; existing Decrypt error already includes the observed format byte (`0x%02x`).
+- **RESOLVED (79921ca)** `internal/infra/storage/repos/deliveries.go:53-95` — `ORDER BY next_attempt_at ASC, id ASC` adds a deterministic tiebreaker.
+- **RESOLVED (79921ca)** `internal/infra/storage/repos/subscription_topics.go:60-87` — `ListByStatus` now bounded by `DefaultListByStatusCap = 1000`; new `ListByStatusPage(limit, offset)` for callers needing more.
+- **RESOLVED (79921ca)** `internal/infra/storage/claim/claim.go:40` — `hasSkipLocked` now strips line/block comments and string literals via `stripSQLCommentsAndStrings` before substring match. Test: `TestN1_HasSkipLockedIgnoresCommentsAndStrings`.
+- **RESOLVED (ffe847b)** `internal/infra/storage/partition/partition.go:33-65` — `Run` re-reads `cfg.RunInterval` and `cfg.TickTimeout` on every iteration so SIGHUP-driven reloads take effect.
 
 ---
 
@@ -595,3 +596,17 @@ The full B-4 wiring exercise surfaced four new findings that exist *because* the
 - **What:** When the configured `adapter.id` is unknown, the binary fails with `production wiring: adapter load: registry: unknown adapter "X" (bundled: [default])`. The error chains through `fmt.Errorf` rather than the typed `*registry.UnknownAdapterError`, so an operator-facing tool that wants to recommend the bundled list has to grep the message.
 - **Why it matters:** Operability — error messages are correct but not machine-readable. Not a correctness issue.
 - **Fix:** Surface the typed error to the caller (probably via a small `errors.As` switch in `realMain`) so the recommended bundled-adapter list is structured.
+
+---
+
+## Reclassified
+
+Items originally captured under N-1 (NICE-TO-HAVE / Polish) that proved larger than the polish bar during the 2026-06-18 N-1 sweep. Each is genuinely follow-up work, not lost work.
+
+- **N-1 → follow-up: chi.Middleware-typed Auth wiring** (`internal/api/handlers/router.go:111-117`). Compile-time guaranteeing `NotFound`/`MethodNotAllowed` run behind auth requires changing the public `Deps` surface so `RegisterRoutes` accepts a typed `chi.Middleware` parameter rather than relying on the call-site to wrap. Touches every existing wiring caller.
+
+- **N-1 → follow-up: deterministic message-channel Bundle bytes** (`internal/channel/message/message.go:263-323`). `wrapInMessageBundle` re-marshals a `map[string]any`, so map-iteration order leaks into the wire bytes. Fix is a JCS-canonicalizer (or a sorted-keys writer like `bundle.go` already uses) for the outer Bundle. Tracked because the audit-chain `chain_input` for sink-side signing of message-channel deliveries depends on byte-stable output; non-trivial to land safely without tests across every wrap path.
+
+- **N-1 → follow-up: PROXY protocol v2 in MLLP listener** (`internal/mllp/endpoint.go:90`). Behind a Cloud Load Balancer that prepends `PROXY` headers, every accepted conn currently reports the LB's IP rather than the originating EHR. Fix is to wrap the listener in a `proxyproto.Listener` from `github.com/pires/go-proxyproto` and gate via a config knob; introduces a new dependency and config surface.
+
+- **N-1 → follow-up: classify-as-permanent on N consecutive setup errors** (`internal/engine/scheduler/worker.go:289-299`). The current path retries setup errors through the standard `RetryConfig.MaxAttempts` budget; per-subscription same-error counting is a follow-up.

@@ -50,6 +50,12 @@ func (r *DeliveriesRepo) Insert(ctx context.Context, q Querier, row DeliveryRow)
 
 // ClaimPending claims up to limit pending rows whose next_attempt_at is
 // at or before now. Sets status='delivering' on each.
+//
+// N-1: ORDER BY adds id ASC as a tiebreaker so concurrent workers
+// observe a deterministic claim order when many rows share the same
+// next_attempt_at (typical for a freshly-fanned-out batch). Without the
+// tiebreaker, Postgres can return rows in any order, which complicates
+// reproducing failures and reasoning about head-of-line behavior.
 func (r *DeliveriesRepo) ClaimPending(ctx context.Context, tx pgx.Tx, limit int32, now time.Time) ([]DeliveryRow, error) {
 	const sql = `
 		SELECT id, subscription_id, ehr_event_id, event_number, status,
@@ -57,7 +63,7 @@ func (r *DeliveriesRepo) ClaimPending(ctx context.Context, tx pgx.Tx, limit int3
 		       key_version, correlation_id, created_at, updated_at
 		FROM deliveries
 		WHERE status = 'pending' AND next_attempt_at <= $1
-		ORDER BY next_attempt_at ASC
+		ORDER BY next_attempt_at ASC, id ASC
 		LIMIT $2
 		FOR UPDATE SKIP LOCKED`
 	rows, err := tx.Query(ctx, sql, now, limit)

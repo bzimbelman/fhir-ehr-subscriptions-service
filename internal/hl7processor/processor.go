@@ -469,6 +469,14 @@ func (p *Processor) decideOutcome(ctx context.Context, tx pgx.Tx, row repos.Hl7M
 		// replacements symmetrically, but the existing schema's
 		// pending_kind only allows 'delete'/'create'. We still hold by
 		// kind=create.
+		//
+		// N-1: the `create` enum value here is overloaded — it means
+		// either "first half of a fresh create-pair" OR "held
+		// replacement awaiting its cancellation half." Disambiguate
+		// downstream by inspecting the source HL7 control segment if
+		// you need to tell them apart; renaming the enum to add a
+		// dedicated `replacement_held` value is a schema migration
+		// outside N-1 polish scope.
 		if ext.IsReplacementHalf {
 			window := p.deps.Adapter.CorrelationHoldWindow()
 			if p.cfg.CorrelationHoldWindow > 0 {

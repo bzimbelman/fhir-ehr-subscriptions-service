@@ -95,6 +95,14 @@ type Framer struct {
 	// Specifically: in stateClosed, pending may hold bytes preceding the
 	// next 0x0B; in stateOpen, pending is unused (bytes go straight to buf).
 	pending []byte
+
+	// closedScanned tracks how many leading bytes of `pending` have
+	// already been swept for the end-pair while we are in stateClosed.
+	// Without it, repeated Next calls on a stream that streams junk
+	// before the first 0x0B re-scanned from offset 0 every time —
+	// O(n^2) on Append+Next interleaving. Reset to 0 whenever pending
+	// is rewritten or state transitions (N-1).
+	closedScanned int
 }
 
 // NewFramer constructs a framer with the given maximum frame body size in
@@ -142,18 +150,39 @@ func (f *Framer) Next() FramerEvent {
 			// EXCEPT a 0x1C 0x0D pair before the first 0x0B is per LLD §4
 			// EndBeforeStart — a peer software bug that triggers a drop.
 			startIdx := indexOf(f.pending, frameStart)
-			endBeforeStart := scanEndPair(f.pending, startIdx)
+			// N-1: incremental end-pair scan. We have already swept
+			// pending[:closedScanned] in a prior Next call; only sweep
+			// the new tail so repeated junk does not produce O(n^2)
+			// scanning. The scan window's upper bound is min(len, startIdx).
+			upper := len(f.pending)
+			if startIdx >= 0 && startIdx < upper {
+				upper = startIdx
+			}
+			scanFrom := f.closedScanned
+			if scanFrom > 0 {
+				// Step back one byte so we catch a pair straddling the
+				// previous scan boundary.
+				scanFrom--
+			}
+			endBeforeStart := false
+			if scanFrom < upper && scanEndPairRange(f.pending, scanFrom, upper) {
+				endBeforeStart = true
+			}
+			f.closedScanned = upper
 			if endBeforeStart {
 				f.pending = f.pending[:0]
+				f.closedScanned = 0
 				return MalformedEvent{Reason: ReasonEndBeforeStart}
 			}
 			if startIdx < 0 {
 				// All pending bytes are noise; discard them and ask for more.
 				f.pending = f.pending[:0]
+				f.closedScanned = 0
 				return NeedMoreEvent{}
 			}
 			// Drop noise + the start byte itself; transition to Open.
 			f.pending = f.pending[startIdx+1:]
+			f.closedScanned = 0
 			f.state = stateOpen
 			f.buf = f.buf[:0]
 			// Fall through to process any bytes already in pending.
@@ -238,15 +267,20 @@ func indexOf(b []byte, c byte) int {
 	return -1
 }
 
-// scanEndPair reports whether b contains the 0x1C 0x0D end-byte pair at
-// any position before startIdx (the first 0x0B). startIdx == -1 means
-// no 0x0B was found, so the entire buffer is "before" the start.
-func scanEndPair(b []byte, startIdx int) bool {
-	limit := startIdx
-	if limit < 0 {
-		limit = len(b)
+// scanEndPairRange reports whether b[from:to] contains the 0x1C 0x0D
+// end-byte pair anywhere. The window is half-open. (N-1)
+//
+// Replaced the prior `scanEndPair(b, startIdx)` whole-prefix scan; the
+// windowed form is what production callers use to honor the
+// `closedScanned` offset.
+func scanEndPairRange(b []byte, from, to int) bool {
+	if from < 0 {
+		from = 0
 	}
-	for i := 0; i+1 < limit; i++ {
+	if to > len(b) {
+		to = len(b)
+	}
+	for i := from; i+1 < to; i++ {
 		if b[i] == frameEnd1 && b[i+1] == frameEnd2 {
 			return true
 		}

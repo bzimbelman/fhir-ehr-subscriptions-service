@@ -70,7 +70,65 @@ func Unprocessed[T any](
 	return out, nil
 }
 
+// hasSkipLocked reports whether the SQL string carries both `FOR UPDATE`
+// and `SKIP LOCKED` clauses outside of comments. SQL comments and string
+// literals are stripped first so a payload like
+// `-- FOR UPDATE SKIP LOCKED` cannot trick the runtime check (N-1).
 func hasSkipLocked(sql string) bool {
-	upper := strings.ToUpper(sql)
+	stripped := stripSQLCommentsAndStrings(sql)
+	upper := strings.ToUpper(stripped)
 	return strings.Contains(upper, "FOR UPDATE") && strings.Contains(upper, "SKIP LOCKED")
+}
+
+// stripSQLCommentsAndStrings removes `--` line comments, `/* ... */`
+// block comments, and the contents of single-quoted string literals
+// from s. It is intentionally lightweight (no SQL parser dependency)
+// and only needs to be robust against the patterns ClaimUnprocessed
+// callers compose at compile time.
+func stripSQLCommentsAndStrings(s string) string {
+	var out strings.Builder
+	i := 0
+	n := len(s)
+	for i < n {
+		c := s[i]
+		// Line comment: -- to end of line.
+		if c == '-' && i+1 < n && s[i+1] == '-' {
+			for i < n && s[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		// Block comment: /* ... */
+		if c == '/' && i+1 < n && s[i+1] == '*' {
+			i += 2
+			for i+1 < n && !(s[i] == '*' && s[i+1] == '/') {
+				i++
+			}
+			if i+1 < n {
+				i += 2
+			} else {
+				i = n
+			}
+			continue
+		}
+		// Single-quoted string literal: '...' with '' as escaped quote.
+		if c == '\'' {
+			i++
+			for i < n {
+				if s[i] == '\'' {
+					if i+1 < n && s[i+1] == '\'' {
+						i += 2
+						continue
+					}
+					i++
+					break
+				}
+				i++
+			}
+			continue
+		}
+		out.WriteByte(c)
+		i++
+	}
+	return out.String()
 }

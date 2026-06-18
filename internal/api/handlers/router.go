@@ -66,6 +66,15 @@ type ActivatePanicRecorder interface {
 	RecordActivatePanic()
 }
 
+// RandFailureRecorder is an optional extension implemented by
+// MetricsRecorder to count crypto/rand.Read failures in token-mint
+// paths. The previous code only tripped the generic HTTP 500 counter,
+// which buried a kernel entropy failure under unrelated 500s (N-1).
+// Detected via type assertion so legacy recorders compile unchanged.
+type RandFailureRecorder interface {
+	RecordRandFailure()
+}
+
 // Deps is the bundle of dependencies the handlers need at request time.
 type Deps struct {
 	Subscriptions SubscriptionsStore

@@ -110,6 +110,13 @@ func DeterministicRNG(seed int64) RNG {
 	return rand.New(rand.NewPCG(s, s^0x9E3779B97F4A7C15))
 }
 
+// maxBackoffDoublingSteps caps how many times ComputeBackoff doubles
+// the base. With int64 nanoseconds, base*2 overflows after ~62
+// doublings starting from 1ns; anything past 64 is irrelevant because
+// cfg.Max is reached far earlier under any realistic configuration
+// (N-1).
+const maxBackoffDoublingSteps int32 = 64
+
 // ComputeBackoff returns the duration to wait before the next attempt
 // for a delivery whose current attempts counter is `attempts` (i.e.,
 // 0 for the first scheduled retry). The retryAfter hint, if non-zero,
@@ -127,7 +134,17 @@ func ComputeBackoff(cfg RetryConfig, attempts int32, retryAfter time.Duration, r
 		return clamp(retryAfter, cfg.Min, cfg.Max)
 	}
 	base := cfg.Initial
-	for i := int32(0); i < attempts; i++ {
+	// N-1: cap iteration at maxBackoffDoublingSteps (64) explicitly. The
+	// curve is initial * 2^attempts; with int64 nanoseconds, base*2
+	// overflows after ~62 doublings (initial=1ns) regardless of cfg.Max.
+	// The legacy "next < base" guard caught overflow but pathological
+	// callers passing attempts > 1e6 still spun for millions of harmless
+	// iterations. Bound it.
+	steps := attempts
+	if steps > maxBackoffDoublingSteps {
+		steps = maxBackoffDoublingSteps
+	}
+	for i := int32(0); i < steps; i++ {
 		next := base * 2
 		if next < base || next > cfg.Max {
 			base = cfg.Max

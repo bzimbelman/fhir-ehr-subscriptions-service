@@ -173,6 +173,26 @@ type EventCoding struct {
 }
 
 // Catalog is the immutable handle the matcher reads.
+//
+// # Immutability contract (N-1)
+//
+// A Catalog returned by Load is treated as read-only by every consumer
+// in this codebase. Mutating a *Catalog or any *Topic it owns after it
+// has been published (e.g., via AtomicCatalogProvider.Store) is
+// undefined and will race with concurrent matcher reads. To roll out a
+// new catalog, build a new *Catalog via Load and atomically swap it
+// in; never mutate in place.
+//
+// # RawJSON lifetime
+//
+// Topic.RawJSON is materialized at Load time so subsequent
+// /SubscriptionTopic GETs do not have to re-canonicalize. For very
+// large catalogs (10k+ topics) this is a meaningful in-memory cost;
+// the RawJSON bytes are never mutated, so a future on-demand-load
+// variant is a backwards-compatible refactor (load returns the bytes
+// from a sidecar file/blob the first time RawJSON() is called).
+// Today the cost is intentional — the API never serializes one row
+// per request.
 type Catalog struct {
 	topics      []*Topic
 	byURL       map[string]*Topic
@@ -261,6 +281,25 @@ type Override struct {
 	ToOrigin   string // origin of the rejected higher-priority candidate
 	ToSource   Source
 	Reason     string
+}
+
+// LogFields returns a structured map suitable for slog/logr emitters.
+// Wiring layers iterate Catalog.Overridden() at startup and emit one
+// record per Override so operators see exactly which higher-priority
+// candidate was shadowed by a lower-priority working topic — a typo in
+// an operator-supplied catalog should never silently shadow a built-in
+// without an audit trail (N-1).
+func (o Override) LogFields() map[string]any {
+	return map[string]any{
+		"event":           "topic_override_fallback",
+		"url":             o.URL,
+		"version":         o.Version,
+		"used_origin":     o.FromOrigin,
+		"used_source":     string(o.FromSource),
+		"shadowed_origin": o.ToOrigin,
+		"shadowed_source": string(o.ToSource),
+		"reason":          o.Reason,
+	}
 }
 
 // Report is what Load returns.

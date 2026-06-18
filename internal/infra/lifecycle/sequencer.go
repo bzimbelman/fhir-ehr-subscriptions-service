@@ -171,9 +171,14 @@ func (m *LifecycleModule) runShutdown(parent context.Context, reason string) {
 		probeWindow = remaining
 	}
 	if probeWindow > 0 {
+		// N-1: time.NewTimer + Stop instead of time.After so an early
+		// parent.Done() releases the timer's runtime slot rather than
+		// waiting on GC.
+		probeTimer := time.NewTimer(probeWindow)
 		select {
-		case <-time.After(probeWindow):
+		case <-probeTimer.C:
 		case <-parent.Done():
+			probeTimer.Stop()
 		}
 	}
 	p1 := m.lctx.Clock().Sub(phaseStart)

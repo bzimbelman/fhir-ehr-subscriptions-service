@@ -268,11 +268,17 @@ func (l *Listener) Shutdown(ctx context.Context) error {
 		close(drained)
 	}()
 
+	// N-1: time.NewTimer + Stop instead of time.After so a fast-drain
+	// path stops the timer's underlying runtime resource immediately
+	// rather than waiting for the deadline to fire and let GC reclaim it.
+	deadlineTimer := time.NewTimer(time.Until(deadline))
+	defer deadlineTimer.Stop()
+
 	select {
 	case <-drained:
 		l.logger.Info("mllp_listener_shutdown_complete", nil)
 		return nil
-	case <-time.After(time.Until(deadline)):
+	case <-deadlineTimer.C:
 		// Hard close anything remaining.
 		for _, ep := range l.endpoints {
 			ep.closeAllConns()

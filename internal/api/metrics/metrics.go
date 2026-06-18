@@ -44,6 +44,7 @@ type Metrics struct {
 	TokenIssued          prometheus.Counter
 	WSBindingTokenIssued prometheus.Counter
 	ActivatePanicTotal   prometheus.Counter
+	RandFailuresTotal    prometheus.Counter
 }
 
 // New constructs the API metric set and registers it with reg. If reg
@@ -95,6 +96,10 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fhir_subs_api_activate_panic_total",
 			Help: "Recovered panics in the fire-and-forget activation goroutines (B-10).",
 		}),
+		RandFailuresTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fhir_subs_api_rand_failures_total",
+			Help: "crypto/rand.Read failures in token-mint paths (N-1).",
+		}),
 	}
 
 	collectors := []prometheus.Collector{
@@ -108,6 +113,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.TokenIssued,
 		m.WSBindingTokenIssued,
 		m.ActivatePanicTotal,
+		m.RandFailuresTotal,
 	}
 
 	for _, c := range collectors {
@@ -203,6 +209,15 @@ func (m *Metrics) RecordActivatePanic() {
 		return
 	}
 	m.ActivatePanicTotal.Inc()
+}
+
+// RecordRandFailure increments rand_failures_total. Called by handlers
+// when crypto/rand.Read fails on a token-mint path (N-1).
+func (m *Metrics) RecordRandFailure() {
+	if m == nil || m.RandFailuresTotal == nil {
+		return
+	}
+	m.RandFailuresTotal.Inc()
 }
 
 // RequestMiddleware returns a chi-friendly HTTP middleware that records

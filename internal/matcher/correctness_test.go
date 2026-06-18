@@ -107,11 +107,14 @@ func TestAtomicCatalogProviderRaceFree(t *testing.T) {
 		}()
 	}
 
-	// Writer: swap between two catalogs many times.
+	// Writer: swap between two catalogs many times. N-1: bumped to
+	// 100k iterations from 1k so the writer cannot finish before any
+	// reader has been scheduled — the previous bound was tight enough
+	// to flake on busy CI runners that under-served the reader loops.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 1000; i++ {
+		for i := 0; i < 100000; i++ {
 			if i%2 == 0 {
 				prov.Store(cat1)
 			} else {

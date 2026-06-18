@@ -51,6 +51,14 @@ func (s *server) recordValidationFailure(kind string) {
 		s.deps.Metrics.RecordValidationFailure(kind)
 	}
 }
+func (s *server) recordRandFailure() {
+	if s.deps.Metrics == nil {
+		return
+	}
+	if r, ok := s.deps.Metrics.(RandFailureRecorder); ok {
+		r.RecordRandFailure()
+	}
+}
 
 // requireScopes returns true if the principal carries every needed
 // scope; otherwise it writes a 403 OperationOutcome and returns false.
@@ -601,13 +609,22 @@ func classifyUpdate(existing *repos.SubscriptionRow, want *internalSubscription)
 	return routingTakesEffectImmediately
 }
 
+// equalJSON compares two JSON byte slices for semantic equality after a
+// canonicalizing round-trip. Two empty inputs are equal. If either side
+// fails to parse, equalJSON falls back to byte-equality so a malformed
+// store-side blob does NOT silently look "equal" to a fresh parsable
+// inbound payload (N-1 — the prior implementation Marshal'd the nil
+// any returned by failed Unmarshal and produced "null" on both sides).
 func equalJSON(a, b []byte) bool {
 	if len(a) == 0 && len(b) == 0 {
 		return true
 	}
 	var av, bv any
-	_ = json.Unmarshal(a, &av)
-	_ = json.Unmarshal(b, &bv)
+	aErr := json.Unmarshal(a, &av)
+	bErr := json.Unmarshal(b, &bv)
+	if aErr != nil || bErr != nil {
+		return bytes.Equal(a, b)
+	}
 	ab, _ := json.Marshal(av)
 	bb, _ := json.Marshal(bv)
 	return bytes.Equal(ab, bb)
@@ -821,6 +838,10 @@ func (s *server) opGetWsBindingToken(w http.ResponseWriter, r *http.Request) {
 	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
+		// N-1: surface entropy failure on its own counter so an
+		// operator can distinguish a kernel/CSPRNG outage from
+		// generic HTTP 500s.
+		s.recordRandFailure()
 		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException, "rand failed")
 		return
 	}

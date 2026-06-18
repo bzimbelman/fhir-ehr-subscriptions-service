@@ -3,6 +3,25 @@
 
 package hl7processor
 
+// Metric cardinality contract:
+//
+// MetricResourceChangesTotal carries `adapter_id × resource_type ×
+// change_kind`. Each label has a closed, deployment-bound domain:
+//   - adapter_id is set once at startup from `Config.AdapterID` and is
+//     constant for the process lifetime; one cluster typically runs
+//     one or two adapters total.
+//   - resource_type is the FHIR R5 resource type; the SPI restricts
+//     this to the bundled vocabulary (Patient, Observation, ...).
+//   - change_kind is `create | update | delete | merge` (the SPI's
+//     ChangeKind enum, fixed-domain).
+//
+// The 3-way cross product is therefore O(adapters × resources × 4) ≈
+// O(40) for realistic deployments. No user-supplied input flows into
+// any of the labels; cardinality is bounded at registry registration
+// time. The audit's N-1 cardinality concern is documented here rather
+// than capped at runtime — adding a cap would mask a misconfigured
+// adapter_id rather than fix it (N-1).
+
 // Metric names emitted by the processor. Wire form per LLD §8.
 const (
 	MetricMessagesProcessed    = "fhir_subs_hl7processor_messages_processed"

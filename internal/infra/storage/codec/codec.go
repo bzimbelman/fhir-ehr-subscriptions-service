@@ -140,7 +140,17 @@ func New(kp KeyProvider) (*Codec, error) {
 	return &Codec{kp: kp, gcms: gcms, active: active}, nil
 }
 
-// envelopeVersionByte is reserved to allow future format changes.
+// envelopeFormat is the magic byte at offset 0 of every codec
+// envelope. Reserved to allow future format changes; bumping it
+// requires a coordinated migration of every encrypted column. The
+// reserved byte at offset 1 is currently 0x00 and is the second
+// dimension of the format namespace if a layout change is ever needed.
+//
+// N-1: Decrypt now logs the observed format byte in its returned error
+// so an operator wading through pgxpool errors can see "0x02"
+// immediately rather than guessing at the encoding. The format byte
+// is non-secret (an attacker who can read encrypted columns already
+// holds the envelope; the byte is the same shape for every row).
 const envelopeFormat byte = 0x01
 
 // Encrypt produces the ciphertext envelope plus the key_version column

@@ -837,6 +837,24 @@ func NewWorker(pool *pgxpool.Pool, rcs *repos.ResourceChangesRepo, ehr *repos.Eh
 	return &Worker{pool: pool, rcsRepo: rcs, ehrRepo: ehr, catalog: cp, cfg: cfg}
 }
 
+// backoffReporter is the optional sampler the wiring layer can install
+// so it can publish `matcher_backoff_seconds` to the metrics layer
+// (N-1). Kept as a function pointer to avoid a metrics-package
+// dependency in this hot path.
+var backoffReporter atomic.Pointer[func(seconds float64)]
+
+// SetBackoffReporter installs (or unsets, with nil) the matcher's
+// per-worker backoff observer. The reporter is fired on every transient
+// DB-error retry with the current backoff duration in seconds, so the
+// host can wire a Prometheus gauge.
+func SetBackoffReporter(fn func(seconds float64)) {
+	if fn == nil {
+		backoffReporter.Store(nil)
+		return
+	}
+	backoffReporter.Store(&fn)
+}
+
 // Run blocks until ctx is canceled. Each iteration claims at most one
 // row, evaluates, commits.
 func (w *Worker) Run(ctx context.Context) error {
@@ -850,6 +868,9 @@ func (w *Worker) Run(ctx context.Context) error {
 		}
 		processed, err := w.tickOnce(ctx)
 		if err != nil {
+			if r := backoffReporter.Load(); r != nil {
+				(*r)(backoff.Seconds())
+			}
 			select {
 			case <-ctx.Done():
 				return nil
@@ -857,6 +878,12 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			backoff = nextBackoff(backoff, w.cfg.DBBackoffMax)
 			continue
+		}
+		// Healthy tick — reset the gauge to 0 so the metric tracks
+		// "current observed backoff" rather than "last observed
+		// non-zero value." (N-1.)
+		if r := backoffReporter.Load(); r != nil {
+			(*r)(0)
 		}
 		backoff = w.cfg.DBBackoffInitial
 		if !processed {
@@ -891,9 +918,13 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("matcher: begin tx: %w", err)
 	}
-	committed := false
+	// txDone is set when the deferred rollback would be redundant —
+	// either we explicitly committed, or we explicitly rolled back. The
+	// previous name `committed` lied about the empty-claim early-exit
+	// path which rolls back rather than commits (N-1).
+	txDone := false
 	defer func() {
-		if !committed {
+		if !txDone {
 			_ = tx.Rollback(ctx)
 		}
 	}()
@@ -904,7 +935,7 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	}
 	if len(rows) == 0 {
 		_ = tx.Rollback(ctx)
-		committed = true
+		txDone = true
 		return false, nil
 	}
 
@@ -948,6 +979,6 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("matcher: commit: %w", err)
 	}
-	committed = true
+	txDone = true
 	return true, nil
 }
