@@ -63,6 +63,10 @@ const (
 	MetricBindRejectedTotal    = "fhir_subs_channel_websocket_bind_rejected_total"
 	MetricReplayTruncatedTotal = "fhir_subs_channel_websocket_replay_truncated_total"
 	MetricIdleClosedTotal      = "fhir_subs_channel_websocket_idle_closed_total"
+	// MetricUnknownAckTotal counts ack frames whose eventNumber is not
+	// in the sent-set. A misbehaving or hostile client gets visibility
+	// here; a healthy client should never increment it (N-1).
+	MetricUnknownAckTotal = "fhir_subs_channel_websocket_unknown_ack_total"
 )
 
 // ConsumeOutcome and ConsumeResult mirror the storage repo's enum so the
@@ -598,7 +602,12 @@ func (c *Channel) readLoop(ctx context.Context, sess *session) {
 		}
 		switch msg.Type {
 		case "ack":
-			sess.deliverAck(msg.EventNumber)
+			// N-1: validate the ack against the in-flight sent-set.
+			// Unknown event numbers are silently dropped today; emit a
+			// metric so a hostile client is observable.
+			if !sess.deliverAck(msg.EventNumber) {
+				c.metrics.Inc(MetricUnknownAckTotal, map[string]string{"channel": channelName})
+			}
 		default:
 			// Ignore unrecognized client message types after bind; the
 			// LLD does not require active error reporting on each frame.
@@ -665,6 +674,21 @@ func (c *Channel) removeSession(sess *session) {
 }
 
 // Deliver implements channel.Channel.
+//
+// # Concurrency contract with Close
+//
+// N-1: Deliver and Close are concurrent-safe but not synchronized: a
+// Deliver running when Close starts may race the per-session conn close
+// and surface as a TransientFailure ("write: …" or "socket closed
+// before ack"). The transient classification is correct — the
+// scheduler retries on the next pod or the next bind — and the
+// underlying conn library guards against double-close internally. The
+// session map lookup runs under c.mu, so Deliver never sees a session
+// after Close removed it; the only window is between "lookup returned
+// sess" and "Write returned". Callers concerned about delivering a
+// final notification on the way down should use the lifecycle module's
+// drain phase rather than racing Close (S-7 #9 covers the goroutine
+// join; this comment documents the Deliver-side window).
 func (c *Channel) Deliver(ctx context.Context, env channel.NotificationEnvelope) (channel.DeliveryOutcome, error) {
 	c.mu.Lock()
 	sess, ok := c.sessions[env.SubscriptionID]
@@ -838,7 +862,11 @@ func (s *session) cancelAck(eventNumber uint64) {
 // matching Deliver could also close on the timeout path, panicking on
 // close-of-closed-channel. The closeOnce wrapper makes the close
 // single-owner regardless of who arrives first.
-func (s *session) deliverAck(eventNumber uint64) {
+//
+// Returns true when eventNumber matched a waiter, false otherwise.
+// N-1: callers can use the false return to count "ack outside sent-set"
+// frames as a signal of a misbehaving / hostile client.
+func (s *session) deliverAck(eventNumber uint64) bool {
 	s.ackMu.Lock()
 	w, ok := s.ackWaits[eventNumber]
 	if ok {
@@ -848,6 +876,7 @@ func (s *session) deliverAck(eventNumber uint64) {
 	if ok {
 		w.closeOnce()
 	}
+	return ok
 }
 
 // helpers.

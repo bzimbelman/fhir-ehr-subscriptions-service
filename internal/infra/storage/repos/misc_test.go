@@ -195,7 +195,7 @@ func TestSubscriptionTopicsInsertAndList(t *testing.T) {
 
 	now := time.Now()
 	pool.ExpectQuery("SELECT (.+) FROM subscription_topics WHERE status").
-		WithArgs("active").
+		WithArgs("active", repos.DefaultListByStatusCap, 0).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "url", "version", "title", "description", "status",
 			"date", "source", "body", "compiled_form", "created_at", "retired_at",

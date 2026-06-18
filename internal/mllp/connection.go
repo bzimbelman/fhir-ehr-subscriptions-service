@@ -247,7 +247,7 @@ func handleOneFrame(
 			"reason":          "inflight_cap",
 			"mllp_message_id": mshFields.MessageControlID,
 		})
-		_ = writeNACK(conn, mshFields, "inflight cap reached", now)
+		_ = writeNACK(conn, mshFields, "inflight cap reached", now, cfg.AckWriteTimeout)
 		return false
 	}
 
@@ -264,7 +264,7 @@ func handleOneFrame(
 				"reason":          "msh9_unparseable",
 				"mllp_message_id": mshFields.MessageControlID,
 			})
-			_ = writeNACK(conn, mshFields, "msh9_unparseable", now)
+			_ = writeNACK(conn, mshFields, "msh9_unparseable", now, cfg.AckWriteTimeout)
 			return false
 		}
 		if !messageTypeAllowed(mshFields.MessageType, ep.AllowedMessageTypes) {
@@ -280,7 +280,7 @@ func handleOneFrame(
 				"type":            mshFields.MessageType,
 				"mllp_message_id": mshFields.MessageControlID,
 			})
-			_ = writeNACK(conn, mshFields, "message type not allowed", now)
+			_ = writeNACK(conn, mshFields, "message type not allowed", now, cfg.AckWriteTimeout)
 			return false
 		}
 	}
@@ -374,7 +374,7 @@ func handleOneFrame(
 				"mllp_message_id": mshFields.MessageControlID,
 				"error":           err.Error(),
 			})
-			_ = writeNACK(conn, mshFields, persistErrorReason(err), now)
+			_ = writeNACK(conn, mshFields, persistErrorReason(err), now, cfg.AckWriteTimeout)
 			if int(consecutiveFails) >= cfg.NackThenDropAfter {
 				metrics.Inc(MetricDropForPersistFails, endpointLabels)
 				clog.emit(logLevelError, "dropped", map[string]any{
@@ -396,7 +396,7 @@ func handleOneFrame(
 		"mllp_message_id": mshFields.MessageControlID,
 		"row_id":          row.ID.String(),
 	})
-	if err := writeACK(conn, mshFields, now); err != nil {
+	if err := writeACK(conn, mshFields, now, cfg.AckWriteTimeout); err != nil {
 		// Per LLD §8: ACK write failure after commit does not change row
 		// state — the row is durable, the EHR will time out and retry,
 		// and downstream idempotency dedupes. Log warn so operators can
@@ -417,18 +417,26 @@ func handleOneFrame(
 	return false
 }
 
-func writeACK(conn net.Conn, msh MSHFields, now time.Time) error {
+// defaultAckWriteTimeout backstops writeACK / writeNACK when the caller
+// did not pass through a configured AckWriteTimeout (typically older
+// tests). Default mirrors the pre-N-1 hardcoded 2s.
+const defaultAckWriteTimeout = 2 * time.Second
+
+func writeACK(conn net.Conn, msh MSHFields, now time.Time, timeout time.Duration) error {
 	frame := buildACK(ackAA, msh, "", now)
-	return writeFrame(conn, frame)
+	return writeFrame(conn, frame, timeout)
 }
 
-func writeNACK(conn net.Conn, msh MSHFields, reason string, now time.Time) error {
+func writeNACK(conn net.Conn, msh MSHFields, reason string, now time.Time, timeout time.Duration) error {
 	frame := buildACK(ackAE, msh, reason, now)
-	return writeFrame(conn, frame)
+	return writeFrame(conn, frame, timeout)
 }
 
-func writeFrame(conn net.Conn, frame []byte) error {
-	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+func writeFrame(conn net.Conn, frame []byte, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultAckWriteTimeout
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(timeout))
 	_, err := conn.Write(frame)
 	_ = conn.SetWriteDeadline(time.Time{})
 	return err

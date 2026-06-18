@@ -77,6 +77,12 @@ type ListenerConfig struct {
 	// Must be strictly less than the host's storage.statement_timeout.
 	PersistTimeout time.Duration
 
+	// AckWriteTimeout bounds a single ACK/NACK frame write back to the
+	// peer. Default 2s. The previous code hardcoded the 2s deadline
+	// inline; deployments behind a high-latency LB occasionally need
+	// to extend it (N-1).
+	AckWriteTimeout time.Duration
+
 	// NackThenDropAfter is the consecutive-persist-failure threshold
 	// at which the listener drops the connection. Default 5.
 	NackThenDropAfter int
@@ -173,6 +179,9 @@ func (c ListenerConfig) withDefaults() ListenerConfig {
 	}
 	if c.PersistTimeout <= 0 {
 		c.PersistTimeout = 5 * time.Second
+	}
+	if c.AckWriteTimeout <= 0 {
+		c.AckWriteTimeout = 2 * time.Second
 	}
 	if c.NackThenDropAfter <= 0 {
 		c.NackThenDropAfter = 5

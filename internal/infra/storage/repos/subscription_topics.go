@@ -55,15 +55,41 @@ func (r *SubscriptionTopicsRepo) GetByURLVersion(ctx context.Context, q Querier,
 	return &rec, nil
 }
 
-// ListByStatus returns all rows in the given status.
+// DefaultListByStatusCap is the implicit upper bound applied by
+// ListByStatus when the caller has not chosen its own. The cap exists
+// so a runaway operator-import that lands 100k topics does not OOM the
+// API process on a /SubscriptionTopic search. Callers needing more
+// should iterate with ListByStatusPage (N-1).
+const DefaultListByStatusCap = 1000
+
+// ListByStatus returns rows in the given status, capped at
+// DefaultListByStatusCap. The result is ORDER BY url, version, id ASC.
+//
+// N-1: prior to this version the query had no LIMIT; a runaway import
+// could pin the API process. The cap is large enough for every real
+// catalog while bounding the worst case.
 func (r *SubscriptionTopicsRepo) ListByStatus(ctx context.Context, q Querier, status string) ([]SubscriptionTopicRow, error) {
+	return r.ListByStatusPage(ctx, q, status, DefaultListByStatusCap, 0)
+}
+
+// ListByStatusPage returns at most limit rows in the given status,
+// skipping offset rows, ORDER BY url, version, id ASC. limit <= 0
+// means DefaultListByStatusCap; offset < 0 means 0.
+func (r *SubscriptionTopicsRepo) ListByStatusPage(ctx context.Context, q Querier, status string, limit, offset int) ([]SubscriptionTopicRow, error) {
+	if limit <= 0 {
+		limit = DefaultListByStatusCap
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	const sql = `
 		SELECT id, url, version, COALESCE(title, ''), COALESCE(description, ''),
 		       status, date, source, body, compiled_form, created_at, retired_at
 		FROM subscription_topics
 		WHERE status = $1
-		ORDER BY url, version`
-	rows, err := q.Query(ctx, sql, status)
+		ORDER BY url, version, id
+		LIMIT $2 OFFSET $3`
+	rows, err := q.Query(ctx, sql, status, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("subscription_topics: list: %w", err)
 	}
