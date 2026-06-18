@@ -184,6 +184,62 @@ func TestRun_RejectsTLSWithoutCertWhenNotInsecure(t *testing.T) {
 	}
 }
 
+// TestRun_LogsCloseErrorAfterShutdownTimeout asserts that when the
+// graceful Shutdown deadline is exceeded and the forced Close path runs,
+// any error returned by srv.Close is logged at warn level rather than
+// silently dropped (S-1.5). We exercise the path by overriding the
+// runHooks-installed test seam to make Shutdown fail and Close fail too.
+func TestRun_LogsCloseErrorAfterShutdownTimeout(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Adapter:    AdapterConfig{ID: "a1"},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		// Microsecond grace so the shutdown ctx is already expired by the
+		// time we reach srv.Shutdown — that returns ctx.DeadlineExceeded
+		// which forces the Close() branch.
+		Lifecycle: LifecycleConfig{ShutdownGracePeriod: time.Microsecond},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logs := &strings.Builder{}
+	prevForceCloseHook := testForceCloseHook
+	t.Cleanup(func() { testForceCloseHook = prevForceCloseHook })
+	testForceCloseHook = func() error {
+		return errSimulatedClose
+	}
+
+	started := make(chan struct{})
+	hooks := runHooks{onListening: func(_ string) { close(started) }}
+	done := make(chan error, 1)
+	go func() { done <- runWithHooks(ctx, cfg, logs, hooks) }()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never started")
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return")
+	}
+
+	if !strings.Contains(logs.String(), "force close") {
+		t.Fatalf("expected force-close log; got: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), errSimulatedClose.Error()) {
+		t.Fatalf("expected close error in logs; got: %s", logs.String())
+	}
+}
+
+var errSimulatedClose = fmt.Errorf("simulated close error")
+
 // pickFreeAddr returns 127.0.0.1:<random-free-port>.
 func pickFreeAddr(t *testing.T) string {
 	t.Helper()
