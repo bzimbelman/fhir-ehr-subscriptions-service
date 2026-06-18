@@ -19,6 +19,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// MaxTokenRequestBodyBytes is the default ceiling on the size of a
+// /token request body, applied via http.MaxBytesReader before
+// ParseForm. The endpoint is unauthenticated; without a body cap an
+// attacker can OOM the process with a single multi-MB POST.
+const MaxTokenRequestBodyBytes = 64 * 1024
+
 // TokenEndpointConfig configures the OAuth2 token endpoint.
 type TokenEndpointConfig struct {
 	// Audience is the aud value stamped on issued access tokens. Same
@@ -64,6 +70,10 @@ type TokenEndpointConfig struct {
 
 	// Now returns the current time. Tests substitute.
 	Now func() time.Time
+
+	// MaxRequestBodyBytes caps the request body size accepted by
+	// ServeHTTP. Default MaxTokenRequestBodyBytes (64 KiB).
+	MaxRequestBodyBytes int64
 }
 
 // TokenEndpoint implements the SMART on FHIR Backend Services token
@@ -107,6 +117,9 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.MaxRequestBodyBytes <= 0 {
+		cfg.MaxRequestBodyBytes = MaxTokenRequestBodyBytes
+	}
 	return &TokenEndpoint{
 		cfg:       cfg,
 		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now),
@@ -121,7 +134,17 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		te.fail(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed", "malformed")
 		return
 	}
+	// Cap the request body before ParseForm consumes it. The endpoint
+	// is unauthenticated, so without this an attacker can flood
+	// arbitrary-sized POSTs to exhaust memory (B-6).
+	r.Body = http.MaxBytesReader(w, r.Body, te.cfg.MaxRequestBodyBytes)
 	if err := r.ParseForm(); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			te.fail(w, http.StatusRequestEntityTooLarge, "invalid_request",
+				"request body too large", "malformed")
+			return
+		}
 		te.fail(w, http.StatusBadRequest, "invalid_request", "could not parse form", "malformed")
 		return
 	}
