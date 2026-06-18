@@ -127,6 +127,13 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("adapter registry: %w", regErr)
 	}
+	// #65: cross-adapter validation runs once at registry init so
+	// startup fails loud on capability/builder mismatch or two
+	// adapters declaring the same contributed topic url.
+	if valErr := adReg.ValidateAll(ctx, adapterspi.HostSPIVersion); valErr != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("adapter registry: %w", valErr)
+	}
 	loadCfg := registry.LoadConfig{
 		AdapterID:  cfg.Adapter.ID,
 		HostSpiVer: adapterspi.HostSPIVersion,
