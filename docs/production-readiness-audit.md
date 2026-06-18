@@ -439,38 +439,38 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 - **`internal/engine/builder/builder.go:208-210`** — handshake/heartbeat correlation_id is fresh `uuid.NewString()`; non-deterministic; replays produce different IDs.
 - **`internal/engine/builder/builder.go:36-38`** — `fhir+xml` deferred; no rejection at subscription create — silent dead-letter at delivery time.
 
-#### S-13: Storage / repos — RESOLVED in fa8c237 (branch fix/sf-storage-observability-config)
-- **`internal/infra/storage/codec/codec.go:142-189`** — RESOLVED fa8c237: AES-GCM key-rotation cadence (NIST 2^32 limit) documented in package doc.
-- **`internal/infra/storage/repos/audit_log.go:18-32`** — RESOLVED fa8c237: added `AppendChained` with prev-hash verification + `ErrAuditPrevHashMismatch`; legacy `Append` documented.
-- **`internal/infra/storage/repos/subscriptions.go:82-118`** — RESOLVED fa8c237: added `StreamActiveByTopic` and `ListActiveByTopicPage` for bounded-memory fanout; `ListActiveByTopic` retained as a thin wrapper.
-- **`internal/infra/storage/pool/pool.go:115-132`** — RESOLVED fa8c237: defaults stay but every field is now configurable via `pool.Config` and plumbed through `storage.Pool`.
-- **`internal/infra/storage/pool/pool.go:129-132`** — RESOLVED fa8c237: `AfterConnect` now SETs `statement_timeout`, `idle_in_transaction_session_timeout`, and `lock_timeout` on every checked-out connection.
-- **`internal/infra/storage/storage.go:182-229`** — RESOLVED fa8c237: each Tick now runs under `context.WithTimeout(bgCtx, TickTimeout)`; `OnTickError` hook surfaces previously-discarded errors.
-- **`internal/infra/storage/storage.go:268-283`** — RESOLVED fa8c237: pool-close budget derived from `cfg.Lifecycle.ShutdownGracePeriod` (default 30s); 5s hardcode removed.
-- **`internal/infra/storage/partition/partition.go:42`** — RESOLVED fa8c237: errors flow through `OnTickError`; first-run failure no longer silently discarded.
-- **`internal/infra/storage/partition/partition.go:106-145`** — RESOLVED fa8c237: `dropOnePartition` runs `ALTER TABLE ... DETACH PARTITION` and `DROP TABLE` inside a single transaction; partial failure rolls back.
-- **`migrations/0001_init.sql:277-300`** — RESOLVED fa8c237: documented apply-time `now()` semantics + `CREATE TABLE IF NOT EXISTS` idempotency contract; checksum is over file text so it remains stable.
+#### S-13: Storage / repos — RESOLVED in c765c8e (branch fix/sf-storage-observability-config)
+- **`internal/infra/storage/codec/codec.go:142-189`** — RESOLVED c765c8e: AES-GCM key-rotation cadence (NIST 2^32 limit) documented in package doc.
+- **`internal/infra/storage/repos/audit_log.go:18-32`** — RESOLVED c765c8e: added `AppendChained` with prev-hash verification + `ErrAuditPrevHashMismatch`; legacy `Append` documented.
+- **`internal/infra/storage/repos/subscriptions.go:82-118`** — RESOLVED c765c8e: added `StreamActiveByTopic` and `ListActiveByTopicPage` for bounded-memory fanout; `ListActiveByTopic` retained as a thin wrapper.
+- **`internal/infra/storage/pool/pool.go:115-132`** — RESOLVED c765c8e: defaults stay but every field is now configurable via `pool.Config` and plumbed through `storage.Pool`.
+- **`internal/infra/storage/pool/pool.go:129-132`** — RESOLVED c765c8e: `AfterConnect` now SETs `statement_timeout`, `idle_in_transaction_session_timeout`, and `lock_timeout` on every checked-out connection.
+- **`internal/infra/storage/storage.go:182-229`** — RESOLVED c765c8e: each Tick now runs under `context.WithTimeout(bgCtx, TickTimeout)`; `OnTickError` hook surfaces previously-discarded errors.
+- **`internal/infra/storage/storage.go:268-283`** — RESOLVED c765c8e: pool-close budget derived from `cfg.Lifecycle.ShutdownGracePeriod` (default 30s); 5s hardcode removed.
+- **`internal/infra/storage/partition/partition.go:42`** — RESOLVED c765c8e: errors flow through `OnTickError`; first-run failure no longer silently discarded.
+- **`internal/infra/storage/partition/partition.go:106-145`** — RESOLVED c765c8e: `dropOnePartition` runs `ALTER TABLE ... DETACH PARTITION` and `DROP TABLE` inside a single transaction; partial failure rolls back.
+- **`migrations/0001_init.sql:277-300`** — RESOLVED c765c8e: documented apply-time `now()` semantics + `CREATE TABLE IF NOT EXISTS` idempotency contract; checksum is over file text so it remains stable.
 
-#### S-14: Observability — RESOLVED in 3b5d8e5 (branch fix/sf-storage-observability-config)
-- **`internal/infra/observability/observability.go:179`** — RESOLVED 3b5d8e5: `LoggingConfig.Sink` and `LoggingConfig.DebugLogPayloads` plumbed into `logging.NewLogger`; default still `os.Stdout`.
-- **`internal/infra/observability/observability.go:298-300`** — RESOLVED 3b5d8e5: `fileSink` pre-constructs the inner `WriterSink` once at construction; per-Emit allocation removed.
-- **`internal/infra/observability/audit/audit.go:42-51, 233`** — RESOLVED 3b5d8e5: chain genesis literal is now configurable via `WriterOptions.GenesisLiteral`; `GenesisHashFromLiteral` and `VerifyChainWithGenesis` exposed for matching readers.
-- **`internal/infra/observability/audit/audit.go:151-205`** — RESOLVED 3b5d8e5 (documented): the advisory_lock + LastChainHash + INSERT serialization is the chain's throughput cap by design; `Emit` doc-block calls out the constraint and points operators at deployment-side mitigations.
-- **`internal/infra/observability/audit/audit.go:347-450`** — RESOLVED 3b5d8e5: `canonicalNumber` rewritten to use IEEE-754 shortest round-trip via `strconv.AppendFloat('g', -1, 64)`; integer fast-path retained; documented for external JCS auditors.
-- **`internal/infra/observability/correlation/correlation.go:114-126`** — RESOLVED 3b5d8e5: `MaxCorrelationIDLen=128` cap; `IsValidCorrelationIDChar` allow-list (alnum + `-._/`); CRLF / oversize / disallowed-char inputs fall back to a fresh UUID.
-- **`internal/infra/observability/logging/logging.go:35-41, 192-208`** — RESOLVED 3b5d8e5: PHI list expanded with `patient`/`payload`/`dob`/`mrn`/`webhook`/`callback`/`target`/`name`/`identifier`/etc.; redaction match is now case-insensitive.
-- **`internal/infra/observability/tracing/tracing.go:62-100`** — RESOLVED 3b5d8e5: `tracing.SafeAttribute` redacts span values that are PII-shaped (long strings or sensitive key suffixes); guidance documented.
-- **`internal/infra/observability/tracing/tracing.go:73-79`** — RESOLVED 3b5d8e5: OTLP exporter constructed with `context.WithTimeout` (default 10s), `TLSConfig` / `Headers` / `Insecure` knobs added; refuses plaintext OTLP to non-loopback collectors unless `Insecure=true`.
+#### S-14: Observability — RESOLVED in 9e7fa45 (branch fix/sf-storage-observability-config)
+- **`internal/infra/observability/observability.go:179`** — RESOLVED 9e7fa45: `LoggingConfig.Sink` and `LoggingConfig.DebugLogPayloads` plumbed into `logging.NewLogger`; default still `os.Stdout`.
+- **`internal/infra/observability/observability.go:298-300`** — RESOLVED 9e7fa45: `fileSink` pre-constructs the inner `WriterSink` once at construction; per-Emit allocation removed.
+- **`internal/infra/observability/audit/audit.go:42-51, 233`** — RESOLVED 9e7fa45: chain genesis literal is now configurable via `WriterOptions.GenesisLiteral`; `GenesisHashFromLiteral` and `VerifyChainWithGenesis` exposed for matching readers.
+- **`internal/infra/observability/audit/audit.go:151-205`** — RESOLVED 9e7fa45 (documented): the advisory_lock + LastChainHash + INSERT serialization is the chain's throughput cap by design; `Emit` doc-block calls out the constraint and points operators at deployment-side mitigations.
+- **`internal/infra/observability/audit/audit.go:347-450`** — RESOLVED 9e7fa45: `canonicalNumber` rewritten to use IEEE-754 shortest round-trip via `strconv.AppendFloat('g', -1, 64)`; integer fast-path retained; documented for external JCS auditors.
+- **`internal/infra/observability/correlation/correlation.go:114-126`** — RESOLVED 9e7fa45: `MaxCorrelationIDLen=128` cap; `IsValidCorrelationIDChar` allow-list (alnum + `-._/`); CRLF / oversize / disallowed-char inputs fall back to a fresh UUID.
+- **`internal/infra/observability/logging/logging.go:35-41, 192-208`** — RESOLVED 9e7fa45: PHI list expanded with `patient`/`payload`/`dob`/`mrn`/`webhook`/`callback`/`target`/`name`/`identifier`/etc.; redaction match is now case-insensitive.
+- **`internal/infra/observability/tracing/tracing.go:62-100`** — RESOLVED 9e7fa45: `tracing.SafeAttribute` redacts span values that are PII-shaped (long strings or sensitive key suffixes); guidance documented.
+- **`internal/infra/observability/tracing/tracing.go:73-79`** — RESOLVED 9e7fa45: OTLP exporter constructed with `context.WithTimeout` (default 10s), `TLSConfig` / `Headers` / `Insecure` knobs added; refuses plaintext OTLP to non-loopback collectors unless `Insecure=true`.
 
-#### S-15: Config / lifecycle — RESOLVED in e1f9ce6 (branch fix/sf-storage-observability-config)
-- **`internal/infra/config/config.go:118-125`** — RESOLVED e1f9ce6: `Start` now respects ctx (refuses with wrapped `ctx.Err()` if already canceled).
-- **`internal/infra/config/loader/loader.go:101-102`** — RESOLVED e1f9ce6: `EnvCollisions` exposes ambiguous env-var derivations; `ReadEnvForKnownKeys` drops colliding env vars rather than silently picking one.
-- **`internal/infra/config/redaction/redaction.go:101-121`** — RESOLVED e1f9ce6: walker depth-capped at `MaxRedactDepth=256`; deeper subtrees collapse to `RedactedTooDeep` sentinel.
-- **`internal/infra/config/secrets/secrets.go:80-110`** — RESOLVED e1f9ce6: `${file:...}` reads use `io.LimitReader(f, MaxSecretFileSize+1)`; oversize returns typed `ErrSecretFileTooLarge`.
-- **`internal/infra/config/effective_store/effective_store.go:107-119`** — RESOLVED e1f9ce6: bounded worker pool (`MaxConcurrentNotifications=32`); panicking subscribers recovered + logged via `SetNotifyPanicLogger`; saturated-pool callbacks fall back to inline-with-recover.
-- **`internal/infra/config/reload/reload.go:189-216`** — RESOLVED e1f9ce6: `splitPath` honours `\.` and `\\` escapes so keys containing literal `.` (subscriber hostnames) route correctly.
-- **`internal/infra/lifecycle/sequencer.go:281-306`** — RESOLVED e1f9ce6: `resultsMu` serializes hook-goroutine and phase-deadline writes into the shared slice; deadline path no longer races; report loop reads a mutex-protected snapshot.
-- **`internal/infra/lifecycle/sequencer.go:362-369`** — RESOLVED e1f9ce6: `isDeadlineExceeded` uses `errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)`; wrapped sentinels classified correctly.
+#### S-15: Config / lifecycle — RESOLVED in 081200d (branch fix/sf-storage-observability-config)
+- **`internal/infra/config/config.go:118-125`** — RESOLVED 081200d: `Start` now respects ctx (refuses with wrapped `ctx.Err()` if already canceled).
+- **`internal/infra/config/loader/loader.go:101-102`** — RESOLVED 081200d: `EnvCollisions` exposes ambiguous env-var derivations; `ReadEnvForKnownKeys` drops colliding env vars rather than silently picking one.
+- **`internal/infra/config/redaction/redaction.go:101-121`** — RESOLVED 081200d: walker depth-capped at `MaxRedactDepth=256`; deeper subtrees collapse to `RedactedTooDeep` sentinel.
+- **`internal/infra/config/secrets/secrets.go:80-110`** — RESOLVED 081200d: `${file:...}` reads use `io.LimitReader(f, MaxSecretFileSize+1)`; oversize returns typed `ErrSecretFileTooLarge`.
+- **`internal/infra/config/effective_store/effective_store.go:107-119`** — RESOLVED 081200d: bounded worker pool (`MaxConcurrentNotifications=32`); panicking subscribers recovered + logged via `SetNotifyPanicLogger`; saturated-pool callbacks fall back to inline-with-recover.
+- **`internal/infra/config/reload/reload.go:189-216`** — RESOLVED 081200d: `splitPath` honours `\.` and `\\` escapes so keys containing literal `.` (subscriber hostnames) route correctly.
+- **`internal/infra/lifecycle/sequencer.go:281-306`** — RESOLVED 081200d: `resultsMu` serializes hook-goroutine and phase-deadline writes into the shared slice; deadline path no longer races; report loop reads a mutex-protected snapshot.
+- **`internal/infra/lifecycle/sequencer.go:362-369`** — RESOLVED 081200d: `isDeadlineExceeded` uses `errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)`; wrapped sentinels classified correctly.
 
 #### S-16: Empty packages / dead code — RESOLVED 2026-06-18 (1ffc778, 2a0bbc2, 060d538, eea803a, ed87e64)
 - **`internal/channels/{email,message,resthook,websocket}/*.go`** — entire `internal/channels/` (plural) tree is 5-line empty stubs; production uses `internal/channel/` (singular). Delete the duplicates. **RESOLVED 1ffc778** — entire `internal/channels/` tree deleted; verified no production imports.
