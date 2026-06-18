@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the architecture of `fhir-subscriptions-foss`. It builds on [high-level-concept.md](high-level-concept.md) and is the source of truth for module boundaries, scaling behavior, and the EHR adapter plugin contract.
+This document describes the architecture of `fhir-ehr-subscriptions-service`. It builds on [high-level-concept.md](high-level-concept.md) and is the source of truth for module boundaries, scaling behavior, and the EHR adapter plugin contract.
 
 Two architectural constraints drive every decision below:
 
@@ -1130,7 +1130,7 @@ adapter:
 # Channels — built-in are always available; this section configures them
 channels:
   rest_hook:
-    user_agent: "fhir-subscriptions-foss/1.0"
+    user_agent: "fhir-ehr-subscriptions-service/1.0"
     request_timeout: "30s"
     max_retries: 8
     backoff: "exponential"                  # 10s, 30s, 2m, 10m, 1h, ...

@@ -8,7 +8,7 @@
 
 ```mermaid
 flowchart LR
-    subgraph host["fhir-subscriptions-foss process"]
+    subgraph host["fhir-ehr-subscriptions-service process"]
         direction TB
         emitters["Per-component emitters<br/>(metrics / tracer / logger /<br/>audit-log writer)"]
         regs["Observability module<br/>(registries, exporters, sinks)"]
@@ -414,7 +414,7 @@ table audit_log (
 )
 ```
 
-The chain_input for row N is the canonical serialization of `(seq, ts, kind, correlation_id, subscription_id, actor, detail, prior_hash)`. Canonicalization is RFC 8785 (JCS) per [decisions/0010 #3](../high-level-design/decisions/0010-implementation-defaults.md). The chain_hash for row N is `SHA-256(chain_input_N)`. Row N+1's `prior_hash` is row N's `chain_hash`. Row 0's `prior_hash` is the genesis constant (`SHA-256("fhir-subscriptions-foss audit chain genesis")`).
+The chain_input for row N is the canonical serialization of `(seq, ts, kind, correlation_id, subscription_id, actor, detail, prior_hash)`. Canonicalization is RFC 8785 (JCS) per [decisions/0010 #3](../high-level-design/decisions/0010-implementation-defaults.md). The chain_hash for row N is `SHA-256(chain_input_N)`. Row N+1's `prior_hash` is row N's `chain_hash`. Row 0's `prior_hash` is the genesis constant (`SHA-256("fhir-ehr-subscriptions-service audit chain genesis")`).
 
 Any deletion or modification of a prior row breaks every subsequent row's chain. A re-walk operation (manual via admin tool, or scheduled per `observability.audit.verify_interval`) reads rows in `seq` order and verifies each `chain_hash` against the prior row's `chain_hash` plus the row's own `chain_input`. A mismatch increments `fhir_subs_audit_chain_verify_failures_total` and writes an `audit.chain.verify_failed` log line at `error`.
 

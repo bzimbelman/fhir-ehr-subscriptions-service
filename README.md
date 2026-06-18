@@ -1,6 +1,6 @@
-# fhir-subscriptions-foss
+# fhir-ehr-subscriptions-service
 
-`fhir-subscriptions-foss` is a free and open source server that bridges
+`fhir-ehr-subscriptions-service` is a free and open source server that bridges
 **FHIR Subscriptions** on one side and **Electronic Health Record (EHR) systems**
 on the other. It allows external applications, registries, and analytics
 platforms to subscribe to clinical events in an EHR using the standard FHIR

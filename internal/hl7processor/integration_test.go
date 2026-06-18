@@ -1,6 +1,6 @@
 //go:build integration
 
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Integration tests for the HL7 Message Processor. Requires Docker.

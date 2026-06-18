@@ -10,7 +10,7 @@
 flowchart LR
     k8s["Kubernetes kubelet"]
     sigterm["SIGTERM<br/>(orchestrator / admin)"]
-    subgraph host["fhir-subscriptions-foss process"]
+    subgraph host["fhir-ehr-subscriptions-service process"]
         direction TB
         probe_http["Probe HTTP server<br/>(/healthz /readyz /startup)"]
         registry["Lifecycle registry<br/>(checks + hooks)"]

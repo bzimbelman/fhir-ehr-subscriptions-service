@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package resthook implements the rest-hook notification channel: HTTPS
@@ -37,7 +37,7 @@ const channelName = "resthook"
 // Default values. These mirror the defaults in
 // docs/low-level-design/channels.md §4.1 and ADR 0010.
 const (
-	DefaultUserAgent       = "fhir-subscriptions-foss/0.0"
+	DefaultUserAgent       = "fhir-ehr-subscriptions-service/0.0"
 	DefaultRequestTimeout  = 30 * time.Second
 	DefaultMaxResponseBody = 256 // bytes — bounds the 4xx body excerpt in PermanentFailure.Reason
 )

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package catalog is the SubscriptionTopic catalog: load, validate
@@ -33,7 +33,7 @@ import (
 var schemaFS embed.FS
 
 // SchemaURI is the canonical $id of the embedded schema.
-const SchemaURI = "https://fhir-subscriptions-foss.org/schemas/subscription_topic.schema.json"
+const SchemaURI = "https://fhir-ehr-subscriptions-service.org/schemas/subscription_topic.schema.json"
 
 // schemaOnce builds the compiled JSON Schema lazily.
 var (

@@ -1,6 +1,6 @@
 # Channel Modules — Low-Level Design
 
-**Purpose.** This document describes how the Channel SPI and the four built-in channel modules (`rest-hook`, `websocket`, `email`, `message`) are constructed inside `fhir-subscriptions-foss`, in enough detail that an implementor can build them without rereading the higher-level documents. It covers the SPI base scaffolding the framework provides for free, the per-channel internals (connection pools, frame encoders, MIME assembly, MessageHeader construction), the protocol-level retry and timeout configuration each channel owns, the activation handshake each channel performs, the failure mappings that drive the engine's `DeliveryOutcome`, and how a third-party module registers a custom channel.
+**Purpose.** This document describes how the Channel SPI and the four built-in channel modules (`rest-hook`, `websocket`, `email`, `message`) are constructed inside `fhir-ehr-subscriptions-service`, in enough detail that an implementor can build them without rereading the higher-level documents. It covers the SPI base scaffolding the framework provides for free, the per-channel internals (connection pools, frame encoders, MIME assembly, MessageHeader construction), the protocol-level retry and timeout configuration each channel owns, the activation handshake each channel performs, the failure mappings that drive the engine's `DeliveryOutcome`, and how a third-party module registers a custom channel.
 
 **Reader's prerequisites.** Read first:
 
@@ -250,7 +250,7 @@ A subscriber asking for a deny-listed header at create time receives HTTP 422 wi
 
 On every POST the channel adds:
 
-- `User-Agent: <channels.rest_hook.user_agent>` (default `fhir-subscriptions-foss/<version>`).
+- `User-Agent: <channels.rest_hook.user_agent>` (default `fhir-ehr-subscriptions-service/<version>`).
 - `Content-Type: <envelope.content_type>` (`application/fhir+json` or `application/fhir+xml`).
 - `Accept: application/fhir+json, application/fhir+xml; q=0.9` so the subscriber can return an OperationOutcome on error.
 - `traceparent`: the W3C trace context derived from `correlation_id`.

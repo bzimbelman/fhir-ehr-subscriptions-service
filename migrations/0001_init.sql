@@ -1,6 +1,6 @@
 -- migrations/0001_init.sql
 --
--- v0 schema for fhir-subscriptions-foss.
+-- v0 schema for fhir-ehr-subscriptions-service.
 -- Authority: docs/high-level-design/decisions/{0001, 0008, 0010}.
 -- Defines 13 tables, 2 sequences, 2 triggers, partition pre-create for the next 3 months.
 --

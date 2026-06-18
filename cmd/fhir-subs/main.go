@@ -1,7 +1,7 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command fhir-subs is the entry point for the fhir-subscriptions-foss server.
+// Command fhir-subs is the entry point for the fhir-ehr-subscriptions-service server.
 package main
 
 import (

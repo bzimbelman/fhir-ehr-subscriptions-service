@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package email implements the email notification channel: SMTP submission
@@ -87,7 +87,7 @@ const (
 const (
 	DefaultRequestTimeout          = 30 * time.Second
 	DefaultAttachmentThresholdByte = 65536
-	DefaultUserAgent               = "fhir-subscriptions-foss/0.0"
+	DefaultUserAgent               = "fhir-ehr-subscriptions-service/0.0"
 	DefaultSubjectTemplate         = "FHIR Subscription notification"
 	mimeBoundaryPrefix             = "fhir-subs-"
 )

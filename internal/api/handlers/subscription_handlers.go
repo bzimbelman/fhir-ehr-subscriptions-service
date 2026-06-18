@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package handlers
@@ -853,7 +853,7 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 		"date":         s.deps.Now().UTC().Format("2006-01-02T15:04:05Z07:00"),
 		"kind":         "instance",
 		"software": map[string]any{
-			"name":    "fhir-subscriptions-foss",
+			"name":    "fhir-ehr-subscriptions-service",
 			"version": s.deps.ServerVersion,
 		},
 		"implementation": map[string]any{

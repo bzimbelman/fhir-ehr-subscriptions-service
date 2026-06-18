@@ -10,7 +10,7 @@
 flowchart TB
     cfg["Validated startup config<br/>(adapter.id, adapter.config)"]
 
-    subgraph host["fhir-subscriptions-foss process"]
+    subgraph host["fhir-ehr-subscriptions-service process"]
         direction TB
         loader["Adapter Loader"]
         ctx_build["Context Builder"]

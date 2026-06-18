@@ -1,4 +1,4 @@
-# golangci-lint configuration for fhir-subscriptions-foss.
+# golangci-lint configuration for fhir-ehr-subscriptions-service.
 # See https://golangci-lint.run/usage/configuration/ for the schema.
 
 run:

@@ -1,6 +1,6 @@
 # High-Level Design (HLD)
 
-This directory holds the High-Level Design for `fhir-subscriptions-foss`. The HLD set sits between the original concept and the eventual low-level design (LLD). Its job is to organize the architecture into focused per-domain documents with stable contracts and recorded decisions, not to invent new design.
+This directory holds the High-Level Design for `fhir-ehr-subscriptions-service`. The HLD set sits between the original concept and the eventual low-level design (LLD). Its job is to organize the architecture into focused per-domain documents with stable contracts and recorded decisions, not to invent new design.
 
 ## How the source documents relate
 

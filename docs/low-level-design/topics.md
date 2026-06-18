@@ -101,7 +101,7 @@ A topic JSON is parsed once at load time and never re-parsed. The compiled form 
 ```
 struct CompiledTopic {
     // Identity
-    canonical_url: String,           // e.g. "http://fhir-subscriptions-foss.org/topics/order-changed"
+    canonical_url: String,           // e.g. "http://fhir-ehr-subscriptions-service.org/topics/order-changed"
     version: String,                 // e.g. "1.0.0"
     title: String,                   // human-readable
     status: TopicStatus,             // active | draft | retired
@@ -425,13 +425,13 @@ The built-in topics ship as static byte arrays embedded into the binary at build
 
 | Topic canonical URL | Triggered by | Built-in version |
 |---|---|---|
-| `http://fhir-subscriptions-foss.org/topics/admit-discharge-transfer` | `Encounter` create / update with `status` transitions | `1.0.0` |
-| `http://fhir-subscriptions-foss.org/topics/lab-result-finalized` | `Observation` or `DiagnosticReport` transitions to `final` | `1.0.0` |
-| `http://fhir-subscriptions-foss.org/topics/order-placed` | `ServiceRequest` create with `status in {active, draft}` | `1.0.0` |
-| `http://fhir-subscriptions-foss.org/topics/order-changed` | `ServiceRequest` update (any status change, edit, cancel-and-replace) | `1.0.0` |
-| `http://fhir-subscriptions-foss.org/topics/document-available` | `DocumentReference` create or status transition to `current` | `1.0.0` |
-| `http://fhir-subscriptions-foss.org/topics/allergy-changed` | `AllergyIntolerance` create / update / delete | `1.0.0` |
-| `http://fhir-subscriptions-foss.org/topics/medication-changed` | `MedicationRequest` / `MedicationStatement` create / update | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/admit-discharge-transfer` | `Encounter` create / update with `status` transitions | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/lab-result-finalized` | `Observation` or `DiagnosticReport` transitions to `final` | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/order-placed` | `ServiceRequest` create with `status in {active, draft}` | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/order-changed` | `ServiceRequest` update (any status change, edit, cancel-and-replace) | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/document-available` | `DocumentReference` create or status transition to `current` | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/allergy-changed` | `AllergyIntolerance` create / update / delete | `1.0.0` |
+| `http://fhir-ehr-subscriptions-service.org/topics/medication-changed` | `MedicationRequest` / `MedicationStatement` create / update | `1.0.0` |
 
 One example shown in full — `lab-result-finalized` — to make the shape concrete:
 
@@ -439,13 +439,13 @@ One example shown in full — `lab-result-finalized` — to make the shape concr
 {
   "resourceType": "SubscriptionTopic",
   "id": "lab-result-finalized",
-  "url": "http://fhir-subscriptions-foss.org/topics/lab-result-finalized",
+  "url": "http://fhir-ehr-subscriptions-service.org/topics/lab-result-finalized",
   "version": "1.0.0",
   "title": "Lab result finalized",
   "status": "active",
   "experimental": false,
   "date": "2026-01-01",
-  "publisher": "fhir-subscriptions-foss",
+  "publisher": "fhir-ehr-subscriptions-service",
   "description": "Fires when an Observation or DiagnosticReport with category 'laboratory' transitions to status=final and is not preliminary or amended.",
   "resourceTrigger": [
     {

@@ -1,4 +1,4 @@
-// Copyright the fhir-subscriptions-foss authors.
+// Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
 package spi_test
@@ -186,7 +186,7 @@ func TestAdapterManifestValidate(t *testing.T) {
 	t.Parallel()
 	good := spi.AdapterManifest{
 		ID:                   "default",
-		Vendor:               "fhir-subscriptions-foss",
+		Vendor:               "fhir-ehr-subscriptions-service",
 		Description:          "no-vendor reference adapter",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{

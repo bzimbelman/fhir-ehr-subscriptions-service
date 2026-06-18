@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-The `fhir-subscriptions-foss` project takes security issues seriously,
+The `fhir-ehr-subscriptions-service` project takes security issues seriously,
 especially given that deployments handle protected health information.
 
 If you believe you have found a security vulnerability, please **do not** open
@@ -10,7 +10,7 @@ a public GitHub issue. Instead, report it privately by either:
 
 - Opening a private advisory through GitHub Security Advisories on this
   repository (preferred), or
-- Emailing `security@fhir-subscriptions-foss.example` (placeholder until the
+- Emailing `security@fhir-ehr-subscriptions-service.example` (placeholder until the
   project's security mailing list is provisioned).
 
 In your report, please include:
