@@ -27,6 +27,7 @@ func buildEffective(tree map[string]interface{}, rmap *redaction.Map) Effective 
 	mapToStruct(tree["lifecycle"], &e.Lifecycle)
 	mapToStruct(tree["storage"], &e.Storage)
 	mapToStruct(tree["auth"], &e.Auth)
+	mapToStruct(tree["admin"], &e.Admin)
 	mapToStruct(tree["topics"], &e.Topics)
 	mapToStruct(tree["mllp_listener"], &e.MLLPListener)
 	mapToStruct(tree["adapter"], &e.Adapter)

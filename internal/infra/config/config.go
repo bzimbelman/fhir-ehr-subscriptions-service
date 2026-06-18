@@ -60,6 +60,7 @@ type Effective struct {
 	Lifecycle     configtypes.LifecycleConfig
 	Storage       configtypes.StorageConfig
 	Auth          configtypes.AuthConfig
+	Admin         configtypes.AdminConfig
 	Topics        configtypes.TopicsConfig
 	MLLPListener  configtypes.MLLPListenerConfig
 	Adapter       configtypes.AdapterConfig
