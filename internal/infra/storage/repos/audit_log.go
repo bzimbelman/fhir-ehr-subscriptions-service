@@ -4,9 +4,21 @@
 package repos
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 )
+
+// ErrAuditPrevHashMismatch is returned by AppendChained when the
+// caller-supplied PrevHash does not match the prior row's hash in the
+// audit_log table. This is a defense-in-depth check on top of the
+// hash chain enforced by the observability/audit module: a buggy or
+// malicious caller cannot pass an arbitrary prev_hash and bypass
+// chain integrity.
+var ErrAuditPrevHashMismatch = errors.New("audit_log: prev_hash does not match prior row")
 
 // AuditLogRepo wraps the audit_log table.
 type AuditLogRepo struct{}
@@ -14,7 +26,11 @@ type AuditLogRepo struct{}
 // NewAuditLogRepo constructs the repo.
 func NewAuditLogRepo() *AuditLogRepo { return &AuditLogRepo{} }
 
-// Append writes one audit row and returns its assigned sequence number.
+// Append writes one audit row and returns its assigned sequence
+// number. The caller is fully responsible for the value of
+// row.PrevHash — Append does not validate it. New callers should
+// prefer AppendChained, which verifies the prev-hash against the
+// prior row in the same transaction.
 func (r *AuditLogRepo) Append(ctx context.Context, q Querier, row AuditLogRow) (int64, error) {
 	const sql = `
 		INSERT INTO audit_log
@@ -30,4 +46,33 @@ func (r *AuditLogRepo) Append(ctx context.Context, q Querier, row AuditLogRow) (
 		return 0, fmt.Errorf("audit_log: append: %w", err)
 	}
 	return seq, nil
+}
+
+// AppendChained writes one audit row after verifying that the
+// caller-supplied PrevHash matches the prior row's hash. The check
+// and the insert run on the same Querier so they share whatever
+// transaction the caller has open; the caller MUST run it inside a
+// SERIALIZABLE transaction (or under the chain's advisory lock) to
+// keep the verify→insert pair atomic.
+//
+// If the table is empty, the caller's PrevHash must equal the zero-
+// length slice (or nil) to represent the genesis row. This is a
+// belt-and-braces check on top of the chain logic in the
+// observability/audit module.
+func (r *AuditLogRepo) AppendChained(ctx context.Context, q Querier, row AuditLogRow) (int64, error) {
+	const selSQL = `SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1`
+	var prior []byte
+	switch err := q.QueryRow(ctx, selSQL).Scan(&prior); {
+	case err == nil:
+		if !bytes.Equal(prior, row.PrevHash) {
+			return 0, ErrAuditPrevHashMismatch
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		if len(row.PrevHash) != 0 {
+			return 0, ErrAuditPrevHashMismatch
+		}
+	default:
+		return 0, fmt.Errorf("audit_log: load prior: %w", err)
+	}
+	return r.Append(ctx, q, row)
 }

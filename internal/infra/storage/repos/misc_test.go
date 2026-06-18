@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -485,6 +486,144 @@ func TestAuditLogAppend(t *testing.T) {
 	}
 	if got != 42 {
 		t.Errorf("expected seq=42, got %d", got)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestAuditLogAppendChainedOK exercises the happy path of the
+// defense-in-depth chain check (S-13 #2): the prior row's hash is
+// fetched and compared to the caller-supplied PrevHash before insert.
+func TestAuditLogAppendChainedOK(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	pool.ExpectQuery("SELECT hash FROM audit_log").
+		WillReturnRows(pgxmock.NewRows([]string{"hash"}).AddRow([]byte("prev")))
+	pool.ExpectQuery("INSERT INTO audit_log").
+		WithArgs(anyArgs(10)...).
+		WillReturnRows(pgxmock.NewRows([]string{"seq"}).AddRow(int64(43)))
+
+	repo := repos.NewAuditLogRepo()
+	got, err := repo.AppendChained(ctx, pool, repos.AuditLogRow{
+		ActorKind:     "system",
+		Action:        "create_subscription",
+		Outcome:       "success",
+		CanonicalForm: []byte(`{"a":1}`),
+		Hash:          []byte("hash"),
+		PrevHash:      []byte("prev"),
+	})
+	if err != nil {
+		t.Fatalf("append-chained: %v", err)
+	}
+	if got != 43 {
+		t.Errorf("expected seq=43, got %d", got)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestAuditLogAppendChainedMismatch verifies that a wrong PrevHash
+// returns ErrAuditPrevHashMismatch and does NOT issue an INSERT.
+func TestAuditLogAppendChainedMismatch(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	pool.ExpectQuery("SELECT hash FROM audit_log").
+		WillReturnRows(pgxmock.NewRows([]string{"hash"}).AddRow([]byte("real-prev")))
+	// Note: NO ExpectQuery for INSERT — pgxmock fails the test if it ever runs.
+
+	repo := repos.NewAuditLogRepo()
+	_, err = repo.AppendChained(ctx, pool, repos.AuditLogRow{
+		ActorKind:     "system",
+		Action:        "create_subscription",
+		Outcome:       "success",
+		CanonicalForm: []byte(`{"a":1}`),
+		Hash:          []byte("hash"),
+		PrevHash:      []byte("forged-prev"),
+	})
+	if !errors.Is(err, repos.ErrAuditPrevHashMismatch) {
+		t.Fatalf("expected ErrAuditPrevHashMismatch, got %v", err)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestAuditLogAppendChainedGenesis verifies that the first-ever row
+// (audit_log empty) requires PrevHash to be empty.
+func TestAuditLogAppendChainedGenesis(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	pool.ExpectQuery("SELECT hash FROM audit_log").
+		WillReturnRows(pgxmock.NewRows([]string{"hash"}))
+	pool.ExpectQuery("INSERT INTO audit_log").
+		WithArgs(anyArgs(10)...).
+		WillReturnRows(pgxmock.NewRows([]string{"seq"}).AddRow(int64(1)))
+
+	repo := repos.NewAuditLogRepo()
+	got, err := repo.AppendChained(ctx, pool, repos.AuditLogRow{
+		ActorKind:     "system",
+		Action:        "boot",
+		Outcome:       "success",
+		CanonicalForm: []byte(`{"genesis":true}`),
+		Hash:          []byte("first-hash"),
+		PrevHash:      nil,
+	})
+	if err != nil {
+		t.Fatalf("genesis append: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("expected seq=1, got %d", got)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestAuditLogAppendChainedGenesisMismatch verifies that a non-empty
+// PrevHash is rejected when the table is empty.
+func TestAuditLogAppendChainedGenesisMismatch(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	pool.ExpectQuery("SELECT hash FROM audit_log").
+		WillReturnRows(pgxmock.NewRows([]string{"hash"}))
+
+	repo := repos.NewAuditLogRepo()
+	_, err = repo.AppendChained(ctx, pool, repos.AuditLogRow{
+		ActorKind: "system", Action: "boot", Outcome: "success",
+		CanonicalForm: []byte(`{}`), Hash: []byte("h"), PrevHash: []byte("forged"),
+	})
+	if !errors.Is(err, repos.ErrAuditPrevHashMismatch) {
+		t.Fatalf("expected ErrAuditPrevHashMismatch, got %v", err)
 	}
 	if err := pool.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)

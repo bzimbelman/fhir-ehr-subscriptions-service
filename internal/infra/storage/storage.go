@@ -47,6 +47,20 @@ type Config struct {
 
 	// Partitioning behavior.
 	Partitioning PartitionConfig
+
+	// Lifecycle controls shutdown timing.
+	Lifecycle LifecycleConfig
+}
+
+// LifecycleConfig controls graceful-shutdown timing for the storage
+// layer. Mirrors the lifecycle.* block in the YAML config so the same
+// budget the readiness probe uses also bounds Storage.Shutdown.
+type LifecycleConfig struct {
+	// ShutdownGracePeriod bounds how long Shutdown will wait for
+	// background workers to drain AND how long it gives the underlying
+	// pool to close before returning. A non-positive value falls back
+	// to 30s.
+	ShutdownGracePeriod time.Duration
 }
 
 // RetentionConfig controls retention sweeper windows.
@@ -62,6 +76,8 @@ type RetentionConfig struct {
 	BatchSize int32
 	// BatchPause inserts a small sleep between chunks.
 	BatchPause time.Duration
+	// TickTimeout caps a single sweep; default 6h.
+	TickTimeout time.Duration
 }
 
 // PartitionConfig controls the partition maintainer.
@@ -69,6 +85,8 @@ type PartitionConfig struct {
 	AutoDrop             bool
 	PartitionLockTimeout time.Duration
 	RunInterval          time.Duration
+	// TickTimeout caps a single maintenance cycle; default 30m.
+	TickTimeout time.Duration
 
 	// PartitionRetention is per-table; defaults to 30d for both
 	// resource_changes and ehr_events.
@@ -115,6 +133,10 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Partitioning.EhrEventsRetention == 0 {
 		c.Partitioning.EhrEventsRetention = 30 * 24 * time.Hour
+	}
+
+	if c.Lifecycle.ShutdownGracePeriod <= 0 {
+		c.Lifecycle.ShutdownGracePeriod = 30 * time.Second
 	}
 }
 
@@ -210,6 +232,7 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 			AutoDrop:                 cfg.Partitioning.AutoDrop,
 			ResourceChangesRetention: cfg.Partitioning.ResourceChangesRetention,
 			EhrEventsRetention:       cfg.Partitioning.EhrEventsRetention,
+			TickTimeout:              cfg.Partitioning.TickTimeout,
 		})
 	}()
 
@@ -221,6 +244,7 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 			RunInterval:     cfg.Retention.RunInterval,
 			BatchSize:       cfg.Retention.BatchSize,
 			BatchPause:      cfg.Retention.BatchPause,
+			TickTimeout:     cfg.Retention.TickTimeout,
 			Hl7MessageQueue: cfg.Retention.Hl7MessageQueue,
 			Deliveries:      cfg.Retention.Deliveries,
 			DeadLetters:     cfg.Retention.DeadLetters,
@@ -273,11 +297,19 @@ func (s *Storage) Shutdown(ctx context.Context) error {
 			s.pool.Close()
 			close(closed)
 		}()
+		// Last-ditch budget when the caller's ctx has no deadline. We
+		// derive it from cfg.Lifecycle.ShutdownGracePeriod so operators
+		// can tune the upper bound; the prior hardcoded 5s often raced
+		// the rest of the lifecycle's shutdown grace period.
+		budget := s.cfg.Lifecycle.ShutdownGracePeriod
+		if budget <= 0 {
+			budget = 30 * time.Second
+		}
 		select {
 		case <-closed:
 		case <-ctx.Done():
 			// Caller's context is done — return; pool finishes on its own.
-		case <-time.After(5 * time.Second):
+		case <-time.After(budget):
 			// Last-ditch budget for a non-context-bound shutdown.
 		}
 	}

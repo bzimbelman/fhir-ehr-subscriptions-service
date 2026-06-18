@@ -30,6 +30,14 @@ type Config struct {
 	// StatementTimeout is sent via SET on every checked-out connection.
 	// Default 30s.
 	StatementTimeout time.Duration
+	// IdleInTransactionSessionTimeout caps how long a transaction can
+	// sit idle before Postgres terminates the backend. Defends against
+	// caller bugs that BEGIN but never COMMIT/ROLLBACK. Default 60s.
+	IdleInTransactionSessionTimeout time.Duration
+	// LockTimeout is sent via SET on every checked-out connection. Caps
+	// how long a statement waits for a row/object lock before erroring;
+	// keeps a runaway DDL from wedging the entire pool. Default 5s.
+	LockTimeout time.Duration
 	// IdleTimeout — idle conns above min are evicted after this. Default 5m.
 	IdleTimeout time.Duration
 	// MaxConnectionLifetime — connections recycled after this even under
@@ -55,6 +63,12 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.StatementTimeout == 0 {
 		c.StatementTimeout = 30 * time.Second
+	}
+	if c.IdleInTransactionSessionTimeout == 0 {
+		c.IdleInTransactionSessionTimeout = 60 * time.Second
+	}
+	if c.LockTimeout == 0 {
+		c.LockTimeout = 5 * time.Second
 	}
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 5 * time.Minute
@@ -124,7 +138,14 @@ func Open(ctx context.Context, cfg Config) (*Pool, error) {
 	pcfg.ConnConfig.RuntimeParams["application_name"] = cfg.ApplicationName
 
 	stmtMillis := cfg.StatementTimeout.Milliseconds()
-	stmtSet := fmt.Sprintf("SET statement_timeout = %d", stmtMillis)
+	idleTxnMillis := cfg.IdleInTransactionSessionTimeout.Milliseconds()
+	lockMillis := cfg.LockTimeout.Milliseconds()
+	// Combine the three SETs into one Exec to keep AfterConnect a
+	// single round-trip per connection.
+	stmtSet := fmt.Sprintf(
+		"SET statement_timeout = %d; SET idle_in_transaction_session_timeout = %d; SET lock_timeout = %d",
+		stmtMillis, idleTxnMillis, lockMillis,
+	)
 
 	pcfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
 		_, execErr := c.Exec(ctx, stmtSet)

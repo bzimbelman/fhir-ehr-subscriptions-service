@@ -72,6 +72,12 @@ type Config struct {
 	BatchSize   int32
 	BatchPause  time.Duration
 
+	// TickTimeout caps how long a single Run-driven Tick may take. A
+	// stuck advisory lock or a misbehaving DELETE can no longer wedge
+	// the sweeper for the lifetime of the process. Default: 6h (one
+	// quarter of the default RunInterval).
+	TickTimeout time.Duration
+
 	Hl7MessageQueue time.Duration
 	Deliveries      time.Duration
 	DeadLetters     time.Duration
@@ -93,7 +99,15 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	if cfg.RunInterval == 0 {
 		cfg.RunInterval = 24 * time.Hour
 	}
-	_ = Tick(ctx, pool, cfg)
+	if cfg.TickTimeout <= 0 {
+		cfg.TickTimeout = 6 * time.Hour
+	}
+	tickOnce := func() {
+		tickCtx, cancel := context.WithTimeout(ctx, cfg.TickTimeout)
+		defer cancel()
+		_ = Tick(tickCtx, pool, cfg)
+	}
+	tickOnce()
 	t := time.NewTimer(cfg.RunInterval)
 	defer t.Stop()
 	for {
@@ -101,7 +115,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = Tick(ctx, pool, cfg)
+			tickOnce()
 			t.Reset(cfg.RunInterval)
 		}
 	}
