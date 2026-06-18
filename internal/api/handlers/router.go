@@ -107,6 +107,13 @@ type Deps struct {
 	// during graceful shutdown so handshakes either finish, time out,
 	// or are canceled before the process exits (B-10).
 	ActivationWaitGroup *sync.WaitGroup
+
+	// URLValidator, when non-nil, vets the subscriber-supplied
+	// channel.endpoint URL on every create and update before the row
+	// is persisted (B-11). A nil validator is treated as "no policy"
+	// for backward-compatibility with existing tests; production
+	// wiring MUST set this.
+	URLValidator URLValidator
 }
 
 // RegisterRoutes wires every handler onto r. Auth middleware MUST be

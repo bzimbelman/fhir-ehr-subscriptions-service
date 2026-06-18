@@ -173,6 +173,19 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF guard (B-11). The validator runs on every channel that
+	// carries an outbound URL. websocket has no caller-supplied URL so
+	// we skip the check there. The same validator is reused at delivery
+	// time by the rest-hook channel as a DNS-rebinding defense.
+	if s.deps.URLValidator != nil && internal.Endpoint != "" && internal.ChannelType != "websocket" {
+		if err := s.deps.URLValidator.Validate(internal.Endpoint); err != nil {
+			s.recordValidationFailure("ssrf")
+			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+				"endpoint rejected by SSRF policy")
+			return
+		}
+	}
+
 	row := internal.toRow(p.ClientID, repos.SubRequested)
 	id, insertErr := s.deps.Subscriptions.Insert(r.Context(), row)
 	if insertErr != nil {
@@ -422,6 +435,15 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"unsupported channelType")
 		return
+	}
+
+	if s.deps.URLValidator != nil && newDoc.Endpoint != "" && newDoc.ChannelType != "websocket" {
+		if err := s.deps.URLValidator.Validate(newDoc.Endpoint); err != nil {
+			s.recordValidationFailure("ssrf")
+			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+				"endpoint rejected by SSRF policy")
+			return
+		}
 	}
 
 	classification := classifyUpdate(existing, newDoc)
