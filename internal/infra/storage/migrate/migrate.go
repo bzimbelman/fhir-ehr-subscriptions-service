@@ -131,39 +131,39 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 	}
 	defer conn.Release()
 
-	// 1. Ensure version table exists. The very first migration also creates
-	// it; this is idempotent.
-	_, err = conn.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS schema_migrations (
-			version    TEXT PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			checksum   TEXT
-		)`)
+	// Detect whether schema_migrations already exists. The very first
+	// migration creates it as part of its body; we only create it ourselves
+	// when bootstrapping a database whose first migration has already been
+	// applied by an out-of-band tool.
+	exists, err := schemaMigrationsExists(ctx, conn.Conn())
 	if err != nil {
-		return fmt.Errorf("migrate: ensure schema_migrations: %w", err)
+		return fmt.Errorf("migrate: probe schema_migrations: %w", err)
+	}
+	if exists {
+		// Some bootstrap deployments (e.g., 0001_init.sql) created
+		// schema_migrations without a checksum column. Add it if missing.
+		_, _ = conn.Exec(ctx, `ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`)
 	}
 
-	// Some bootstrap deployments (e.g., 0001_init.sql) created
-	// schema_migrations without a checksum column. Add it if missing.
-	_, _ = conn.Exec(ctx, `ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`)
-
-	// 2. Pull applied set.
+	// 2. Pull applied set (or treat as empty when the table doesn't yet exist).
 	applied := map[string]string{}
-	rows, err := conn.Query(ctx, `SELECT version, COALESCE(checksum, '') FROM schema_migrations`)
-	if err != nil {
-		return fmt.Errorf("migrate: select schema_migrations: %w", err)
-	}
-	for rows.Next() {
-		var v, c string
-		if err := rows.Scan(&v, &c); err != nil {
-			rows.Close()
-			return fmt.Errorf("migrate: scan: %w", err)
+	if exists {
+		rows, err := conn.Query(ctx, `SELECT version, COALESCE(checksum, '') FROM schema_migrations`)
+		if err != nil {
+			return fmt.Errorf("migrate: select schema_migrations: %w", err)
 		}
-		applied[v] = c
-	}
-	rows.Close()
-	if rerr := rows.Err(); rerr != nil {
-		return fmt.Errorf("migrate: rows: %w", rerr)
+		for rows.Next() {
+			var v, c string
+			if err := rows.Scan(&v, &c); err != nil {
+				rows.Close()
+				return fmt.Errorf("migrate: scan: %w", err)
+			}
+			applied[v] = c
+		}
+		rows.Close()
+		if rerr := rows.Err(); rerr != nil {
+			return fmt.Errorf("migrate: rows: %w", rerr)
+		}
 	}
 
 	for _, m := range migs {
@@ -188,6 +188,13 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 			if _, err := conn.Exec(ctx, m.Body); err != nil {
 				return fmt.Errorf("migrate: apply concurrent %s: %w", m.Version, err)
 			}
+			// Ensure schema_migrations has a checksum column. Bootstrap
+			// migrations (e.g., 0001_init.sql) may have created the table
+			// without one.
+			if _, err := conn.Exec(ctx,
+				`ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
+				return fmt.Errorf("migrate: ensure checksum column: %w", err)
+			}
 			if _, err := conn.Exec(ctx,
 				`INSERT INTO schema_migrations(version, applied_at, checksum) VALUES ($1, now(), $2)
 				 ON CONFLICT (version) DO UPDATE SET checksum = excluded.checksum`,
@@ -200,6 +207,13 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 		if err := withTx(ctx, conn.Conn(), func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, m.Body); err != nil {
 				return fmt.Errorf("apply: %w", err)
+			}
+			// Ensure schema_migrations has a checksum column. The bootstrap
+			// migration may have created the table without one; subsequent
+			// migrations are safe with the IF NOT EXISTS guard.
+			if _, err := tx.Exec(ctx,
+				`ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
+				return fmt.Errorf("ensure checksum column: %w", err)
 			}
 			if _, err := tx.Exec(ctx,
 				`INSERT INTO schema_migrations(version, applied_at, checksum) VALUES ($1, now(), $2)
@@ -227,4 +241,22 @@ func withTx(ctx context.Context, conn *pgx.Conn, fn func(pgx.Tx) error) error {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// schemaMigrationsExists returns true if the schema_migrations relation
+// is already present in the current database.
+func schemaMigrationsExists(ctx context.Context, conn *pgx.Conn) (bool, error) {
+	const sql = `SELECT EXISTS(
+		SELECT 1
+		FROM pg_catalog.pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.relname = 'schema_migrations'
+		  AND n.nspname = ANY (current_schemas(false))
+		  AND c.relkind IN ('r', 'p')
+	)`
+	var exists bool
+	if err := conn.QueryRow(ctx, sql).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
