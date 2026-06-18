@@ -93,9 +93,15 @@ type stubMetrics struct {
 	processed int
 	matchSum  int
 	runtime   int
+	attempts  map[string]int
 }
 
-func newStubMetrics() *stubMetrics { return &stubMetrics{outcomes: map[FanoutDecision]int{}} }
+func newStubMetrics() *stubMetrics {
+	return &stubMetrics{
+		outcomes: map[FanoutDecision]int{},
+		attempts: map[string]int{},
+	}
+}
 
 func (m *stubMetrics) FanoutOutcome(_ string, d FanoutDecision) {
 	m.outcomes[d]++
@@ -105,6 +111,7 @@ func (m *stubMetrics) EventProcessed(_ string, matched int) {
 	m.matchSum += matched
 }
 func (m *stubMetrics) FilterRuntimeError(uuid.UUID) { m.runtime++ }
+func (m *stubMetrics) RowAttempt(outcome string)    { m.attempts[outcome]++ }
 
 // makeRows builds n active SubscriptionRows for topic, with no
 // filterBy so every one will Match the synthetic event.

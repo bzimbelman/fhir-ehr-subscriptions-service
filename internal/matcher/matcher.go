@@ -935,6 +935,16 @@ type MetricsEmitter interface {
 	// EhrEventEmitted is bumped once per ehr_events insert. No labels —
 	// throughput-aggregate.
 	EhrEventEmitted()
+	// RowAttempt bumps the per-tickOnce attempt counter labeled by
+	// outcome ∈ {processed, deferred, error}. Distinct from
+	// ResourceChangeClaimed: the *Claimed counter is the LLD §9 "claim
+	// transaction outcome" view; RowAttempt is the cross-pipeline
+	// "row_attempts_total" view audited under S-10.6, called the same
+	// way for the matcher and submatcher so dashboards can compare
+	// attempts/row across the two stages without a name remap (story
+	// #61). They both fire from the same call sites; the duplication is
+	// deliberate and cheap.
+	RowAttempt(outcome string)
 }
 
 // nopMetrics is the default zero-allocation no-op emitter.
@@ -946,6 +956,7 @@ func (nopMetrics) TopicMatch(string)                {}
 func (nopMetrics) FHIRPathTimeout(string)           {}
 func (nopMetrics) EvaluateDuration(string, float64) {}
 func (nopMetrics) EhrEventEmitted()                 {}
+func (nopMetrics) RowAttempt(string)                {}
 
 // metricsEmitter is the process-global emitter. Wiring installs once at
 // startup; the matcher reads via load on the hot path.
@@ -1049,6 +1060,7 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		em.ResourceChangeClaimed("error")
+		em.RowAttempt("error")
 		return false, fmt.Errorf("matcher: begin tx: %w", err)
 	}
 	// txDone is set when the deferred rollback would be redundant —
@@ -1065,12 +1077,14 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	rows, err := w.rcsRepo.ClaimUnprocessed(ctx, tx, w.cfg.ClaimBatchSize)
 	if err != nil {
 		em.ResourceChangeClaimed("error")
+		em.RowAttempt("error")
 		return false, fmt.Errorf("matcher: claim: %w", err)
 	}
 	if len(rows) == 0 {
 		_ = tx.Rollback(ctx)
 		txDone = true
 		em.ResourceChangeClaimed("deferred")
+		em.RowAttempt("deferred")
 		return false, nil
 	}
 
@@ -1104,6 +1118,7 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 		})
 		if err != nil {
 			em.ResourceChangeClaimed("error")
+			em.RowAttempt("error")
 			return false, fmt.Errorf("matcher: insert ehr_events: %w", err)
 		}
 		em.EhrEventEmitted()
@@ -1111,14 +1126,17 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 
 	if _, err := w.rcsRepo.MarkProcessed(ctx, tx, row.ID, row.CreatedMonth); err != nil {
 		em.ResourceChangeClaimed("error")
+		em.RowAttempt("error")
 		return false, fmt.Errorf("matcher: mark processed: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		em.ResourceChangeClaimed("error")
+		em.RowAttempt("error")
 		return false, fmt.Errorf("matcher: commit: %w", err)
 	}
 	txDone = true
 	em.ResourceChangeClaimed("processed")
+	em.RowAttempt("processed")
 	return true, nil
 }

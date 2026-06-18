@@ -103,6 +103,12 @@ type Metrics interface {
 	// filterBy hit an EvaluationError. Mirrors
 	// fhir_subs_filter_runtime_errors_total in the LLD §metrics.
 	FilterRuntimeError(subscriptionID uuid.UUID)
+	// RowAttempt bumps fhir_subs_submatcher_row_attempts_total{outcome}
+	// once per tickOnce return. outcome ∈ {processed, deferred, error};
+	// "deferred" is the empty-claim short-circuit (no rows to fan out).
+	// Mirrors matcher.MetricsEmitter.RowAttempt so cross-pipeline
+	// dashboards line up (story #61, S-12.3).
+	RowAttempt(outcome string)
 }
 
 // nopMetrics satisfies Metrics with no-op methods. The default when no
@@ -112,6 +118,7 @@ type nopMetrics struct{}
 func (nopMetrics) FanoutOutcome(string, FanoutDecision) {}
 func (nopMetrics) EventProcessed(string, int)           {}
 func (nopMetrics) FilterRuntimeError(uuid.UUID)         {}
+func (nopMetrics) RowAttempt(string)                    {}
 
 // AuthRechecker is the SPI the worker consumes at delivery prep
 // (P2.7). It is satisfied by internal/api/auth.Rechecker (and by its
@@ -323,6 +330,7 @@ func (w *Worker) TickOnce(ctx context.Context) (bool, error) {
 func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		w.metrics.RowAttempt("error")
 		return false, fmt.Errorf("submatcher: begin: %w", err)
 	}
 	committed := false
@@ -334,24 +342,29 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 
 	rows, err := w.ehr.ClaimUnprocessed(ctx, tx, w.cfg.ClaimBatchSize)
 	if err != nil {
+		w.metrics.RowAttempt("error")
 		return false, fmt.Errorf("submatcher: claim: %w", err)
 	}
 	if len(rows) == 0 {
 		_ = tx.Rollback(ctx)
 		committed = true
+		w.metrics.RowAttempt("deferred")
 		return false, nil
 	}
 
 	for i := range rows {
 		if err := w.fanoutOne(ctx, tx, &rows[i]); err != nil {
+			w.metrics.RowAttempt("error")
 			return false, err
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		w.metrics.RowAttempt("error")
 		return false, fmt.Errorf("submatcher: commit: %w", err)
 	}
 	committed = true
+	w.metrics.RowAttempt("processed")
 	return true, nil
 }
 

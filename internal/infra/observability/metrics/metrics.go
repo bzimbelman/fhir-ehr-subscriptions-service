@@ -374,6 +374,16 @@ type Inventory struct {
 	MatcherFHIRPathTimeoutsTotal       *Counter
 	MatcherEvaluateDurationSeconds     *Histogram
 	MatcherEhrEventsEmittedTotal       *Counter
+	// Story #61 — counter wiring for the four PARTIAL audit items
+	// (S-9.6, S-10.6, S-11.4, S-12.3). The matcher and submatcher each
+	// gain a per-row attempts counter labeled by outcome
+	// (processed|deferred|error); the topics catalog gains rejected and
+	// overridden counters so operator dashboards see typo-shadowed
+	// builtins without trawling logs.
+	MatcherRowAttemptsTotal    *Counter
+	SubmatcherRowAttemptsTotal *Counter
+	TopicsRejectedTotal        *Counter
+	TopicOverriddenTotal       *Counter
 }
 
 // RegisterStartupInventory creates and registers the canonical metric set.
@@ -473,7 +483,43 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	if err != nil {
 		return nil, err
 	}
-	mr.Set(12, nil)
+	// Story #61 — matcher / submatcher row attempts and topic catalog
+	// counters. The audit (S-9.6, S-10.6, S-11.4, S-12.3) flagged these
+	// as PARTIAL because the seams existed but the host inventory did
+	// not register or pre-seed them.
+	mra, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_matcher_row_attempts_total",
+		Help:   "Per-row matcher claim attempts, by outcome (processed|deferred|error).",
+		Labels: []string{"outcome"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	smra, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_submatcher_row_attempts_total",
+		Help:   "Per-row submatcher claim attempts, by outcome (processed|deferred|error).",
+		Labels: []string{"outcome"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	trt, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_topics_rejected_total",
+		Help:   "Topics rejected at catalog load, by origin and reason.",
+		Labels: []string{"origin", "reason"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	tot, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_topic_overridden_total",
+		Help:   "Topics where a higher-priority candidate was rejected and a lower-priority topic was used; labeled (from, to) where 'from' is the origin used and 'to' is the rejected origin.",
+		Labels: []string{"from", "to"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mr.Set(16, nil)
 	// Pre-register a zero-valued time series for each label-set we know
 	// about so the /metrics endpoint exposes them at scrape time even
 	// before the first event lands. This makes alert rules targeting
@@ -497,8 +543,20 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	}
 	for _, o := range []string{"processed", "deferred", "error"} {
 		mrcc.Add(0, prometheus.Labels{"outcome": o})
+		mra.Add(0, prometheus.Labels{"outcome": o})
+		smra.Add(0, prometheus.Labels{"outcome": o})
 	}
 	mee.Add(0, nil)
+	// Story #61: pre-seed topics_rejected and topic_overridden with the
+	// closed-domain origin values (Source enum) so dashboards see the
+	// families at scrape time before the first reload. The reason and
+	// (from,to) pair labels are open-ended at the operator-supplied
+	// catalog level so we use "_unset" placeholders — operators see the
+	// real reason once a rejected topic lands.
+	for _, origin := range []string{"builtin", "adapter", "operator"} {
+		trt.Add(0, prometheus.Labels{"origin": origin, "reason": "_unset"})
+	}
+	tot.Add(0, prometheus.Labels{"from": "_unset", "to": "_unset"})
 
 	return &Inventory{
 		MetricsRegistered:                  mr,
@@ -513,5 +571,9 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 		MatcherFHIRPathTimeoutsTotal:       mft,
 		MatcherEvaluateDurationSeconds:     med,
 		MatcherEhrEventsEmittedTotal:       mee,
+		MatcherRowAttemptsTotal:            mra,
+		SubmatcherRowAttemptsTotal:         smra,
+		TopicsRejectedTotal:                trt,
+		TopicOverriddenTotal:               tot,
 	}, nil
 }

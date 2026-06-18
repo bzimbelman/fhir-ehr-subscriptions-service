@@ -33,12 +33,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/submatcher"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/metrics"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
 // MetricsConfig is the metrics-layer config block.
@@ -174,6 +176,90 @@ func (a *matcherEmitterAdapter) EvaluateDuration(t string, seconds float64) {
 }
 func (a *matcherEmitterAdapter) EhrEventEmitted() {
 	a.inv.MatcherEhrEventsEmittedTotal.Inc(nil)
+}
+func (a *matcherEmitterAdapter) RowAttempt(outcome string) {
+	a.inv.MatcherRowAttemptsTotal.Inc(prometheus.Labels{"outcome": outcome})
+}
+
+// SubmatcherMetricsAdapter forwards submatcher.Metrics calls into the
+// observability inventory so the host can wire one adapter per worker
+// (story #61). The adapter is exported so cmd/fhir-subs can pass it via
+// submatcher.WithMetrics — observability owns the inventory; the worker
+// owns the call sites.
+type SubmatcherMetricsAdapter struct {
+	inv *metrics.Inventory
+}
+
+// NewSubmatcherMetricsAdapter returns an adapter bound to mod's
+// inventory. Returns nil when mod is nil (mostly for tests that pass
+// the nil module shape through).
+func NewSubmatcherMetricsAdapter(mod *ObservabilityModule) *SubmatcherMetricsAdapter {
+	if mod == nil {
+		return nil
+	}
+	return &SubmatcherMetricsAdapter{inv: mod.inventory}
+}
+
+// FanoutOutcome is unused at present (the audit's S-12.3 row_attempts
+// view subsumes the per-decision cardinality in dashboards), but the
+// method is kept so the adapter satisfies submatcher.Metrics today.
+func (a *SubmatcherMetricsAdapter) FanoutOutcome(_ string, _ submatcher.FanoutDecision) {}
+
+// EventProcessed is similarly the row-level "matched count" view; we
+// expose it as a no-op until a downstream dashboard wants it. The
+// matcher's MatcherEhrEventsEmittedTotal already counts the per-row
+// success.
+func (a *SubmatcherMetricsAdapter) EventProcessed(_ string, _ int) {}
+
+// FilterRuntimeError is the per-subscription runtime-error counter
+// (S-12.3). subscriptionID is high-cardinality and forbidden as a
+// label per LLD §4.2 — drop it to a global counter once we wire one;
+// for now this is a no-op and the operator-facing signal is the
+// matcher/submatcher row_attempts_total{outcome="error"} aggregation.
+func (a *SubmatcherMetricsAdapter) FilterRuntimeError(_ uuid.UUID) {}
+
+// RowAttempt forwards the per-tickOnce attempt to
+// fhir_subs_submatcher_row_attempts_total{outcome}.
+func (a *SubmatcherMetricsAdapter) RowAttempt(outcome string) {
+	a.inv.SubmatcherRowAttemptsTotal.Inc(prometheus.Labels{"outcome": outcome})
+}
+
+// PublishTopicCatalogReport bumps the topics_rejected_total and
+// topic_overridden_total counters once per startup/reload load
+// (S-11.4). The catalog itself is pure; the host layer translates
+// Catalog.Rejected() / Catalog.Overridden() into Prometheus emits.
+func (m *ObservabilityModule) PublishTopicCatalogReport(report catalog.Report) {
+	if m == nil || m.inventory == nil {
+		return
+	}
+	for _, rej := range report.Rejected {
+		origin := rej.Origin
+		if origin == "" {
+			origin = "_unknown"
+		}
+		reason := rej.Reason
+		if reason == "" {
+			reason = "_unknown"
+		}
+		m.inventory.TopicsRejectedTotal.Inc(prometheus.Labels{
+			"origin": origin,
+			"reason": reason,
+		})
+	}
+	for _, ov := range report.Overridden {
+		from := string(ov.FromSource)
+		if from == "" {
+			from = "_unknown"
+		}
+		to := string(ov.ToSource)
+		if to == "" {
+			to = "_unknown"
+		}
+		m.inventory.TopicOverriddenTotal.Inc(prometheus.Labels{
+			"from": from,
+			"to":   to,
+		})
+	}
 }
 
 // auditAdapter adapts the audit.Writer to the AuditWriter shape exposed
