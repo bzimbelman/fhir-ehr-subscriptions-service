@@ -109,6 +109,17 @@ func readCappedBody(r *http.Request, cap int64) (body []byte, err error, oversiz
 	return body, nil, false
 }
 
+// logActivateError emits a warn-level log when a database / audit /
+// channel call inside the fire-and-forget activation goroutine fails
+// (S-2.7). Nil logger is a no-op so existing tests / callers that
+// don't wire a logger keep working.
+func (s *server) logActivateError(op string, id uuid.UUID, err error) {
+	if s.deps.Logger == nil || err == nil {
+		return
+	}
+	s.deps.Logger.Warn(op, "subscription_id", id.String(), "err", err.Error())
+}
+
 // parseEventNumberParam parses an optional event-number query
 // parameter. Empty means 0 (unbounded). Returns ok=false on a
 // malformed or negative value so the handler can answer 400 instead
@@ -271,16 +282,24 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 // activate runs the channel's on_subscription_activated handshake and
-// flips the subscription status accordingly. Errors are recorded; the
-// subscription is left in `error` on failure.
+// flips the subscription status accordingly. DB / channel / audit
+// errors are routed to the dep-injected logger so an operator can spot
+// silent activation failures (S-2.7); previously every error was
+// dropped to `_`.
 func (s *server) activate(ctx context.Context, id uuid.UUID) {
 	sub, err := s.deps.Subscriptions.GetByID(ctx, id)
-	if err != nil || sub == nil {
+	if err != nil {
+		s.logActivateError("activate.get_subscription", id, err)
+		return
+	}
+	if sub == nil {
 		return
 	}
 	channel, ok := s.deps.Channels[sub.ChannelType]
 	if !ok {
-		_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, "no channel registered")
+		if err := s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, "no channel registered"); err != nil {
+			s.logActivateError("activate.no_channel.update_status", id, err)
+		}
 		return
 	}
 	outcome, err := channel.ActivateSubscription(ctx, *sub)
@@ -296,12 +315,20 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 		if bookkeepingCtx.Err() != nil {
 			bookkeepingCtx = context.Background()
 		}
-		_ = s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason)
-		_ = s.deps.Audit.Append(bookkeepingCtx, "subscription.handshake.fail", id.String(), "failure", nil, nil)
+		if uErr := s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason); uErr != nil {
+			s.logActivateError("activate.handshake_fail.update_status", id, uErr)
+		}
+		if aErr := s.deps.Audit.Append(bookkeepingCtx, "subscription.handshake.fail", id.String(), "failure", nil, nil); aErr != nil {
+			s.logActivateError("activate.handshake_fail.audit", id, aErr)
+		}
 		return
 	}
-	_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, "")
-	_ = s.deps.Audit.Append(ctx, "subscription.handshake.ok", id.String(), "success", nil, nil)
+	if err := s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, ""); err != nil {
+		s.logActivateError("activate.success.update_status", id, err)
+	}
+	if err := s.deps.Audit.Append(ctx, "subscription.handshake.ok", id.String(), "success", nil, nil); err != nil {
+		s.logActivateError("activate.success.audit", id, err)
+	}
 }
 
 // matchingSubscriptions returns this client's subscriptions whose
@@ -645,7 +672,7 @@ func (s *server) opStatusSingle(w http.ResponseWriter, r *http.Request) {
 			"no such subscription")
 		return
 	}
-	statusResource := s.buildSubscriptionStatus(sub, "query-status", nil)
+	statusResource := s.buildSubscriptionStatus(r.Context(), sub, "query-status", nil)
 	bundle := wrapSearchset([]any{statusResource})
 	body, _ := json.Marshal(bundle)
 	writeJSON(w, http.StatusOK, body)
@@ -685,7 +712,7 @@ func (s *server) opStatusBulk(w http.ResponseWriter, r *http.Request) {
 			entries = append(entries, makeOutcomeEntry(raw, "not-found"))
 			continue
 		}
-		entries = append(entries, s.buildSubscriptionStatus(sub, "query-status", nil))
+		entries = append(entries, s.buildSubscriptionStatus(r.Context(), sub, "query-status", nil))
 	}
 	bundle := wrapSearchset(entries)
 	body, _ := json.Marshal(bundle)
@@ -749,7 +776,7 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 		notificationEvents = append(notificationEvents, entry)
 	}
 
-	statusResource := s.buildSubscriptionStatus(sub, "query-event", notificationEvents)
+	statusResource := s.buildSubscriptionStatus(r.Context(), sub, "query-event", notificationEvents)
 	bundle := map[string]any{
 		"resourceType": "Bundle",
 		"type":         "subscription-notification",
@@ -885,20 +912,36 @@ func (s *server) readTopic(w http.ResponseWriter, r *http.Request) {
 	fhirerror.WriteError(w, http.StatusNotFound, fhirerror.CodeNotFound, "no such topic")
 }
 
-// getCapabilityStatement is GET /metadata.
+// getCapabilityStatement is GET /metadata when mounted behind the
+// authenticated surface (RegisterRoutes).
 func (s *server) getCapabilityStatement(w http.ResponseWriter, r *http.Request) {
 	if mustPrincipal(w, r) == nil {
 		return
 	}
+	s.writeCapabilityStatement(w, r)
+}
+
+// getCapabilityStatementPublic serves /metadata on the pre-auth
+// surface (RegisterPublicRoutes). FHIR conformance probes hit
+// /metadata without a bearer token (S-2.1).
+func (s *server) getCapabilityStatementPublic(w http.ResponseWriter, r *http.Request) {
+	s.writeCapabilityStatement(w, r)
+}
+
+func (s *server) writeCapabilityStatement(w http.ResponseWriter, r *http.Request) {
 	cs := s.buildCapabilityStatement(r.Context())
 	body, _ := json.Marshal(cs)
 	writeJSON(w, http.StatusOK, body)
 }
 
 // buildSubscriptionStatus assembles a SubscriptionStatus resource per
-// the spec.
-func (s *server) buildSubscriptionStatus(sub *repos.SubscriptionRow, kind string, events []map[string]any) map[string]any {
-	last, _ := s.deps.Deliveries.LastDeliveredEventNumber(context.Background(), sub.ID)
+// the spec. ctx is the caller's request context so deadline / cancel
+// propagate to the deliveries lookup (S-2.12).
+func (s *server) buildSubscriptionStatus(ctx context.Context, sub *repos.SubscriptionRow, kind string, events []map[string]any) map[string]any {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	last, _ := s.deps.Deliveries.LastDeliveredEventNumber(ctx, sub.ID)
 	out := map[string]any{
 		"resourceType":                 "SubscriptionStatus",
 		"status":                       string(sub.Status),

@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -140,6 +141,12 @@ type Deps struct {
 	// JSON-schema validation errors. Zero means
 	// DefaultMaxSchemaErrorBytes. (S-2.3)
 	MaxSchemaErrorBytes int
+
+	// Logger is the structured logger used for activate-side errors
+	// that the API can't surface to the client (S-2.7). Nil is
+	// permitted; activate calls then drop the error silently — that's
+	// the legacy behavior, kept for backwards-compat.
+	Logger *slog.Logger
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
@@ -212,6 +219,22 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
 		fhirerror.WriteError(w, http.StatusMethodNotAllowed, fhirerror.CodeNotSupported, "method not allowed")
 	})
+}
+
+// RegisterPublicRoutes wires the routes that MUST NOT be wrapped in
+// auth middleware: the FHIR `/metadata` (CapabilityStatement) endpoint
+// is required by FHIR conformance probes and is fetched
+// unauthenticated. Production wiring mounts this on the bare server
+// mux so the auth middleware never sees the request (S-2.1).
+func RegisterPublicRoutes(r chi.Router, d Deps) {
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	if d.FHIRVersion == "" {
+		d.FHIRVersion = DefaultFHIRVersion
+	}
+	h := &server{deps: d}
+	r.Get("/metadata", h.getCapabilityStatementPublic)
 }
 
 type server struct {
