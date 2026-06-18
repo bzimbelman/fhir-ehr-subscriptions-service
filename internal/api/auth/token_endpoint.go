@@ -55,6 +55,12 @@ type TokenEndpointConfig struct {
 	// Default 60s.
 	ClockSkew time.Duration
 
+	// Metrics, if non-nil, receives auth-failure and token-issued
+	// counters. The token endpoint treats every assertion failure as an
+	// auth failure with the reason mapped to the canonical set
+	// (malformed, signature, expired, audience, unknown_client).
+	Metrics MetricsRecorder
+
 	// Now returns the current time. Tests substitute.
 	Now func() time.Time
 }
@@ -65,6 +71,7 @@ type TokenEndpointConfig struct {
 type TokenEndpoint struct {
 	cfg       TokenEndpointConfig
 	jwksCache *jwksCache
+	jtiCache  *JTIReplayCache
 }
 
 // NewTokenEndpoint validates cfg and returns a ready handler.
@@ -102,6 +109,7 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	return &TokenEndpoint{
 		cfg:       cfg,
 		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now),
+		jtiCache:  NewJTIReplayCache(0, cfg.Now),
 	}, nil
 }
 
@@ -109,28 +117,28 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 // Services profile.
 func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeOAuthError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
+		te.fail(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed", "malformed")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "could not parse form")
+		te.fail(w, http.StatusBadRequest, "invalid_request", "could not parse form", "malformed")
 		return
 	}
 	if r.PostForm.Get("grant_type") != "client_credentials" {
-		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type",
-			"only client_credentials is supported")
+		te.fail(w, http.StatusBadRequest, "unsupported_grant_type",
+			"only client_credentials is supported", "malformed")
 		return
 	}
 	if r.PostForm.Get("client_assertion_type") !=
 		"urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client",
-			"client_assertion_type must be jwt-bearer")
+		te.fail(w, http.StatusBadRequest, "invalid_client",
+			"client_assertion_type must be jwt-bearer", "malformed")
 		return
 	}
 	assertion := r.PostForm.Get("client_assertion")
 	if assertion == "" {
-		writeOAuthError(w, http.StatusBadRequest, "invalid_client",
-			"client_assertion required")
+		te.fail(w, http.StatusBadRequest, "invalid_client",
+			"client_assertion required", "malformed")
 		return
 	}
 
@@ -138,8 +146,8 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
 	unverified, _, err := parser.ParseUnverified(assertion, jwt.MapClaims{})
 	if err != nil {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"malformed assertion")
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"malformed assertion", "malformed")
 		return
 	}
 	claims, _ := unverified.Claims.(jwt.MapClaims)
@@ -149,27 +157,27 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientID, _ = claims["sub"].(string)
 	}
 	if clientID == "" {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"missing client_id/sub")
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"missing client_id/sub", "malformed")
 		return
 	}
 
 	client, err := te.cfg.ClientLookup.GetByID(r.Context(), clientID)
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error",
-			"client lookup failed")
+		te.fail(w, http.StatusInternalServerError, "server_error",
+			"client lookup failed", "unknown_client")
 		return
 	}
 	if client == nil || client.JwksURL == "" {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"unknown client")
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"unknown client", "unknown_client")
 		return
 	}
 
 	kf, err := te.jwksCache.fetch(r.Context(), client.JwksURL)
 	if err != nil {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"jwks unavailable")
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"jwks unavailable", "signature")
 		return
 	}
 
@@ -182,30 +190,52 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		jwt.WithTimeFunc(te.cfg.Now),
 	).Parse(assertion, kf.Keyfunc)
 	if err != nil {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			fmt.Sprintf("assertion validation failed: %v", err))
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			fmt.Sprintf("assertion validation failed: %v", err),
+			classifyAssertionErr(err))
 		return
 	}
 	if !verified.Valid {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"assertion invalid")
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"assertion invalid", "signature")
 		return
 	}
 	vc, _ := verified.Claims.(jwt.MapClaims)
 
-	// iss/sub MUST equal client_id; aud MUST be the token URL.
+	// Required claims per RFC 7523.
+	if _, ok := vc["exp"]; !ok {
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing exp", "malformed")
+		return
+	}
+	if _, ok := vc["iat"]; !ok {
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing iat", "malformed")
+		return
+	}
 	if iss, _ := vc["iss"].(string); iss != clientID {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "iss mismatch")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "iss mismatch", "malformed")
 		return
 	}
 	if sub, _ := vc["sub"].(string); sub != clientID {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "sub mismatch")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "sub mismatch", "malformed")
 		return
 	}
 	if !audienceMatches(vc["aud"], te.cfg.TokenURL) {
-		writeOAuthError(w, http.StatusUnauthorized, "invalid_client",
-			"assertion aud must equal token URL")
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"assertion aud must equal token URL", "audience")
 		return
+	}
+
+	// Replay protection within the token endpoint — same JTI cannot be
+	// re-used to mint a new token even if it's still in its validity
+	// window.
+	if jti, _ := vc["jti"].(string); jti != "" {
+		exp, _ := claimToTime(vc["exp"])
+		if te.jtiCache.Seen(jti) {
+			te.fail(w, http.StatusUnauthorized, "invalid_client",
+				"assertion jti replay", "replayed_jti")
+			return
+		}
+		te.jtiCache.Put(jti, exp)
 	}
 
 	// Compute granted scopes — intersect requested with client.Scopes.
@@ -215,8 +245,8 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	granted := intersect(requested, client.Scopes)
 	if len(granted) == 0 {
-		writeOAuthError(w, http.StatusForbidden, "invalid_scope",
-			"no authorized scopes")
+		te.fail(w, http.StatusForbidden, "invalid_scope",
+			"no authorized scopes", "revoked")
 		return
 	}
 
@@ -234,9 +264,13 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	signed, err := access.SignedString(te.cfg.AccessTokenSecret)
 	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error",
-			"signing failed")
+		te.fail(w, http.StatusInternalServerError, "server_error",
+			"signing failed", "malformed")
 		return
+	}
+
+	if te.cfg.Metrics != nil {
+		te.cfg.Metrics.RecordTokenIssued()
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -248,6 +282,30 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"expires_in":   int(te.cfg.AccessTokenTTL.Seconds()),
 		"scope":        strings.Join(granted, " "),
 	})
+}
+
+// fail writes an OAuth-formatted OperationOutcome and records the
+// matching auth_failures metric.
+func (te *TokenEndpoint) fail(w http.ResponseWriter, status int, code, desc, reason string) {
+	if te.cfg.Metrics != nil {
+		te.cfg.Metrics.RecordAuthFailure(reason)
+	}
+	writeOAuthError(w, status, code, desc)
+}
+
+func classifyAssertionErr(err error) string {
+	switch {
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return "expired"
+	case errors.Is(err, jwt.ErrTokenSignatureInvalid):
+		return "signature"
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return "expired"
+	case strings.Contains(err.Error(), "kid"):
+		return "signature"
+	default:
+		return "signature"
+	}
 }
 
 func writeOAuthError(w http.ResponseWriter, status int, code, desc string) {

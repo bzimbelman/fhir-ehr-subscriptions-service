@@ -66,6 +66,11 @@ type VerifierConfig struct {
 	// access tokens it mints. Required if IssuedSecret is set.
 	IssuedIssuer string
 
+	// Metrics, if non-nil, receives RecordAuthFailure(reason) calls for
+	// every verification failure. The token endpoint owns
+	// RecordTokenIssued; the verifier never calls it.
+	Metrics MetricsRecorder
+
 	// Now returns the current time. Tests substitute. Default time.Now.
 	Now func() time.Time
 }
@@ -119,11 +124,13 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status int, reason string) {
 	header := r.Header.Get("Authorization")
 	if header == "" || !strings.HasPrefix(header, "Bearer ") {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "missing bearer token"
 	}
 	tok := strings.TrimPrefix(header, "Bearer ")
 	tok = strings.TrimSpace(tok)
 	if tok == "" {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "empty bearer token"
 	}
 
@@ -134,10 +141,12 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
 	unverified, _, err := parser.ParseUnverified(tok, jwt.MapClaims{})
 	if err != nil {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "malformed token"
 	}
 	claims, ok := unverified.Claims.(jwt.MapClaims)
 	if !ok {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "malformed token"
 	}
 
@@ -146,14 +155,17 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		clientID, _ = claims["sub"].(string)
 	}
 	if clientID == "" {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "missing client_id and sub"
 	}
 
 	client, err := v.cfg.ClientLookup.GetByID(r.Context(), clientID)
 	if err != nil {
+		v.recordFailure("unknown_client")
 		return nil, http.StatusUnauthorized, "client lookup failed"
 	}
 	if client == nil {
+		v.recordFailure("unknown_client")
 		return nil, http.StatusUnauthorized, "unknown client_id"
 	}
 
@@ -170,10 +182,12 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		keyFn = func(_ *jwt.Token) (any, error) { return secret, nil }
 		validMethods = []string{"HS256"}
 	case client.JwksURL == "":
+		v.recordFailure("unknown_client")
 		return nil, http.StatusUnauthorized, "client has no jwks_url configured"
 	default:
 		kf, kfErr := v.keyfuncFor(r.Context(), client.JwksURL)
 		if kfErr != nil {
+			v.recordFailure("signature")
 			return nil, http.StatusUnauthorized, "jwks unavailable"
 		}
 		keyFn = kf.Keyfunc
@@ -194,39 +208,49 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		msg := err.Error()
 		switch {
 		case errors.Is(err, jwt.ErrTokenExpired):
+			v.recordFailure("expired")
 			return nil, http.StatusUnauthorized, "token expired"
 		case errors.Is(err, jwt.ErrTokenSignatureInvalid):
+			v.recordFailure("signature")
 			return nil, http.StatusUnauthorized, "signature invalid"
 		case errors.Is(err, jwt.ErrTokenNotValidYet):
+			v.recordFailure("expired")
 			return nil, http.StatusUnauthorized, "token not yet valid"
 		case strings.Contains(msg, "kid"):
+			v.recordFailure("signature")
 			return nil, http.StatusUnauthorized, "unknown signing key"
 		default:
+			v.recordFailure("signature")
 			return nil, http.StatusUnauthorized, "token validation failed"
 		}
 	}
 	if !verified.Valid {
+		v.recordFailure("signature")
 		return nil, http.StatusUnauthorized, "token invalid"
 	}
 
 	verifiedClaims, ok := verified.Claims.(jwt.MapClaims)
 	if !ok {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "malformed claims"
 	}
 
 	if !audienceMatches(verifiedClaims["aud"], v.cfg.Audience) {
+		v.recordFailure("audience")
 		return nil, http.StatusUnauthorized, "audience mismatch"
 	}
 
 	jti, _ := verifiedClaims["jti"].(string)
 	if jti != "" {
 		if v.cfg.JTICache.Seen(jti) {
+			v.recordFailure("replayed_jti")
 			return nil, http.StatusUnauthorized, "token replay"
 		}
 	}
 
 	exp, err := claimToTime(verifiedClaims["exp"])
 	if err != nil {
+		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "missing exp"
 	}
 
@@ -234,6 +258,7 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 	tokenScopes := splitScope(scope)
 	effective := intersect(tokenScopes, client.Scopes)
 	if len(effective) == 0 {
+		v.recordFailure("revoked")
 		return nil, http.StatusForbidden, "no authorized scopes"
 	}
 
@@ -247,6 +272,13 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		JTI:      jti,
 		Exp:      exp,
 	}, 0, ""
+}
+
+func (v *Verifier) recordFailure(reason string) {
+	if v.cfg.Metrics == nil {
+		return
+	}
+	v.cfg.Metrics.RecordAuthFailure(reason)
 }
 
 // Middleware wraps next with bearer-token authentication. On failure it
