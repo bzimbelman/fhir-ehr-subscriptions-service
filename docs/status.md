@@ -138,7 +138,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-11.2 | Topic.EventCodings missing system+code | RESOLVED | RESOLVED ✓ | d3fad44 | EventCoding slice |
 | audit | S-11.3 | notificationShape collapses multi-entry | RESOLVED | RESOLVED ✓ | story/54 | catalog `Load` rejects multi-entry topics; reason text includes topic URL + "multi-entry notificationShape" |
 | audit | S-11.4 | Topic catalog Prometheus metrics | PARTIAL | PARTIAL ✓ | (B-25 work) | Rejected/Overridden exposed; metric wiring in callers |
-| audit | S-12.1 | ListActiveByTopic materializes full list | DEFERRED | DEFERRED ✓ | — | streaming requires repo refactor |
+| audit | S-12.1 | ListActiveByTopic materializes full list | RESOLVED | RESOLVED ✓ | story/55 | submatcher fanoutOne now drives StreamActiveByTopic with a per-row callback (Evaluate + delivery write inside the iterator); streamFakeLister unit test asserts maxInFlight==1 even at 64 candidates; benchmark verifies the streaming contract at N=1k/10k |
 | audit | S-12.2 | submatcher PoolSize knob missing | RESOLVED | RESOLVED ✓ | d3fad44 | Config.PoolSize |
 | audit | S-12.3 | submatcher MaxRowAttempts | PARTIAL | PARTIAL ✓ | d3fad44 | knob added; counter wiring pending |
 | audit | S-12.4 | Fanout tx inline events_since_subscription_start UPDATE | DEFERRED | DEFERRED ✓ | — | hot-subscription scaling |

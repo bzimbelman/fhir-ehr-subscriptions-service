@@ -140,16 +140,31 @@ type SubscriptionStateUpdater interface {
 	MarkErrorRevoked(ctx context.Context, tx pgx.Tx, subscriptionID uuid.UUID, reason string) error
 }
 
+// subscriptionLister is the smallest contract the fanout loop needs
+// from the subscriptions repo. Defined as an interface (not a concrete
+// type) so unit tests can inject a fake that asserts the worker uses
+// the streaming entry point — never the materializing
+// ListActiveByTopic. *repos.SubscriptionsRepo satisfies it directly.
+type subscriptionLister interface {
+	StreamActiveByTopic(
+		ctx context.Context, q repos.Querier, topicURL string,
+		fn func(repos.SubscriptionRow) error,
+	) error
+}
+
 // Worker is the Stage 3 claim/fanout/commit loop.
 //
 // Each iteration is one transaction:
 //
 //  1. Claim up to ClaimBatchSize unprocessed ehr_events rows under
 //     FOR UPDATE SKIP LOCKED.
-//  2. For each row, list active subscriptions on its topic.
-//  3. Evaluate each subscription's filterBy; for every Match, INSERT a
-//     deliveries row keyed by (subscription_id, event_number) where
-//     event_number is the per-subscription monotonic sequence
+//  2. For each row, stream active subscriptions on its topic (story
+//     #55 — the previous slice-materializing path was bounded by RAM
+//     and pinned the fanout transaction open while the slice was
+//     built).
+//  3. Per streamed subscription, evaluate its filterBy; for a Match,
+//     INSERT a deliveries row keyed by (subscription_id, event_number)
+//     where event_number is the per-subscription monotonic sequence
 //     (max(deliveries.event_number)+1 per ADR 0010 #2).
 //  4. Mark the ehr_events row processed.
 //  5. Commit.
@@ -160,7 +175,7 @@ type SubscriptionStateUpdater interface {
 // one transaction) makes any single-row replay idempotent.
 type Worker struct {
 	pool         *pgxpool.Pool
-	subs         *repos.SubscriptionsRepo
+	subs         subscriptionLister
 	ehr          *repos.EhrEventsRepo
 	dlv          *repos.DeliveriesRepo
 	metrics      Metrics
@@ -331,13 +346,17 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 
 // fanoutOne is the per-event fanout. Runs entirely inside the caller's
 // transaction (the outbox).
+//
+// Story #55: streams active subscriptions for the topic via
+// StreamActiveByTopic and applies per-row evaluation + side effects in
+// the same pgx.Rows iteration loop. The previous implementation
+// materialized every active subscription into a slice up-front; on a
+// hot topic that pinned the transaction open until the entire result
+// set was buffered, with peak memory O(N_active). The streaming path
+// keeps peak memory flat regardless of N: at any moment the loop
+// holds one SubscriptionRow plus the result of evaluating it.
 func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRow) error {
 	cctx := correlation.WithID(ctx, row.CorrelationID.String())
-
-	candidates, err := w.subs.ListActiveByTopic(cctx, tx, row.TopicURL)
-	if err != nil {
-		return fmt.Errorf("submatcher: list subs: %w", err)
-	}
 
 	event := EhrEvent{
 		ID:               row.ID,
@@ -352,11 +371,19 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 		OccurredAt:       row.OccurredAt,
 		CreatedMonth:     row.CreatedMonth,
 	}
-	decisions := Evaluate(event, candidates)
 
 	matched := 0
-	for i := range decisions {
-		d := &decisions[i]
+	// Reusable single-element slice fed to Evaluate so the pure
+	// evaluator's signature stays unchanged but we never grow a
+	// per-topic slab.
+	one := make([]repos.SubscriptionRow, 1)
+	if err := w.subs.StreamActiveByTopic(cctx, tx, row.TopicURL, func(sub repos.SubscriptionRow) error {
+		one[0] = sub
+		decisions := Evaluate(event, one)
+		if len(decisions) != 1 {
+			return fmt.Errorf("submatcher: evaluate produced %d decisions (want 1)", len(decisions))
+		}
+		d := decisions[0]
 		// P2.7: delivery-time scope re-check. We layer this on top of
 		// Evaluate so the pure evaluator stays free of I/O. Only Match
 		// decisions need a re-check; other decisions are already
@@ -443,6 +470,9 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 				return fmt.Errorf("submatcher: filter runtime error (transient): %s", d.SkipReason)
 			}
 		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("submatcher: stream subs: %w", err)
 	}
 
 	if _, err := w.ehr.MarkProcessed(cctx, tx, row.ID, row.CreatedMonth); err != nil {

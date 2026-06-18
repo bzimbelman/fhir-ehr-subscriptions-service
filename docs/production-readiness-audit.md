@@ -145,7 +145,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-11.2 | `Topic.EventCodings` missing system+code pair | RESOLVED | `d3fad44` | new `EventCoding` slice |
 | S-11.3 | `notificationShape` collapses multi-entry | RESOLVED | story/54 | catalog `Load` rejects multi-entry topics with clear error |
 | S-11.4 | Topic catalog Prometheus metrics | PARTIAL | (B-25 work) | `Rejected()`/`Overridden()` exposed; metric wiring in callers |
-| S-12.1 | `ListActiveByTopic` materializes full list | DEFERRED | — | streaming requires repo refactor |
+| S-12.1 | `ListActiveByTopic` materializes full list | RESOLVED | story/55 | submatcher fanoutOne switched to `StreamActiveByTopic`; per-row Evaluate + delivery write inside `pgx.Rows` iterator; unit test asserts `maxInFlight==1`; benchmark across N=1k/10k holds the streaming contract |
 | S-12.2 | submatcher `PoolSize` knob missing | RESOLVED | `d3fad44` | `Config.PoolSize` |
 | S-12.3 | submatcher `MaxRowAttempts` | PARTIAL | `d3fad44` | knob added; counter wiring pending |
 | S-12.4 | Fanout tx inline `events_since_subscription_start` UPDATE | DEFERRED | — | hot-subscription scaling work |
