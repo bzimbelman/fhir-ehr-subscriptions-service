@@ -472,12 +472,12 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 - **`internal/infra/lifecycle/sequencer.go:281-306`** — phase deadline timeout reads `results[i].name` without per-slot synchronization; race on shutdown.
 - **`internal/infra/lifecycle/sequencer.go:362-369`** — `isDeadlineExceeded` uses `==` not `errors.Is`; wrapped sentinels misclassified.
 
-#### S-16: Empty packages / dead code
-- **`internal/channels/{email,message,resthook,websocket}/*.go`** — entire `internal/channels/` (plural) tree is 5-line empty stubs; production uses `internal/channel/` (singular). Delete the duplicates.
-- **`internal/queue/queue.go`, `internal/wakeup/wakeup.go`** — empty packages; either implement or delete.
-- **`internal/adapters/{defaults,epic}/*.go`, `internal/adapterspi/adapterspi.go`** — 5-line empty packages; flagged as misleading abstraction.
-- **`internal/domain/{bundle,cursor}/*.go`, `internal/domain/domain.go`** — empty domain packages.
-- **`internal/infra/lifecycle/lifecycle.go:283-284`** — dead reference `var _ = errors.New` indicates incomplete wiring.
+#### S-16: Empty packages / dead code — RESOLVED 2026-06-18 (1ffc778, 2a0bbc2, 060d538, eea803a, ed87e64)
+- **`internal/channels/{email,message,resthook,websocket}/*.go`** — entire `internal/channels/` (plural) tree is 5-line empty stubs; production uses `internal/channel/` (singular). Delete the duplicates. **RESOLVED 1ffc778** — entire `internal/channels/` tree deleted; verified no production imports.
+- **`internal/queue/queue.go`, `internal/wakeup/wakeup.go`** — empty packages; either implement or delete. **NOT FOUND** — no `internal/queue/` or `internal/wakeup/` package exists in tree (audit was incorrect; the real packages live at `internal/infra/queue/` and `internal/infra/wakeup/` and contain real code). No action needed.
+- **`internal/adapters/{defaults,epic}/*.go`, `internal/adapterspi/adapterspi.go`** — 5-line empty packages; flagged as misleading abstraction. **RESOLVED 2a0bbc2 + 060d538** — `internal/adapters/` and `internal/adapterspi/` deleted; production uses `internal/adapter/` (singular) and `internal/adapter/spi/`.
+- **`internal/domain/{bundle,cursor}/*.go`, `internal/domain/domain.go`** — empty domain packages. **RESOLVED eea803a** — entire `internal/domain/` tree deleted.
+- **`internal/infra/lifecycle/lifecycle.go:283-284`** — dead reference `var _ = errors.New` indicates incomplete wiring. **RESOLVED ed87e64** — sentinel and now-unused `errors` import removed.
 
 ---
 
