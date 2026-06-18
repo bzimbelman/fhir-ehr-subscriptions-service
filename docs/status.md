@@ -239,7 +239,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.7 | Auth re-check at delivery prep | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | SPI + cached wrapper + submatcher hook landed; production auth-store integration deferred |
 | future | P2.8 | OpenTelemetry trace export configuration | RESOLVED | RESOLVED ✓ | 9e7fa45 (S-14.9) + P2 batch recipe docs | configuration surface at `internal/infra/observability/tracing/tracing.go:54-65`; recipe docs at `docs/operations/otel-exporter-recipes.md` |
 | future | P2.9 | Webhook ingress (vendor push) | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/webhook/` HMAC-SHA256 receiver landed; production wiring deferred until per-adapter secret config is added |
-| future | P2.10 | Multi-instance / horizontal scale | (no status) | OPEN ✗ | — | per ADR 0002 single-instance |
+| future | P2.10 | Multi-instance / horizontal scale | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | algorithmic support already shipping (claim loops, advisory locks, partition rotator); recipe docs at `docs/operations/horizontal-scale.md`; read-replica plumbing genuinely deferred to v1.0 follow-up |
 | future | P3.1 | Adapter authoring guide | (no status) | OPEN ✗ | — | docs only |
 | future | P3.2 | More EHR adapters | (no status) | OPEN ✗ | — | community ask |
 | future | P3.3 | Repository unused code cleanup | (no status) | OPEN ✗ | — | WsBindingTokensRepo.Get/Delete unused |

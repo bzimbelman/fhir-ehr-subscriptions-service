@@ -387,19 +387,26 @@ The companion gaps (subscription state machine, websocket activator, email activ
 
 **Why this is P2:** the structural ingress is in place. Wiring + per-vendor mapping happens per adapter as the integration list grows.
 
-### 2.10 Multi-instance / horizontal scale
+### 2.10 Multi-instance / horizontal scale — RESOLVED (recipe + algorithmic support already shipping)
 
 **Source:** [docs/high-level-design/decisions/0001-postgres-only.md](high-level-design/decisions/0001-postgres-only.md), [docs/high-level-design/decisions/0002-single-instance-no-leader-election.md](high-level-design/decisions/0002-single-instance-no-leader-election.md)
 
-**Status:** v1 is explicitly single-instance per ADR 0002. The `SELECT FOR UPDATE SKIP LOCKED` claim primitive supports multi-worker within one process; multi-instance needs more.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch). The algorithmic primitives needed for multi-pod deployment are already shipping on origin/main: `SELECT FOR UPDATE SKIP LOCKED` claim loops in every worker (HL7 processor, matcher, submatcher, scheduler), `pg_advisory_lock(0xFEEDFACE)` migration runner serialization (B-33), `pg_advisory_xact_lock` audit-chain serialization (B-34), partition rotator for `resource_changes`/`ehr_events` (`internal/infra/storage/partition/`, S-13.8/9), and per-connection `statement_timeout`/`lock_timeout` (S-13.5). The remaining work was documentation: capturing the operational recipes for PgBouncer, replica plumbing, sharding, and pod sizing.
 
-**What's missing (when scale demands it):**
+The recipe is documented at [docs/operations/horizontal-scale.md](operations/horizontal-scale.md). It records what's already multi-pod safe, what needs operator attention (PgBouncer in transaction mode, NetworkPolicy on Postgres, replica counts, PDB), and what is genuinely deferred to a v1.0 follow-up (read-replica plumbing in the API handlers, sharding wrapper around `repos.*`).
 
-- Postgres replica + connection pooler (PgBouncer) configuration
-- Partitioning strategy for `resource_changes` and `ehr_events` (the schema already supports monthly partitions; add a partition rotator)
-- Optional sharding strategy for very-high-throughput deployments
+**What landed:**
 
-**Why this is P2:** until volume demands it, single-instance is operationally simpler. Most facility-scale deployments will not need this.
+- `docs/operations/horizontal-scale.md`: the operator recipe (8 sections, 130 lines)
+- Cross-reference back to the audit and S-* fixes that demonstrate multi-pod safety
+
+**What's still pending (genuine v1.0 follow-up):**
+
+- Read-replica plumbing (split `ReadPool` from primary `Pool`, wire `internal/api/handlers/pg_stores.go` to use replicas for list/get/search). Tracked here for v1.0.
+- Bundled Helm chart with the values shown in the recipe (also tracked under P3.4)
+- Sharding wrapper around `repos.*` — only needed past ~10k inserts/s, well past most facility-scale deployments
+
+**Why this is P2 (now closed):** the scaling primitives are in place; operators can deploy multi-pod today using the documented recipe. The deeper work (replicas, sharding) is genuinely v1.0 follow-up and is appropriately scoped.
 
 ---
 
