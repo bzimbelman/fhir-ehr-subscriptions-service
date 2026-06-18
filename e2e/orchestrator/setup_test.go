@@ -72,28 +72,38 @@ func (m *MockSubHandle) InjectNotification(subID string, body []byte) {
 }
 
 // harness is the package-global instance set by TestMain. nil if setup
-// failed (in which case every harness-backed test should t.Skip via the
-// requireHarness gate).
+// failed (in which case every harness-backed test calls dockerGate via
+// requireHarness — fail-loud unless E2E_ALLOW_NO_DOCKER=1 is set).
 var harness *Harness
 
 // harnessSetupErr captures why TestMain could not bring up the harness,
-// so individual tests can surface it in their skip message.
+// so individual tests can surface it via dockerGate.
 var harnessSetupErr error
 
+// allowNoDocker is read once at TestMain entry from $E2E_ALLOW_NO_DOCKER.
+// CI never sets this. Local devs without Docker can opt into the
+// skip-instead-of-fail behavior.
+var allowNoDocker bool
+
 // TestMain bootstraps Postgres + mocks once for the package, runs the
-// tests, and tears everything down. Setup failures are surfaced as a
-// per-test SKIP rather than fataling the whole suite — that way the
-// scenario tests still parse and report on environments without a
-// Docker daemon (typical for some local dev machines), and CI can
-// provide one.
+// tests, and tears everything down. Setup failures land in
+// harnessSetupErr; per-test gating happens in requireHarness, which
+// calls dockerGate. The default policy is fail-loud — a CI run with a
+// broken Docker daemon must NOT report green via skipped tests.
+//
+// testcontainers v0.34's MustExtractDockerHost panics on missing socket
+// rather than returning an error, so setupHarness is wrapped in a
+// defer/recover that converts the panic into harnessSetupErr.
 func TestMain(m *testing.M) {
+	allowNoDocker = os.Getenv("E2E_ALLOW_NO_DOCKER") == "1"
+
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	h, cleanup, err := setupHarness(ctx)
+	h, cleanup, err := safeSetupHarness(ctx)
 	if err != nil {
 		harnessSetupErr = err
-		fmt.Fprintf(os.Stderr, "WARN: orchestrator harness setup failed; tests will SKIP: %v\n", err)
+		fmt.Fprintf(os.Stderr, "WARN: orchestrator harness setup failed; per-test dockerGate will decide: %v\n", err)
 		os.Exit(m.Run())
 	}
 	harness = h
@@ -102,16 +112,30 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// requireHarness is the gate every harness-backed test calls first. It
-// either returns the live harness or skips the calling test with a
-// message describing why the harness isn't available.
+// safeSetupHarness wraps setupHarness in a defer/recover so a panic from
+// inside testcontainers (notably v0.34's MustExtractDockerHost) becomes
+// a normal error the caller can route through dockerGate.
+func safeSetupHarness(ctx context.Context) (h *Harness, cleanup func(), err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cleanup = func() {}
+			err = fmt.Errorf("setupHarness panicked: %v", r)
+		}
+	}()
+	return setupHarness(ctx)
+}
+
+// requireHarness is the gate every harness-backed test calls first. If
+// the harness is up, it returns it. If setup failed, it routes through
+// dockerGate which either skips (E2E_ALLOW_NO_DOCKER=1) or fails the
+// test (the default).
 func requireHarness(t *testing.T) *Harness {
 	t.Helper()
 	if harness == nil {
-		if harnessSetupErr != nil {
-			t.Skipf("harness unavailable: %v", harnessSetupErr)
-		}
-		t.Skip("harness unavailable")
+		dockerGate(t, harnessSetupErr, allowNoDocker)
+		// dockerGate either Skipf'd or Fatalf'd; both halt the test.
+		// This return is unreachable but the type system needs it.
+		return nil
 	}
 	return harness
 }
