@@ -11,7 +11,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"time"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
 )
 
 // runHooks lets tests observe internal state transitions deterministically. In
@@ -24,6 +25,14 @@ type runHooks struct {
 	// onShutdownStart fires after the registry is marked shutting_down but
 	// before the HTTP server begins draining.
 	onShutdownStart func(reg *lifecycleRegistry)
+	// onStartupComplete fires after lifecycle.MarkStartupComplete has been
+	// called — the gate that flips /healthz from "starting" to "ok" and
+	// readyz to walking the registered checks. Audit B-3.
+	onStartupComplete func()
+	// onServerConfigured fires once the *http.Server has been built but
+	// before Serve runs. Tests use this to assert the production timeouts
+	// match the audit's B-2 requirements.
+	onServerConfigured func(s *http.Server)
 }
 
 // run is the production entry point used by main(). It is a thin wrapper
@@ -34,9 +43,8 @@ func run(ctx context.Context, cfg *Config, logOut io.Writer) error {
 
 // runWithHooks owns the full process lifetime for one boot:
 //   - validates the config
-//   - constructs the lifecycle registry
-//   - binds and serves the probe HTTP server
-//   - flips startup_complete once the listener is up
+//   - constructs the lifecycle module (probe handlers, shutdown sequencer)
+//   - binds and serves the HTTP listener with audited timeouts
 //   - waits on ctx.Done() (the signal handler cancels ctx)
 //   - drives graceful shutdown bounded by lifecycle.shutdown_grace_period
 //
@@ -46,6 +54,7 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	cfg.Server.HTTP.applyTimeoutDefaults()
 
 	logger := slog.New(slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: slogLevel(cfg.Deployment.LogLevel)}))
 	logger.Info(banner(cfg.Deployment.FacilityID, cfg.Adapter.ID),
@@ -56,6 +65,18 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		"environment", cfg.Deployment.Environment,
 	)
 
+	// Lifecycle module owns probe aggregation, shutdown sequencing, and
+	// signal dispatch. Audit B-1 / B-3.
+	lcMod, err := lifecycle.Start(ctx, lifecycle.LifecycleConfig{
+		ShutdownGracePeriod: cfg.Lifecycle.ShutdownGracePeriod,
+	}, lifecycle.LifecycleContext{
+		Logger: logger,
+	})
+	if err != nil {
+		return fmt.Errorf("lifecycle: start: %w", err)
+	}
+	// Bridge the legacy lifecycleRegistry surface (still used by the
+	// onShutdownStart test hook) to the lifecycle module's flags.
 	reg := newLifecycleRegistry()
 
 	// Pre-bind the listener so we know the chosen port before starting the
@@ -66,9 +87,17 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	}
 	addr := listener.Addr().String()
 
+	mux := buildHTTPMux(lcMod)
 	srv := &http.Server{
-		Handler:           probeMux(reg),
-		ReadHeaderTimeout: 5 * time.Second,
+		Handler:           mux,
+		ReadHeaderTimeout: cfg.Server.HTTP.ReadHeaderTimeout,
+		ReadTimeout:       cfg.Server.HTTP.ReadTimeout,
+		WriteTimeout:      cfg.Server.HTTP.WriteTimeout,
+		IdleTimeout:       cfg.Server.HTTP.IdleTimeout,
+		MaxHeaderBytes:    cfg.Server.HTTP.MaxHeaderBytes,
+	}
+	if hooks.onServerConfigured != nil {
+		hooks.onServerConfigured(srv)
 	}
 
 	// Serve in a goroutine; the main goroutine waits on ctx.Done().
@@ -83,28 +112,40 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		serveErr <- nil
 	}()
 
-	// The HTTP server is bound and accepting. Mark startup complete and notify
-	// any test hook.
-	reg.markStartupComplete()
 	logger.Info("http server listening", "addr", addr, "insecure", cfg.Server.HTTP.Insecure)
 	if hooks.onListening != nil {
 		hooks.onListening(addr)
 	}
 
+	// Audit B-3: only flip startup_complete after every component (just
+	// the lifecycle module + listener for now) has come up cleanly. When
+	// B-4's storage/handlers/pipeline wiring lands, those modules also
+	// register before this call.
+	lcMod.MarkStartupComplete()
+	reg.markStartupComplete()
+	if hooks.onStartupComplete != nil {
+		hooks.onStartupComplete()
+	}
+
 	// Wait for shutdown signal (caller cancels ctx) or for the server to die
-	// unexpectedly.
+	// unexpectedly. The lifecycle module also installs SIGTERM/SIGINT
+	// handlers, so RequestShutdown can fire from either path.
 	select {
 	case err := <-serveErr:
+		// Pre-shutdown serve failure: ask lifecycle to wind down so any
+		// registered hooks still get called.
+		lcMod.RequestShutdown(context.Background(), "http_serve_error")
+		_ = lcMod.WaitForExit(context.Background())
 		if err != nil {
 			return fmt.Errorf("http serve: %w", err)
 		}
-		// Server returned without error before shutdown was triggered.
 		return nil
 	case <-ctx.Done():
 		// Fall through to graceful shutdown.
 	}
 
 	logger.Info("shutdown initiated", "reason", "context_canceled")
+	lcMod.RequestShutdown(context.Background(), "context_canceled")
 	reg.markShutdownInProgress()
 	if hooks.onShutdownStart != nil {
 		hooks.onShutdownStart(reg)
@@ -123,17 +164,38 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 
 	// Wait for the serve goroutine to actually exit so we don't return while
 	// it's still touching the listener.
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), cfg.Lifecycle.ShutdownGracePeriod)
+	defer waitCancel()
 	select {
 	case err := <-serveErr:
 		if err != nil {
+			_ = lcMod.WaitForExit(waitCtx)
 			return fmt.Errorf("http serve after shutdown: %w", err)
 		}
-	case <-time.After(cfg.Lifecycle.ShutdownGracePeriod + 2*time.Second):
+	case <-waitCtx.Done():
+		_ = lcMod.WaitForExit(context.Background())
 		return errors.New("http serve goroutine did not exit within budget")
 	}
 
+	// Drain the lifecycle sequencer before returning.
+	_ = lcMod.WaitForExit(waitCtx)
+
 	logger.Info("shutdown complete")
 	return nil
+}
+
+// buildHTTPMux assembles the production HTTP handler. Today it serves the
+// lifecycle probe surface and the legacy /metadata stub. When B-4's full
+// API + pipeline wiring lands, this is where handlers.RegisterRoutes is
+// mounted behind auth + observability middleware.
+func buildHTTPMux(lcMod *lifecycle.LifecycleModule) http.Handler {
+	mux := http.NewServeMux()
+	probes := lcMod.Probes()
+	mux.Handle("/healthz", probes.Healthz)
+	mux.Handle("/readyz", probes.Readyz)
+	mux.Handle("/startup", probes.Startup)
+	mux.HandleFunc("/metadata", makeMetadata())
+	return mux
 }
 
 func slogLevel(level string) slog.Level {

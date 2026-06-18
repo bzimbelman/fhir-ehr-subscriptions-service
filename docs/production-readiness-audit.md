@@ -16,29 +16,33 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 
 ### BLOCKER
 
-#### B-1: `/readyz` always returns 503 in production entry point
+#### B-1: `/readyz` always returns 503 in production entry point — RESOLVED in commits 35b2cea, 192ab8e
 - **File:** `cmd/fhir-subs/probes.go:59-75`, `cmd/fhir-subs/run.go:69-72`
 - **What:** `makeReadyz` is hardcoded to write `unready: ["all_components"]`; the probe handler is never replaced by the real `lifecycle.Module.Probes()` output.
 - **Why it matters:** k8s will mark every pod NotReady forever; no traffic ever flows in a real cluster.
 - **Fix:** Wire the lifecycle module's readiness aggregator into the probe mux before `markStartupComplete()`.
+- **Resolution:** `cmd/fhir-subs/run.go` now constructs `lifecycle.LifecycleModule` and mounts `Probes().Readyz` on the HTTP mux. With no readiness checks registered the aggregator returns 200 ready; per-component checks (DB pool, etc.) plug in via `lcMod.RegisterReadiness(...)` when B-4's storage wiring lands. The hardcoded `failed=["all_components"]` 503 path is gone — the legacy `probeMux/makeReadyz/makeHealthz/makeStartup` helpers were removed entirely.
 
-#### B-2: HTTP server has no `WriteTimeout` / `IdleTimeout` / `MaxHeaderBytes`
+#### B-2: HTTP server has no `WriteTimeout` / `IdleTimeout` / `MaxHeaderBytes` — RESOLVED in commit 35b2cea
 - **File:** `cmd/fhir-subs/run.go:69-72`
 - **What:** Only `ReadHeaderTimeout` is set on the production `http.Server` that hosts every API and probe route.
 - **Why it matters:** Slowloris-style write-side hangs / unbounded idle conns; trivial DoS against the only HTTP listener.
 - **Fix:** Mirror the `lifecycle/probe_server.go` pattern (Write/Idle/MaxHeaderBytes); make values configurable.
+- **Resolution:** `HTTPConfig` gains `read_header_timeout`, `read_timeout`, `write_timeout`, `idle_timeout`, `max_header_bytes` (YAML keys, also `--set server.http.*`). Defaults `5s/30s/30s/120s/1MiB` are applied via `applyTimeoutDefaults` from both `loadConfig` and `runWithHooks` so every code path gets the safe values.
 
-#### B-3: `markStartupComplete()` fires before the system is actually ready
+#### B-3: `markStartupComplete()` fires before the system is actually ready — RESOLVED in commits 35b2cea, 192ab8e
 - **File:** `cmd/fhir-subs/run.go:50-89`
 - **What:** Liveness `/healthz` flips to OK as soon as the listener binds; DB, migrations, observability, lifecycle modules don't gate it.
 - **Why it matters:** A stuck pod that never finished startup will be considered live forever — k8s will not restart it.
 - **Fix:** Defer `markStartupComplete` until lifecycle Start returns success across all modules.
+- **Resolution:** `runWithHooks` now calls `lcMod.MarkStartupComplete()` only after `lifecycle.Start` succeeds AND the listener has bound. The shutdown path also routes through the lifecycle sequencer: `srv.Shutdown` is registered as a `PhaseCloseConnections` hook so the Phase-1 ProbeObserveWindow elapses (k8s observes `/readyz=503 shutting_down`) BEFORE the listener stops accepting. When B-4's storage/handlers/pipeline wiring lands, every module registers before this gate.
 
-#### B-4: Production `cmd/fhir-subs/run.go` never calls `handlers.RegisterRoutes` — the API is wired only in tests
+#### B-4: Production `cmd/fhir-subs/run.go` never calls `handlers.RegisterRoutes` — the API is wired only in tests — PARTIALLY RESOLVED (scaffolding) in commit 192ab8e; full wiring deferred
 - **File:** `cmd/fhir-subs/run.go` (whole file)
 - **What:** The HTTP server in run.go serves only the probe mux; `handlers.RegisterRoutes` (the real subscription API) is invoked only from tests / e2e harness.
 - **Why it matters:** Today the binary literally does not serve the FHIR subscription endpoints. A "real-world deployment" is impossible.
 - **Fix:** Construct the full router (subscriptions, $get-ws-binding-token, $events, $status, /metadata) inside run.go and mount it; gate behind auth + observability middleware.
+- **Status:** The new `buildHTTPMux` is the single seam where the lifecycle probes + `/metadata` are mounted today and where `handlers.RegisterRoutes` will plug in once the production binary gains config knobs for the database URL, codec key provider, auth issuer/audience/JWKS, channel constructors, and MLLP listener. The full wiring is intentionally deferred from this branch because each new dependency adds blast radius (DB connection failure modes, key rotation surface, channel TLS) that deserves its own RED/GREEN cycle on top of the lifecycle gate the B-1/B-2/B-3 fix already gives operators. The probe-only binary is now safe to deploy as a "known-not-yet-serving-API" stage; the same binary will gain the API + pipeline workers in the follow-up B-4-full commit.
 
 #### B-5: jwksCache map has no mutex; concurrent `/token` requests will fatal-error the process
 - **File:** `internal/api/auth/token_endpoint.go:352-393`
@@ -148,23 +152,26 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** Same root cause as B-21; the rotation contract is unfulfillable.
 - **Fix:** Add migration `ALTER TABLE pending_pairs ADD COLUMN key_version SMALLINT NOT NULL DEFAULT 1`; update `Insert`/`Decrypt`.
 
-#### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence)
+#### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence) — RESOLVED
 - **File:** `internal/matcher/matcher.go:286-355`
 - **What:** `extractFieldValues` hardcodes `status/subject/patient/code/category/name/_lastUpdated`; any other parameter returns nil → clause fails closed → topic silently never matches; no rejection at catalog load, no metric.
 - **Why it matters:** A topic referencing `performer`, `encounter`, `period`, `class`, etc. silently never fires; subscribers miss notifications and operators have no signal.
 - **Fix:** Reject topics at load if they reference unsupported parameters; emit `matcher_unknown_parameter_total{topic}`.
+- **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `internal/topics/catalog/catalog.go` now exports `SupportedSearchParameters()` / `IsSupportedSearchParameter()` and `parseSearchExpression` rejects any topic referencing an unsupported parameter at load time. `compileOne` likewise rejects unsupported `canFilterBy.filterParameter`. The catalog's `Rejected()` method (and `Report.Rejected`) surface the rejections so /readyz can read them. Tests: `TestLoadRejectsUnsupportedSearchParameter`, `TestLoadRejectsUnsupportedFilterByParameter`, `TestLoadAcceptsAllSupportedSearchParameters`, `TestLoadRejectedTopicAbsentFromCatalog` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_unknownParamRejected` (`e2e/orchestrator/matcher_unknown_param_rejected_test.go`).
 
-#### B-24: Matcher FHIRPath `runFHIRPath` defaults to fail-OPEN (returns true) for unrecognized expressions
+#### B-24: Matcher FHIRPath `runFHIRPath` defaults to fail-OPEN (returns true) for unrecognized expressions — RESOLVED
 - **File:** `internal/matcher/matcher.go:510-547`
 - **What:** After `.exists()` and `.status = '...'` checks fall through, return `true` — every unknown FHIRPath expression treated as a match.
 - **Why it matters:** Future-work P1.2 covers building the sandboxed evaluator, but the *current default* is fail-OPEN which is more dangerous than fail-closed: a topic with `Patient.deceased.empty()` would fire on every change, leaking notifications. (Future-work doesn't call out the fail-direction — flagging as a separate concrete defect.)
 - **Fix:** Default to fail-CLOSED today; emit `fhirpath_unknown_expression_total`; reverse only when sandbox lands.
+- **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). `runFHIRPath` now returns `false` for any expression shape outside the recognized minimal set. Wiring layers can install a callback via `matcher.SetUnknownFHIRPathReporter` to bump `fhir_subs_matcher_fhirpath_unknown_expression_total` without coupling the matcher package to a metrics dependency. `IsRecognizedFHIRPath` is exported for catalog-level strict-mode validation. Tests: `TestEvaluateFHIRPathUnknownExpressionFailsClosed`, `TestEvaluateFHIRPathRecognizedExpressionStillMatches` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_fhirpathFailClosed` (`e2e/orchestrator/matcher_fhirpath_fail_closed_test.go`).
 
-#### B-25: Topic catalog rejections do not fail startup; operator override silently shadows working built-in
+#### B-25: Topic catalog rejections do not fail startup; operator override silently shadows working built-in — RESOLVED
 - **File:** `internal/topics/catalog/catalog.go:240-282`
 - **What:** Per-topic rejections accumulate in `Rejected`; only schema-load errors are fatal. Operator-supplied broken topic with the same `(url,version)` shadows the built-in working topic.
 - **Why it matters:** Operator typo silently drops a topic from runtime; no /readyz signal; no override audit trail.
 - **Fix:** Surface rejected topics to /readyz; add `--strict` startup mode; on operator-validation failure fall back to lower-priority topic; emit `topic_overridden_total`/`topic_rejected_total`.
+- **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `catalog.LoadStrict` is the strict-mode entry point — it returns a non-nil error wrapping every rejection so `--strict-topics` startup wiring can refuse to start. `Load` walks sources in priority order (Operator > Adapter > BuiltIn) and on a higher-priority compile failure falls back to the lower-priority working topic, recording an `Override{URL, Version, FromOrigin, FromSource, ToOrigin, ToSource, Reason}` entry. Both `Rejected` and `Overridden` are surfaced through the `Catalog` handle so /readyz can read them after the `Report` is dropped. Tests: `TestLoadStrictModeRejectsAtStartup`, `TestLoadStrictModeAcceptsValidCatalog`, `TestLoadFallsBackToBuiltInWhenOperatorOverrideRejected` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_strictMode`, `TestMatcher_topicOverride` (`e2e/orchestrator/`).
 
 #### B-26: `nextEventNumber` race — two workers can both insert event_number N+1
 - **File:** `internal/engine/submatcher/worker.go:337-348`
@@ -184,11 +191,12 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** Hash-chained audit log over bundle bytes produces different hashes on identical inputs. Any downstream signer (S/MIME plan, P2.3) is broken at the foundation.
 - **Fix:** Use a canonical JSON encoder (sorted keys), a struct, or `json.RawMessage` to preserve byte form.
 
-#### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe
+#### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe — RESOLVED
 - **File:** `internal/matcher/matcher.go:554, 656`
 - **What:** Worker calls `cat := w.catalog()` per tick; interface values are 2 words. Without `atomic.Pointer`, a concurrent reload can return a torn interface value (data + type pointer mismatch).
 - **Why it matters:** Catalog hot-reload data race; sporadic crash with cryptic stack.
 - **Fix:** Use `atomic.Pointer[catalog.Catalog]` inside provider impl; document contract on `CatalogProvider`.
+- **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). New `matcher.AtomicCatalogProvider` wraps an `atomic.Pointer[catalog.Catalog]`; `Get`/`Store` are race-free and `AsProvider()` returns a `CatalogProvider` closure ready for `NewWorker`. The `CatalogProvider` doc now documents the atomic-swap contract that callers (e.g., the harness's `topic_seed.go` mutex-guarded swap) must satisfy. Tests: `TestAtomicCatalogProviderRaceFree` (1000 swaps × 8 readers under `-race`) and `TestAtomicCatalogProviderUsableAsCatalogProvider` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_catalogHotReloadRace` (`e2e/orchestrator/matcher_catalog_hot_reload_race_test.go`). Whole-repo `go test -race ./...` passes.
 
 #### B-30: High-cardinality MSH-9 label on MLLP nack metric — Prometheus cardinality bomb
 - **File:** `internal/mllp/connection.go:269-274`

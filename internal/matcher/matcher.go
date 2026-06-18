@@ -10,6 +10,28 @@
 // previous criteria, current criteria, combine, fhirPathCriteria,
 // emit — lives in Evaluate. The claim/process loop wraps the
 // transactional outbox in Worker.
+//
+// # Supported FHIR search parameters
+//
+// The matcher's extractFieldValues function understands a closed set of
+// FHIR search parameters. The catalog package's SupportedSearchParameters
+// list MUST stay in lockstep with the switch in extractFieldValues —
+// any topic referencing a parameter outside this list is rejected at
+// catalog load time (B-23) so it cannot silently fail to match at run
+// time.
+//
+// Currently supported parameters: status, subject, patient, code,
+// category, name, _lastUpdated.
+//
+// # FHIRPath
+//
+// runFHIRPath is a *minimal* gate, not a full evaluator. The LLD calls
+// for a sandboxed FHIRPath with timeout, traversal limit, and deny-list
+// (see docs/future-work.md P1.2). Only `<Resource>.<field>.exists()`
+// and `<Resource>.status = '<v>'` are recognized. Every other expression
+// returns false (fail-CLOSED) per B-24 — earlier behavior fell through
+// to `return true`, silently firing topics with unrecognized FHIRPath
+// like `Patient.deceased.empty()` on every change.
 package matcher
 
 import (
@@ -18,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -276,9 +299,9 @@ func evaluateClause(c catalog.SearchClause, body map[string]any) bool {
 }
 
 // extractFieldValues yields the values for a top-level parameter name.
-// We support the common search parameters built-in topics and the
-// initial conformance set need; unknown parameters return no values
-// (the clause fails closed).
+// The supported parameter set is closed; the catalog rejects topics
+// that reference any parameter not in this switch (B-23). Keep the
+// case list in lockstep with catalog.supportedSearchParameters.
 func extractFieldValues(body map[string]any, param string) []any {
 	if body == nil {
 		return nil
@@ -498,15 +521,22 @@ func foldICURoot(s string) string {
 }
 
 // runFHIRPath is a *minimal* gate, not a full evaluator. The LLD calls
-// for a sandboxed FHIRPath with timeout, traversal limit, and deny-list.
-// Until the dedicated evaluator lands, we recognize a small set of
-// expressions that the built-in topics need:
+// for a sandboxed FHIRPath with timeout, traversal limit, and deny-list
+// (see docs/future-work.md P1.2).
+//
+// Until that evaluator lands, runFHIRPath recognizes only a closed
+// set of expression shapes that the built-in topics need:
 //
 //   - "<Resource>.<field>.exists()" — true if the field has a value
 //   - "<Resource>.status = '<v>'" — equality
-//   - other expressions: pass-through (return true). Operator metric
-//     should flag unknown FHIRPath usage; the catalog preserves the
-//     source so the future evaluator can replay deterministically.
+//
+// B-24: Every other expression returns *false* (fail-CLOSED). Earlier
+// behavior fell through to `return true`, which silently fired every
+// topic carrying an unrecognized FHIRPath like
+// `Patient.deceased.empty()` on every change. Topics relying on
+// shapes the matcher cannot evaluate are surfaced at load time
+// (catalog.LoadStrictFHIRPath, when wired through) or via the
+// SetUnknownFHIRPathReporter callback.
 func runFHIRPath(expr string, resource, _ []byte) bool {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -530,6 +560,7 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 			case []any:
 				return len(x) > 0
 			default:
+				_ = x
 				return v != nil
 			}
 		}
@@ -543,7 +574,52 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 			return got == want
 		}
 	}
-	return true
+	// B-24: fail-CLOSED for unrecognized expressions. Notify the
+	// optional reporter so wiring can bump a metric.
+	if reporter := unknownFHIRPathReporter.Load(); reporter != nil {
+		(*reporter)(expr)
+	}
+	return false
+}
+
+// IsRecognizedFHIRPath reports whether runFHIRPath knows how to
+// evaluate expr without falling through to the fail-closed default.
+// Catalog load uses it (in strict mode) to surface unsupported shapes.
+func IsRecognizedFHIRPath(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return true
+	}
+	if strings.HasSuffix(expr, ".exists()") {
+		prefix := strings.TrimSuffix(expr, ".exists()")
+		if i := strings.LastIndex(prefix, "."); i > 0 {
+			return true
+		}
+	}
+	if i := strings.Index(expr, ".status = '"); i > 0 {
+		open := i + len(".status = '")
+		if end := strings.Index(expr[open:], "'"); end > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// unknownFHIRPathReporter is an optional callback the wiring layer can
+// install so it can bump a Prometheus counter for unrecognized FHIRPath
+// expressions. Kept as a function pointer to keep this package free of
+// a metrics-package dependency.
+var unknownFHIRPathReporter atomic.Pointer[func(expr string)]
+
+// SetUnknownFHIRPathReporter registers (or unsets, with nil) the
+// callback invoked once per fail-closed FHIRPath evaluation. The
+// matcher only ever calls it; the wiring layer owns the metric handle.
+func SetUnknownFHIRPathReporter(fn func(expr string)) {
+	if fn == nil {
+		unknownFHIRPathReporter.Store(nil)
+		return
+	}
+	unknownFHIRPathReporter.Store(&fn)
 }
 
 // ---------- Worker / claim loop ----------
@@ -551,7 +627,62 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 // CatalogProvider lets the worker re-read the snapshot per iteration
 // (LLD: "Each worker takes a snapshot at the top of its claim-loop
 // iteration").
+//
+// Contract: implementations MUST swap the returned *catalog.Catalog
+// atomically. A function literal that returns the value of an ordinary
+// variable IS NOT SAFE on its own — interface values are two words and
+// a concurrent reload can produce a torn read where the data pointer
+// belongs to the new catalog and the type pointer to the old one.
+// Hot-reloading callers should use AtomicCatalogProvider (or guard the
+// read with a sync.RWMutex) to satisfy this contract (B-29).
 type CatalogProvider func() *catalog.Catalog
+
+// AtomicCatalogProvider stores a *catalog.Catalog in an atomic.Pointer
+// so a hot-reload writer and the matcher's claim-loop reader can swap
+// + read concurrently without a mutex and without a torn-read race
+// (B-29). Construct with NewAtomicCatalogProvider; pass AsProvider() to
+// matcher.NewWorker.
+type AtomicCatalogProvider struct {
+	p atomic.Pointer[catalog.Catalog]
+}
+
+// NewAtomicCatalogProvider constructs an AtomicCatalogProvider with
+// initial as the starting catalog. initial may be nil; Store(nil) is
+// silently ignored thereafter so the worker always sees a non-nil
+// catalog once one has been published.
+func NewAtomicCatalogProvider(initial *catalog.Catalog) *AtomicCatalogProvider {
+	a := &AtomicCatalogProvider{}
+	if initial != nil {
+		a.p.Store(initial)
+	}
+	return a
+}
+
+// Get returns the currently-loaded catalog. Safe to call concurrently
+// with Store.
+func (a *AtomicCatalogProvider) Get() *catalog.Catalog {
+	if a == nil {
+		return nil
+	}
+	return a.p.Load()
+}
+
+// Store swaps in a new catalog. Concurrent Store + Get is race-free.
+// nil is silently ignored.
+func (a *AtomicCatalogProvider) Store(c *catalog.Catalog) {
+	if a == nil || c == nil {
+		return
+	}
+	a.p.Store(c)
+}
+
+// AsProvider returns a CatalogProvider closure suitable for
+// matcher.NewWorker. The closure shares state with the
+// AtomicCatalogProvider — later Store calls are observed by the worker
+// on its next tick.
+func (a *AtomicCatalogProvider) AsProvider() CatalogProvider {
+	return func() *catalog.Catalog { return a.Get() }
+}
 
 // Config is the matcher worker's tunables.
 type Config struct {

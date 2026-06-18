@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,11 +49,26 @@ type ServerConfig struct {
 	HTTP HTTPConfig `yaml:"http"`
 }
 
-// HTTPConfig models server.http.* fields.
+// HTTPConfig models server.http.* fields. Timeouts are operator-tunable
+// per audit B-2; defaults are applied by loadConfig when zero.
 type HTTPConfig struct {
 	Bind     string    `yaml:"bind"`
 	Insecure bool      `yaml:"insecure"`
 	TLS      TLSConfig `yaml:"tls"`
+
+	// ReadHeaderTimeout caps the time the server reads request headers.
+	// Default 5s.
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
+	// ReadTimeout caps the time the server reads the entire request
+	// (headers + body). Default 30s.
+	ReadTimeout time.Duration `yaml:"read_timeout"`
+	// WriteTimeout caps the time the server takes to write a response.
+	// Default 30s.
+	WriteTimeout time.Duration `yaml:"write_timeout"`
+	// IdleTimeout caps idle keep-alive duration. Default 120s.
+	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	// MaxHeaderBytes caps the size of request headers. Default 1MiB.
+	MaxHeaderBytes int `yaml:"max_header_bytes"`
 }
 
 // TLSConfig models server.http.tls.* fields. Real TLS wiring lands later.
@@ -110,8 +126,30 @@ func loadConfig(path string) (*Config, error) {
 	if cfg.Lifecycle.ShutdownGracePeriod == 0 {
 		cfg.Lifecycle.ShutdownGracePeriod = 30 * time.Second
 	}
+	cfg.Server.HTTP.applyTimeoutDefaults()
 
 	return cfg, nil
+}
+
+// applyTimeoutDefaults fills in safe HTTP server timeouts (audit B-2).
+// Defaults chosen to defeat slowloris / write-side hangs while leaving
+// room for legitimate FHIR bundles up to a few MiB.
+func (h *HTTPConfig) applyTimeoutDefaults() {
+	if h.ReadHeaderTimeout <= 0 {
+		h.ReadHeaderTimeout = 5 * time.Second
+	}
+	if h.ReadTimeout <= 0 {
+		h.ReadTimeout = 30 * time.Second
+	}
+	if h.WriteTimeout <= 0 {
+		h.WriteTimeout = 30 * time.Second
+	}
+	if h.IdleTimeout <= 0 {
+		h.IdleTimeout = 120 * time.Second
+	}
+	if h.MaxHeaderBytes <= 0 {
+		h.MaxHeaderBytes = 1 << 20 // 1 MiB
+	}
 }
 
 // Validate performs minimal semantic validation. It is intentionally narrow;
@@ -193,6 +231,36 @@ func applySets(cfg *Config, sets []string) error {
 				return fmt.Errorf("--set %s=%q: %w", key, val, err)
 			}
 			cfg.Lifecycle.ShutdownGracePeriod = d
+		case "server.http.read_header_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+			}
+			cfg.Server.HTTP.ReadHeaderTimeout = d
+		case "server.http.read_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+			}
+			cfg.Server.HTTP.ReadTimeout = d
+		case "server.http.write_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+			}
+			cfg.Server.HTTP.WriteTimeout = d
+		case "server.http.idle_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+			}
+			cfg.Server.HTTP.IdleTimeout = d
+		case "server.http.max_header_bytes":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+			}
+			cfg.Server.HTTP.MaxHeaderBytes = n
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)
 		}
