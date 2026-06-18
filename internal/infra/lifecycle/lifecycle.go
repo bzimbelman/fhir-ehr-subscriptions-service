@@ -174,33 +174,100 @@ type LifecycleModule struct {
 // installs signal handlers. The returned module is reachable for
 // registration and the probes are reachable as soon as Start returns.
 func Start(ctx context.Context, cfg LifecycleConfig, lctx LifecycleContext) (*LifecycleModule, error) {
-	return nil, errors.New("lifecycle.Start: not implemented")
+	mod, err := newModule(cfg, lctx, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := mod.installSignalHandlers(ctx); err != nil {
+		return nil, err
+	}
+	if err := mod.maybeStartProbeListener(); err != nil {
+		return nil, err
+	}
+	return mod, nil
 }
 
 // RegisterReadiness registers (or replaces) a readiness check by name.
-// Safe under concurrent calls.
-func (m *LifecycleModule) RegisterReadiness(name string, check ReadinessCheck) {}
+// Safe under concurrent calls. Errors (registration after shutdown, etc.)
+// are logged and dropped — see LLD §7 ("registration after shutdown is
+// always a bug"). Components that need the explicit error reach into the
+// registry helpers, but the documented surface is the silent-on-error
+// form.
+func (m *LifecycleModule) RegisterReadiness(name string, check ReadinessCheck) {
+	if err := m.reg.registerReadiness(name, check); err != nil {
+		m.lctx.Logger.Error("lifecycle: registerReadiness failed",
+			"name", name, "error", err.Error())
+	}
+}
 
 // RegisterShutdown registers (or replaces) a shutdown hook keyed by
-// (name, phase). Safe under concurrent calls.
-func (m *LifecycleModule) RegisterShutdown(hook ShutdownHook) {}
+// (name, phase). Safe under concurrent calls. Same error semantics as
+// RegisterReadiness.
+func (m *LifecycleModule) RegisterShutdown(hook ShutdownHook) {
+	if err := m.reg.registerShutdown(hook); err != nil {
+		m.lctx.Logger.Error("lifecycle: registerShutdown failed",
+			"name", hook.Name, "phase", hook.Phase.String(), "error", err.Error())
+	}
+}
 
-// MarkStartupComplete flips the startup-complete flag. Until called,
-// `/startup` returns 503.
-func (m *LifecycleModule) MarkStartupComplete() {}
+// MarkStartupComplete flips the startup-complete flag and bumps the
+// startup-complete gauge. Until called, `/startup` returns 503.
+func (m *LifecycleModule) MarkStartupComplete() {
+	m.reg.markStartupComplete()
+	m.lctx.Metrics.Set(MetricStartupComplete, 1, nil)
+}
 
 // RequestShutdown begins the shutdown sequence. Idempotent — only the
-// first caller's reason is recorded.
-func (m *LifecycleModule) RequestShutdown(ctx context.Context, reason string) {}
+// first caller's reason is recorded; subsequent calls return without
+// effect. Safe under concurrent calls.
+//
+// Note: the ctx parameter is currently advisory. The sequencer runs on a
+// dedicated context so a cancelled caller does not abandon the drain.
+// Callers that need to cap the entire sequence pass ShutdownGracePeriod
+// instead.
+func (m *LifecycleModule) RequestShutdown(ctx context.Context, reason string) {
+	_ = ctx
+	m.requestOnce.Do(func() {
+		// Buffered channel of size 1 — first send always succeeds.
+		m.requestCh <- reason
+	})
+}
 
-// WaitForExit blocks until shutdown completes or the grace period
-// expires. Returns the resulting ShutdownReport.
+// WaitForExit blocks until shutdown completes or until the parent ctx
+// fires. Returns the recorded ShutdownReport.
 func (m *LifecycleModule) WaitForExit(ctx context.Context) ShutdownReport {
-	return ShutdownReport{}
+	select {
+	case <-m.exitDone:
+	case <-ctx.Done():
+	}
+	m.reportMu.Lock()
+	rep := m.report
+	m.reportMu.Unlock()
+	return rep
 }
 
 // Probes returns the ProbeHandlers bundle the host mounts when ProbeBind
 // is empty.
 func (m *LifecycleModule) Probes() ProbeHandlers {
-	return ProbeHandlers{}
+	return m.probes
 }
+
+// installSignalHandlers wires SIGTERM and SIGINT to RequestShutdown. The
+// implementation lives in signals.go; this method exists to keep Start
+// readable.
+func (m *LifecycleModule) installSignalHandlers(ctx context.Context) error {
+	return installSignalHandlers(ctx, m)
+}
+
+// maybeStartProbeListener binds the dedicated probe HTTP listener when
+// cfg.ProbeBind is non-empty. Failure to bind is a startup error per
+// LLD §10. Implementation lives in probe_server.go (created in the
+// metrics-wiring commit so the dependency surface stays small here).
+func (m *LifecycleModule) maybeStartProbeListener() error {
+	return maybeStartProbeListener(m)
+}
+
+// errProbeListenerNotImplemented is a sentinel kept to avoid the unused
+// import warning when the probe listener glue is wired up. It is replaced
+// by the real binder.
+var _ = errors.New
