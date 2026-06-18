@@ -45,25 +45,6 @@ func buildMessage(e MessageEntry, ctrlID string) (body string, ctrl string, err 
 	}
 }
 
-// summary returns the human-readable subset of fields shown in the
-// publisher's "→ send" line. Field selection mirrors the demo doc's
-// example output (patient + content highlights).
-func summary(e MessageEntry) string {
-	switch e.Template {
-	case "oru-r01":
-		return fmt.Sprintf("patient=%s obs=%s value=%s",
-			e.Fields["patient_id"], e.Fields["observation_code"], e.Fields["value"])
-	case "adt-a01":
-		fac := e.Fields["facility"]
-		if fac == "" {
-			return fmt.Sprintf("patient=%s", e.Fields["patient_id"])
-		}
-		return fmt.Sprintf("patient=%s facility=%q", e.Fields["patient_id"], fac)
-	default:
-		return fmt.Sprintf("patient=%s", e.Fields["patient_id"])
-	}
-}
-
 // triggerLabel returns the MSH-9 token used in the printed "→" line so
 // operators see "ORU^R01" / "ADT^A01" rather than the catalog template id.
 func triggerLabel(template string) string {

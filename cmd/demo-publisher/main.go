@@ -20,6 +20,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/cliprint"
 )
 
 func main() {
@@ -36,7 +38,8 @@ func mainE(argv []string, stdout, stderr *os.File) error {
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", "127.0.0.1:6000", "MLLP listener address (host:port)")
 	catalogPath := fs.String("catalog", "", "path to YAML catalog (required)")
-	noColor := fs.Bool("no-color", false, "disable ANSI color output")
+	noColor := fs.Bool("no-color", false, "disable ANSI color output (kept for backward compat; prefer NO_COLOR env)")
+	pretty := fs.Bool("pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}
@@ -57,11 +60,26 @@ func mainE(argv []string, stdout, stderr *os.File) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	formatter := cliprint.NewFormatter(stdout, cliprint.Options{
+		Pretty:  *pretty,
+		NoColor: *noColor,
+	})
 	pub := &publisher{
-		addr:    *addr,
-		out:     stdout,
-		noColor: *noColor,
+		addr: *addr,
+		fmt:  formatter,
 	}
-	fmt.Fprintf(stdout, "demo-publisher: %d messages → %s\n", len(cat.Messages), *addr)
+	if *pretty {
+		fmt.Fprintf(stdout, "demo-publisher: %d messages → %s\n", len(cat.Messages), *addr)
+	} else {
+		formatter.Emit(cliprint.Event{
+			Kind:   cliprint.KindInfo,
+			Status: cliprint.StatusInfo,
+			Fields: []cliprint.Field{
+				{K: "messages", V: fmt.Sprintf("%d", len(cat.Messages))},
+				{K: "addr", V: *addr},
+			},
+			Msg: "demo-publisher start",
+		})
+	}
 	return pub.run(ctx, cat)
 }

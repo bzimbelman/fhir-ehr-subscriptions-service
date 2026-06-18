@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/cliprint"
 )
 
 // TestPublishCatalog_SendsAllMessagesAndPrintsACKs runs the end-to-end happy
@@ -50,11 +53,10 @@ func TestPublishCatalog_SendsAllMessagesAndPrintsACKs(t *testing.T) {
 
 	out := &bytes.Buffer{}
 	pub := &publisher{
-		addr:    srv.Addr().String(),
-		out:     out,
-		nowFn:   func() time.Time { return time.Date(2026, 1, 2, 14, 1, 2, 0, time.UTC) },
-		idFn:    sequentialIDs("DEMO"),
-		noColor: true, // deterministic output for assertions
+		addr:  srv.Addr().String(),
+		fmt:   cliprint.NewFormatter(out, cliprint.Options{Pretty: true, NoColor: true}),
+		nowFn: func() time.Time { return time.Date(2026, 1, 2, 14, 1, 2, 0, time.UTC) },
+		idFn:  sequentialIDs("DEMO"),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -98,6 +100,63 @@ func TestPublishCatalog_SendsAllMessagesAndPrintsACKs(t *testing.T) {
 	}
 }
 
+// TestPublishCatalog_JSONLinesMode runs the publisher with Pretty=false
+// and asserts each emitted line is parseable JSON with the expected
+// kind/label fields. The send + ack pair per message yields two JSON
+// records.
+func TestPublishCatalog_JSONLinesMode(t *testing.T) {
+	t.Parallel()
+	srv := startTestMLLPListener(t)
+	defer srv.Close()
+
+	cat := &Catalog{
+		Messages: []MessageEntry{{
+			Description: "Lab result for ABC123",
+			Template:    "oru-r01",
+			Fields: map[string]string{
+				"patient_id":       "ABC123",
+				"observation_code": "718-7",
+				"value":            "13.5",
+			},
+		}},
+	}
+
+	out := &bytes.Buffer{}
+	pub := &publisher{
+		addr:  srv.Addr().String(),
+		fmt:   cliprint.NewFormatter(out, cliprint.Options{Pretty: false}),
+		nowFn: func() time.Time { return time.Date(2026, 1, 2, 14, 1, 2, 0, time.UTC) },
+		idFn:  sequentialIDs("DEMO"),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pub.run(ctx, cat); err != nil {
+		t.Fatalf("publisher.run: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "\x1b[") {
+		t.Errorf("JSON mode must not emit ANSI: %q", output)
+	}
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 JSON lines (send + ack), got %d:\n%s", len(lines), output)
+	}
+	var send, ack map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &send); err != nil {
+		t.Fatalf("send line not JSON: %v\n%s", err, lines[0])
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &ack); err != nil {
+		t.Fatalf("ack line not JSON: %v\n%s", err, lines[1])
+	}
+	if send["kind"] != "send" || send["label"] != "ORU^R01" {
+		t.Errorf("send record wrong: %+v", send)
+	}
+	if ack["kind"] != "ack" || ack["label"] != "ACK" {
+		t.Errorf("ack record wrong: %+v", ack)
+	}
+}
+
 func TestPublishCatalog_StopsOnContextCancel(t *testing.T) {
 	t.Parallel()
 	srv := startTestMLLPListener(t)
@@ -112,11 +171,10 @@ func TestPublishCatalog_StopsOnContextCancel(t *testing.T) {
 		},
 	}
 	pub := &publisher{
-		addr:    srv.Addr().String(),
-		out:     io.Discard,
-		nowFn:   time.Now,
-		idFn:    sequentialIDs("CXL"),
-		noColor: true,
+		addr:  srv.Addr().String(),
+		fmt:   cliprint.NewFormatter(io.Discard, cliprint.Options{Pretty: true, NoColor: true}),
+		nowFn: time.Now,
+		idFn:  sequentialIDs("CXL"),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
 	defer cancel()

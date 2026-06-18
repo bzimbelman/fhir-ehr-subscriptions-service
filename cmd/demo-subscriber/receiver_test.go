@@ -19,7 +19,7 @@ func TestReceiver_PrintsBundleOnPOST(t *testing.T) {
 	t.Parallel()
 
 	var sink bytes.Buffer
-	rcv := newReceiver(&sink, false)
+	rcv := newReceiver(&sink, true /*pretty*/, true /*noColor*/)
 	srv := startListener(t, rcv)
 	defer srv.Close()
 
@@ -81,7 +81,7 @@ func TestReceiver_HandshakeReturnsOK(t *testing.T) {
 	t.Parallel()
 
 	var sink bytes.Buffer
-	rcv := newReceiver(&sink, false)
+	rcv := newReceiver(&sink, true /*pretty*/, true /*noColor*/)
 	srv := startListener(t, rcv)
 	defer srv.Close()
 

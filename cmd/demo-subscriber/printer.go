@@ -6,11 +6,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/cliprint"
 )
 
 // bundleHighlights is the small set of fields we surface per delivery.
@@ -62,21 +62,22 @@ func extractBundleHighlights(body []byte) (bundleHighlights, error) {
 	return h, nil
 }
 
-// printer renders one line per delivery to its writer. Concurrent
-// writes are serialized so two simultaneous deliveries don't tear an
-// ANSI sequence in half.
+// printer renders one line per delivery through a cliprint.Formatter.
+// The formatter handles color, emoji, and pretty-vs-JSON-Lines mode
+// selection; the printer just builds the Event.
 type printer struct {
-	mu       sync.Mutex
-	w        io.Writer
-	colorize bool
-	now      func() time.Time
+	fmt *cliprint.Formatter
+	now func() time.Time
 }
 
-func newPrinter(w io.Writer, colorize bool) *printer {
-	return &printer{w: w, colorize: colorize, now: time.Now}
+func newPrinter(w io.Writer, pretty, noColor bool) *printer {
+	return &printer{
+		fmt: cliprint.NewFormatter(w, cliprint.Options{Pretty: pretty, NoColor: noColor}),
+		now: time.Now,
+	}
 }
 
-// printNotification renders a single delivery line.
+// printNotification renders a single delivery as a structured event.
 func (p *printer) printNotification(h bundleHighlights) {
 	topic := shortTopic(h.Topic)
 	if topic == "" {
@@ -86,44 +87,38 @@ func (p *printer) printNotification(h bundleHighlights) {
 	if patient == "" {
 		patient = "(unknown)"
 	}
-	ts := p.now().Format("15:04:05")
-	line := fmt.Sprintf("[%s] notification topic=%s patient=%s event=%d",
-		ts, topic, patient, h.EventNumber)
-	if p.colorize {
-		c := colorForTopic(h.Topic)
-		line = c + line + ansiReset
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	fmt.Fprintln(p.w, line)
+	p.fmt.Emit(cliprint.Event{
+		Time:   p.now(),
+		Kind:   cliprint.KindNotification,
+		Status: cliprint.StatusOK,
+		Label:  topic,
+		Fields: []cliprint.Field{
+			{K: "patient", V: patient},
+			{K: "event", V: fmt.Sprintf("%d", h.EventNumber)},
+		},
+	})
 }
 
-// printError emits a one-line error to the same writer; used when a
-// delivery body fails to parse so the operator sees the failure.
+// printError emits a one-line error event; used when a delivery body
+// fails to parse so the operator sees the failure.
 func (p *printer) printError(format string, args ...any) {
-	ts := p.now().Format("15:04:05")
-	msg := fmt.Sprintf(format, args...)
-	line := fmt.Sprintf("[%s] error: %s", ts, msg)
-	if p.colorize {
-		line = ansiRed + line + ansiReset
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	fmt.Fprintln(p.w, line)
+	p.fmt.Emit(cliprint.Event{
+		Time:   p.now(),
+		Kind:   cliprint.KindError,
+		Status: cliprint.StatusFail,
+		Msg:    fmt.Sprintf(format, args...),
+	})
 }
 
-// printInfo emits an informational line (e.g. "subscribed", "listener
-// up"). Always plain (no per-topic color).
+// printInfo emits an informational event (e.g. "subscribed", "listener
+// up").
 func (p *printer) printInfo(format string, args ...any) {
-	ts := p.now().Format("15:04:05")
-	msg := fmt.Sprintf(format, args...)
-	line := fmt.Sprintf("[%s] %s", ts, msg)
-	if p.colorize {
-		line = ansiCyan + line + ansiReset
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	fmt.Fprintln(p.w, line)
+	p.fmt.Emit(cliprint.Event{
+		Time:   p.now(),
+		Kind:   cliprint.KindInfo,
+		Status: cliprint.StatusInfo,
+		Msg:    fmt.Sprintf(format, args...),
+	})
 }
 
 // shortTopic returns the trailing path segment of a topic URL, so
@@ -137,33 +132,4 @@ func shortTopic(t string) string {
 		return t
 	}
 	return t[idx+1:]
-}
-
-// ANSI color helpers. The palette is intentionally small (6 colors)
-// so the operator can tell deliveries apart at a glance without
-// needing a legend.
-const (
-	ansiReset = "\x1b[0m"
-	ansiRed   = "\x1b[31m"
-	ansiCyan  = "\x1b[36m"
-)
-
-var topicPalette = []string{
-	"\x1b[32m", // green
-	"\x1b[33m", // yellow
-	"\x1b[34m", // blue
-	"\x1b[35m", // magenta
-	"\x1b[36m", // cyan
-	"\x1b[91m", // bright red
-}
-
-// colorForTopic returns a stable ANSI color sequence for a topic URL.
-// Same input always returns the same color.
-func colorForTopic(topic string) string {
-	if topic == "" {
-		return topicPalette[0]
-	}
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(topic))
-	return topicPalette[int(h.Sum32())%len(topicPalette)]
 }
