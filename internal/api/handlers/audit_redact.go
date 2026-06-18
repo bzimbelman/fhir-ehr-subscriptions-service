@@ -52,7 +52,7 @@ var jwtRegexp = regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{20,}\.[A
 // pemRegexp matches any PEM-armored block. We strip the entire block
 // rather than just the body because the headers themselves can
 // disclose the key type.
-var pemRegexp = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]+-----.*?-----END [A-Z0-9 ]+-----`)
+var pemRegexp = regexp.MustCompile(`(?s)-{5}BEGIN [A-Z0-9 ]+-{5}.*?-{5}END [A-Z0-9 ]+-{5}`)
 
 // longBase64Regexp matches base64-shaped runs of >=64 chars. This is
 // imperfect — it catches some legitimate identifiers — but the
@@ -74,9 +74,9 @@ var longBase64Regexp = regexp.MustCompile(`[A-Za-z0-9+/_=-]{64,}`)
 // callers can still safely persist *something* without leaking the raw
 // bytes.
 func RedactSubscriptionForAudit(body []byte, cfg AuditRedactConfig) ([]byte, error) {
-	max := cfg.MaxBytes
-	if max <= 0 {
-		max = DefaultAuditMaxBytes
+	limit := cfg.MaxBytes
+	if limit <= 0 {
+		limit = DefaultAuditMaxBytes
 	}
 
 	if len(body) == 0 {
@@ -93,7 +93,7 @@ func RedactSubscriptionForAudit(body []byte, cfg AuditRedactConfig) ([]byte, err
 			"unparseable": true,
 			"redacted":    scrubbed,
 		})
-		return capBytes(out, max), nil
+		return capBytes(out, limit), nil
 	}
 
 	redacted := redactValue(doc)
@@ -101,7 +101,7 @@ func RedactSubscriptionForAudit(body []byte, cfg AuditRedactConfig) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
-	return capBytes(out, max), nil
+	return capBytes(out, limit), nil
 }
 
 func redactValue(v any) any {
@@ -151,14 +151,14 @@ func scrubString(s string) string {
 	return s
 }
 
-func capBytes(b []byte, max int) []byte {
-	if len(b) <= max {
+func capBytes(b []byte, limit int) []byte {
+	if len(b) <= limit {
 		return b
 	}
 	// Wrap the original in a truncated envelope. We re-marshal to a
 	// stable shape and budget the prefix accordingly.
 	const envelopeOverhead = 64
-	keep := max - envelopeOverhead
+	keep := limit - envelopeOverhead
 	if keep < 0 {
 		keep = 0
 	}
@@ -170,8 +170,9 @@ func capBytes(b []byte, max int) []byte {
 		"prefix":    string(b[:keep]),
 	}
 	out, _ := json.Marshal(envelope)
-	if len(out) > max {
-		// Last resort: hard truncate at max with a stable shape.
+	if len(out) > limit {
+		// Last resort: hard truncate at the configured limit with a
+		// stable, parseable shape.
 		out = []byte(`{"truncated":true}`)
 	}
 	return out

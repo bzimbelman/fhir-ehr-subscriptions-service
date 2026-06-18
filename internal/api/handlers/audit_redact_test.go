@@ -32,9 +32,8 @@ func seedActiveRow() repos.SubscriptionRow {
 
 // auditCapture records the canonical body that was passed into Audit.Append.
 type auditCapture struct {
-	mu       sync.Mutex
-	rows     []auditRow
-	failNext bool
+	mu   sync.Mutex
+	rows []auditRow
 }
 
 type auditRow struct {

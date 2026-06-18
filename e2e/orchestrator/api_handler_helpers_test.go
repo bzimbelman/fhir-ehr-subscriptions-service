@@ -94,13 +94,13 @@ type panicMetrics struct {
 	activatePanicTotal atomic.Int64
 }
 
-func (m *panicMetrics) RecordSubscriptionCreated()         {}
-func (m *panicMetrics) RecordSubscriptionUpdated()         {}
-func (m *panicMetrics) RecordSubscriptionDeleted()         {}
-func (m *panicMetrics) RecordWSBindingTokenIssued()        {}
-func (m *panicMetrics) RecordValidationFailure(_ string)   {}
-func (m *panicMetrics) RecordActivatePanic()               { m.activatePanicTotal.Add(1) }
-func (m *panicMetrics) ActivatePanics() int64              { return m.activatePanicTotal.Load() }
+func (m *panicMetrics) RecordSubscriptionCreated()       {}
+func (m *panicMetrics) RecordSubscriptionUpdated()       {}
+func (m *panicMetrics) RecordSubscriptionDeleted()       {}
+func (m *panicMetrics) RecordWSBindingTokenIssued()      {}
+func (m *panicMetrics) RecordValidationFailure(_ string) {}
+func (m *panicMetrics) RecordActivatePanic()             { m.activatePanicTotal.Add(1) }
+func (m *panicMetrics) ActivatePanics() int64            { return m.activatePanicTotal.Load() }
 
 // panickingActivator panics inside ActivateSubscription so the e2e
 // test can verify the recover() path.
