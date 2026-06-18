@@ -1,0 +1,222 @@
+// Copyright the fhir-ehr-subscriptions-service authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
+	"sync/atomic"
+	"time"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+)
+
+// restHookActivatorOptions parameterizes newRestHookActivator. Operators
+// configure these via channels.rest_hook.* in production; tests
+// substitute httptest values directly.
+type restHookActivatorOptions struct {
+	// AllowHTTP, when true, lets the activator POST to plain http://
+	// endpoints. Production keeps this false (the URLValidator rejects
+	// non-https endpoints at create time anyway); dev / e2e flips it on.
+	AllowHTTP bool
+
+	// Timeout bounds the entire handshake POST (dial + TLS + read).
+	// A slow / hostile subscriber must not pin the API request.
+	Timeout time.Duration
+
+	// Logger receives one structured line per outcome. Nil falls back to
+	// slog.Default().
+	Logger *slog.Logger
+
+	// httpClient is a test seam. Production constructs a fresh client
+	// from Timeout; tests can substitute a transport that records the
+	// outbound request.
+	httpClient *http.Client
+}
+
+// restHookActivator implements handlers.ChannelActivator by POSTing a
+// synthetic FHIR R5 handshake Bundle to the subscriber's endpoint and
+// classifying the response. Replaces the no-op defaultActivator (D-2).
+type restHookActivator struct {
+	allowHTTP   bool
+	timeout     time.Duration
+	logger      *slog.Logger
+	client      *http.Client
+	successHits atomic.Uint64
+	failureHits atomic.Uint64
+}
+
+// newRestHookActivator constructs the activator from opts. The returned
+// activator is safe for concurrent use; it owns no per-subscription
+// state.
+func newRestHookActivator(opts restHookActivatorOptions) *restHookActivator {
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	client := opts.httpClient
+	if client == nil {
+		client = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout:   5 * time.Second,
+					KeepAlive: 90 * time.Second,
+				}).DialContext,
+				MaxIdleConnsPerHost:   16,
+				MaxConnsPerHost:       64,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				ForceAttemptHTTP2:     true,
+				TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12}, //nolint:gosec // 1.2 floor; subscribers vary.
+			},
+		}
+	}
+	return &restHookActivator{
+		allowHTTP: opts.AllowHTTP,
+		timeout:   timeout,
+		logger:    logger,
+		client:    client,
+	}
+}
+
+// ActivateSubscription performs the FHIR R5 handshake against
+// row.Endpoint. A 2xx response is HandshakeSucceeded; everything else
+// (non-2xx, dial failure, timeout, scheme rejection) is HandshakeFailed.
+// The error return is reserved for caller-side bugs; transport failures
+// are classified into the outcome so the API audit trail records the
+// real result instead of a synthetic "succeeded" (D-2).
+func (a *restHookActivator) ActivateSubscription(ctx context.Context, row repos.SubscriptionRow) (handlers.HandshakeOutcome, error) {
+	endpoint := row.Endpoint
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed == nil || parsed.Host == "" {
+		a.logFail(row, "invalid endpoint url", 0)
+		return handlers.HandshakeFailed, nil
+	}
+	if parsed.Scheme != "https" && !(a.allowHTTP && parsed.Scheme == "http") {
+		a.logFail(row, "endpoint scheme not allowed", 0)
+		return handlers.HandshakeFailed, nil
+	}
+
+	body, err := buildHandshakeBundle(row)
+	if err != nil {
+		// Caller-side bug — surface as error so the API logs it.
+		return handlers.HandshakeFailed, fmt.Errorf("handshake: build bundle: %w", err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return handlers.HandshakeFailed, fmt.Errorf("handshake: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/fhir+json")
+	req.Header.Set("Accept", "application/fhir+json")
+	req.Header.Set("X-Subscription-Id", row.ID.String())
+	req.Header.Set("X-Subscription-Event-Number", "0")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		a.logFail(row, "transport error: "+err.Error(), 0)
+		return handlers.HandshakeFailed, nil
+	}
+	defer resp.Body.Close()
+	// Drain a small response body for clean keep-alive reuse without
+	// consuming PHI into our memory.
+	_, _ = io.CopyN(io.Discard, resp.Body, 4096)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		a.successHits.Add(1)
+		a.logger.Info("rest-hook handshake succeeded",
+			"subscription_id", row.ID,
+			"endpoint", redactEndpointForLog(endpoint),
+			"status", resp.StatusCode,
+		)
+		return handlers.HandshakeSucceeded, nil
+	}
+	a.logFail(row, "non-2xx response", resp.StatusCode)
+	return handlers.HandshakeFailed, nil
+}
+
+func (a *restHookActivator) logFail(row repos.SubscriptionRow, reason string, status int) {
+	a.failureHits.Add(1)
+	a.logger.Warn("rest-hook handshake failed",
+		"subscription_id", row.ID,
+		"endpoint", redactEndpointForLog(row.Endpoint),
+		"reason", reason,
+		"status", status,
+	)
+}
+
+// redactEndpointForLog drops the userinfo + query so a credentialed URL
+// or query-token never enters the audit log (S-1.4-style redaction).
+func redactEndpointForLog(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed == nil {
+		return "<invalid>"
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	return parsed.String()
+}
+
+// buildHandshakeBundle constructs a minimal FHIR R5 handshake Bundle:
+// one entry, one SubscriptionStatus resource with type=handshake. The
+// bytes are deterministic so a subscriber gateway that signs the body
+// observes the same input across attempts.
+func buildHandshakeBundle(row repos.SubscriptionRow) ([]byte, error) {
+	type subscriptionStatus struct {
+		ResourceType string `json:"resourceType"`
+		Type         string `json:"type"`
+		Status       string `json:"status"`
+		Subscription struct {
+			Reference string `json:"reference"`
+		} `json:"subscription"`
+		Topic string `json:"topic,omitempty"`
+	}
+	type entry struct {
+		FullURL  string             `json:"fullUrl"`
+		Resource subscriptionStatus `json:"resource"`
+	}
+	type bundle struct {
+		ResourceType string  `json:"resourceType"`
+		Type         string  `json:"type"`
+		Timestamp    string  `json:"timestamp"`
+		Entry        []entry `json:"entry"`
+	}
+
+	ss := subscriptionStatus{
+		ResourceType: "SubscriptionStatus",
+		Type:         "handshake",
+		Status:       "requested",
+		Topic:        row.TopicURL,
+	}
+	ss.Subscription.Reference = "Subscription/" + row.ID.String()
+	b := bundle{
+		ResourceType: "Bundle",
+		Type:         "subscription-notification",
+		Timestamp:    time.Time{}.UTC().Format(time.RFC3339),
+		Entry: []entry{
+			{
+				FullURL:  "urn:uuid:handshake",
+				Resource: ss,
+			},
+		},
+	}
+	return json.Marshal(&b)
+}

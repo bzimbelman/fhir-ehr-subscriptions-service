@@ -13,7 +13,10 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 )
 
 // defaultConfigPath is the canonical config-file location per the configuration LLD.
@@ -183,8 +186,28 @@ func realMain(args []string, stdout, stderr io.Writer) (rc int) {
 	defer cancel()
 
 	if err := run(ctx, cfg, stderr); err != nil {
-		fmt.Fprintln(stderr, "error: run:", err)
+		fmt.Fprintln(stderr, formatRunError(err))
 		return 1
 	}
 	return 0
+}
+
+// formatRunError converts a run() error into the operator-facing line
+// printed to stderr. It surfaces typed errors from the adapter registry
+// so an operator-facing tool can recommend the bundled list without
+// regex-matching the message (D-4).
+func formatRunError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var uae *registry.UnknownAdapterError
+	if errors.As(err, &uae) {
+		return fmt.Sprintf(
+			"error: adapter %q is not in the bundled registry; available: [%s]; full error: unknown adapter %q",
+			uae.Requested,
+			strings.Join(uae.Bundled, ", "),
+			uae.Requested,
+		)
+	}
+	return "error: run: " + err.Error()
 }

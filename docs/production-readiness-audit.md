@@ -221,10 +221,10 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | N-1.33 | `subscription_topics.ListByStatus` no LIMIT | RESOLVED | `79921ca` | `DefaultListByStatusCap = 1000`; new `ListByStatusPage(limit, offset)` |
 | N-1.34 | claim FOR UPDATE / SKIP LOCKED substring match fragile | RESOLVED | `79921ca` | `stripSQLCommentsAndStrings` before substring match |
 | N-1.35 | partition `Run` ignores reload changes | RESOLVED | `ffe847b` | re-reads `cfg.RunInterval` and `cfg.TickTimeout` every iteration |
-| D-1 | Production binary loads an empty catalog | OPEN | — | discovered during B-4 wiring; needs `topics.sources` config + SIGHUP-driven reload |
-| D-2 | rest-hook channel handshake is a placeholder | OPEN | — | discovered during B-4 wiring; `defaultActivator` always returns `HandshakeSucceeded` |
-| D-3 | pgxpool startup ping retries past `pingCtx` in some paths | OPEN | — | discovered during B-4 wiring; diagnostic-latency only |
-| D-4 | Adapter version pin error path uses generic Go error | OPEN | — | discovered during B-4 wiring; chains via `fmt.Errorf` rather than typed `*registry.UnknownAdapterError` |
+| D-1 | Production binary loads an empty catalog | RESOLVED | `3d0945f` | `topics.catalog_dir` config block walks operator JSON files at startup; SIGHUP-driven hot reload via `lcMod.SetReloadHandler` swaps the `AtomicCatalogProvider`. |
+| D-2 | rest-hook channel handshake is a placeholder | RESOLVED | `3d0945f` | `restHookActivator` POSTs a synthetic FHIR R5 handshake Bundle to the subscriber endpoint; 2xx → `HandshakeSucceeded`, anything else (non-2xx, dial error, timeout, scheme rejection) → `HandshakeFailed`. |
+| D-3 | pgxpool startup ping retries past `pingCtx` in some paths | RESOLVED | `3d0945f` | `buildPoolConfig` calls `pgxpool.ParseConfig` and overrides `ConnConfig.ConnectTimeout` (default 5s) so per-attempt dials honor the operator-supplied bound. |
+| D-4 | Adapter version pin error path uses generic Go error | RESOLVED | `3d0945f` | `formatRunError` switches on `*registry.UnknownAdapterError` and emits a structured operator-facing line carrying the requested id and bundled list. |
 
 ---
 
@@ -741,29 +741,30 @@ The strongest two impressions: (1) the system is structurally complete but has m
 
 The full B-4 wiring exercise surfaced four new findings that exist *because* the production binary now actually constructs every dependency. None of them block deployment — the binary boots, serves API, handles MLLP, and shuts down cleanly — but they should be tracked.
 
-### D-1 (NICE-TO-HAVE): Production binary loads an empty catalog
-- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime` — `catalog.Load(catalog.Sources{})`
-- **What:** The matcher's `CatalogProvider` is initialized to an empty `*catalog.Catalog`. `subscription_topics` rows do nothing because no topic mapping is loaded.
-- **Why it matters:** Even with subscriptions in `active` and HL7 messages flowing, no `ehr_events` rows are produced — the pipeline silently halts at the matcher.
-- **Fix:** Add a `topics.sources` config block (file paths or embedded built-in topics) and pipe the `Sources` through. Wire SIGHUP-driven reload via the lifecycle module's `SetReloadHandler` so operators can roll out new topic mappings without a restart.
+### D-1 (RESOLVED 3d0945f): Production binary loads an empty catalog
+- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime` — was `catalog.Load(catalog.Sources{})`
+- **What:** The matcher's `CatalogProvider` was initialized to an empty `*catalog.Catalog`. `subscription_topics` rows did nothing because no topic mapping was loaded.
+- **Why it mattered:** Even with subscriptions in `active` and HL7 messages flowing, no `ehr_events` rows were produced — the pipeline silently halted at the matcher.
+- **Resolution:** Added `topics.catalog_dir` to the typed config (`cmd/fhir-subs/config.go`); a new `loadTopicSources` helper (`cmd/fhir-subs/topics.go`) walks the dir non-recursively, loads every `*.json` as an `Operator`-precedence `RawTopic`, and the wiring pipes it into `catalog.Load`. SIGHUP routes through `lcMod.SetReloadHandler` to re-walk the dir and `Store()` a fresh catalog into the `AtomicCatalogProvider` (race-free; B-29 contract preserved). RED unit tests in `topics_d1_test.go` and `config_d1_test.go`; e2e harness coverage in `e2e/orchestrator/prod_binary_topics_catalog_d1_test.go` asserts both startup load and SIGHUP reload via captured stderr lines.
 
-### D-2 (NICE-TO-HAVE): rest-hook channel handshake is a placeholder
-- **File:** `cmd/fhir-subs/wiring.go::defaultActivator`
-- **What:** Every `ChannelActivator` registered in production is a stub that always returns `HandshakeSucceeded`. The actual FHIR R5 handshake bundle (POST a synthetic `SubscriptionStatus` heartbeat to the subscriber endpoint, await 2xx) is owned by the channel module's own activation logic; the API binds it via this no-op default for now.
-- **Why it matters:** A subscription created in production immediately flips to `active` regardless of whether the subscriber endpoint actually exists or is reachable. The audit-log entry says "handshake.succeeded" even when the endpoint would 404.
-- **Fix:** Replace `defaultActivator` with adapters around `internal/channel/resthook`, `.../websocket`, `.../email` that perform the real handshake bundle. Track per-channel handshake metrics and audit events.
+### D-2 (RESOLVED 3d0945f): rest-hook channel handshake is a placeholder
+- **File:** `cmd/fhir-subs/wiring.go` — `rest-hook` slot in the `handlers.ChannelRegistry`
+- **What:** The `ChannelActivator` registered for rest-hook was `defaultActivator{}`, a stub that always returned `HandshakeSucceeded`. The audit-log entry said "handshake.succeeded" even when the subscriber endpoint would 404.
+- **Why it mattered:** A subscription created in production immediately flipped to `active` regardless of whether the subscriber endpoint actually existed or was reachable.
+- **Resolution:** New `restHookActivator` (`cmd/fhir-subs/activators.go`) POSTs a synthetic FHIR R5 handshake Bundle (`SubscriptionStatus` with `type=handshake`) to `row.Endpoint` with `Content-Type: application/fhir+json`. 2xx → `HandshakeSucceeded`; non-2xx, dial error, timeout, scheme rejection → `HandshakeFailed`. Per-outcome counters (`successHits` / `failureHits`) surface for future metric wiring. Endpoint URL is redacted (userinfo + query stripped) before it lands in audit logs. Five RED unit tests in `activators_d2_test.go` cover 2xx success, 4xx failure, dial-error failure, handshake-bundle shape, and the `AllowHTTP=false` reject-before-dial branch. `websocket` and `email` keep the `defaultActivator` placeholder — see `docs/future-work.md` for tracking.
+- **Test caveat:** Activator behavior is covered by unit tests; an end-to-end test that drives the activator via the production binary's `POST /Subscription` route requires a debug-mode auth seam (no audience → no principal → 401), so the API-driven e2e is deferred. The unit tests exercise the same code path the API uses (wired in `wiring.go`).
 
-### D-3 (NICE-TO-HAVE): pgxpool startup ping retries past pingCtx in some paths
-- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime`
-- **What:** When the configured Postgres is unreachable on a closed port (`127.0.0.1:1`), pgxpool's internal connect-retry loop occasionally outruns the 5s `pingCtx`. The race is benign — the binary still exits non-zero with a clear "database: ping" diagnostic — but the diagnostic surfaces only after the lifecycle module's signal-driven shutdown phase, not the `buildProductionRuntime` failure path.
-- **Why it matters:** Operationally the binary is doing the right thing (fail-loud, non-zero exit, /readyz never available), but the time-to-first-error is longer than the configured budget. k8s' liveness/startup probes will still mark the pod unhealthy and restart it; this finding is about diagnostic latency, not correctness.
-- **Fix:** Inject `connect_timeout` into the pgxpool config explicitly via `pgxpool.ParseConfig` (rather than relying on URL params), and surface the failure deterministically before the listener registration.
+### D-3 (RESOLVED 3d0945f): pgxpool startup ping retries past pingCtx in some paths
+- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime` — Postgres pool construction
+- **What:** When the configured Postgres was unreachable on a closed port, pgxpool's internal connect-retry loop occasionally outran the 5s `pingCtx`.
+- **Why it mattered:** The diagnostic surfaced only after the lifecycle module's signal-driven shutdown phase rather than the `buildProductionRuntime` failure path. Diagnostic-latency only — not a correctness gap.
+- **Resolution:** New `buildPoolConfig` helper (`cmd/fhir-subs/pool.go`) calls `pgxpool.ParseConfig`, overrides `ConnConfig.ConnectTimeout` with a 5s default (configurable in future), then constructs the pool via `pgxpool.NewWithConfig`. RED unit tests in `pool_d3_test.go` cover: explicit timeout injected, zero falls back to a positive default, malformed URL surfaced as a parse error.
 
-### D-4 (NICE-TO-HAVE): Adapter version pin error path uses generic Go error
-- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime` — adapter Load failure
-- **What:** When the configured `adapter.id` is unknown, the binary fails with `production wiring: adapter load: registry: unknown adapter "X" (bundled: [default])`. The error chains through `fmt.Errorf` rather than the typed `*registry.UnknownAdapterError`, so an operator-facing tool that wants to recommend the bundled list has to grep the message.
-- **Why it matters:** Operability — error messages are correct but not machine-readable. Not a correctness issue.
-- **Fix:** Surface the typed error to the caller (probably via a small `errors.As` switch in `realMain`) so the recommended bundled-adapter list is structured.
+### D-4 (RESOLVED 3d0945f): Adapter version pin error path uses generic Go error
+- **File:** `cmd/fhir-subs/main.go::realMain` — was `fmt.Fprintln(stderr, "error: run:", err)`
+- **What:** When the configured `adapter.id` was unknown, the binary failed with `error: run: production wiring: adapter load: registry: unknown adapter "X" (bundled: [default])`. The error chained through `fmt.Errorf` rather than the typed `*registry.UnknownAdapterError`, so an operator-facing tool that wanted to recommend the bundled list had to grep the message.
+- **Why it mattered:** Operability — error messages were correct but not machine-readable.
+- **Resolution:** New `formatRunError` helper (`cmd/fhir-subs/main.go`) `errors.As`-switches on `*registry.UnknownAdapterError` and emits a structured operator-facing line listing the requested id and the bundled list explicitly. Other errors fall back to the legacy `error: run: <err>` prefix. RED unit tests in `main_d4_test.go` cover the typed-error branch and the legacy fallback.
 
 ---
 

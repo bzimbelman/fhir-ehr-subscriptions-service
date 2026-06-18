@@ -51,6 +51,8 @@ type productionRuntime struct {
 	matcher     *matcher.Worker
 	submatcher  *submatcher.Worker
 	scheduler   *scheduler.Worker
+	catalogProv *matcher.AtomicCatalogProvider
+	topicsDir   string
 	pipelineWG  sync.WaitGroup
 	cancelLoops context.CancelFunc
 
@@ -70,7 +72,16 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	rt := &productionRuntime{logger: logger}
 
 	// --- 1. Postgres pool + migrations -----------------------------------
-	pool, err := pgxpool.New(ctx, cfg.Database.URL)
+	// Use ParseConfig + explicit ConnectTimeout so the per-attempt dial
+	// honors a bound the operator can reason about. Without it, an
+	// unreachable Postgres lets pgxpool's internal retry loop outrun the
+	// caller's pingCtx and the diagnostic surfaces only during shutdown
+	// (D-3).
+	poolCfg, err := buildPoolConfig(cfg.Database.URL, 0)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("database: open: %w", err)
 	}
@@ -170,8 +181,20 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		AllowHTTP: cfg.Auth.AllowInsecure, // dev convenience: if insecure JWKS allowed, allow http endpoints too
 	})
+	// rest-hook gets a real activator that POSTs a synthetic FHIR R5
+	// handshake bundle to the subscriber endpoint and only flips status
+	// to active on a 2xx response (D-2). websocket and email continue to
+	// use the no-op default — the websocket handshake is asynchronous
+	// (the subscriber binds with a token after creation), and email
+	// handshake semantics depend on relay AUTH that is not modeled
+	// today. Both are tracked in future-work.
+	rhActivator := newRestHookActivator(restHookActivatorOptions{
+		AllowHTTP: cfg.Auth.AllowInsecure,
+		Timeout:   cfg.Channels.RestHook.RequestTimeout,
+		Logger:    logger.With("component", "channel.resthook.activator"),
+	})
 	channels := handlers.ChannelRegistry{
-		"rest-hook": defaultActivator{},
+		"rest-hook": rhActivator,
 		"websocket": defaultActivator{},
 		"email":     defaultActivator{},
 	}
@@ -254,14 +277,27 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 	rt.processor = proc
 
-	// Matcher.
-	emptyCat, err := catalog.Load(catalog.Sources{})
+	// Matcher. The CatalogProvider is hot-swappable: at startup we load
+	// the operator-supplied topic JSON files (D-1); on SIGHUP the
+	// reload handler walks the same directory and Stores a fresh
+	// catalog so operators can roll out new topic mappings without a
+	// restart.
+	rt.topicsDir = cfg.Topics.CatalogDir
+	topicSources, err := loadTopicSources(rt.topicsDir)
+	if err != nil {
+		cancelLoops()
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("topics: load sources: %w", err)
+	}
+	initialCat, err := catalog.Load(topicSources)
 	if err != nil {
 		cancelLoops()
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("catalog: %w", err)
 	}
-	cp := matcher.NewAtomicCatalogProvider(emptyCat.Catalog)
+	logCatalogDiagnostics(logger, rt.topicsDir, initialCat)
+	cp := matcher.NewAtomicCatalogProvider(initialCat.Catalog)
+	rt.catalogProv = cp
 	matchPoll := cfg.Pipeline.Matcher.IdlePollInterval
 	if matchPoll == 0 {
 		matchPoll = 200 * time.Millisecond
@@ -324,7 +360,63 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		return pool.Ping(pingCtx)
 	})
 
+	// --- 12. SIGHUP-driven topic catalog reload (D-1) -------------------
+	// A signal handler chains: if a future caller (config module) also
+	// wants SIGHUP, this becomes a multi-handler dispatch; today the
+	// catalog is the only consumer.
+	lcMod.SetReloadHandler(func(rctx context.Context) {
+		newSources, srcErr := loadTopicSources(rt.topicsDir)
+		if srcErr != nil {
+			logger.Warn("topic reload: source walk failed; keeping previous catalog",
+				"err", srcErr.Error(),
+				"dir", rt.topicsDir,
+			)
+			return
+		}
+		_ = rctx // catalog.Load is in-process and bounded; ctx is reserved for future
+		newCat, loadErr := catalog.Load(newSources)
+		if loadErr != nil {
+			logger.Warn("topic reload: catalog.Load failed; keeping previous catalog",
+				"err", loadErr.Error(),
+			)
+			return
+		}
+		logCatalogDiagnostics(logger, rt.topicsDir, newCat)
+		rt.catalogProv.Store(newCat.Catalog)
+		logger.Info("topic catalog reloaded",
+			"dir", rt.topicsDir,
+			"topics", len(newCat.Catalog.All()),
+			"rejected", len(newCat.Rejected),
+		)
+	})
+
 	return rt, nil
+}
+
+// logCatalogDiagnostics emits a single startup/reload line summarizing
+// what the catalog now contains and one line per rejected/overridden
+// candidate so operators see exactly which topic JSON file failed.
+func logCatalogDiagnostics(logger *slog.Logger, dir string, report catalog.Report) {
+	if report.Catalog == nil {
+		logger.Warn("topic catalog: nil after Load (treating as empty)")
+		return
+	}
+	logger.Info("topic catalog loaded",
+		"dir", dir,
+		"topics", len(report.Catalog.All()),
+		"rejected", len(report.Rejected),
+		"overridden", len(report.Overridden),
+	)
+	for _, rej := range report.Rejected {
+		logger.Warn("topic rejected",
+			"origin", rej.Origin,
+			"url", rej.URL,
+			"reason", rej.Reason,
+		)
+	}
+	for _, ov := range report.Overridden {
+		logger.Warn("topic override fallback", "fields", ov.LogFields())
+	}
 }
 
 // registerLifecycle wires the runtime's components into the lifecycle

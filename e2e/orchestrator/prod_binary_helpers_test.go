@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -26,6 +28,22 @@ type prodBinaryHandle struct {
 	httpAddr string
 	mllpAddr string
 	cancel   func()
+	stdout   *prefixWriter
+	stderr   *prefixWriter
+}
+
+// Stderr returns the captured-line collector for the binary's stderr
+// stream so tests can assert on emitted log content (e.g. catalog
+// reload, handshake outcome).
+func (h *prodBinaryHandle) Stderr() *prefixWriter { return h.stderr }
+
+// SignalHUP sends SIGHUP to the binary so a test can drive the reload
+// handler (D-1: catalog reload).
+func (h *prodBinaryHandle) SignalHUP(t *testing.T) {
+	t.Helper()
+	if err := h.cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatalf("signal HUP: %v", err)
+	}
 }
 
 // HTTPURL returns the full http base URL the test should hit.
@@ -82,6 +100,17 @@ type prodBinaryConfig struct {
 	MLLPBind     string // empty = no MLLP
 	Insecure     bool
 	GracePeriod  time.Duration
+
+	// TopicsCatalogDir, when non-empty, is rendered into topics.catalog_dir
+	// so the production binary loads the operator topic JSON files at
+	// startup (D-1).
+	TopicsCatalogDir string
+
+	// AuthAllowInsecureJWKS rendered into auth.allow_insecure_jwks. The
+	// rest-hook handshake activator reuses this flag to allow http://
+	// subscriber endpoints in e2e (D-2). Off by default — production is
+	// https-only.
+	AuthAllowInsecureJWKS bool
 }
 
 // startProdBinary builds and launches cmd/fhir-subs against the
@@ -137,6 +166,19 @@ mllp:
 		mllpAddrPlaceholder = cfg.MLLPBind
 	}
 
+	topicsBlock := ""
+	if cfg.TopicsCatalogDir != "" {
+		topicsBlock = fmt.Sprintf(`
+topics:
+  catalog_dir: %s
+`, cfg.TopicsCatalogDir)
+	}
+
+	authInsecureLine := ""
+	if cfg.AuthAllowInsecureJWKS {
+		authInsecureLine = "\n  allow_insecure_jwks: true"
+	}
+
 	yamlBody := fmt.Sprintf(`deployment:
   facility_id: %s
   environment: e2e
@@ -158,7 +200,7 @@ codec:
     - version: 1
       material: %s
 auth:
-  audience: %s
+  audience: %s%s
 pipeline:
   hl7_processor:
     claim_batch_size: 16
@@ -173,11 +215,11 @@ pipeline:
     claim_batch_size: 16
     idle_poll_interval: 100ms
   correlation_hold_window: 1s
-%s
+%s%s
 `,
 		cfg.FacilityID, cfg.AdapterID, cfg.HTTPBind, cfg.Insecure,
 		cfg.GracePeriod.String(),
-		cfg.DatabaseURL, keyB64, cfg.AuthAudience, mllpBlock,
+		cfg.DatabaseURL, keyB64, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock,
 	)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -187,8 +229,10 @@ pipeline:
 
 	binCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(binCtx, binPath, "--config", cfgPath)
-	cmd.Stdout = newPrefixWriter(t, "fhir-subs out")
-	cmd.Stderr = newPrefixWriter(t, "fhir-subs err")
+	stdoutW := newPrefixWriter(t, "fhir-subs out")
+	stderrW := newPrefixWriter(t, "fhir-subs err")
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
 		cancel()
 		t.Fatalf("start binary: %v", err)
@@ -199,6 +243,8 @@ pipeline:
 		httpAddr: cfg.HTTPBind,
 		mllpAddr: mllpAddrPlaceholder,
 		cancel:   cancel,
+		stdout:   stdoutW,
+		stderr:   stderrW,
 	}
 
 	// Wait for /healthz to flip green.
@@ -259,15 +305,39 @@ func findRepoRoot() (string, error) {
 
 // prefixWriter prefixes every newline-terminated chunk with "[name]" so
 // concurrent test logs can be told apart. Implements io.Writer over
-// t.Log.
+// t.Log. It also retains every emitted line so a test can grep its own
+// captured output for log-driven assertions (e.g. "catalog reloaded").
 type prefixWriter struct {
 	t      *testing.T
 	prefix string
 	buf    []byte
+	mu     sync.Mutex
+	lines  []string
 }
 
 func newPrefixWriter(t *testing.T, prefix string) *prefixWriter {
 	return &prefixWriter{t: t, prefix: prefix}
+}
+
+// Lines returns a snapshot of captured lines (newline-stripped).
+func (p *prefixWriter) Lines() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]string, len(p.lines))
+	copy(out, p.lines)
+	return out
+}
+
+// ContainsLine reports whether any captured line contains substr.
+func (p *prefixWriter) ContainsLine(substr string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, l := range p.lines {
+		if strings.Contains(l, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *prefixWriter) Write(b []byte) (int, error) {
@@ -286,6 +356,9 @@ func (p *prefixWriter) Write(b []byte) (int, error) {
 		line := strings.TrimRight(string(p.buf[:idx]), "\r")
 		p.buf = p.buf[idx+1:]
 		p.t.Logf("[%s] %s", p.prefix, line)
+		p.mu.Lock()
+		p.lines = append(p.lines, line)
+		p.mu.Unlock()
 	}
 	return len(b), nil
 }
