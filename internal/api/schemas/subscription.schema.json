@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fhir-subscriptions-foss/schemas/subscription-r4b-backport.json",
+  "title": "FHIR Subscription (R4B Backport / R5)",
+  "description": "Project-defined validation schema for Subscription resources accepted by the Subscriptions API. Covers the fields the LLD references; structural-only checks. Profile-level validation is deferred per ADR 0010 #8.",
+  "type": "object",
+  "required": [
+    "resourceType",
+    "status",
+    "channel"
+  ],
+  "properties": {
+    "resourceType": {
+      "type": "string",
+      "const": "Subscription"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9\\-\\.]{1,64}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["requested", "active", "error", "off", "entered-in-error"]
+    },
+    "topic": {
+      "type": "string",
+      "format": "uri"
+    },
+    "criteria": {
+      "type": "string"
+    },
+    "reason": { "type": "string" },
+    "end": { "type": "string" },
+    "contact": { "type": "array" },
+    "filterBy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "resourceType": { "type": "string" },
+          "filterParameter": { "type": "string" },
+          "modifier": { "type": "string" },
+          "comparator": { "type": "string" },
+          "value": { "type": "string" }
+        },
+        "required": ["filterParameter", "value"]
+      }
+    },
+    "channelType": {
+      "type": "object",
+      "properties": {
+        "system": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["code"]
+    },
+    "endpoint": {
+      "type": "string",
+      "format": "uri"
+    },
+    "parameter": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "heartbeatPeriod": { "type": "integer", "minimum": 0 },
+    "timeout": { "type": "integer", "minimum": 0 },
+    "content": {
+      "type": "string",
+      "enum": ["empty", "id-only", "full-resource"]
+    },
+    "contentType": { "type": "string" },
+    "maxCount": { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "channel": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "endpoint": { "type": "string", "format": "uri" },
+        "payload": { "type": "string" },
+        "header": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "heartbeatPeriod": { "type": "integer", "minimum": 0 },
+        "timeout": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
