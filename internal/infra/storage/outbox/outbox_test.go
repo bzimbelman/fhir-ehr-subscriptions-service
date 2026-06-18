@@ -29,8 +29,8 @@ func TestRunOutboxCommitsOnSuccess(t *testing.T) {
 	pool.ExpectCommit()
 
 	out, err := outbox.RunPool(ctx, pool, func(ctx context.Context, tx outbox.Tx) error {
-		_, err := tx.Exec(ctx, "INSERT INTO test_table VALUES (1)")
-		return err
+		_, execErr := tx.Exec(ctx, "INSERT INTO test_table VALUES (1)")
+		return execErr
 	})
 	if err != nil {
 		t.Fatalf("RunPool: %v", err)
@@ -91,14 +91,14 @@ func TestRunOutboxCountsMultipleWrites(t *testing.T) {
 	pool.ExpectCommit()
 
 	out, err := outbox.RunPool(ctx, pool, func(ctx context.Context, tx outbox.Tx) error {
-		if _, err := tx.Exec(ctx, "UPDATE input SET processed=true"); err != nil {
-			return err
+		if _, execErr := tx.Exec(ctx, "UPDATE input SET processed=true"); execErr != nil {
+			return execErr
 		}
-		if _, err := tx.Exec(ctx, "INSERT output VALUES (1)"); err != nil {
-			return err
+		if _, execErr := tx.Exec(ctx, "INSERT output VALUES (1)"); execErr != nil {
+			return execErr
 		}
-		_, err := tx.Exec(ctx, "INSERT output VALUES (2)")
-		return err
+		_, execErr := tx.Exec(ctx, "INSERT output VALUES (2)")
+		return execErr
 	})
 	if err != nil {
 		t.Fatalf("RunPool: %v", err)

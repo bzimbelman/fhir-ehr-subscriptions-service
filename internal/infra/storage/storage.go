@@ -66,9 +66,9 @@ type RetentionConfig struct {
 
 // PartitionConfig controls the partition maintainer.
 type PartitionConfig struct {
-	AutoDrop            bool
+	AutoDrop             bool
 	PartitionLockTimeout time.Duration
-	RunInterval         time.Duration
+	RunInterval          time.Duration
 
 	// PartitionRetention is per-table; defaults to 30d for both
 	// resource_changes and ehr_events.
@@ -174,7 +174,7 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 		return nil, err
 	}
 
-	if err := migrate.MigrateUp(ctx, p.Pgx()); err != nil {
+	if err := migrate.Up(ctx, p.Pgx()); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("storage: migrate: %w", err)
 	}

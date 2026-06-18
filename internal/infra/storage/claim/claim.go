@@ -23,7 +23,7 @@ import (
 // columns into typed fields.
 type Scanner func(dest ...any) error
 
-// ClaimUnprocessed runs the given SQL inside the caller-provided
+// Unprocessed runs the given SQL inside the caller-provided
 // transaction, decoding each returned row via decode. The SQL must
 // include "FOR UPDATE SKIP LOCKED" — without it, a stuck worker would
 // block other workers, which defeats the purpose. We reject the SQL at
@@ -33,7 +33,10 @@ type Scanner func(dest ...any) error
 // The caller commits the transaction. The lock is held for the
 // transaction's lifetime; the caller is expected to UPDATE the rows
 // they claimed (typically marking processed) before commit.
-func ClaimUnprocessed[T any](
+//
+// LLD §6 calls the primitive `ClaimUnprocessed`; in Go we name it
+// without the package prefix to avoid stuttering (revive: exported).
+func Unprocessed[T any](
 	ctx context.Context,
 	tx pgx.Tx,
 	decode func(Scanner) (T, error),

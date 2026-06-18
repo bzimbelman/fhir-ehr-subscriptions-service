@@ -105,12 +105,12 @@ func TestAdapterStateUpsertAndGet(t *testing.T) {
 			AddRow([]byte("vendor-token"), int32(1), time.Now()))
 
 	repo := repos.NewAdapterStateRepo()
-	if err := repo.Upsert(ctx, pool, repos.AdapterStateRow{
+	if upErr := repo.Upsert(ctx, pool, repos.AdapterStateRow{
 		AdapterID: "epic", Scope: "vendor_token", Key: "interconnect",
 		Value:      []byte("vendor-token"),
 		KeyVersion: 1,
-	}); err != nil {
-		t.Fatalf("upsert: %v", err)
+	}); upErr != nil {
+		t.Fatalf("upsert: %v", upErr)
 	}
 	got, err := repo.Get(ctx, pool, "epic", "vendor_token", "interconnect")
 	if err != nil {
@@ -148,13 +148,13 @@ func TestAuthClientsInsertAndGet(t *testing.T) {
 			"Lab", time.Now(), time.Now()))
 
 	repo := repos.NewAuthClientsRepo()
-	if err := repo.Insert(ctx, pool, repos.AuthClientRow{
+	if insErr := repo.Insert(ctx, pool, repos.AuthClientRow{
 		ID:          "client-a",
 		JwksURL:     "https://idp/jwks",
 		Scopes:      []string{"system/Subscription.cruds"},
 		DisplayName: "Lab",
-	}); err != nil {
-		t.Fatalf("insert: %v", err)
+	}); insErr != nil {
+		t.Fatalf("insert: %v", insErr)
 	}
 	got, err := repo.GetByID(ctx, pool, "client-a")
 	if err != nil {

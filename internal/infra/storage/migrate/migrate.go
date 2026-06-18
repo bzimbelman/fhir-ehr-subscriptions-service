@@ -109,11 +109,14 @@ func detectConcurrent(body string) bool {
 // longer matches the embedded body. Continuing in that case is unsafe.
 var ErrChecksumMismatch = errors.New("migrate: checksum drift between embedded and applied migration")
 
-// MigrateUp ensures the schema_migrations table exists, then applies any
+// Up ensures the schema_migrations table exists, then applies any
 // embedded migration whose version is not present. The schema_migrations
 // table is the one defined in 0001_init.sql; this function tolerates the
 // case where 0001 itself creates the table (it will be a no-op insert).
-func MigrateUp(ctx context.Context, pool *pgxpool.Pool) error {
+//
+// LLD §5 refers to this as `migrate_up`; in Go we name it without
+// the package prefix to avoid stuttering (revive: exported).
+func Up(ctx context.Context, pool *pgxpool.Pool) error {
 	if pool == nil {
 		return errors.New("migrate: nil pool")
 	}

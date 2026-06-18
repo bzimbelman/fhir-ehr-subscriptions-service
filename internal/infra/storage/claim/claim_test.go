@@ -27,7 +27,7 @@ func decodeFake(scan claim.Scanner) (fakeRow, error) {
 	return r, nil
 }
 
-func TestClaimUnprocessedReturnsRows(t *testing.T) {
+func TestUnprocessedReturnsRows(t *testing.T) {
 	t.Parallel()
 
 	pool, err := pgxmock.NewPool()
@@ -49,7 +49,7 @@ func TestClaimUnprocessedReturnsRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := claim.ClaimUnprocessed(ctx, tx, decodeFake,
+	rows, err := claim.Unprocessed(ctx, tx, decodeFake,
 		`SELECT id, name FROM widgets WHERE processed = false LIMIT $1 FOR UPDATE SKIP LOCKED`,
 		int64(10))
 	if err != nil {
@@ -69,7 +69,7 @@ func TestClaimUnprocessedReturnsRows(t *testing.T) {
 	}
 }
 
-func TestClaimUnprocessedRejectsSQLWithoutSkipLocked(t *testing.T) {
+func TestUnprocessedRejectsSQLWithoutSkipLocked(t *testing.T) {
 	t.Parallel()
 
 	pool, err := pgxmock.NewPool()
@@ -85,7 +85,7 @@ func TestClaimUnprocessedRejectsSQLWithoutSkipLocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, claimErr := claim.ClaimUnprocessed(ctx, tx, decodeFake,
+	_, claimErr := claim.Unprocessed(ctx, tx, decodeFake,
 		`SELECT id, name FROM widgets WHERE processed = false LIMIT $1`,
 		int64(10))
 	if claimErr == nil {
@@ -96,7 +96,7 @@ func TestClaimUnprocessedRejectsSQLWithoutSkipLocked(t *testing.T) {
 	}
 }
 
-func TestClaimUnprocessedPropagatesScanError(t *testing.T) {
+func TestUnprocessedPropagatesScanError(t *testing.T) {
 	t.Parallel()
 
 	pool, err := pgxmock.NewPool()
@@ -116,7 +116,7 @@ func TestClaimUnprocessedPropagatesScanError(t *testing.T) {
 	bad := func(_ claim.Scanner) (fakeRow, error) {
 		return fakeRow{}, want
 	}
-	_, err = claim.ClaimUnprocessed(ctx, tx, bad,
+	_, err = claim.Unprocessed(ctx, tx, bad,
 		`SELECT id, name FROM widgets FOR UPDATE SKIP LOCKED`)
 	if !errors.Is(err, want) {
 		t.Fatalf("expected wrapped %v, got %v", want, err)

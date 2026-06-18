@@ -104,7 +104,7 @@ func TestIntegrationMigrationsApplyCleanly(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if err := migrate.MigrateUp(ctx, pool); err != nil {
+	if err := migrate.Up(ctx, pool); err != nil {
 		t.Fatalf("MigrateUp: %v", err)
 	}
 
@@ -119,7 +119,7 @@ func TestIntegrationMigrationsApplyCleanly(t *testing.T) {
 	}
 
 	// Re-running is a no-op.
-	if err := migrate.MigrateUp(ctx, pool); err != nil {
+	if err := migrate.Up(ctx, pool); err != nil {
 		t.Fatalf("MigrateUp idempotent run failed: %v", err)
 	}
 }

@@ -139,7 +139,7 @@ const envelopeFormat byte = 0x01
 //
 // We keep the layout self-describing so a future codec can recognize
 // foreign-shaped envelopes deterministically.
-func (c *Codec) Encrypt(plaintext []byte) ([]byte, int32, error) {
+func (c *Codec) Encrypt(plaintext []byte) (envelope []byte, keyVersion int32, err error) {
 	gcm, ok := c.gcms[c.active]
 	if !ok {
 		return nil, 0, fmt.Errorf("%w: active=%d", ErrUnknownKeyVersion, c.active)

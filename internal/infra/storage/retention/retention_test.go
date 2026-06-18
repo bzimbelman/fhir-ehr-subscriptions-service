@@ -4,12 +4,13 @@
 package retention
 
 import (
+	"context"
 	"testing"
 )
 
 func TestTickNilPoolErrors(t *testing.T) {
 	t.Parallel()
-	if err := Tick(t.Context(), nil, Config{}); err == nil {
+	if err := Tick(context.Background(), nil, Config{}); err == nil {
 		t.Error("expected error for nil pool")
 	}
 }

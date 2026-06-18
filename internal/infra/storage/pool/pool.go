@@ -127,8 +127,8 @@ func Open(ctx context.Context, cfg Config) (*Pool, error) {
 	stmtSet := fmt.Sprintf("SET statement_timeout = %d", stmtMillis)
 
 	pcfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
-		_, err := c.Exec(ctx, stmtSet)
-		return err
+		_, execErr := c.Exec(ctx, stmtSet)
+		return execErr
 	}
 
 	pgxp, err := pgxpool.NewWithConfig(ctx, pcfg)

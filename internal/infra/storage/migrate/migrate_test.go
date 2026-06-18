@@ -70,11 +70,11 @@ func TestParseVersion(t *testing.T) {
 	}
 }
 
-func TestMigrateUpRequiresPool(t *testing.T) {
+func TestUpRequiresPool(t *testing.T) {
 	t.Parallel()
 
-	// MigrateUp with a nil pool must fail loudly, not panic.
-	err := migrate.MigrateUp(context.Background(), nil)
+	// Up with a nil pool must fail loudly, not panic.
+	err := migrate.Up(context.Background(), nil)
 	if err == nil {
 		t.Fatal("expected error from nil pool")
 	}

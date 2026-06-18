@@ -4,6 +4,7 @@
 package partition
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -45,7 +46,7 @@ func TestParseSuffixDate(t *testing.T) {
 
 func TestTickOnNilPoolErrors(t *testing.T) {
 	t.Parallel()
-	if err := Tick(t.Context(), nil, Config{}); err == nil {
+	if err := Tick(context.Background(), nil, Config{}); err == nil {
 		t.Error("expected error on nil pool")
 	}
 }
