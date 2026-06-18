@@ -35,6 +35,16 @@ type Config struct {
 	DBBackoffMax     time.Duration
 	// Retry tunes the retry curve. See ComputeBackoff.
 	Retry RetryConfig
+	// ShutdownGrace bounds how long Run waits for in-flight
+	// dispatchOne calls to finish after ctx is canceled. Default 10s.
+	ShutdownGrace time.Duration
+	// RecoveryInterval is how often the recovery sweep runs to reset
+	// rows that have been stuck in 'delivering' beyond StuckThreshold
+	// (e.g., after a worker crash). Default 30s.
+	RecoveryInterval time.Duration
+	// StuckThreshold is the minimum age a 'delivering' row must reach
+	// before the recovery sweep flips it back to 'pending'. Default 5m.
+	StuckThreshold time.Duration
 }
 
 // applyDefaults fills zero values per the LLD's "Configuration knobs".
@@ -50,6 +60,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.DBBackoffMax == 0 {
 		c.DBBackoffMax = 5 * time.Second
+	}
+	if c.ShutdownGrace == 0 {
+		c.ShutdownGrace = 10 * time.Second
+	}
+	if c.RecoveryInterval == 0 {
+		c.RecoveryInterval = 30 * time.Second
+	}
+	if c.StuckThreshold == 0 {
+		c.StuckThreshold = 5 * time.Minute
 	}
 	c.Retry.applyDefaults()
 }
@@ -120,6 +139,12 @@ type Worker struct {
 	logger   *slog.Logger
 	clock    func() time.Time
 	rng      RNG
+	// inflight tracks each in-flight dispatchOne so Run can wait for
+	// them to finish before returning. Without this, a SIGTERM mid-tick
+	// would leave deliveries rows pinned in 'delivering' forever; the
+	// recovery sweep would clean them up but the row would skip past
+	// its retry window meanwhile (audit B-31).
+	inflight sync.WaitGroup
 }
 
 // Options configure a Worker.
@@ -164,22 +189,37 @@ func NewWorker(
 }
 
 // Run blocks until ctx is canceled.
+//
+// On shutdown, Run waits up to cfg.ShutdownGrace for any in-flight
+// dispatchOne calls to drain. While the loop is running, a separate
+// goroutine ticks the recovery sweep (resetRecoveryStuck) every
+// cfg.RecoveryInterval to reset stale 'delivering' rows from prior
+// crashed workers. Both behaviors are required by audit B-31.
 func (w *Worker) Run(ctx context.Context) error {
 	if w == nil {
 		return errors.New("scheduler: nil worker")
 	}
+
+	recCtx, recCancel := context.WithCancel(ctx)
+	defer recCancel()
+	go w.runRecoverySweep(recCtx)
+
 	backoff := w.cfg.DBBackoffInitial
-	for {
+	stop := false
+	for !stop {
 		if ctx.Err() != nil {
-			return nil
+			break
 		}
 		processed, err := w.tickOnce(ctx)
 		if err != nil {
 			w.logger.WarnContext(ctx, "scheduler tick error", slog.String("err", err.Error()))
 			select {
 			case <-ctx.Done():
-				return nil
+				stop = true
 			case <-time.After(backoff):
+			}
+			if stop {
+				break
 			}
 			backoff = nextBackoff(backoff, w.cfg.DBBackoffMax)
 			continue
@@ -188,11 +228,25 @@ func (w *Worker) Run(ctx context.Context) error {
 		if !processed {
 			select {
 			case <-ctx.Done():
-				return nil
+				stop = true
 			case <-time.After(w.cfg.IdlePollInterval):
 			}
 		}
 	}
+
+	// ctx is canceled; allow already-launched dispatchOne goroutines a
+	// bounded budget to finish their commit.
+	done := make(chan struct{})
+	go func() {
+		w.inflight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(w.cfg.ShutdownGrace):
+		w.logger.WarnContext(ctx, "scheduler: shutdown grace exceeded; remaining in-flight dispatches will be reset by recovery sweep")
+	}
+	return nil
 }
 
 // TickOnce performs one claim/dispatch/handle iteration. Exported so
@@ -226,11 +280,73 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 
 	// 2. Dispatch each claimed row. Per-row work is ordered;
 	//    horizontal scaling comes from running multiple workers and
-	//    relying on SKIP LOCKED.
+	//    relying on SKIP LOCKED. We register each call on the in-flight
+	//    WaitGroup so a Run shutdown can wait for them to commit before
+	//    returning (audit B-31).
 	for i := range rows {
-		w.dispatchOne(ctx, &rows[i])
+		w.inflight.Add(1)
+		func(r *repos.DeliveryRow) {
+			defer w.inflight.Done()
+			w.dispatchOne(ctx, r)
+		}(&rows[i])
 	}
 	return true, nil
+}
+
+// runRecoverySweep periodically resets rows that have been pinned in
+// 'delivering' for longer than StuckThreshold. Such rows are the
+// fingerprint of a worker that claimed them and crashed before either
+// committing the outcome or finishing its tick. Without this sweep
+// they would never retry and the row would pile up in 'delivering'.
+func (w *Worker) runRecoverySweep(ctx context.Context) {
+	t := time.NewTicker(w.cfg.RecoveryInterval)
+	defer t.Stop()
+	// Run an initial sweep on startup so a fresh boot reclaims rows
+	// that the previous process left dangling.
+	w.recoverStuck(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			w.recoverStuck(ctx)
+		}
+	}
+}
+
+// RecoverStuckForTest is a thin testing seam over recoverStuck. Tests
+// can drive a single recovery pass deterministically without standing
+// up the long-lived Run loop.
+func (w *Worker) RecoverStuckForTest(ctx context.Context) int64 {
+	return w.recoverStuck(ctx)
+}
+
+// recoverStuck flips 'delivering' rows whose updated_at is older than
+// StuckThreshold back to 'pending', incrementing attempts so the
+// re-attempt is recorded. Returns the number of rows reset.
+func (w *Worker) recoverStuck(ctx context.Context) int64 {
+	if ctx.Err() != nil {
+		return 0
+	}
+	cutoff := w.clock().Add(-w.cfg.StuckThreshold)
+	const sql = `
+		UPDATE deliveries
+		   SET status = 'pending',
+		       attempts = attempts + 1,
+		       next_attempt_at = now(),
+		       last_error = COALESCE(last_error, '') || CASE WHEN COALESCE(last_error,'')='' THEN '' ELSE '; ' END || 'recovery_sweep:stuck_in_delivering',
+		       updated_at = now()
+		 WHERE status = 'delivering' AND updated_at < $1`
+	tag, err := w.pool.Exec(ctx, sql, cutoff)
+	if err != nil {
+		w.logger.WarnContext(ctx, "scheduler: recovery sweep failed", slog.Any("err", err))
+		return 0
+	}
+	n := tag.RowsAffected()
+	if n > 0 {
+		w.logger.InfoContext(ctx, "scheduler: recovery sweep reset stuck rows", slog.Int64("count", n))
+	}
+	return n
 }
 
 // dispatchOne drives one claimed deliveries row through build →
