@@ -105,15 +105,34 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	// onShutdownStart test hook) to the lifecycle module's flags.
 	reg := newLifecycleRegistry()
 
+	// B-4: when the operator supplied a complete config (database +
+	// codec + auth), construct the full production runtime: DB pool +
+	// migrations, codec, channel registry, adapter, auth verifier,
+	// handlers.RegisterRoutes, MLLP listener, pipeline workers. Every
+	// failure here is fatal — listener never binds, /healthz never
+	// flips to ok, the binary exits non-zero with a clear error.
+	var prod *productionRuntime
+	if cfg.Database.URL != "" {
+		var rtErr error
+		prod, rtErr = buildProductionRuntime(ctx, cfg, logger, lcMod)
+		if rtErr != nil {
+			_ = lcMod.WaitForExit(context.Background())
+			return fmt.Errorf("production wiring: %w", rtErr)
+		}
+	}
+
 	// Pre-bind the listener so we know the chosen port before starting the
 	// server goroutine. Lets tests use bind=":0" without a race.
 	listener, err := net.Listen("tcp", cfg.Server.HTTP.Bind)
 	if err != nil {
+		if prod != nil {
+			prod.shutdown(context.Background())
+		}
 		return fmt.Errorf("listen %s: %w", cfg.Server.HTTP.Bind, err)
 	}
 	addr := listener.Addr().String()
 
-	mux := buildHTTPMux(lcMod)
+	mux := buildHTTPMux(lcMod, prod)
 	srv := &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: cfg.Server.HTTP.ReadHeaderTimeout,
@@ -231,17 +250,28 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	return nil
 }
 
-// buildHTTPMux assembles the production HTTP handler. Today it serves the
-// lifecycle probe surface and the legacy /metadata stub. When B-4's full
-// API + pipeline wiring lands, this is where handlers.RegisterRoutes is
-// mounted behind auth + observability middleware.
-func buildHTTPMux(lcMod *lifecycle.LifecycleModule) http.Handler {
+// buildHTTPMux assembles the production HTTP handler. The lifecycle
+// probes (`/healthz`, `/readyz`, `/startup`) are always mounted on a
+// fixed mux. When the production runtime is configured (B-4 full
+// wiring), every other request is delegated to the runtime's router —
+// which serves the FHIR Subscription API behind auth + observability
+// middleware. Probe-only mode (no DB) keeps the legacy `/metadata`
+// stub so the existing smoke tests continue to function.
+func buildHTTPMux(lcMod *lifecycle.LifecycleModule, prod *productionRuntime) http.Handler {
 	mux := http.NewServeMux()
 	probes := lcMod.Probes()
 	mux.Handle("/healthz", probes.Healthz)
 	mux.Handle("/readyz", probes.Readyz)
 	mux.Handle("/startup", probes.Startup)
-	mux.HandleFunc("/metadata", makeMetadata())
+
+	if prod == nil || prod.router == nil {
+		mux.HandleFunc("/metadata", makeMetadata())
+		return mux
+	}
+	// Mount the production router on every non-probe path. Using "/"
+	// as the catch-all means probe routes (registered above) win
+	// thanks to ServeMux's "longest match" rule.
+	mux.Handle("/", prod.router)
 	return mux
 }
 

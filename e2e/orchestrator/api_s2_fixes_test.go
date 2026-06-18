@@ -190,4 +190,3 @@ func TestE2E_S2_BodySizeOversize413(t *testing.T) {
 		t.Fatalf("status = %d; want 413; body excerpt=%s", resp.StatusCode, bb[:min(200, len(bb))])
 	}
 }
-

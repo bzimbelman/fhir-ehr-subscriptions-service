@@ -10,7 +10,7 @@ Methodology: line-by-line read of every production file across four parallel scr
 
 **Original audit (2026-06-18, commit `b624b7d`):** roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The original summary observation was that the system had a working backbone but was not yet a "drop in and run" production service — correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcoded `key_version=1` and broke key rotation, retention sweeper that physically deleted hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination).
 
-**Current state:** **0 BLOCKERs remaining**, **~70 SHOULD-FIX still open** (mostly unchanged from the original audit), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 is the sole exception: its lifecycle scaffolding is in place (B-1 / B-2 / B-3 wiring) but the full production binary still does not mount `handlers.RegisterRoutes`; it is tracked as PARTIALLY RESOLVED pending a follow-up that adds DB / codec / auth / channel / MLLP wiring under its own RED/GREEN cycle. Two whole package trees are still empty (`internal/channels/*`, `internal/queue`, `internal/wakeup`, `internal/adapters/{defaults,epic}`, `internal/adapterspi`) — phantom abstractions covered under SHOULD-FIX S-16. The remaining SHOULD-FIX work centers on hardening API edges (rate limits, body size knobs, pagination), tightening channel defaults (resthook header allowlist, websocket idle-timeout enforcement, message channel deterministic bundle), and reconciling the audit-chain canonicaliser with a real RFC 8785 (JCS) implementation.
+**Current state:** **0 BLOCKERs remaining**, **~70 SHOULD-FIX still open** (mostly unchanged from the original audit), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 has now been brought through to RESOLVED on the `fix/b4-full-production-wiring` branch: the production binary's `cmd/fhir-subs/run.go` constructs a real DB pool (with migrations), AES-GCM codec from a versioned key bundle, SMART Backend Services verifier + token endpoint, `handlers.RegisterRoutes` on a chi router, MLLP TCP listener with persist-then-ACK, and the four-stage pipeline (HL7 processor, matcher, submatcher, scheduler). All four phases of the lifecycle sequencer now have production hooks: stop_accepting (MLLP listener), drain_in_flight (pipeline + activation WaitGroup), close_connections (DB pool). The remaining SHOULD-FIX work centers on hardening API edges (rate limits, body size knobs, pagination), tightening channel defaults (resthook header allowlist, websocket idle-timeout enforcement, message channel deterministic bundle), and reconciling the audit-chain canonicaliser with a real RFC 8785 (JCS) implementation.
 
 ---
 
@@ -23,7 +23,7 @@ The original audit catalogued 35 BLOCKERs (B-1 through B-35). The table below re
 | B-1 | `/readyz` always 503 in production entry point | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
 | B-2 | HTTP server missing Write / Idle / MaxHeaderBytes | RESOLVED | `35b2cea` (merged in `8096936`) |
 | B-3 | `markStartupComplete` fires before system is ready | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
-| B-4 | Production `run.go` never calls `handlers.RegisterRoutes` | PARTIALLY RESOLVED (scaffolding) | `192ab8e` (merged in `8096936`) — full API wiring deferred to a follow-up |
+| B-4 | Production `run.go` never calls `handlers.RegisterRoutes` | RESOLVED | `192ab8e` (scaffolding, merged in `8096936`) + `2e28aa8`, `c1e5b41`, `76f92bb`, `743cddc`, `0a5e3bc`, `b6004e7` (full DB / codec / auth / handlers / MLLP / pipeline wiring on `fix/b4-full-production-wiring`) |
 | B-5 | `jwksCache` map race | RESOLVED | `168cc80` (merged in `0a771cf`) |
 | B-6 | Token endpoint missing body-size limit | RESOLVED | `7200625` (merged in `0a771cf`) |
 | B-7 | Missing `jti` silently accepted (replay bypass) | RESOLVED | `e788c0e` (merged in `0a771cf`) |
@@ -56,7 +56,7 @@ The original audit catalogued 35 BLOCKERs (B-1 through B-35). The table below re
 | B-34 | Audit log file sink missing fsync; pgstore lock leak | RESOLVED | `ad6ddd2` (merged in `f853619`) |
 | B-35 | Secret rotation unreachable — SIGHUP not registered | RESOLVED | `3a81559` (merged in `f853619`) |
 
-Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
+Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 
 ---
 
@@ -85,12 +85,29 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 - **Fix:** Defer `markStartupComplete` until lifecycle Start returns success across all modules.
 - **Resolution:** `runWithHooks` now calls `lcMod.MarkStartupComplete()` only after `lifecycle.Start` succeeds AND the listener has bound. The shutdown path also routes through the lifecycle sequencer: `srv.Shutdown` is registered as a `PhaseCloseConnections` hook so the Phase-1 ProbeObserveWindow elapses (k8s observes `/readyz=503 shutting_down`) BEFORE the listener stops accepting. When B-4's storage/handlers/pipeline wiring lands, every module registers before this gate.
 
-#### B-4: Production `cmd/fhir-subs/run.go` never calls `handlers.RegisterRoutes` — the API is wired only in tests — PARTIALLY RESOLVED (scaffolding) in commit 192ab8e; full wiring deferred
-- **File:** `cmd/fhir-subs/run.go` (whole file)
-- **What:** The HTTP server in run.go serves only the probe mux; `handlers.RegisterRoutes` (the real subscription API) is invoked only from tests / e2e harness.
-- **Why it matters:** Today the binary literally does not serve the FHIR subscription endpoints. A "real-world deployment" is impossible.
-- **Fix:** Construct the full router (subscriptions, $get-ws-binding-token, $events, $status, /metadata) inside run.go and mount it; gate behind auth + observability middleware.
-- **Status:** The new `buildHTTPMux` is the single seam where the lifecycle probes + `/metadata` are mounted today and where `handlers.RegisterRoutes` will plug in once the production binary gains config knobs for the database URL, codec key provider, auth issuer/audience/JWKS, channel constructors, and MLLP listener. The full wiring is intentionally deferred from this branch because each new dependency adds blast radius (DB connection failure modes, key rotation surface, channel TLS) that deserves its own RED/GREEN cycle on top of the lifecycle gate the B-1/B-2/B-3 fix already gives operators. The probe-only binary is now safe to deploy as a "known-not-yet-serving-API" stage; the same binary will gain the API + pipeline workers in the follow-up B-4-full commit.
+#### B-4: Production `cmd/fhir-subs/run.go` never calls `handlers.RegisterRoutes` — RESOLVED in commits 192ab8e (scaffolding) + 2e28aa8 / c1e5b41 / 76f92bb / 743cddc / 0a5e3bc / b6004e7 (full wiring)
+- **File:** `cmd/fhir-subs/run.go`, new `cmd/fhir-subs/wiring.go`
+- **What:** The HTTP server in run.go served only the probe mux; `handlers.RegisterRoutes` (the real subscription API) was invoked only from tests / e2e harness.
+- **Why it matters:** The binary literally did not serve the FHIR subscription endpoints. A "real-world deployment" was impossible.
+- **Fix:** Constructed the full router (subscriptions, $get-ws-binding-token, $events, $status, /metadata) inside run.go and mount it; gate behind auth + observability middleware.
+- **Resolution:** Lands across two pieces. The scaffolding (192ab8e) replaced the hardcoded probe mux with the lifecycle-module-driven probe handlers. The B-4-full wiring (this branch) introduces `cmd/fhir-subs/wiring.go::buildProductionRuntime` which:
+  1. Opens a `pgxpool.Pool` against `database.url` and runs the embedded migrations under a 60s budget (fails-loud on either step).
+  2. Builds an AES-GCM `codec.Codec` from the configured `codec.keys` versioned bundle, requiring `codec.active_key_version`.
+  3. Loads the configured adapter via `internal/adapter/registry` (default reference adapter is registered in-tree).
+  4. Constructs the full SMART Backend Services `auth.Verifier` and `auth.TokenEndpoint` against the `auth_clients` repo when `auth.audience` is set; auth disabled (probe-only mode) when `auth.audience=""`.
+  5. Builds the `internal/channel/resthook` channel and registers it under the scheduler's `ChannelRegistry`.
+  6. Constructs `handlers.Deps` against pg-backed stores (subscriptions, topics, events, deliveries, ws-tokens, audit) and calls `handlers.RegisterRoutes` on a chi router; mounts the verifier middleware when auth is enabled.
+  7. When `mllp.listeners[]` is configured, starts `internal/mllp.Listener` against a pgx-backed `Persister` that goes through `repos.Hl7MessageQueueRepo` (so raw_body lands encrypted under the same codec).
+  8. Launches the four pipeline workers (`hl7processor`, `matcher`, `submatcher`, `scheduler`) with config-driven `claim_batch_size` and `idle_poll_interval` per stage.
+  9. Registers shutdown hooks against the lifecycle module: `mllp.stop_accepting` (PhaseStopAccepting), `pipeline.drain` and `api.activations.drain` (PhaseDrainInFlight), and `database.close` (PhaseCloseConnections).
+  10. Registers a `database` readiness check that pings the pool with a 2s budget on every `/readyz` probe.
+  Probe-only fallback (no `database.url`) keeps the legacy `/metadata` stub so the existing CMD smoke tests continue to function.
+- **E2E coverage:** Four new `e2e/orchestrator/prod_binary_*_test.go` scenarios prove the wiring against a real Postgres testcontainer and the production binary (built by `go build` and launched via `exec.Command`):
+  - `prod_binary_serves_subscription_api_test.go` — POST /Subscription/ against the binary, assert it does NOT return 404 (i.e., the route is mounted; without an auth token the handler returns 401 with an OperationOutcome — that is the expected post-wiring shape).
+  - `prod_binary_processes_hl7_message_test.go` — drives an HL7 v2 message through the binary's MLLP listener; asserts hl7_message_queue, resource_changes, ehr_events flow. Catalog-driven matching is not exercised here (the binary's catalog is empty by default; topic loading is a follow-up).
+  - `prod_binary_db_unreachable_test.go` — points the binary at an unreachable Postgres; asserts the binary fails and never binds the listener.
+  - `prod_binary_graceful_shutdown_test.go` — SIGTERM mid-flight; asserts /readyz reports `shutting_down`.
+- **Discovered during wiring:** see the `## Discovered during B-4 full wiring` section below for the new findings.
 
 #### B-5: jwksCache map has no mutex; concurrent `/token` requests will fatal-error the process — **RESOLVED** (`f786914`)
 - **File:** `internal/api/auth/token_endpoint.go:352-393`
@@ -548,3 +565,33 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
   - Cryptographic primitive selection (AES-GCM vs ChaCha20-Poly1305) — the selection is reasonable but key-rotation cadence vs message volume is a SLO conversation.
 
 The strongest two impressions: (1) the system is structurally complete but has many "trust your callers" gaps that fall apart the moment a misbehaving subscriber, hostile peer, or operator typo lands — defaults need to flip from permissive to strict before this is safe to deploy unattended; (2) the audit-chain commitment is at odds with the retention sweeper, the bundle JSON encoder, and the `pgstore` lock-leak path — all three need to be reconciled before the audit module's promise is real.
+
+---
+
+## Discovered during B-4 full wiring
+
+The full B-4 wiring exercise surfaced four new findings that exist *because* the production binary now actually constructs every dependency. None of them block deployment — the binary boots, serves API, handles MLLP, and shuts down cleanly — but they should be tracked.
+
+### D-1 (NICE-TO-HAVE): Production binary loads an empty catalog
+- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime` — `catalog.Load(catalog.Sources{})`
+- **What:** The matcher's `CatalogProvider` is initialized to an empty `*catalog.Catalog`. `subscription_topics` rows do nothing because no topic mapping is loaded.
+- **Why it matters:** Even with subscriptions in `active` and HL7 messages flowing, no `ehr_events` rows are produced — the pipeline silently halts at the matcher.
+- **Fix:** Add a `topics.sources` config block (file paths or embedded built-in topics) and pipe the `Sources` through. Wire SIGHUP-driven reload via the lifecycle module's `SetReloadHandler` so operators can roll out new topic mappings without a restart.
+
+### D-2 (NICE-TO-HAVE): rest-hook channel handshake is a placeholder
+- **File:** `cmd/fhir-subs/wiring.go::defaultActivator`
+- **What:** Every `ChannelActivator` registered in production is a stub that always returns `HandshakeSucceeded`. The actual FHIR R5 handshake bundle (POST a synthetic `SubscriptionStatus` heartbeat to the subscriber endpoint, await 2xx) is owned by the channel module's own activation logic; the API binds it via this no-op default for now.
+- **Why it matters:** A subscription created in production immediately flips to `active` regardless of whether the subscriber endpoint actually exists or is reachable. The audit-log entry says "handshake.succeeded" even when the endpoint would 404.
+- **Fix:** Replace `defaultActivator` with adapters around `internal/channel/resthook`, `.../websocket`, `.../email` that perform the real handshake bundle. Track per-channel handshake metrics and audit events.
+
+### D-3 (NICE-TO-HAVE): pgxpool startup ping retries past pingCtx in some paths
+- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime`
+- **What:** When the configured Postgres is unreachable on a closed port (`127.0.0.1:1`), pgxpool's internal connect-retry loop occasionally outruns the 5s `pingCtx`. The race is benign — the binary still exits non-zero with a clear "database: ping" diagnostic — but the diagnostic surfaces only after the lifecycle module's signal-driven shutdown phase, not the `buildProductionRuntime` failure path.
+- **Why it matters:** Operationally the binary is doing the right thing (fail-loud, non-zero exit, /readyz never available), but the time-to-first-error is longer than the configured budget. k8s' liveness/startup probes will still mark the pod unhealthy and restart it; this finding is about diagnostic latency, not correctness.
+- **Fix:** Inject `connect_timeout` into the pgxpool config explicitly via `pgxpool.ParseConfig` (rather than relying on URL params), and surface the failure deterministically before the listener registration.
+
+### D-4 (NICE-TO-HAVE): Adapter version pin error path uses generic Go error
+- **File:** `cmd/fhir-subs/wiring.go::buildProductionRuntime` — adapter Load failure
+- **What:** When the configured `adapter.id` is unknown, the binary fails with `production wiring: adapter load: registry: unknown adapter "X" (bundled: [default])`. The error chains through `fmt.Errorf` rather than the typed `*registry.UnknownAdapterError`, so an operator-facing tool that wants to recommend the bundled list has to grep the message.
+- **Why it matters:** Operability — error messages are correct but not machine-readable. Not a correctness issue.
+- **Fix:** Surface the typed error to the caller (probably via a small `errors.As` switch in `realMain`) so the recommended bundled-adapter list is structured.

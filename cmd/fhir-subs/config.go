@@ -24,10 +24,133 @@ type Config struct {
 	Adapter    AdapterConfig    `yaml:"adapter"`
 	Server     ServerConfig     `yaml:"server"`
 	Lifecycle  LifecycleConfig  `yaml:"lifecycle"`
+	Database   DatabaseConfig   `yaml:"database"`
+	Codec      CodecConfig      `yaml:"codec"`
+	Auth       AuthConfig       `yaml:"auth"`
+	MLLP       MLLPConfig       `yaml:"mllp"`
+	Pipeline   PipelineConfig   `yaml:"pipeline"`
+	Channels   ChannelsConfig   `yaml:"channels"`
 
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
 	Extra map[string]any `yaml:",inline"`
+}
+
+// DatabaseConfig models database.* fields.
+type DatabaseConfig struct {
+	URL string `yaml:"url"`
+}
+
+// CodecConfig models codec.* fields.
+//
+// Keys are versioned to support rotation: every row is encrypted under the
+// current `active_key_version` and decrypted via the version recorded in
+// the row. The bundle MUST include `active_key_version`.
+type CodecConfig struct {
+	ActiveKeyVersion int32          `yaml:"active_key_version"`
+	Keys             []CodecKeySpec `yaml:"keys"`
+}
+
+// CodecKeySpec is one entry under codec.keys[].
+//
+// Material is base64-encoded 32-byte AES-256 key bytes. Operators
+// typically supply the key body via env interpolation (`${KEY_V1}`); the
+// bytes never enter the YAML literally in production.
+type CodecKeySpec struct {
+	Version  int32  `yaml:"version"`
+	Material string `yaml:"material"`
+}
+
+// AuthConfig models auth.* fields. Operator-supplied JWT issuer trust,
+// audience, and the server-issued access-token signing material.
+type AuthConfig struct {
+	Audience       string         `yaml:"audience"`
+	TokenURL       string         `yaml:"token_url"`
+	IssuedSecret   string         `yaml:"issued_secret"`
+	IssuedIssuer   string         `yaml:"issued_issuer"`
+	AccessTokenTTL time.Duration  `yaml:"access_token_ttl"`
+	JWKSCacheTTL   time.Duration  `yaml:"jwks_cache_ttl"`
+	ClockSkew      time.Duration  `yaml:"clock_skew"`
+	AllowInsecure  bool           `yaml:"allow_insecure_jwks"`
+	JWKSAllowed    []string       `yaml:"jwks_allowed_hosts"`
+	TrustedIssuers []TrustedIssue `yaml:"trusted_issuers"`
+}
+
+// TrustedIssue models one entry under auth.trusted_issuers[]. Today the
+// fields are advisory: per-client trust is stored in the auth_clients
+// table; this list pins which issuers' tokens the verifier will load
+// JWKS for. Future revisions may filter the verifier's keyfunc lookup.
+type TrustedIssue struct {
+	Issuer   string `yaml:"issuer"`
+	Audience string `yaml:"audience"`
+	JWKSURL  string `yaml:"jwks_url"`
+}
+
+// MLLPConfig models mllp.* fields.
+type MLLPConfig struct {
+	// Listeners is the set of MLLP TCP endpoints to bind. Empty means
+	// "do not start the MLLP listener" (operators that only use the
+	// FHIR scan path).
+	Listeners []MLLPListener `yaml:"listeners"`
+	// MaxMessageBytes overrides the per-message body cap (default 1
+	// MiB).
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// PersistTimeout bounds the per-message Persist call.
+	PersistTimeout time.Duration `yaml:"persist_timeout"`
+	// MaxConnections caps total concurrent connections across all
+	// endpoints (B-19).
+	MaxConnections int `yaml:"max_connections"`
+	// MaxConnectionsPerIP caps concurrent connections from a single
+	// remote IP (B-19).
+	MaxConnectionsPerIP int `yaml:"max_connections_per_ip"`
+	// ShutdownDrainGrace bounds the graceful drain window for the
+	// listener.
+	ShutdownDrainGrace time.Duration `yaml:"shutdown_drain_grace"`
+}
+
+// MLLPListener is one entry under mllp.listeners[].
+type MLLPListener struct {
+	Name string `yaml:"name"`
+	Bind string `yaml:"bind"`
+}
+
+// PipelineConfig models pipeline.* fields. Each stage's claim loop has
+// its own batch size and idle-poll cadence.
+type PipelineConfig struct {
+	HL7Processor StageConfig `yaml:"hl7_processor"`
+	Matcher      StageConfig `yaml:"matcher"`
+	Submatcher   StageConfig `yaml:"submatcher"`
+	Scheduler    StageConfig `yaml:"scheduler"`
+
+	// CorrelationHoldWindow caps how long the HL7 processor will hold
+	// an unpaired half before reaping. Default 30s.
+	CorrelationHoldWindow time.Duration `yaml:"correlation_hold_window"`
+}
+
+// StageConfig is the per-stage pipeline tunables.
+type StageConfig struct {
+	ClaimBatchSize   int32         `yaml:"claim_batch_size"`
+	IdlePollInterval time.Duration `yaml:"idle_poll_interval"`
+}
+
+// ChannelsConfig models channels.* fields. Each channel block is
+// optional; when absent the channel is wired with package defaults.
+type ChannelsConfig struct {
+	RestHook  RestHookChannelConfig  `yaml:"rest_hook"`
+	WebSocket WebSocketChannelConfig `yaml:"websocket"`
+}
+
+// RestHookChannelConfig models channels.rest_hook.*.
+type RestHookChannelConfig struct {
+	UserAgent      string        `yaml:"user_agent"`
+	RequestTimeout time.Duration `yaml:"request_timeout"`
+}
+
+// WebSocketChannelConfig models channels.websocket.*.
+type WebSocketChannelConfig struct {
+	OriginPatterns []string      `yaml:"origin_patterns"`
+	IdleTimeout    time.Duration `yaml:"idle_timeout"`
+	PingInterval   time.Duration `yaml:"ping_interval"`
 }
 
 // DeploymentConfig models deployment.* fields.
@@ -261,6 +384,28 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.MaxHeaderBytes = n
+		case "database.url":
+			cfg.Database.URL = val
+		case "auth.audience":
+			cfg.Auth.Audience = val
+		case "auth.token_url":
+			cfg.Auth.TokenURL = val
+		case "auth.issued_issuer":
+			cfg.Auth.IssuedIssuer = val
+		case "auth.issued_secret":
+			cfg.Auth.IssuedSecret = val
+		case "auth.allow_insecure_jwks":
+			b, err := parseBool(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.AllowInsecure = b
+		case "codec.active_key_version":
+			n, err := strconv.ParseInt(val, 10, 32)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Codec.ActiveKeyVersion = int32(n)
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)
 		}
