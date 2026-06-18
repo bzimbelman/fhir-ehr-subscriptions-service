@@ -401,7 +401,7 @@ func applySets(cfg *Config, sets []string) error {
 			}
 			cfg.Auth.AllowInsecure = b
 		case "codec.active_key_version":
-			n, err := strconv.Atoi(val)
+			n, err := strconv.ParseInt(val, 10, 32)
 			if err != nil {
 				return setParseErr(key, err)
 			}

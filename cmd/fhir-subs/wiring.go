@@ -81,13 +81,13 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// the listener registration past the operator's startup probe.
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	pingErr := make(chan error, 1)
-	go func() { pingErr <- pool.Ping(pingCtx) }()
+	pingErrCh := make(chan error, 1)
+	go func() { pingErrCh <- pool.Ping(pingCtx) }()
 	select {
-	case err := <-pingErr:
-		if err != nil {
+	case pErr := <-pingErrCh:
+		if pErr != nil {
 			rt.shutdown(context.Background())
-			return nil, fmt.Errorf("database: ping: %w", err)
+			return nil, fmt.Errorf("database: ping: %w", pErr)
 		}
 	case <-pingCtx.Done():
 		rt.shutdown(context.Background())
@@ -95,10 +95,10 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 
 	migCtx, cancelMig := context.WithTimeout(ctx, 60*time.Second)
-	if err := migrate.Up(migCtx, pool); err != nil {
+	if migErr := migrate.Up(migCtx, pool); migErr != nil {
 		cancelMig()
 		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("database: migrate: %w", err)
+		return nil, fmt.Errorf("database: migrate: %w", migErr)
 	}
 	cancelMig()
 
@@ -112,9 +112,9 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 
 	// --- 3. Adapter registry --------------------------------------------
 	adReg := registry.New()
-	if err := adReg.Register("default", func() adapterspi.EhrAdapter { return defaultadapter.New() }); err != nil {
+	if regErr := adReg.Register("default", func() adapterspi.EhrAdapter { return defaultadapter.New() }); regErr != nil {
 		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("adapter registry: %w", err)
+		return nil, fmt.Errorf("adapter registry: %w", regErr)
 	}
 	loadCfg := registry.LoadConfig{
 		AdapterID:  cfg.Adapter.ID,
@@ -206,14 +206,14 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 
 	// --- 8. MLLP listener (optional) ------------------------------------
 	if len(cfg.MLLP.Listeners) > 0 {
-		listener, err := buildMLLPListener(cfg.MLLP, pool, hl7Q, logger)
-		if err != nil {
+		listener, mErr := buildMLLPListener(cfg.MLLP, pool, hl7Q, logger)
+		if mErr != nil {
 			rt.shutdown(context.Background())
-			return nil, fmt.Errorf("mllp: %w", err)
+			return nil, fmt.Errorf("mllp: %w", mErr)
 		}
-		if err := listener.Start(ctx); err != nil {
+		if startErr := listener.Start(ctx); startErr != nil {
 			rt.shutdown(context.Background())
-			return nil, fmt.Errorf("mllp start: %w", err)
+			return nil, fmt.Errorf("mllp start: %w", startErr)
 		}
 		rt.mllpListen = listener
 	}
@@ -333,10 +333,12 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 //   - PhaseStopAccepting: MLLP listener stops accepting (Phase 2).
 //   - PhaseDrainInFlight: pipeline workers drain (Phase 3, 70% budget).
 //   - PhaseCloseConnections: DB pool closes last (Phase 4).
+//
+// The grace argument is currently advisory — the lifecycle module
+// owns the per-phase budget — but is kept on the API so a future
+// switch to per-component grace tuning is non-breaking.
 func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, grace time.Duration) {
-	if grace <= 0 {
-		grace = 30 * time.Second
-	}
+	_ = grace
 
 	if r.mllpListen != nil {
 		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
@@ -618,7 +620,7 @@ func nonZeroInt32(v, fallback int32) int32 {
 	return fallback
 }
 
-// silence the unused-import diagnostics emitted while the package
-// scaffolding is still being written. The references here go away once
-// the e2e harness exercises every component.
-var _ channel.Channel = (channel.Channel)(nil)
+// silence the unused-import diagnostic emitted while the package
+// scaffolding is still being written. The reference here goes away
+// once the e2e harness exercises every component.
+var _ channel.Channel = channel.Channel(nil)
