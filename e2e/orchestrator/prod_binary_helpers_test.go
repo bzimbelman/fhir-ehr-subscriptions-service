@@ -22,10 +22,10 @@ import (
 // prodBinaryHandle wraps the running fhir-subs binary so a test can poke
 // it (HTTP, MLLP) and shut it down at test end.
 type prodBinaryHandle struct {
-	cmd    *exec.Cmd
+	cmd      *exec.Cmd
 	httpAddr string
 	mllpAddr string
-	cancel func()
+	cancel   func()
 }
 
 // HTTPURL returns the full http base URL the test should hit.
