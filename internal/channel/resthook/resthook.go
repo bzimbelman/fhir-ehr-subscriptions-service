@@ -430,10 +430,10 @@ func formatTraceparent(corrID string) string {
 	return "00-" + traceID + "-" + spanID + "-00"
 }
 
-// readBodyExcerpt reads up to max bytes of body for a log-safe excerpt.
-func readBodyExcerpt(r io.Reader, max int) string {
-	buf := make([]byte, max)
-	n, _ := io.ReadFull(io.LimitReader(r, int64(max)), buf)
+// readBodyExcerpt reads up to maxBytes of body for a log-safe excerpt.
+func readBodyExcerpt(r io.Reader, maxBytes int) string {
+	buf := make([]byte, maxBytes)
+	n, _ := io.ReadFull(io.LimitReader(r, int64(maxBytes)), buf)
 	if n == 0 {
 		return ""
 	}

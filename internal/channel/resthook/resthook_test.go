@@ -5,7 +5,6 @@ package resthook_test
 
 import (
 	"context"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -488,12 +487,3 @@ func TestMalformedURL(t *testing.T) {
 
 // Compile-time check that *resthook.Channel satisfies channel.Channel.
 var _ channel.Channel = (*resthook.Channel)(nil)
-
-// errReader returns errReader-typed errors used in classification table tests.
-var errSentinel = errors.New("sentinel")
-
-func TestSentinelExists(t *testing.T) {
-	if errSentinel == nil {
-		t.Fatal("nil")
-	}
-}

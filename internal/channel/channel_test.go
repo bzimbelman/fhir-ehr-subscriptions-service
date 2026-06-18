@@ -87,4 +87,22 @@ func TestNotificationEnvelopeFields(t *testing.T) {
 	if env.ContentType != channel.ContentTypeFHIRJSON {
 		t.Errorf("ct")
 	}
+	if env.PayloadType != channel.PayloadIDOnly {
+		t.Errorf("payload type")
+	}
+	if env.Attempt != 0 {
+		t.Errorf("attempt")
+	}
+	if env.CorrelationID != corr {
+		t.Errorf("corr id")
+	}
+	if env.SubscriptionEndpoint != "https://subscriber.example/webhook" {
+		t.Errorf("endpoint")
+	}
+	if len(env.SubscriptionParameters) != 1 || env.SubscriptionParameters[0].Name != "X-Tenant" {
+		t.Errorf("params")
+	}
+	if !env.Deadline.Equal(deadline) {
+		t.Errorf("deadline")
+	}
 }
