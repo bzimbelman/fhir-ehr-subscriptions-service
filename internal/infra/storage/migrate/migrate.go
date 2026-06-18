@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -52,6 +53,23 @@ type Report struct {
 }
 
 var versionRE = regexp.MustCompile(`^(\d+)_.*\.sql$`)
+
+// migrationAdvisoryLockID is held for the duration of applyAll so
+// multi-pod rollouts cannot race the migration runner. The bigint is
+// stable across releases; choose a constant that's unlikely to collide
+// with any other advisory_lock the application takes (audit B-33).
+const migrationAdvisoryLockID int64 = 0xFEEDFACE
+
+// concurrentDirective is the leading-comment opt-in marker that flags
+// a migration as not-transaction-wrappable. Files that need
+// CREATE INDEX CONCURRENTLY (or any other statement that PostgreSQL
+// refuses to run inside a transaction block) MUST start with the
+// `-- @CONCURRENT` directive on the first non-blank, non-shebang line.
+//
+// This replaces the previous strings.Contains("CREATE INDEX CONCURRENTLY",
+// ...) heuristic, which a SQL comment containing those words could trip
+// (audit B-33).
+const concurrentDirective = "-- @CONCURRENT"
 
 // ParseVersion returns the numeric prefix of a migration filename.
 func ParseVersion(filename string) (string, error) {
@@ -100,9 +118,32 @@ func Embedded() ([]Migration, error) {
 	return out, nil
 }
 
+// detectConcurrent returns true only when the migration's leading
+// non-blank, non-comment-noise line is the explicit opt-in directive
+// `-- @CONCURRENT`. We deliberately do NOT scan the whole body for
+// "CREATE INDEX CONCURRENTLY" — a SQL comment that mentions those
+// words would otherwise force the runner into the no-transaction path
+// for a perfectly transactional migration.
+//
+// Migration authors who genuinely need a non-transactional run
+// (e.g. CREATE INDEX CONCURRENTLY) must opt in by putting the
+// directive on the first content line of the file.
 func detectConcurrent(body string) bool {
-	return strings.Contains(strings.ToUpper(body), "CREATE INDEX CONCURRENTLY") ||
-		strings.Contains(strings.ToUpper(body), "DROP INDEX CONCURRENTLY")
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		// Allow a leading shebang-style or block-comment-open line
+		// (rare, but harmless).
+		if strings.HasPrefix(line, "/*") {
+			continue
+		}
+		// The first content line is decisive: either it's the directive,
+		// or this migration is transactional.
+		return strings.EqualFold(line, concurrentDirective)
+	}
+	return false
 }
 
 // ErrChecksumMismatch is returned when an applied migration's checksum no
@@ -133,6 +174,19 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 		return fmt.Errorf("migrate: acquire: %w", err)
 	}
 	defer conn.Release()
+
+	// Hold a session-level advisory lock for the whole apply pass so a
+	// rolling deployment with N replicas can't race the runner against
+	// itself. Two competing migrators serialize: one applies, the
+	// other waits, then sees the work already done (audit B-33).
+	if _, lockErr := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationAdvisoryLockID); lockErr != nil {
+		return fmt.Errorf("migrate: advisory_lock: %w", lockErr)
+	}
+	defer func() {
+		uctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = conn.Exec(uctx, `SELECT pg_advisory_unlock($1)`, migrationAdvisoryLockID)
+	}()
 
 	// Detect whether schema_migrations already exists. The very first
 	// migration creates it as part of its body; we only create it ourselves
