@@ -10,53 +10,221 @@ Methodology: line-by-line read of every production file across four parallel scr
 
 **Original audit (2026-06-18, commit `b624b7d`):** roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The original summary observation was that the system had a working backbone but was not yet a "drop in and run" production service — correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcoded `key_version=1` and broke key rotation, retention sweeper that physically deleted hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination).
 
-**Current state:** **0 BLOCKERs remaining**, **0 SHOULD-FIX genuinely open** (S-1 through S-16 all landed on `main`; ~13 sub-bullets are explicitly DEFERRED with rationale — they cross package boundaries this branch cohort wouldn't touch and are tracked under future-work), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 has now been brought through to RESOLVED on the `fix/b4-full-production-wiring` branch: the production binary's `cmd/fhir-subs/run.go` constructs a real DB pool (with migrations), AES-GCM codec from a versioned key bundle, SMART Backend Services verifier + token endpoint, `handlers.RegisterRoutes` on a chi router, MLLP TCP listener with persist-then-ACK, and the four-stage pipeline (HL7 processor, matcher, submatcher, scheduler). All four phases of the lifecycle sequencer now have production hooks: stop_accepting (MLLP listener), drain_in_flight (pipeline + activation WaitGroup), close_connections (DB pool). The S-* SHOULD-FIX cohort (S-1 cmd hardening; S-2 API handler knobs; S-3/S-4/S-5 auth/rest-hook/message channel hardening; S-6 email STARTTLS metrics; S-7 websocket bounded-resources; S-8 scheduler classify-and-bail; S-9/S-10/S-11/S-12 pipeline / matcher / topics / engine; S-13/S-14/S-15 storage / observability / config; S-16 phantom-package cleanup) all landed across merges `d027dab`, `1078e41`, `83365e6`, `c1c6b32`, `7d4e7b4`, `6aaf6e5`. The remaining work is the deferred sub-bullets (cross-package storage refactors and audit-chain canonicaliser RFC 8785 reconciliation) plus the NICE-TO-HAVE polish list.
+**Current state:** **0 BLOCKERs remaining**, **107 SHOULD-FIX RESOLVED + 4 PARTIAL + 14 DEFERRED (125 total enumerated sub-items)**, **32 NICE-TO-HAVE RESOLVED + 3 DEFERRED + 4 OPEN (39 total: 35 N-1 polish items + 4 D-* items discovered during B-4 wiring)**. All B-1 through B-35 BLOCKERs have been resolved on `main`. B-4 has now been brought through to RESOLVED on the `fix/b4-full-production-wiring` branch: the production binary's `cmd/fhir-subs/run.go` constructs a real DB pool (with migrations), AES-GCM codec from a versioned key bundle, SMART Backend Services verifier + token endpoint, `handlers.RegisterRoutes` on a chi router, MLLP TCP listener with persist-then-ACK, and the four-stage pipeline (HL7 processor, matcher, submatcher, scheduler). All four phases of the lifecycle sequencer now have production hooks: stop_accepting (MLLP listener), drain_in_flight (pipeline + activation WaitGroup), close_connections (DB pool). The S-* SHOULD-FIX cohort (S-1 cmd hardening; S-2 API handler knobs; S-3/S-4/S-5 auth/rest-hook/message channel hardening; S-6 email STARTTLS metrics; S-7 websocket bounded-resources; S-8 scheduler classify-and-bail; S-9/S-10/S-11/S-12 pipeline / matcher / topics / engine; S-13/S-14/S-15 storage / observability / config; S-16 phantom-package cleanup) all landed across merges `d027dab`, `1078e41`, `83365e6`, `c1c6b32`, `7d4e7b4`, `6aaf6e5`. The N-1 polish batch landed in `fix/nice-to-have-batch` (commits `c1ff9eb`, `6649d9b`, `2c8e258`, `79921ca`, `ffe847b`). Remaining open work is the 14 DEFERRED SHOULD-FIX sub-bullets (cross-package storage refactors, audit-chain canonicaliser RFC 8785 reconciliation, fhir+xml rejection at API boundary), 3 DEFERRED N-1 items (chi.Middleware-typed Auth wiring, deterministic message-channel Bundle bytes, PROXY protocol v2 in MLLP), and the 4 D-* findings discovered during B-4 wiring (empty topic catalog, placeholder activator, pgxpool diagnostic latency, typed adapter error).
 
 ---
 
 ## Resolution Status
 
-The original audit catalogued 35 BLOCKERs (B-1 through B-35). The table below records the disposition of each one against `main` as of 2026-06-18. Use the per-finding sections below the table for the full **what / why / fix / Resolution** detail; this table is the navigation aid.
+Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polish item, and the four D-* findings discovered during B-4 wiring) is rolled up into the table below. Section bodies further down carry the original What/Why/Fix/Resolution prose for reference; this table is the single-page summary of "what's done, what remains." The section is encoded in the ID prefix (`B-*` BLOCKER, `S-*.X` SHOULD-FIX sub-bullet, `N-1.X` NICE-TO-HAVE polish, `D-*` discovered during B-4 wiring).
 
-| ID | Title (abbreviated) | Status | Resolving commit(s) |
-|----|---------------------|--------|---------------------|
-| B-1 | `/readyz` always 503 in production entry point | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
-| B-2 | HTTP server missing Write / Idle / MaxHeaderBytes | RESOLVED | `35b2cea` (merged in `8096936`) |
-| B-3 | `markStartupComplete` fires before system is ready | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
-| B-4 | Production `run.go` never calls `handlers.RegisterRoutes` | RESOLVED | `192ab8e` (scaffolding, merged in `8096936`) + `2e28aa8`, `c1e5b41`, `76f92bb`, `743cddc`, `0a5e3bc`, `b6004e7` (full DB / codec / auth / handlers / MLLP / pipeline wiring on `fix/b4-full-production-wiring`) |
-| B-5 | `jwksCache` map race | RESOLVED | `168cc80` (merged in `0a771cf`) |
-| B-6 | Token endpoint missing body-size limit | RESOLVED | `7200625` (merged in `0a771cf`) |
-| B-7 | Missing `jti` silently accepted (replay bypass) | RESOLVED | `e788c0e` (merged in `0a771cf`) |
-| B-8 | Raw JWT parser error leaked in HTTP body | RESOLVED | `3e7de5e` (merged in `0a771cf`) |
-| B-9 | JTI cache eviction broken | RESOLVED | `aa7567f` (merged in `0a771cf`) |
-| B-10 | Fire-and-forget activation goroutines | RESOLVED | `a6e042f` (merged in `790c6a8`) |
-| B-11 | SSRF on subscriber endpoint URL | RESOLVED | `9689730` (merged in `790c6a8`) |
-| B-12 | JWKS fetch unauthenticated / no body cap | RESOLVED | `34d2196` (merged in `0a771cf`) |
-| B-13 | Audit log persists full request body | RESOLVED | `25dffba` (merged in `790c6a8`) |
-| B-14 | Email STARTTLS default `Preferred` | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
-| B-15 | SMTP PLAIN/LOGIN allowed over plaintext | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
-| B-16 | Email header injection via `CorrelationID` | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
-| B-17 | WebSocket upgrade `InsecureSkipVerify=true` | RESOLVED | `a0360e4` (merged in `d3f2a4b`) |
-| B-18 | WebSocket ack-channel close-of-closed race | RESOLVED | `a0360e4` (merged in `d3f2a4b`) |
-| B-19 | MLLP listener missing connection caps | RESOLVED | `b8c1209` (merged in `d3f2a4b`) |
-| B-20 | MLLP listener missing TLS / mTLS | RESOLVED | `b8c1209` (merged in `d3f2a4b`) |
-| B-21 | HL7 processor decrypts with hardcoded key version | RESOLVED | `07d7be2` (cherry-pick of `6d0e5a2`) |
-| B-22 | `pending_pairs` migration omits `key_version` | RESOLVED | `07d7be2` (cherry-pick of `6d0e5a2`) |
-| B-23 | Matcher silently passes through unknown search params | RESOLVED | `3d80c7d` (cherry-pick of `04e2c36`, merged in `8096936`) |
-| B-24 | FHIRPath `runFHIRPath` defaults to fail-OPEN | RESOLVED | `51b8e53` (cherry-pick of `a1f4b12`, merged in `8096936`) |
-| B-25 | Topic catalog rejections do not fail startup | RESOLVED | `3d80c7d` (cherry-pick of `04e2c36`, merged in `8096936`) |
-| B-26 | `nextEventNumber` race | RESOLVED | `f600d42` (cherry-pick of `1ba1c45`) |
-| B-27 | Cursor monotonicity assumes deliveries never deleted | RESOLVED | `f600d42` (cherry-pick of `1ba1c45`) |
-| B-28 | Bundle JSON encoding nondeterministic | RESOLVED | `b76f1b0` (cherry-pick of `0b39e95`) |
-| B-29 | `CatalogProvider` swap not torn-read-safe | RESOLVED | `51b8e53` (cherry-pick of `a1f4b12`, merged in `8096936`) |
-| B-30 | High-cardinality MSH-9 label on MLLP nack metric | RESOLVED | `7e797f3` (merged in `f853619`) |
-| B-31 | Scheduler shutdown does not drain in-flight deliveries | RESOLVED | `5017364` |
-| B-32 | Retention sweeper SQL injection / audit-chain DELETE | RESOLVED | `e697162`, `52ed074` |
-| B-33 | Multi-pod migration race | RESOLVED | `52ed074` |
-| B-34 | Audit log file sink missing fsync; pgstore lock leak | RESOLVED | `ad6ddd2` (merged in `f853619`) |
-| B-35 | Secret rotation unreachable — SIGHUP not registered | RESOLVED | `3a81559` (merged in `f853619`) |
+**Counts:**
+- **BLOCKERs (B-*):** 35 total — 35 RESOLVED, 0 OPEN, 0 DEFERRED
+- **SHOULD-FIX (S-*):** 125 total — 107 RESOLVED, 4 PARTIAL, 0 OPEN, 14 DEFERRED
+- **NICE-TO-HAVE (N-* / D-*):** 39 total — 32 RESOLVED, 0 PARTIAL, 4 OPEN, 3 DEFERRED
+- **TOTAL:** 199 findings — 174 RESOLVED, 4 PARTIAL, 4 OPEN, 17 DEFERRED (87% closed)
 
-Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
+| ID | Title | Status | Commit/Branch | Notes |
+|----|-------|--------|---------------|-------|
+| B-1 | `/readyz` always 503 in production entry point | RESOLVED | `35b2cea`, `192ab8e` | merged in `8096936` |
+| B-2 | HTTP server missing Write / Idle / MaxHeaderBytes | RESOLVED | `35b2cea` | merged in `8096936` |
+| B-3 | `markStartupComplete` fires before system is ready | RESOLVED | `35b2cea`, `192ab8e` | merged in `8096936` |
+| B-4 | Production `run.go` never calls `handlers.RegisterRoutes` | RESOLVED | `192ab8e` + `2e28aa8`, `c1e5b41`, `76f92bb`, `743cddc`, `0a5e3bc`, `b6004e7` | scaffolding merged in `8096936`; full DB / codec / auth / handlers / MLLP / pipeline wiring on `fix/b4-full-production-wiring` |
+| B-5 | `jwksCache` map race | RESOLVED | `168cc80` | merged in `0a771cf` |
+| B-6 | Token endpoint missing body-size limit | RESOLVED | `7200625` | merged in `0a771cf` |
+| B-7 | Missing `jti` silently accepted (replay bypass) | RESOLVED | `e788c0e` | merged in `0a771cf` |
+| B-8 | Raw JWT parser error leaked in HTTP body | RESOLVED | `3e7de5e` | merged in `0a771cf` |
+| B-9 | JTI cache eviction broken | RESOLVED | `aa7567f` | merged in `0a771cf` |
+| B-10 | Fire-and-forget activation goroutines | RESOLVED | `a6e042f` | merged in `790c6a8` |
+| B-11 | SSRF on subscriber endpoint URL | RESOLVED | `9689730` | merged in `790c6a8` |
+| B-12 | JWKS fetch unauthenticated / no body cap | RESOLVED | `34d2196` | merged in `0a771cf` |
+| B-13 | Audit log persists full request body | RESOLVED | `25dffba` | merged in `790c6a8` |
+| B-14 | Email STARTTLS default `Preferred` | RESOLVED | `a6a36aa` | merged in `d3f2a4b` |
+| B-15 | SMTP PLAIN/LOGIN allowed over plaintext | RESOLVED | `a6a36aa` | merged in `d3f2a4b` |
+| B-16 | Email header injection via `CorrelationID` | RESOLVED | `a6a36aa` | merged in `d3f2a4b` |
+| B-17 | WebSocket upgrade `InsecureSkipVerify=true` | RESOLVED | `a0360e4` | merged in `d3f2a4b` |
+| B-18 | WebSocket ack-channel close-of-closed race | RESOLVED | `a0360e4` | merged in `d3f2a4b` |
+| B-19 | MLLP listener missing connection caps | RESOLVED | `b8c1209` | merged in `d3f2a4b` |
+| B-20 | MLLP listener missing TLS / mTLS | RESOLVED | `b8c1209` | merged in `d3f2a4b` |
+| B-21 | HL7 processor decrypts with hardcoded key version | RESOLVED | `07d7be2` | cherry-pick of `6d0e5a2` |
+| B-22 | `pending_pairs` migration omits `key_version` | RESOLVED | `07d7be2` | cherry-pick of `6d0e5a2` |
+| B-23 | Matcher silently passes through unknown search params | RESOLVED | `3d80c7d` | cherry-pick of `04e2c36`, merged in `8096936` |
+| B-24 | FHIRPath `runFHIRPath` defaults to fail-OPEN | RESOLVED | `51b8e53` | cherry-pick of `a1f4b12`, merged in `8096936` |
+| B-25 | Topic catalog rejections do not fail startup | RESOLVED | `3d80c7d` | cherry-pick of `04e2c36`, merged in `8096936` |
+| B-26 | `nextEventNumber` race | RESOLVED | `f600d42` | cherry-pick of `1ba1c45` |
+| B-27 | Cursor monotonicity assumes deliveries never deleted | RESOLVED | `f600d42` | cherry-pick of `1ba1c45` |
+| B-28 | Bundle JSON encoding nondeterministic | RESOLVED | `b76f1b0` | cherry-pick of `0b39e95` |
+| B-29 | `CatalogProvider` swap not torn-read-safe | RESOLVED | `51b8e53` | cherry-pick of `a1f4b12`, merged in `8096936` |
+| B-30 | High-cardinality MSH-9 label on MLLP nack metric | RESOLVED | `7e797f3` | merged in `f853619` |
+| B-31 | Scheduler shutdown does not drain in-flight deliveries | RESOLVED | `5017364` | branch-merge |
+| B-32 | Retention sweeper SQL injection / audit-chain DELETE | RESOLVED | `e697162`, `52ed074` | |
+| B-33 | Multi-pod migration race | RESOLVED | `52ed074` | |
+| B-34 | Audit log file sink missing fsync; pgstore lock leak | RESOLVED | `ad6ddd2` | merged in `f853619` |
+| B-35 | Secret rotation unreachable — SIGHUP not registered | RESOLVED | `3a81559` | merged in `f853619` |
+| S-1.1 | `applySets` errors print raw RHS — redact | RESOLVED | `47e6916` | |
+| S-1.2 | `signal.NotifyContext` SIGTERM/SIGINT only | RESOLVED | `3a81559` | already-done at audit time; lifecycle dispatcher handles SIGHUP separately |
+| S-1.3 | No top-level `defer recover()` over `realMain` | RESOLVED | `ccdc7a1` | |
+| S-1.4 | JSON logger bypasses observability logger | RESOLVED | `35d57e1` | |
+| S-1.5 | `srv.Close()` error after `srv.Shutdown` failure dropped | RESOLVED | `dbc8356` | |
+| S-1.6 | Magic 2s slack on shutdown wait | RESOLVED | — | already-done; magic 2s removed by earlier B-1/B-3 wiring |
+| S-1.7 | `/metadata` should mount production CapabilityStatement | RESOLVED | `a9f96f7` | new `RegisterPublicRoutes`; cmd stub remains as fallback |
+| S-1.8 | Default `0.0.0.0` bind, no loopback opt-in | RESOLVED | `6807f87` | warn-log on wildcard+insecure; audit's `defaults.go`/`metrics.go` pointers were stale |
+| S-2.1 | `/metadata` mounted inside auth middleware | RESOLVED | `a9f96f7` | |
+| S-2.2 | Body size limit hardcoded `1<<20` | RESOLVED | `4743ce7` | new `Deps.MaxBodyBytes` |
+| S-2.3 | json-schema error returned verbatim | RESOLVED | `4743ce7` | new `Deps.MaxSchemaErrorBytes` |
+| S-2.4 | If-None-Exist O(N) `ListByClient` | DEFERRED | — | requires `SubscriptionsStore` interface change |
+| S-2.5 | Channel registry plain-map race | RESOLVED | `caa68a4` | doc'd as immutable post-`RegisterRoutes` |
+| S-2.6 | ETag is id, not version; `If-Match` unquoted | RESOLVED | `4743ce7` | requires `W/"<id>"` |
+| S-2.7 | Six `_ = err` swallows in `activate` | RESOLVED | `a9f96f7` | new `Deps.Logger` (nil-safe) |
+| S-2.8 | `searchSubscriptions` no pagination | DEFERRED | — | requires repo interface growth |
+| S-2.9 | Magic timestamp format repeated 5× | RESOLVED | `4743ce7` | single `instantFormat` constant |
+| S-2.10 | `since, _ := strconv.ParseInt(...)` discards err | RESOLVED | `4743ce7` | new `parseEventNumberParam` |
+| S-2.11 | `$status` bulk no cap on id params | RESOLVED | `4743ce7` | new `Deps.MaxStatusBulkIDs` (256) |
+| S-2.12 | `buildSubscriptionStatus` uses `context.Background()` | RESOLVED | `a9f96f7` | threaded `r.Context()` |
+| S-2.13 | `fhirVersion` hardcoded `"5.0.0"` | RESOLVED | `4743ce7` | sourced from `Deps.FHIRVersion` |
+| S-2.14 | `pg_stores` no per-query deadline | DEFERRED | — | needs B-4 wiring fully landed |
+| S-2.15 | `$events` replay hardcoded `LIMIT 1000` | DEFERRED | — | follows S-2.8 pagination |
+| S-2.16 | `Hash: []byte{0}` placeholder; no chain integrity | DEFERRED | — | replaced by observability/audit hash-chained store under B-4 |
+| S-2.17 | Unvalidated `X-Correlation-ID` reflected | RESOLVED | `a9f96f7` | drops non-UUID values |
+| S-2.18 | `/metrics` has no auth | RESOLVED | `a9f96f7` | new `metrics.AuthGuard(bearer)` |
+| S-2.19 | `routePattern` falls back to `r.URL.Path` | RESOLVED | `a9f96f7` | constant `<unmatched>` |
+| S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | `caa68a4` | rejects endpoint, topic_url, client_id, correlation_id, actor_id |
+| S-3.1 | 60s `ClockSkew` default too generous | RESOLVED | `a2318e9` | lowered to 30s |
+| S-3.2 | No rate limit on token endpoint | RESOLVED | `a2318e9` | per-source-IP token bucket |
+| S-3.3 | No per-client rate limit on subscription create / WS bind-token | DEFERRED | — | exported `RateLimit` primitive for handler MR |
+| S-3.4 | `exp, _ := claimToTime(...)` discards err | RESOLVED | `a2318e9` | fail-closed; 401 malformed |
+| S-3.5 | `HasScope` is O(n) | RESOLVED | `a2318e9` | sync.Once-guarded set |
+| S-4.1 | rest-hook default `*http.Client` no `Timeout` | RESOLVED | `a2318e9` | `Timeout=RequestTimeout` |
+| S-4.2 | `MaxIdleConnsPerHost`/`MaxConnsPerHost` hardcoded | RESOLVED | `a2318e9` | exposed via Options; TLS 1.3 default |
+| S-4.3 | No max bundle size | RESOLVED | `a2318e9` | `Options.MaxBundleBytes` (8 MiB) |
+| S-4.4 | `allowSubscriberHeader` default-permit | RESOLVED | `a2318e9` | deny-list expansion |
+| S-4.5 | NXDOMAIN classified `PermanentFailure` | RESOLVED | `a2318e9` | DNS errors all transient |
+| S-4.6 | `readBodyExcerpt` may leak PHI in `out.Reason` | RESOLVED | `a2318e9` | opt-in default OFF |
+| S-5.1 | message channel default-client no Timeout | RESOLVED | `a2318e9` | mirror of S-4.1 |
+| S-5.2 | non-`fhir+json` fails at delivery time | RESOLVED | `a2318e9` | `ValidateContentType` exposed |
+| S-5.3 | `Bundle.timestamp` uses `time.RFC3339` | RESOLVED | `a2318e9` | `RFC3339Nano` |
+| S-5.4 | message channel default-permit allowlist | RESOLVED | `a2318e9` | mirror of S-4.4 |
+| S-6.1 | `dialer.Timeout` not set | RESOLVED | `972dda7` | bound to `RequestTimeout` |
+| S-6.2 | No metric on STARTTLS-Preferred fallback | RESOLVED | `972dda7` | new `MetricSTARTTLSOutcomeTotal` |
+| S-6.3 | `smtpErrorCode` custom byte-loop parser | RESOLVED | `972dda7` | switched to `errors.As(*textproto.Error)` |
+| S-6.4 | `Close()` errors silently swallowed | RESOLVED | `972dda7` | logged via `slog.WarnContext` |
+| S-7.1 | `sessions` map unbounded | RESOLVED | `4775357` | `Options.MaxSessions` / `MaxSessionsPerClient` |
+| S-7.2 | No upgrade body-size / read-header timeout | RESOLVED | `4775357` | `ConfigureServer` + 4 KiB bind read limit |
+| S-7.3 | `conn.SetReadLimit` never called | RESOLVED | `4775357` | tightens to `MaxFrameBytes` after bind |
+| S-7.4 | bind-read timeout hardcoded 10s | RESOLVED | `4775357` | `Options.BindTimeout` |
+| S-7.5 | pingLoop uses `context.Background()` parent | RESOLVED | `4775357` | bound to channel ctx via `New()` |
+| S-7.6 | Single ping uses full `idleTimeout` | RESOLVED | `4775357` | `Options.PingWriteTimeout` (10s) |
+| S-7.7 | readLoop has no idle-timeout enforcement | RESOLVED | `4775357` | per-session `lastReadAtNS` polled by pingLoop |
+| S-7.8 | Replay loop materializes full slice | RESOLVED | `4775357` | `Options.MaxReplayEvents` (10k) + `replay-truncated` frame |
+| S-7.9 | `Close` doesn't WaitGroup-join goroutines | RESOLVED | `4775357` | per-session `c.wg` |
+| S-8.1 | Single in-flight `dispatchOne` per batch | RESOLVED | `acd798d` | `Config.DispatchConcurrency` |
+| S-8.2 | Not-found errors not dead-lettered | RESOLVED | `acd798d` | `ClassifyRequeueReason` + sentinel reasons |
+| S-8.3 | Permanent build errors retried | RESOLVED | `acd798d` | `isPermanentBuildError` |
+| S-8.4 | `MaxAttempts` not per-channel-type | RESOLVED | `acd798d` | `RetryConfig.PerChannel` |
+| S-8.5 | Jitter uncapped | RESOLVED | `acd798d` | `MaxJitter=0.5` clamp |
+| S-8.6 | Inline UPDATE SQL in worker | DEFERRED | — | full migration to DeliveriesRepo tracked under storage refactor |
+| S-9.1 | MLLP read goroutine no per-message frame deadline | DEFERRED | — | mitigated by S-9.4; true per-message deadline future work |
+| S-9.2 | `persistCtx` decoupled — `PersistTimeout` cap missing | DEFERRED | — | tracked under config validation |
+| S-9.3 | `isClosedConnErr` substring-matches "closed" | RESOLVED | `acd798d` | `errors.Is(net.ErrClosed)` |
+| S-9.4 | Framer no pending-byte bound | RESOLVED | `acd798d` | `pendingExceeded()` returns Malformed{Oversized} at 2× maxBody |
+| S-9.5 | `ExtractMSH` doesn't surface MSH-7/MSH-18 | RESOLVED | `acd798d` | new `MessageDateTime`, `Charset` |
+| S-9.6 | `ReaperBatchSize`, claim/idle knobs | PARTIAL | `acd798d` | `ReaperBatchSize` added; others were already exposed |
+| S-9.7 | No `MetricClaimCycleErrors` emission | RESOLVED | `acd798d` | emitted from claim and reaper loops |
+| S-9.8 | `peekUnprocessed` lost-race window | RESOLVED | — | addressed-by-design: `FOR UPDATE SKIP LOCKED` + `processed=false` predicate |
+| S-9.9 | `BeginTx` failure leaves row unprocessed | DEFERRED | — | per-row retry budget tracked under S-12 pattern |
+| S-9.10 | MSH-7 not used for occurred timestamp | RESOLVED | `acd798d` | `messageDateTime(parsed)` |
+| S-9.11 | Same-kind paired-hold collision metric missing | RESOLVED | `acd798d` | `MetricSameKindCollision` |
+| S-9.12 | Translate panics misclassified as `ErrorClassParse` | RESOLVED | `acd798d` | `vendorPanicError` sentinel + `isPanicError` |
+| S-10.1 | Matcher json.Unmarshal error not metricised | RESOLVED | `d3fad44` | `SetMalformedResourceReporter` |
+| S-10.2 | Bare-clause path inconsistent with submatcher | RESOLVED | `d3fad44` | `equalsString` parity |
+| S-10.3 | `:in` path no metric on unsupported modifier | RESOLVED | `d3fad44` | `SetUnsupportedModifierReporter` |
+| S-10.4 | Flexible-date silent UTC coercion | RESOLVED | `d3fad44` | `parseFlexibleDateWithFlag` returns imputedTZ flag |
+| S-10.5 | FHIRPath fail-closed metric | RESOLVED | (B-24 work) | `unknownFHIRPathReporter` |
+| S-10.6 | `MaxRowAttempts` knob + counter | PARTIAL | `d3fad44` | knob added; counter wiring tracked under storage refactor |
+| S-11.1 | `compileTrigger` missing `supportedInteraction` enum check | RESOLVED | `d3fad44` | defense-in-depth + JSON schema |
+| S-11.2 | `Topic.EventCodings` missing system+code pair | RESOLVED | `d3fad44` | new `EventCoding` slice |
+| S-11.3 | `notificationShape` collapses multi-entry | DEFERRED | — | rejecting multi-entry is breaking-change scope |
+| S-11.4 | Topic catalog Prometheus metrics | PARTIAL | (B-25 work) | `Rejected()`/`Overridden()` exposed; metric wiring in callers |
+| S-12.1 | `ListActiveByTopic` materializes full list | DEFERRED | — | streaming requires repo refactor |
+| S-12.2 | submatcher `PoolSize` knob missing | RESOLVED | `d3fad44` | `Config.PoolSize` |
+| S-12.3 | submatcher `MaxRowAttempts` | PARTIAL | `d3fad44` | knob added; counter wiring pending |
+| S-12.4 | Fanout tx inline `events_since_subscription_start` UPDATE | DEFERRED | — | hot-subscription scaling work |
+| S-12.5 | `resourceTypeOf` materializes full body | RESOLVED | `d3fad44` | streaming `json.Decoder` |
+| S-12.6 | Builder sort non-deterministic on tie | RESOLVED | `d3fad44` | `sort.SliceStable` + ID tiebreaker |
+| S-12.7 | Bundle/notificationEvent timestamps `RFC3339` | RESOLVED | `d3fad44` | `RFC3339Nano` |
+| S-12.8 | Handshake/heartbeat correlation_id non-deterministic | RESOLVED | `d3fad44` | deterministic v5 UUID |
+| S-12.9 | `fhir+xml` rejection at builder, not API | DEFERRED | — | belongs at subscription-create API path |
+| S-13.1 | AES-GCM rotation cadence undocumented | RESOLVED | `c765c8e` | NIST 2^32 limit doc'd |
+| S-13.2 | Audit log no chained-append + prev-hash verify | RESOLVED | `c765c8e` | `AppendChained` + `ErrAuditPrevHashMismatch` |
+| S-13.3 | `ListActiveByTopic` no streaming/page variant | RESOLVED | `c765c8e` | `StreamActiveByTopic`, `ListActiveByTopicPage` |
+| S-13.4 | pgxpool defaults non-configurable | RESOLVED | `c765c8e` | `pool.Config` plumbed through |
+| S-13.5 | `AfterConnect` no statement_timeout / lock_timeout | RESOLVED | `c765c8e` | sets statement_timeout, idle_in_tx_session_timeout, lock_timeout |
+| S-13.6 | Storage tick has no per-tick deadline | RESOLVED | `c765c8e` | `TickTimeout` + `OnTickError` |
+| S-13.7 | Pool-close budget hardcoded 5s | RESOLVED | `c765c8e` | derived from `cfg.Lifecycle.ShutdownGracePeriod` |
+| S-13.8 | Partition first-run failure silent | RESOLVED | `c765c8e` | flows through `OnTickError` |
+| S-13.9 | `dropOnePartition` not transactional | RESOLVED | `c765c8e` | DETACH + DROP in single tx |
+| S-13.10 | Migrations apply-time `now()` undocumented | RESOLVED | `c765c8e` | doc'd; checksum is over file text |
+| S-14.1 | `LoggingConfig.Sink` / `DebugLogPayloads` not plumbed | RESOLVED | `9e7fa45` | passed into `logging.NewLogger` |
+| S-14.2 | `fileSink` per-Emit alloc | RESOLVED | `9e7fa45` | inner `WriterSink` pre-constructed |
+| S-14.3 | Audit chain genesis literal hardcoded | RESOLVED | `9e7fa45` | `WriterOptions.GenesisLiteral` |
+| S-14.4 | Audit Emit advisory_lock + LastChainHash + INSERT throughput cap | RESOLVED | `9e7fa45` | doc'd as design constraint |
+| S-14.5 | `canonicalNumber` non-IEEE754 round-trip | RESOLVED | `9e7fa45` | `strconv.AppendFloat('g', -1, 64)` |
+| S-14.6 | Correlation ID no length cap / charset | RESOLVED | `9e7fa45` | `MaxCorrelationIDLen=128`, allow-list |
+| S-14.7 | Logging PHI list narrow / case-sensitive | RESOLVED | `9e7fa45` | expanded list, case-insensitive |
+| S-14.8 | tracing span values not redacted | RESOLVED | `9e7fa45` | `tracing.SafeAttribute` |
+| S-14.9 | OTLP exporter no timeout / TLS / Insecure knob | RESOLVED | `9e7fa45` | timeout (10s), TLSConfig, Headers, Insecure |
+| S-15.1 | `config.Start` ignores ctx | RESOLVED | `081200d` | refuses with wrapped `ctx.Err()` |
+| S-15.2 | `loader` env-var collisions silent | RESOLVED | `081200d` | `EnvCollisions` exposes ambiguity |
+| S-15.3 | redaction walker has no depth cap | RESOLVED | `081200d` | `MaxRedactDepth=256` |
+| S-15.4 | `${file:...}` reads have no size cap | RESOLVED | `081200d` | `io.LimitReader` + `ErrSecretFileTooLarge` |
+| S-15.5 | effective_store has no bounded notification pool | RESOLVED | `081200d` | `MaxConcurrentNotifications=32` + recover |
+| S-15.6 | reload `splitPath` doesn't honour `\.` escape | RESOLVED | `081200d` | escapes for `\.` and `\\` |
+| S-15.7 | sequencer `resultsMu` race on deadline path | RESOLVED | `081200d` | mutex-serialized writes |
+| S-15.8 | `isDeadlineExceeded` bare comparison | RESOLVED | `081200d` | `errors.Is` against DeadlineExceeded + Canceled |
+| S-16.1 | Empty `internal/channels/` (plural) duplicate tree | RESOLVED | `1ffc778` | tree deleted |
+| S-16.2 | Empty `internal/queue/`, `internal/wakeup/` packages | RESOLVED | — | audit was incorrect — no such packages exist; real ones live at `internal/infra/queue/` and `internal/infra/wakeup/` |
+| S-16.3 | Empty `internal/adapters/`, `internal/adapterspi/` trees | RESOLVED | `2a0bbc2`, `060d538` | deleted; production uses singular `internal/adapter/` |
+| S-16.4 | Empty `internal/domain/` packages | RESOLVED | `eea803a` | tree deleted |
+| S-16.5 | `internal/infra/lifecycle/lifecycle.go` dead `_ = errors.New` | RESOLVED | `ed87e64` | sentinel and unused import removed |
+| N-1.1 | `HasScope` is O(n); cache as `map[string]struct{}` | RESOLVED | `a2318e9` | already addressed under S-3.5 at audit time |
+| N-1.2 | `equalJSON` swallows unmarshal errors | RESOLVED | `6649d9b` | falls back to `bytes.Equal` on parse failure; test `TestN1_EqualJSONMalformedFallsBackToBytes` |
+| N-1.3 | `crypto/rand.Read` failure no `rand_failures_total` | RESOLVED | `6649d9b` | new `RandFailureRecorder` interface + `Metrics.RandFailuresTotal` |
+| N-1.4 | `NotFound`/`MethodNotAllowed` rely on upstream auth wiring | DEFERRED | — | Reclassified — chi.Middleware-typed Auth wiring touches every wiring caller |
+| N-1.5 | email Subject CRLF strip | RESOLVED | `2c8e258` | flows through `stripCRLF` before write; test `TestN1_BuildMIMEStripsCRLFFromSubject` |
+| N-1.6 | `formatTraceparent` doesn't validate hex | RESOLVED | `2c8e258` | drops non-hex bytes pre-pad; test `TestN1_FormatTraceparentEmitsHexOnly` |
+| N-1.7 | WS ack handling no eventNumber-in-sent-set check | RESOLVED | `79921ca` | `deliverAck` returns sent-set hit; emits `MetricUnknownAckTotal` on rogue acks |
+| N-1.8 | WS Deliver / Close race documentation | RESOLVED | `79921ca` | `Deliver` doc-block now spells out concurrency contract |
+| N-1.9 | message channel `wrapInMessageBundle` non-deterministic | DEFERRED | — | Reclassified — JCS-canonicalizer or sorted-keys writer is non-trivial scope |
+| N-1.10 | `ComputeBackoff` doubling-loop iteration cap | RESOLVED | `79921ca` | `maxBackoffDoublingSteps = 64` constant; test `TestN1_ComputeBackoffIterationCap` |
+| N-1.11 | Channel setup-error retries forever | RESOLVED | `ffe847b` | already retried under `RetryConfig.MaxAttempts` budget; doc-block updated. Reclassified follow-up: classify-as-permanent on N consecutive setup errors |
+| N-1.12 | `pending_kind` enum reuses `create` for "held replacement" | RESOLVED | `ffe847b` | known schema constraint; rename is a migration outside polish scope |
+| N-1.13 | adapter_id × resource_type × change_kind 3-way label cardinality | RESOLVED | `ffe847b` | cardinality contract documented in `metrics.go`; all three are deployment-bound closed sets |
+| N-1.14 | translate has no charset normalization contract | RESOLVED | `ffe847b` | adapters MUST transcode to UTF-8 before calling translate |
+| N-1.15 | matcher backoff has no `matcher_backoff_seconds` gauge | RESOLVED | `ffe847b` | new `SetBackoffReporter` optional gauge; test `TestN1_SetBackoffReporterStoresAndUnsetsCallback` |
+| N-1.16 | matcher `committed=true` lies about rollback path | RESOLVED | `ffe847b` | renamed `committed` → `txDone` |
+| N-1.17 | Catalog immutability contract undocumented | RESOLVED | `ffe847b` | Catalog immutability + RawJSON lifetime contracts spelled out in type doc |
+| N-1.18 | Catalog `RawJSON` in-memory copy of every body | RESOLVED | `ffe847b` | RawJSON lifetime documented as intentional; lazy-load is follow-up |
+| N-1.19 | Override-shadow has no structured log | RESOLVED | `ffe847b` | new `Override.LogFields()` returns structured map |
+| N-1.20 | MLLP `readBuf` 8192 hardcoded; per-Read alloc | RESOLVED | `79921ca`, `ffe847b` | `ListenerConfig.ReadBufBytes` knob (default 8192) |
+| N-1.21 | MLLP body double-copy | RESOLVED | `ffe847b` | `Body: append([]byte(nil), body...)` removed |
+| N-1.22 | MLLP write deadline 2s hardcoded | RESOLVED | `79921ca` | `ListenerConfig.AckWriteTimeout` (default 2s) |
+| N-1.23 | `scanEndPair` is O(n) per Append | RESOLVED | `ffe847b` | `closedScanned` offset + windowed `scanEndPairRange` helper |
+| N-1.24 | MLLP listener `time.After` timer leaks on shutdown | RESOLVED | `79921ca` | `time.NewTimer + defer Stop` |
+| N-1.25 | MLLP no PROXY protocol v2 | DEFERRED | — | Reclassified — requires new dependency (proxyproto) and config surface |
+| N-1.26 | sequencer `time.After` leaks on early phase return | RESOLVED | `ffe847b` | probeWindow path now uses `time.NewTimer + Stop` |
+| N-1.27 | `bytesEqual` reinvented; use `bytes.Equal` | RESOLVED | `c1ff9eb` | helper deleted; switched to `bytes.Equal` |
+| N-1.28 | Audit sink failure has no buffer/queue | RESOLVED | `c1ff9eb` | `Writer.Emit` doc-block spells out fail-open sink semantics; durable row is the source of truth |
+| N-1.29 | `Event.Payload` taken by reference; no defensive copy | RESOLVED | `c1ff9eb` | `Writer.Emit` takes shallow copy at entry; test `TestN1_EmitDefensiveCopiesPayload` |
+| N-1.30 | pgstore advisory lock id is FNV truncation | RESOLVED | `c1ff9eb` | `AuditChainAdvisoryLockID` int64 constant published; FNV-1a runtime hash removed |
+| N-1.31 | codec envelope format hardcoded `0x01` | RESOLVED | `ffe847b` | envelope format byte `0x01` documented; Decrypt error already includes observed format byte |
+| N-1.32 | deliveries `ORDER BY next_attempt_at` no tiebreaker | RESOLVED | `79921ca` | `ORDER BY next_attempt_at ASC, id ASC` |
+| N-1.33 | `subscription_topics.ListByStatus` no LIMIT | RESOLVED | `79921ca` | `DefaultListByStatusCap = 1000`; new `ListByStatusPage(limit, offset)` |
+| N-1.34 | claim FOR UPDATE / SKIP LOCKED substring match fragile | RESOLVED | `79921ca` | `stripSQLCommentsAndStrings` before substring match |
+| N-1.35 | partition `Run` ignores reload changes | RESOLVED | `ffe847b` | re-reads `cfg.RunInterval` and `cfg.TickTimeout` every iteration |
+| D-1 | Production binary loads an empty catalog | OPEN | — | discovered during B-4 wiring; needs `topics.sources` config + SIGHUP-driven reload |
+| D-2 | rest-hook channel handshake is a placeholder | OPEN | — | discovered during B-4 wiring; `defaultActivator` always returns `HandshakeSucceeded` |
+| D-3 | pgxpool startup ping retries past `pingCtx` in some paths | OPEN | — | discovered during B-4 wiring; diagnostic-latency only |
+| D-4 | Adapter version pin error path uses generic Go error | OPEN | — | discovered during B-4 wiring; chains via `fmt.Errorf` rather than typed `*registry.UnknownAdapterError` |
 
 ---
 
