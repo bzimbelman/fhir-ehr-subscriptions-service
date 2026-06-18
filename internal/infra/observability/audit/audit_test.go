@@ -121,10 +121,11 @@ func TestVerifyChain_DetectsMutation(t *testing.T) {
 		})
 	}
 
-	// Mutate row 1.
+	// Mutate row 1 (simulates an attacker tampering with a prior row).
 	store.mu.Lock()
 	store.rows[1].Payload["i"] = 999
 	store.mu.Unlock()
+
 
 	if err := audit.VerifyChain(context.Background(), store); err == nil {
 		t.Fatalf("expected verification failure")
@@ -245,11 +246,15 @@ func TestEmit_SerializesUnderConcurrency(t *testing.T) {
 	}
 }
 
-// fakeStore implements AuditStore + ChainReader for tests. It models the
-// advisory lock by holding a sync.Mutex during InsertAuditRow.
+// fakeStore implements audit.Store for tests. The AcquireChainLock
+// returns a release that frees `chain`; while it is held, only one
+// emitter mutates rows, modeling the advisory-lock contract. mu is a
+// separate, finer-grained lock that keeps slice reads safe under
+// concurrent IterateRows / snapshot.
 type fakeStore struct {
-	mu   sync.Mutex
-	rows []*audit.Row
+	chain sync.Mutex
+	mu    sync.Mutex
+	rows  []*audit.Row
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{} }
@@ -272,9 +277,9 @@ func (s *fakeStore) LastChainHash(_ context.Context) ([]byte, error) {
 }
 
 func (s *fakeStore) AcquireChainLock(_ context.Context) (func() error, error) {
-	s.mu.Lock()
+	s.chain.Lock()
 	return func() error {
-		s.mu.Unlock()
+		s.chain.Unlock()
 		return nil
 	}, nil
 }
