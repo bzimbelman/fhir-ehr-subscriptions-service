@@ -203,7 +203,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | N-1.22 | MLLP write deadline 2s hardcoded | RESOLVED | RESOLVED ✓ | 79921ca | AckWriteTimeout |
 | audit | N-1.23 | scanEndPair O(n) per Append | RESOLVED | RESOLVED ✓ | ffe847b | closedScanned offset |
 | audit | N-1.24 | MLLP listener time.After leaks on shutdown | RESOLVED | RESOLVED ✓ | 79921ca | NewTimer + Stop |
-| audit | N-1.25 | MLLP no PROXY protocol v2 | DEFERRED | DEFERRED ✓ | — | new dependency required |
+| audit | N-1.25 | MLLP no PROXY protocol v2 | RESOLVED | RESOLVED ✓ | story/60-mllp-proxy-proto-v2 | hand-rolled v2 parser; per-endpoint `proxy_protocol_v2` config; `fhir_subs_mllp_proxy_header_rejected_total` metric; no new external dependency |
 | audit | N-1.26 | sequencer time.After leaks | RESOLVED | RESOLVED ✓ | ffe847b | |
 | audit | N-1.27 | bytesEqual reinvented | RESOLVED | RESOLVED ✓ | c1ff9eb | |
 | audit | N-1.28 | Audit sink failure has no buffer/queue | RESOLVED | RESOLVED ✓ (documented) | c1ff9eb | doc-block |

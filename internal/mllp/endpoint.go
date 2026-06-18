@@ -90,14 +90,12 @@ func (e *endpoint) addr() net.Addr {
 // release closure is bound to the connection lifetime so a slot is
 // reclaimed on disconnect even if the handler panics.
 //
-// N-1: PROXY protocol v2 (haproxy) is NOT yet decoded. Behind a
-// transparent LB / Envoy-with-PROXY-listener, every conn.RemoteAddr
-// reports the LB's address rather than the originating EHR. The fix
-// is to wrap the listener in a proxyproto.Listener so the v2 header
-// is transparently parsed and conn.RemoteAddr returns the real peer.
-// Tracked in the audit doc as a Reclassified follow-up; today the
-// listener treats RemoteAddr as authoritative and operators should
-// run it on a host-network listener or behind a non-PROXY LB.
+// N-1.25: PROXY protocol v2 (haproxy) decoding is opt-in per endpoint
+// (EndpointConfig.ProxyProtocolV2). When enabled, the v2 header is
+// parsed before the admission check so per-IP caps (B-19) and audit
+// logging see the real client address rather than the upstream LB.
+// Connections that fail header parsing are closed before any HL7
+// bytes flow.
 func (e *endpoint) run(ctx context.Context) {
 	endpointLabels := map[string]string{"listener_endpoint": e.cfg.Name}
 	for {
@@ -120,7 +118,38 @@ func (e *endpoint) run(ctx context.Context) {
 			continue
 		}
 
-		remoteAddr := conn.RemoteAddr().String()
+		// PROXY v2 decoding (N-1.25). The wrapped conn presents the real
+		// client address via RemoteAddr; the bare conn is used otherwise
+		// so net.Pipe-driven tests and non-LB deployments stay
+		// unaffected. We pull the parsed address up here (before
+		// admission control) so MaxConnectionsPerIP enforces against
+		// the real peer.
+		handlerConn := conn
+		if e.cfg.ProxyProtocolV2 {
+			realAddr, perr := readProxyV2Header(conn, e.proxyHeaderTimeout())
+			if perr != nil {
+				e.metrics.Inc(MetricProxyHeaderRejectedTotal, map[string]string{
+					"listener_endpoint": e.cfg.Name,
+					"reason":            proxyRejectReason(perr),
+				})
+				e.logger.Warn("mllp_proxy_header_rejected", map[string]any{
+					"listener_endpoint": e.cfg.Name,
+					"peer_addr":         conn.RemoteAddr().String(),
+					"reason":            proxyRejectReason(perr),
+					"error":             perr.Error(),
+				})
+				_ = conn.Close()
+				continue
+			}
+			if realAddr != nil {
+				handlerConn = &proxiedConn{Conn: conn, realRemote: realAddr}
+			}
+			// LOCAL command (realAddr == nil, perr == nil): fall through
+			// with the bare conn — caller's RemoteAddr remains the LB's
+			// own address, which is the right answer for health checks.
+		}
+
+		remoteAddr := handlerConn.RemoteAddr().String()
 		decision := admissionDecision{allow: true}
 		if e.parent != nil {
 			decision = e.parent.admitConnection(remoteAddr)
@@ -134,19 +163,30 @@ func (e *endpoint) run(ctx context.Context) {
 				"max_connections":        e.listenCfg.MaxConnections,
 				"max_connections_per_ip": e.listenCfg.MaxConnectionsPerIP,
 			})
-			_ = conn.Close()
+			_ = handlerConn.Close()
 			continue
 		}
 
-		e.trackConn(conn)
+		e.trackConn(handlerConn)
 		e.connsWG.Add(1)
 		go func(c net.Conn, release func()) {
 			defer e.connsWG.Done()
 			defer e.untrackConn(c)
 			defer release()
 			HandleConnectionWithLogger(ctx, c, e.cfg, e.listenCfg, e.persister, e.metrics, e.logger, remoteAddr)
-		}(conn, decision.release)
+		}(handlerConn, decision.release)
 	}
+}
+
+// proxyHeaderTimeout returns the deadline applied to PROXY v2 header
+// parsing. We reuse ReadIdleTimeout when set (the listener already
+// accepts that as the per-connection slowloris ceiling); otherwise the
+// hard-coded default keeps the accept loop responsive.
+func (e *endpoint) proxyHeaderTimeout() time.Duration {
+	if e.listenCfg.ReadIdleTimeout > 0 {
+		return e.listenCfg.ReadIdleTimeout
+	}
+	return proxyV2HeaderTimeoutDefault
 }
 
 func (e *endpoint) trackConn(c net.Conn) {

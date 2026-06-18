@@ -633,8 +633,9 @@ func buildMLLPListener(cfg MLLPConfig, pool *pgxpool.Pool, hl7Q *repos.Hl7Messag
 	endpoints := make([]mllp.EndpointConfig, 0, len(cfg.Listeners))
 	for _, ep := range cfg.Listeners {
 		endpoints = append(endpoints, mllp.EndpointConfig{
-			Name: ep.Name,
-			Bind: ep.Bind,
+			Name:            ep.Name,
+			Bind:            ep.Bind,
+			ProxyProtocolV2: ep.ProxyProtocolV2,
 		})
 	}
 	maxBytes := cfg.MaxMessageBytes

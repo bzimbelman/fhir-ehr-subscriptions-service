@@ -113,6 +113,12 @@ type MLLPConfig struct {
 type MLLPListener struct {
 	Name string `yaml:"name"`
 	Bind string `yaml:"bind"`
+	// ProxyProtocolV2, when true, requires every accepted TCP connection
+	// to begin with a PROXY protocol v2 header (N-1.25). Enable only on
+	// listeners reachable exclusively through a PROXY-v2-capable load
+	// balancer; a peer that can reach the socket directly while this
+	// flag is on can spoof its source IP at will. Default false.
+	ProxyProtocolV2 bool `yaml:"proxy_protocol_v2"`
 }
 
 // PipelineConfig models pipeline.* fields. Each stage's claim loop has

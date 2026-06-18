@@ -42,6 +42,14 @@ const (
 	// the admission semaphore (B-19): MaxConnections or
 	// MaxConnectionsPerIP exceeded.
 	MetricConnectionsRefusedTotal = "fhir_subs_mllp_connections_refused_total"
+
+	// MetricProxyHeaderRejectedTotal counts connections rejected by
+	// PROXY protocol v2 enforcement (N-1.25). Labels: listener_endpoint,
+	// reason ∈ {bad_signature, unsupported_version, truncated,
+	// unsupported_family, read_error}. Connections that present a
+	// well-formed v2 header are NOT counted here (they pass through to
+	// the normal HL7 read loop).
+	MetricProxyHeaderRejectedTotal = "fhir_subs_mllp_proxy_header_rejected_total"
 )
 
 // Outcome label values for MetricMessagesAckedTotal.
