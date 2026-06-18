@@ -60,6 +60,23 @@ type EndpointConfig struct {
 	// is configured AND MSH-9 cannot be extracted, the message is NACKed
 	// with reason msh9_unparseable.
 	AllowedMessageTypes []string
+
+	// ProxyProtocolV2, when true, requires every accepted TCP connection
+	// to begin with a PROXY protocol v2 header (N-1.25). The parser
+	// substitutes the real client address into per-connection metrics
+	// and audit logging so admission control (B-19 per-IP caps) and
+	// audit trails reflect the originating EHR rather than the
+	// upstream load balancer. Connections that omit the header, send a
+	// non-v2 signature, or specify an unsupported address family are
+	// closed before any HL7 bytes flow and counted under
+	// MetricProxyHeaderRejectedTotal.
+	//
+	// Default false. Operators must enable this only on listeners
+	// reachable exclusively through a PROXY-v2-capable load balancer
+	// (e.g., AWS NLB, HAProxy with `send-proxy-v2`); a peer that can
+	// reach the socket directly while the flag is on can spoof its
+	// source IP at will.
+	ProxyProtocolV2 bool
 }
 
 // ListenerConfig is the validated startup config for the listener as a whole.
