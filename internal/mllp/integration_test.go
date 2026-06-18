@@ -109,9 +109,9 @@ func TestIntegration_RealTCP_MultipleEndpointsConcurrent(t *testing.T) {
 	defer func() { _ = l.Shutdown(context.Background()) }()
 
 	type clientResult struct {
-		ep      string
-		count   int
-		err     error
+		ep    string
+		count int
+		err   error
 	}
 	results := make(chan clientResult, 2)
 

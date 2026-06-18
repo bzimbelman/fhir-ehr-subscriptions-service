@@ -16,7 +16,7 @@ type MalformedReason string
 // MalformedReason values reported by the framer. Names match the LLD's
 // MalformedReason enum and are used as label values on the malformed metric.
 const (
-	ReasonOversizedMessage           MalformedReason = "oversized_message"
+	ReasonOversizedMessage            MalformedReason = "oversized_message"
 	ReasonUnexpectedStartByteMidFrame MalformedReason = "unexpected_start_byte_mid_frame"
 )
 

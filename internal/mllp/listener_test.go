@@ -24,11 +24,11 @@ type fakePersister struct {
 	mu          sync.Mutex
 	rows        []QueueRow
 	persistedAt []time.Time
-	err         error                                            // returned on every call when set
-	beforeHook  func(ctx context.Context, row QueueRow) error    // optional pre-write hook
-	afterHook   func(ctx context.Context, row QueueRow)          // optional post-write hook
-	delay       time.Duration                                    // sleep before returning
-	persistFn   func(ctx context.Context, row QueueRow) error    // optional override
+	err         error                                         // returned on every call when set
+	beforeHook  func(ctx context.Context, row QueueRow) error // optional pre-write hook
+	afterHook   func(ctx context.Context, row QueueRow)       // optional post-write hook
+	delay       time.Duration                                 // sleep before returning
+	persistFn   func(ctx context.Context, row QueueRow) error // optional override
 }
 
 func (p *fakePersister) Persist(ctx context.Context, row QueueRow) error {
@@ -182,13 +182,13 @@ const (
 
 func defaultConfig(eps ...EndpointConfig) ListenerConfig {
 	return ListenerConfig{
-		Endpoints:           eps,
-		MaxMessageBytes:     1 << 20,
-		ReadIdleTimeout:     5 * time.Second,
-		PersistTimeout:      2 * time.Second,
-		NackThenDropAfter:   5,
-		ShutdownDrainGrace:  2 * time.Second,
-		InflightCapPerConn:  64,
+		Endpoints:          eps,
+		MaxMessageBytes:    1 << 20,
+		ReadIdleTimeout:    5 * time.Second,
+		PersistTimeout:     2 * time.Second,
+		NackThenDropAfter:  5,
+		ShutdownDrainGrace: 2 * time.Second,
+		InflightCapPerConn: 64,
 	}
 }
 
