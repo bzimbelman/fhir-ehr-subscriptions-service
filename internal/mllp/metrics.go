@@ -32,6 +32,7 @@ const (
 	MetricNackTotal             = "hl7_nack_total"
 	MetricPersistDurationMS     = "hl7_persist_duration_ms"
 	MetricActiveConnections     = "hl7_active_connections"
+	MetricInflightPerConnection = "hl7_inflight_per_connection"
 	MetricAcceptErrorsTotal     = "hl7_accept_errors_total"
 	MetricReadErrorsTotal       = "hl7_read_errors_total"
 	MetricDisconnectMidFrame    = "hl7_disconnect_mid_frame_total"

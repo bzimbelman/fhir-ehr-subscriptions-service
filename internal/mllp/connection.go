@@ -106,8 +106,8 @@ func HandleConnectionWithLogger(
 			peerAddr = ra.String()
 		}
 	}
-	connID := uuid.New()
-	clog := newConnectionLogger(logger, ep.Name, peerAddr, connID)
+	state := newConnectionState(ep.Name, peerAddr)
+	clog := newConnectionLogger(logger, ep.Name, peerAddr, state.id)
 	clog.emit(logLevelInfo, "accept", nil)
 	defer func() {
 		_ = conn.Close()
@@ -119,8 +119,6 @@ func HandleConnectionWithLogger(
 
 	framer := NewFramer(cfg.MaxMessageBytes)
 	readBuf := make([]byte, 8192)
-
-	var consecutivePersistFailures int
 
 	// readCh is fed by a goroutine that does the blocking Read. We select
 	// on it AND on ctx.Done() so ctx cancellation can trigger shutdown
@@ -193,8 +191,9 @@ func HandleConnectionWithLogger(
 					clog.emit(logLevelWarn, "malformed", map[string]any{"reason": string(ev.Reason)})
 					return
 				case FrameEvent:
+					draining := ctx.Err() != nil
 					stop := handleOneFrame(ctx, conn, ev.Body, ep, cfg, persister, metrics, clog,
-						peerAddr, &consecutivePersistFailures, endpointLabels, receiveLabels)
+						state, endpointLabels, receiveLabels, draining)
 					if stop {
 						return
 					}
@@ -208,6 +207,11 @@ func HandleConnectionWithLogger(
 // handleOneFrame runs the persist-then-ACK transaction for a single frame.
 // Returns true to signal that the connection should be dropped (no further
 // reads).
+//
+// The state pointer carries the per-connection inflight counter (LLD §5.6
+// gate) and consecutive-failure counter (LLD §5.6 NACK-then-drop ramp).
+// `draining` is true when ctx has been canceled (graceful shutdown); per
+// LLD §5.7 we do NOT NACK on persist failure during drain.
 func handleOneFrame(
 	ctx context.Context,
 	conn net.Conn,
@@ -217,13 +221,30 @@ func handleOneFrame(
 	persister Persister,
 	metrics MetricsEmitter,
 	clog connectionLogger,
-	peerAddr string,
-	consecutivePersistFailures *int,
+	state *connectionState,
 	endpointLabels, receiveLabels map[string]string,
+	draining bool,
 ) bool {
 	now := time.Now().UTC()
 
 	mshFields, mshErr := ExtractMSH(body)
+
+	// Inflight cap gate (LLD §5.6). Cap == 0 disables the cap; otherwise
+	// the listener NACKs without calling persist.
+	if cfg.InflightCapPerConn > 0 && state.inflightCount() >= int32(cfg.InflightCapPerConn) {
+		metrics.Inc(MetricNackTotal, map[string]string{
+			"listener_endpoint": ep.Name, "reason": "inflight_cap",
+		})
+		metrics.Inc(MetricMessagesAckedTotal, map[string]string{
+			"listener_endpoint": ep.Name, "outcome": OutcomeAE,
+		})
+		clog.emit(logLevelWarn, "nacked", map[string]any{
+			"reason":          "inflight_cap",
+			"mllp_message_id": mshFields.MessageControlID,
+		})
+		writeNACK(conn, mshFields, "inflight cap reached", now)
+		return false
+	}
 
 	// allowed_message_types filter.
 	if len(ep.AllowedMessageTypes) > 0 {
@@ -264,7 +285,7 @@ func handleOneFrame(
 		ID:               uuid.New(),
 		ReceivedAt:       now,
 		ListenerEndpoint: ep.Name,
-		PeerAddr:         peerAddr,
+		PeerAddr:         state.peerAddr,
 		MLLPMessageID:    mshFields.MessageControlID,
 		CorrelationID:    correlationID,
 		Body:             append([]byte(nil), body...),
@@ -275,6 +296,17 @@ func handleOneFrame(
 		"mllp_message_id": mshFields.MessageControlID,
 		"bytes":           len(body),
 	})
+
+	// Track inflight across the persist call: LLD §7 inflight gauge and
+	// the LLD §5.6 cap gate above both rely on this counter.
+	state.incInflight()
+	metrics.Set(MetricInflightPerConnection, float64(state.inflightCount()),
+		map[string]string{"listener_endpoint": ep.Name, "connection_id": state.id.String()})
+	defer func() {
+		state.decInflight()
+		metrics.Set(MetricInflightPerConnection, float64(state.inflightCount()),
+			map[string]string{"listener_endpoint": ep.Name, "connection_id": state.id.String()})
+	}()
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), cfg.PersistTimeout)
 	// We deliberately do not chain off ctx for persistCtx: the LLD's
@@ -290,9 +322,23 @@ func handleOneFrame(
 		float64(time.Since(persistStart).Microseconds())/1000.0,
 		endpointLabels)
 
+	consecutiveFails := state.recordPersistResult(err)
+
 	if err != nil {
-		*consecutivePersistFailures++
 		reason := persistFailureReason(err)
+
+		// LLD §5.7: during drain, do not NACK on persist failure. Drop
+		// silently and exit. The EHR will reconnect.
+		if draining {
+			clog.emit(logLevelWarn, "dropped", map[string]any{
+				"reason":          "drain_persist_failure",
+				"correlation_id":  correlationID.String(),
+				"mllp_message_id": mshFields.MessageControlID,
+				"error":           err.Error(),
+			})
+			return true
+		}
+
 		switch cfg.OnPersistFail {
 		case OnPersistFailDrop:
 			metrics.Inc(MetricDropForPersistFails, endpointLabels)
@@ -324,11 +370,11 @@ func handleOneFrame(
 				"error":           err.Error(),
 			})
 			writeNACK(conn, mshFields, persistErrorReason(err), now)
-			if *consecutivePersistFailures >= cfg.NackThenDropAfter {
+			if int(consecutiveFails) >= cfg.NackThenDropAfter {
 				metrics.Inc(MetricDropForPersistFails, endpointLabels)
 				clog.emit(logLevelError, "dropped", map[string]any{
 					"reason":   "consecutive_persist_failures",
-					"failures": *consecutivePersistFailures,
+					"failures": consecutiveFails,
 				})
 				return true
 			}
@@ -336,7 +382,6 @@ func handleOneFrame(
 		}
 	}
 
-	*consecutivePersistFailures = 0
 	metrics.Inc(MetricMessagesReceivedTotal, receiveLabels)
 	metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 		"listener_endpoint": ep.Name, "outcome": OutcomeAA,
