@@ -162,6 +162,33 @@ func TestPathHelpers(t *testing.T) {
 	}
 }
 
+// TestMergeFromSetUnion: MergeFrom set-unions another map's paths in-place.
+func TestMergeFromSetUnion(t *testing.T) {
+	t.Parallel()
+	a := redaction.NewMap()
+	a.TagSensitive("a")
+	b := redaction.NewMap()
+	b.TagSensitive("b")
+	a.MergeFrom(b)
+	if !a.IsSensitive("a") || !a.IsSensitive("b") {
+		t.Fatalf("MergeFrom should union: %v", a.Paths())
+	}
+	if b.IsSensitive("a") {
+		t.Fatalf("MergeFrom must not mutate the source")
+	}
+}
+
+// TestMergeFromNil tolerates a nil source.
+func TestMergeFromNil(t *testing.T) {
+	t.Parallel()
+	a := redaction.NewMap()
+	a.TagSensitive("a")
+	a.MergeFrom(nil)
+	if !a.IsSensitive("a") {
+		t.Fatalf("nil merge should be no-op")
+	}
+}
+
 // TestRedactPreservesShape: redaction returns a fresh structure, never mutates
 // the input.
 func TestRedactPreservesShape(t *testing.T) {

@@ -119,3 +119,19 @@ func (m *Map) Redact(v interface{}, basePath string) interface{} {
 		return v
 	}
 }
+
+// MergeFrom set-unions other's tagged paths into m. Used by the reload path
+// to build a candidate redaction map from a fresh schema walk plus newly
+// resolved placeholders, then atomic-swap it into the snapshot.
+func (m *Map) MergeFrom(other *Map) {
+	if other == nil {
+		return
+	}
+	other.mu.RLock()
+	defer other.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k := range other.set {
+		m.set[k] = struct{}{}
+	}
+}
