@@ -3,6 +3,7 @@
 /out/
 /dist/
 /cmd/fhir-subs/fhir-subs
+/cmd/demo-subscriber/demo-subscriber
 *.exe
 *.dll
 *.so
