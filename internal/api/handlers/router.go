@@ -210,6 +210,22 @@ type Deps struct {
 	// DeadLetters is the read-only dead-letters list adapter the admin
 	// surface needs. Nil disables /admin/dead_letters (returns 503).
 	DeadLetters DeadLettersListStore
+
+	// SearchPageSize is the default page size for GET /Subscription
+	// when the client does not pass `_count`. Zero means
+	// DefaultSearchPageSize. (S-2.8)
+	SearchPageSize int
+
+	// SearchMaxPageSize caps the user-supplied `_count`. Zero means
+	// DefaultSearchMaxPageSize. (S-2.8)
+	SearchMaxPageSize int
+
+	// EventReplayPageSize is the maximum number of events returned per
+	// $events response. Replaces the legacy hardcoded LIMIT 1000.
+	// Truncation is signaled to the client via a Bundle.link `next`
+	// relation pointing at the next eventsSinceNumber. Zero means
+	// DefaultEventReplayPageSize. (S-2.15)
+	EventReplayPageSize int
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
@@ -223,6 +239,18 @@ const DefaultMaxStatusBulkIDs = 256
 
 // DefaultMaxSchemaErrorBytes caps schema-validation diagnostics length.
 const DefaultMaxSchemaErrorBytes = 1024
+
+// DefaultSearchPageSize is the default page size for GET /Subscription
+// when the client passes no `_count`. (S-2.8)
+const DefaultSearchPageSize = 50
+
+// DefaultSearchMaxPageSize caps `_count` on GET /Subscription. (S-2.8)
+const DefaultSearchMaxPageSize = 200
+
+// DefaultEventReplayPageSize replaces the legacy hardcoded LIMIT 1000
+// in $events replay; the client gets a Bundle.link `next` whenever the
+// underlying log has more rows than this. (S-2.15)
+const DefaultEventReplayPageSize = 1000
 
 // instantFormat is the canonical FHIR `instant` rendering with
 // millisecond precision and a `Z` suffix (not `+00:00`). (S-2.9)
@@ -261,6 +289,15 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	}
 	if d.MaxSchemaErrorBytes <= 0 {
 		d.MaxSchemaErrorBytes = DefaultMaxSchemaErrorBytes
+	}
+	if d.SearchPageSize <= 0 {
+		d.SearchPageSize = DefaultSearchPageSize
+	}
+	if d.SearchMaxPageSize <= 0 {
+		d.SearchMaxPageSize = DefaultSearchMaxPageSize
+	}
+	if d.EventReplayPageSize <= 0 {
+		d.EventReplayPageSize = DefaultEventReplayPageSize
 	}
 
 	h := &server{deps: d}

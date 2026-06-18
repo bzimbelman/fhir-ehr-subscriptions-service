@@ -15,6 +15,15 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
+// maxPageSize and maxEventReplayPageSize are defensive ceilings for
+// the LIMIT-bound int32 in pgx; production traffic is already capped
+// upstream by parseCountParam / Deps.EventReplayPageSize but a buggy
+// internal caller (or future code path) cannot overflow the SQL bind.
+const (
+	maxPageSize            = 10_000
+	maxEventReplayPageSize = 100_000
+)
+
 // PgSubscriptionsStore wraps repos.SubscriptionsRepo with a pool plus
 // the extra methods (UpdateResource, UpdateStatus, ListByClient) the
 // API needs that are not part of the existing repo's surface.
@@ -79,15 +88,23 @@ func (s *PgSubscriptionsStore) ListByClient(ctx context.Context, clientID string
 	return out, nil
 }
 
-// FindByClientAndCriteria runs the If-None-Exist (LLD §4.1) match
-// entirely in SQL. The composite index `subscriptions_client_match_idx`
-// (migration 0005) covers the equality predicates so the query never
-// materialises the full client subscription list (S-2.4). Tombstoned
-// (`status = 'off'`) rows are excluded so the recreate-after-delete
-// path is unblocked. LIMIT 1 keeps the round-trip flat — the caller
-// only checks for presence.
-func (s *PgSubscriptionsStore) FindByClientAndCriteria(ctx context.Context, clientID string, criteria SubscriptionMatchCriteria) ([]repos.SubscriptionRow, error) {
-	const sql = `
+// ListByClientPage returns up to limit subscription rows for clientID
+// ordered by created_at DESC, id DESC, optionally starting strictly
+// after the (CreatedAt, ID) cursor. The unique strict ordering on the
+// (created_at, id) pair guarantees consecutive pages do not overlap and
+// concurrent inserts cannot cause an existing row to be skipped on the
+// cursor's sort axis. (S-2.8)
+func (s *PgSubscriptionsStore) ListByClientPage(ctx context.Context, clientID string, after *SubscriptionCursor, limit int) ([]repos.SubscriptionRow, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	// Defensive cap so an unsanitized caller cannot overflow int32 in
+	// the LIMIT bind; production traffic comes from parseCountParam,
+	// which already clamps to SearchMaxPageSize.
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+	const baseSQL = `
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
@@ -95,18 +112,28 @@ func (s *PgSubscriptionsStore) FindByClientAndCriteria(ctx context.Context, clie
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
-		WHERE client_id = $1
-		  AND status <> 'off'
-		  AND ($2 = '' OR topic_url = $2)
-		  AND ($3 = '' OR channel_type = $3)
-		  AND ($4 = '' OR COALESCE(endpoint, '') = $4)
-		LIMIT 1`
-	rows, err := s.Pool.Query(ctx, sql, clientID, criteria.Topic, criteria.ChannelType, criteria.Endpoint)
+		WHERE client_id = $1`
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	//nolint:gosec // limit is bounded above by maxPageSize which fits int32
+	limit32 := int32(limit)
+	if after == nil {
+		rows, err = s.Pool.Query(ctx, baseSQL+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2`, clientID, limit32)
+	} else {
+		rows, err = s.Pool.Query(ctx, baseSQL+`
+		  AND (created_at, id) < ($2, $3)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $4`, clientID, after.CreatedAt, after.ID, limit32)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("subscriptions: find by criteria: %w", err)
+		return nil, fmt.Errorf("subscriptions: list by client page: %w", err)
 	}
 	defer rows.Close()
-	out := make([]repos.SubscriptionRow, 0, 1)
+	out := make([]repos.SubscriptionRow, 0, limit)
 	for rows.Next() {
 		var rec repos.SubscriptionRow
 		var status string
@@ -233,6 +260,57 @@ func (s *PgEventsStore) ListByTopicAndRange(ctx context.Context, topicURL string
 		}
 		rec.ChangeKind = repos.ChangeKind(kind)
 		out = append(out, rec)
+	}
+	return out, nil
+}
+
+// ListByTopicAndRangePage replaces the legacy hardcoded LIMIT 1000 in
+// ListByTopicAndRange with an explicit page size. limit <= 0 means
+// "no cap" (the implementation falls back to a generous SQL-side cap
+// to keep an unbounded query from pinning the pool); production
+// callers always pass a positive value derived from
+// Deps.EventReplayPageSize. (S-2.15)
+func (s *PgEventsStore) ListByTopicAndRangePage(ctx context.Context, topicURL string, since, until int64, limit int) ([]repos.EhrEventRow, error) {
+	if limit <= 0 {
+		// Defensive cap so a buggy caller cannot exhaust the pool. The
+		// production path never hits this because the handler always
+		// passes a positive limit from Deps.EventReplayPageSize.
+		limit = maxEventReplayPageSize
+	}
+	if limit > maxEventReplayPageSize {
+		limit = maxEventReplayPageSize
+	}
+	const sql = `
+		SELECT id, event_number, topic_url, focus, change_kind, occurred_at,
+		       resource_change_id
+		FROM ehr_events
+		WHERE topic_url = $1
+		  AND ($2 = 0 OR event_number >= $2)
+		  AND ($3 = 0 OR event_number <= $3)
+		ORDER BY event_number ASC
+		LIMIT $4`
+	//nolint:gosec // limit is bounded above by maxEventReplayPageSize which fits int32
+	limit32 := int32(limit)
+	rows, err := s.Pool.Query(ctx, sql, topicURL, since, until, limit32)
+	if err != nil {
+		return nil, fmt.Errorf("ehr_events: replay page: %w", err)
+	}
+	defer rows.Close()
+	out := make([]repos.EhrEventRow, 0)
+	for rows.Next() {
+		var rec repos.EhrEventRow
+		var kind string
+		if err := rows.Scan(
+			&rec.ID, &rec.EventNumber, &rec.TopicURL, &rec.Focus, &kind,
+			&rec.OccurredAt, &rec.ResourceChangeID,
+		); err != nil {
+			return nil, fmt.Errorf("ehr_events: scan: %w", err)
+		}
+		rec.ChangeKind = repos.ChangeKind(kind)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

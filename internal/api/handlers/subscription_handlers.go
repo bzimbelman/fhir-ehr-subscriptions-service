@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -415,7 +416,11 @@ func (s *server) readSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 // searchSubscriptions is GET /Subscription. Returns a searchset Bundle
-// with the principal's owned subscriptions.
+// with the principal's owned subscriptions, keyset-paginated by
+// (created_at DESC, id DESC). The client controls page size with
+// `_count` (capped at Deps.SearchMaxPageSize) and forward navigation
+// via `_cursor`. The Bundle carries `self` and (when more rows exist)
+// `next` link relations per FHIR spec. (S-2.8)
 func (s *server) searchSubscriptions(w http.ResponseWriter, r *http.Request) {
 	p := mustPrincipal(w, r)
 	if p == nil {
@@ -424,12 +429,38 @@ func (s *server) searchSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if !requireScopes(w, p, "system/Subscription.r") {
 		return
 	}
-	rows, err := s.deps.Subscriptions.ListByClient(r.Context(), p.ClientID)
+
+	limit, ok := parseCountParam(r.URL.Query().Get("_count"), s.deps.SearchPageSize, s.deps.SearchMaxPageSize)
+	if !ok {
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+			"_count must be a positive integer")
+		return
+	}
+
+	var after *SubscriptionCursor
+	if raw := r.URL.Query().Get("_cursor"); raw != "" {
+		c, ok := decodeSubscriptionCursor(raw)
+		if !ok {
+			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+				"_cursor is malformed")
+			return
+		}
+		after = &c
+	}
+
+	// Ask for limit+1 so the handler can detect truncation without a
+	// second round-trip. The store is allowed to honor at most limit+1.
+	rows, err := s.deps.Subscriptions.ListByClientPage(r.Context(), p.ClientID, after, limit+1)
 	if err != nil {
 		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
 			"search failed")
 		return
 	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+
 	accept := r.Header.Get("Accept")
 	entries := make([]any, 0, len(rows))
 	for i := range rows {
@@ -444,9 +475,62 @@ func (s *server) searchSubscriptions(w http.ResponseWriter, r *http.Request) {
 		"type":         "searchset",
 		"total":        len(rows),
 		"entry":        entries,
+		"link":         buildSearchLinks(r, limit, rows, hasMore),
 	}
 	body, _ := json.Marshal(bundle)
 	writeJSON(w, http.StatusOK, body)
+}
+
+// parseCountParam normalizes a `_count` query parameter against the
+// configured default and cap. Empty -> default. Non-integer or negative
+// -> not ok (caller answers 400). Values above the cap clamp to the
+// cap silently — the spec considers `_count` an upper bound, not a
+// command (FHIR R5 §3.1.1.5).
+func parseCountParam(raw string, defaultPageSize, maxPageSize int) (int, bool) {
+	if raw == "" {
+		return defaultPageSize, true
+	}
+	var n int
+	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil {
+		return 0, false
+	}
+	if n <= 0 {
+		return 0, false
+	}
+	if maxPageSize > 0 && n > maxPageSize {
+		n = maxPageSize
+	}
+	return n, true
+}
+
+// buildSearchLinks emits Bundle.link entries (self + optional next). The
+// URLs are written path-relative because the handler does not know the
+// canonical external base URL at this layer; an upstream gateway can
+// rewrite if it wants absolute URLs. The next link's `_cursor` is
+// derived from the last row in the returned page.
+func buildSearchLinks(r *http.Request, limit int, rows []repos.SubscriptionRow, hasMore bool) []any {
+	out := []any{
+		map[string]any{
+			"relation": "self",
+			"url":      r.URL.RequestURI(),
+		},
+	}
+	if hasMore && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		next := encodeSubscriptionCursor(SubscriptionCursor{
+			CreatedAt: last.CreatedAt,
+			ID:        last.ID,
+		})
+		nextQ := r.URL.Query()
+		nextQ.Set("_count", strconv.Itoa(limit))
+		nextQ.Set("_cursor", next)
+		nextURL := r.URL.Path + "?" + nextQ.Encode()
+		out = append(out, map[string]any{
+			"relation": "next",
+			"url":      nextURL,
+		})
+	}
+	return out
 }
 
 // updateSubscription is PUT /Subscription/{id}.
@@ -766,11 +850,21 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := s.deps.Events.ListByTopicAndRange(r.Context(), sub.TopicURL, since, until)
+	limit := s.deps.EventReplayPageSize
+	if limit <= 0 {
+		limit = DefaultEventReplayPageSize
+	}
+	// Ask for limit+1 so the handler can detect truncation without a
+	// second round-trip and emit a Bundle.link `next` (S-2.15).
+	events, err := s.deps.Events.ListByTopicAndRangePage(r.Context(), sub.TopicURL, since, until, limit+1)
 	if err != nil {
 		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
 			"event log read failed")
 		return
+	}
+	hasMore := len(events) > limit
+	if hasMore {
+		events = events[:limit]
 	}
 
 	notificationEvents := make([]map[string]any, 0, len(events))
@@ -792,9 +886,34 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 		"entry": []any{
 			map[string]any{"resource": statusResource},
 		},
+		"link": buildEventsLinks(r, events, hasMore),
 	}
 	body, _ := json.Marshal(bundle)
 	writeJSON(w, http.StatusOK, body)
+}
+
+// buildEventsLinks emits self+next links for $events. The next link
+// advances `eventsSinceNumber` to one past the last delivered event so
+// the client never re-receives a row already on the current page. Spec:
+// FHIR R5 Subscriptions §6 "Bundle.link". (S-2.15)
+func buildEventsLinks(r *http.Request, events []repos.EhrEventRow, hasMore bool) []any {
+	out := []any{
+		map[string]any{
+			"relation": "self",
+			"url":      r.URL.RequestURI(),
+		},
+	}
+	if hasMore && len(events) > 0 {
+		last := events[len(events)-1].EventNumber
+		nextQ := r.URL.Query()
+		nextQ.Set("eventsSinceNumber", strconv.FormatInt(last+1, 10))
+		nextURL := r.URL.Path + "?" + nextQ.Encode()
+		out = append(out, map[string]any{
+			"relation": "next",
+			"url":      nextURL,
+		})
+	}
+	return out
 }
 
 // opGetWsBindingToken is POST /Subscription/{id}/$get-ws-binding-token.
