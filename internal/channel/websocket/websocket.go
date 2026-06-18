@@ -22,7 +22,7 @@ import (
 	codingws "github.com/coder/websocket"
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 )
 
 // Channel name constant; used in metric labels and span names.

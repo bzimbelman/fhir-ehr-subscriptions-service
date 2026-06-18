@@ -13,7 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
 )
 
 // Effective is the typed, immutable, post-validation, post-resolution snapshot

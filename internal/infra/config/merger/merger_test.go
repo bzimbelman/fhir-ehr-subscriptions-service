@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/merger"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/merger"
 )
 
 // TestPrecedenceCLIOverEverything: CLI > env > file > defaults. Last argument

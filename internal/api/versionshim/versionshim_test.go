@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/versionshim"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/versionshim"
 )
 
 func TestNegotiate_DefaultsToR5(t *testing.T) {

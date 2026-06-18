@@ -20,10 +20,10 @@ import (
 	"github.com/google/uuid"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/matcher"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/topics/catalog"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
 // startPostgres spins up a Postgres 16 container or t.Skips when

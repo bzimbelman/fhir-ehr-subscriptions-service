@@ -1,4 +1,4 @@
-module github.com/fhir-subscriptions-foss/fhir-subs
+module github.com/bzimbelman/fhir-ehr-subscriptions-service
 
 go 1.22.0
 

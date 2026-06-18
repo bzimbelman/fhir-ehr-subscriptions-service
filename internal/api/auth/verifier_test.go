@@ -18,7 +18,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/auth"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 )
 
 // keyMaterial is a generated RSA key plus its public key id. Tests use

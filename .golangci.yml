@@ -26,7 +26,7 @@ linters-settings:
     disable:
       - fieldalignment
   goimports:
-    local-prefixes: github.com/fhir-subscriptions-foss/fhir-subs
+    local-prefixes: github.com/bzimbelman/fhir-ehr-subscriptions-service
   revive:
     rules:
       - name: exported

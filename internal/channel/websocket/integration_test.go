@@ -24,10 +24,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel/websocket"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/migrate"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/websocket"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 func startPostgres(t *testing.T) *pgxpool.Pool {

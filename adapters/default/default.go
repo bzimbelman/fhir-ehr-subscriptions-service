@@ -17,8 +17,8 @@ package defaultadapter
 import (
 	"context"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/registry"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // Adapter is the default reference EHR adapter.

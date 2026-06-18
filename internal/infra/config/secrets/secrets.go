@@ -18,7 +18,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
 )
 
 const (

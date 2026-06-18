@@ -15,8 +15,8 @@ import (
 	codingws "github.com/coder/websocket"
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel/websocket"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/websocket"
 )
 
 // fakeMetrics records counter increments so tests can assert them.

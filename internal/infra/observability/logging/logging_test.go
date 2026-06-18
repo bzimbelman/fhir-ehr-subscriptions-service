@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/logging"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 )
 
 // LLD §6.2: at info+ the logger drops fields named resource, bundle, body,

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/registry"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // stubAdapter satisfies spi.EhrAdapter with a configurable manifest.

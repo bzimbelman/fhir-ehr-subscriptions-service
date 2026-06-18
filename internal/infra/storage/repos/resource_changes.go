@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 )
 
 // ResourceChangesRepo wraps the resource_changes partitioned table.

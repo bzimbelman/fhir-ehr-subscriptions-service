@@ -13,7 +13,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 )
 
 func newRecordingTracerProvider() (*sdktrace.TracerProvider, *tracetest.SpanRecorder) {

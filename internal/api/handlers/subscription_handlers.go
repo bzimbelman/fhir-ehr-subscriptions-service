@@ -19,10 +19,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/auth"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/fhirerror"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/schemas"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // recordCreated, recordUpdated, recordDeleted, recordWsTokenIssued, and

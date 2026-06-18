@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/loader"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/loader"
 )
 
 // TestParseCLIFlags asserts that --set dotted.key=value entries become a sparse

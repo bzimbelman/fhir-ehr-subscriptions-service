@@ -19,11 +19,11 @@ import (
 	"github.com/google/uuid"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/engine/builder"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/engine/scheduler"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/builder"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/scheduler"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 func startPostgres(t *testing.T) string {

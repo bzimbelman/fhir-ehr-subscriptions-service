@@ -32,10 +32,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/audit"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/logging"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/metrics"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/tracing"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/metrics"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing"
 )
 
 // MetricsConfig is the metrics-layer config block.

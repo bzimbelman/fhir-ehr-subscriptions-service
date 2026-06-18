@@ -31,7 +31,7 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 )
 
 // RetryConfig governs the backoff curve and the dead-letter

@@ -6,7 +6,7 @@ package auth
 import (
 	"net/http"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/fhirerror"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
 )
 
 func writeAuthFailure(w http.ResponseWriter, status int, reason string) {

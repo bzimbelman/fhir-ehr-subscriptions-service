@@ -15,7 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/audit"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 )
 
 // JCS canonicalization (RFC 8785, ADR 0010 #3) — sort keys, no whitespace.

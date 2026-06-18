@@ -6,7 +6,7 @@ package config
 import (
 	"encoding/json"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
 )
 
 // buildEffective projects the post-resolution generic tree into the typed

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	effectivestore "github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/effective_store"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
+	effectivestore "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/effective_store"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
 )
 
 // TestPublishReadAtomic: a Read after Publish returns the published snapshot.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
 )
 
 func TestStorageConfigDefaults(t *testing.T) {

@@ -19,12 +19,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/codec"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/migrate"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/partition"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/pool"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/retention"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/partition"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/pool"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/retention"
 )
 
 // Config bundles every storage tunable. It mirrors the storage.* block

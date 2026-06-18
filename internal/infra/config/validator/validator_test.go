@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/validator"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/validator"
 )
 
 // TestStructuralBeforeSecret: an unset env var referenced by a placeholder is

@@ -11,7 +11,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/tracing"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing"
 )
 
 // LLD §5: tracer must support root spans at the four entry points

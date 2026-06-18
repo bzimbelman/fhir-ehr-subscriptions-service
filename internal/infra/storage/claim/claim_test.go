@@ -11,7 +11,7 @@ import (
 
 	"github.com/pashagolub/pgxmock/v3"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/claim"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/claim"
 )
 
 type fakeRow struct {

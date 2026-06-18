@@ -17,7 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/e2e/mocksub"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mocksub"
 )
 
 // RegisterSubscriberOptions parameterizes RegisterSubscriber.

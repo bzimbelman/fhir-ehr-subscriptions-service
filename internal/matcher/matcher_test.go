@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/matcher"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/topics/catalog"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
 // orderChangedTopic exercises the seven-step algorithm:

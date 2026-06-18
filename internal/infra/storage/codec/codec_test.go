@@ -9,7 +9,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 )
 
 func newKey(t *testing.T, b byte) []byte {

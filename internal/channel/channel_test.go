@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 )
 
 func TestDeliveryOutcomeKind(t *testing.T) {

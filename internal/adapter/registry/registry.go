@@ -15,7 +15,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
 // Factory constructs a fresh EhrAdapter instance. The registry calls the

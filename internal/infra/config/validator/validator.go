@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
 )
 
 // Report is the result of one or more validation passes.

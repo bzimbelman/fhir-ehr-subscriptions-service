@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/audit"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 )
 
 // TestPostgres_AuditTable runs against a real Postgres instance.

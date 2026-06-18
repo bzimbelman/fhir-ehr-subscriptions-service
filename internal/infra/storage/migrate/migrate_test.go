@@ -7,7 +7,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
 )
 
 func TestMigrationsEmbedded(t *testing.T) {

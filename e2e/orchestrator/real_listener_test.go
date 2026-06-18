@@ -14,7 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/mllp"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/mllp"
 )
 
 // realMLLPListener wraps the production MLLP listener (internal/mllp) so

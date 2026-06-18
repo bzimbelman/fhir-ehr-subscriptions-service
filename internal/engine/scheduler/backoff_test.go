@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/engine/scheduler"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/scheduler"
 )
 
 // TestBackoffExponentialUnclamped: with no jitter and no retry-after

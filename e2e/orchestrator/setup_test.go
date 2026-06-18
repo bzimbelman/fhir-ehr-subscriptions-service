@@ -23,8 +23,8 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/e2e/mockehr"
-	"github.com/fhir-subscriptions-foss/fhir-subs/e2e/mocksub"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mockehr"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mocksub"
 )
 
 // Harness is the per-process e2e fixture. One TestMain wires it up; every

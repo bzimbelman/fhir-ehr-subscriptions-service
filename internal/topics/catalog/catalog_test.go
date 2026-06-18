@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/topics/catalog"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
 // minimalTopic is a compact, syntactically valid SubscriptionTopic

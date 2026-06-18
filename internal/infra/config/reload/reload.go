@@ -14,7 +14,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/schemas"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/schemas"
 )
 
 // Outcome enumerates the reload report classifications LLD §8 commits.

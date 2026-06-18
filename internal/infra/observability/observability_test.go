@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/observability/audit"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 )
 
 func TestStart_DefaultsAreSane(t *testing.T) {

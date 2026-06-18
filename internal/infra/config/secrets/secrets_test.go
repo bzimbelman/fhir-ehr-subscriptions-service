@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/redaction"
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/config/secrets"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/redaction"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config/secrets"
 )
 
 // TestResolveEnvPlaceholder asserts ${env:VAR} substitution and that the path

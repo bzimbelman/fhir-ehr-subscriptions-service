@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pashagolub/pgxmock/v3"
 
-	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 func TestEhrEventsInsertReturnsID(t *testing.T) {
