@@ -7,24 +7,24 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mockehr"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/cliprint"
 )
 
-// publisher walks a Catalog and emits each MessageEntry over MLLP, printing
-// a "→ send" / "← ack" line per message in the style the demo doc shows.
+// publisher walks a Catalog and emits each MessageEntry over MLLP,
+// printing a "→ send" / "← ack" line per message in the style the
+// demo doc shows. Output goes through cliprint.Formatter so the same
+// stream can render as a colored transcript or as JSON Lines.
 //
-// Fields nowFn / idFn / noColor are seams so tests can pin output and so an
-// operator can pipe stdout through a non-tty without ANSI codes leaking.
+// nowFn / idFn are seams so tests can pin output deterministically.
 type publisher struct {
-	addr    string
-	out     io.Writer
-	nowFn   func() time.Time
-	idFn    func() string
-	noColor bool
+	addr  string
+	fmt   *cliprint.Formatter
+	nowFn func() time.Time
+	idFn  func() string
 }
 
 // run sends every message in cat in order. It returns the first send error
@@ -81,54 +81,65 @@ func (p *publisher) sendOne(ctx context.Context, client *mockehr.MLLPClient, ent
 	return nil
 }
 
-// printSend writes the "→ TRIGGER  details                sent" line.
+// printSend emits a cliprint "send" event for one outgoing message.
+// The trigger (ORU^R01 etc.) becomes the label; patient/obs/value
+// derived from the catalog summary become structured fields.
 func (p *publisher) printSend(entry MessageEntry, ctrlID string) {
-	ts := p.nowFn().Format("15:04:05")
-	trigger := triggerLabel(entry.Template)
-	details := summary(entry)
-	desc := ""
+	fields := summaryFields(entry)
+	fields = append(fields, cliprint.Field{K: "id", V: ctrlID})
 	if entry.Description != "" {
-		desc = "  " + entry.Description
+		fields = append(fields, cliprint.Field{K: "desc", V: entry.Description})
 	}
-	prefix := p.colorize(colorBlue, "→")
-	line := fmt.Sprintf("[%s] %s %-10s %-50s sent%s\n", ts, prefix, trigger, details+" id="+ctrlID, desc)
-	_, _ = io.WriteString(p.out, line)
+	p.fmt.Emit(cliprint.Event{
+		Time:   p.nowFn(),
+		Kind:   cliprint.KindSend,
+		Status: cliprint.StatusOK,
+		Label:  triggerLabel(entry.Template),
+		Fields: fields,
+		Msg:    "sent",
+	})
 }
 
-// printAck writes the "← ACK control_id=…  OK/NACK" line. The result is
-// classified by inspecting MSA-1 for AA/AE/AR.
+// printAck emits a cliprint "ack" event. AA → OK, AE → warn, AR/UNKNOWN
+// → fail; the publisher keeps running either way.
 func (p *publisher) printAck(ctrlID string, ack []byte) {
-	ts := p.nowFn().Format("15:04:05")
-	status := "OK"
-	color := colorGreen
-	switch ackKind := classifyACK(ack); ackKind {
+	status := cliprint.StatusOK
+	msg := "OK"
+	switch classifyACK(ack) {
 	case "AA":
-		status = "OK"
-		color = colorGreen
+		status = cliprint.StatusOK
+		msg = "OK"
 	case "AE":
-		status = "AE (application error)"
-		color = colorYellow
+		status = cliprint.StatusWarn
+		msg = "AE (application error)"
 	case "AR":
-		status = "AR (application reject)"
-		color = colorRed
+		status = cliprint.StatusFail
+		msg = "AR (application reject)"
 	default:
-		status = "UNKNOWN"
-		color = colorYellow
+		status = cliprint.StatusWarn
+		msg = "UNKNOWN"
 	}
-	prefix := p.colorize(colorGreen, "←")
-	statusOut := p.colorize(color, status)
-	line := fmt.Sprintf("[%s] %s %-10s control_id=%-20s %s\n", ts, prefix, "ACK", ctrlID, statusOut)
-	_, _ = io.WriteString(p.out, line)
+	p.fmt.Emit(cliprint.Event{
+		Time:   p.nowFn(),
+		Kind:   cliprint.KindAck,
+		Status: status,
+		Label:  "ACK",
+		Fields: []cliprint.Field{{K: "control_id", V: ctrlID}},
+		Msg:    msg,
+	})
 }
 
-// printAckError writes a red "← ACK …  FAILED: <err>" line on transport
-// failures (dial / write / read errors before any MSA could be parsed).
+// printAckError emits a cliprint "ack_error" event on transport
+// failures (dial / write / read before any MSA could be parsed).
 func (p *publisher) printAckError(ctrlID string, err error) {
-	ts := p.nowFn().Format("15:04:05")
-	prefix := p.colorize(colorRed, "←")
-	statusOut := p.colorize(colorRed, "FAILED: "+err.Error())
-	line := fmt.Sprintf("[%s] %s %-10s control_id=%-20s %s\n", ts, prefix, "ACK", ctrlID, statusOut)
-	_, _ = io.WriteString(p.out, line)
+	p.fmt.Emit(cliprint.Event{
+		Time:   p.nowFn(),
+		Kind:   cliprint.KindAckError,
+		Status: cliprint.StatusFail,
+		Label:  "ACK",
+		Fields: []cliprint.Field{{K: "control_id", V: ctrlID}},
+		Msg:    "FAILED: " + err.Error(),
+	})
 }
 
 // classifyACK looks for "MSA|<code>|" and returns "AA" / "AE" / "AR".
@@ -152,23 +163,26 @@ func classifyACK(ack []byte) string {
 	}
 }
 
-// colorize wraps s in an ANSI escape unless noColor is set. The constants
-// stay private — operators don't reach in and override them.
-type ansi string
-
-const (
-	colorReset  ansi = "\033[0m"
-	colorRed    ansi = "\033[31m"
-	colorGreen  ansi = "\033[32m"
-	colorYellow ansi = "\033[33m"
-	colorBlue   ansi = "\033[34m"
-)
-
-func (p *publisher) colorize(c ansi, s string) string {
-	if p.noColor {
-		return s
+// summaryFields returns the structured field set rendered in the
+// publisher's send line. Field selection mirrors the demo doc's
+// example output (patient + content highlights).
+func summaryFields(e MessageEntry) []cliprint.Field {
+	switch e.Template {
+	case "oru-r01":
+		return []cliprint.Field{
+			{K: "patient", V: e.Fields["patient_id"]},
+			{K: "obs", V: e.Fields["observation_code"]},
+			{K: "value", V: e.Fields["value"]},
+		}
+	case "adt-a01":
+		out := []cliprint.Field{{K: "patient", V: e.Fields["patient_id"]}}
+		if fac := e.Fields["facility"]; fac != "" {
+			out = append(out, cliprint.Field{K: "facility", V: fac})
+		}
+		return out
+	default:
+		return []cliprint.Field{{K: "patient", V: e.Fields["patient_id"]}}
 	}
-	return string(c) + s + string(colorReset)
 }
 
 // defaultIDGen returns a goroutine-safe-ish (single-publisher) generator

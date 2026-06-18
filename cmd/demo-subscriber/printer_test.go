@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -86,7 +87,7 @@ func TestPrinter_PrintsHighlights(t *testing.T) {
 	t.Parallel()
 
 	var sb strings.Builder
-	p := newPrinter(&sb, true)
+	p := newPrinter(&sb, true /*pretty*/, false /*noColor*/)
 	p.printNotification(bundleHighlights{
 		Topic:       "http://demo.org/topics/lab-results",
 		Patient:     "Patient/ABC123",
@@ -100,44 +101,69 @@ func TestPrinter_PrintsHighlights(t *testing.T) {
 	if !strings.Contains(out, "lab-results") {
 		t.Errorf("output missing topic short form: %q", out)
 	}
-	if !strings.Contains(out, "7") {
+	if !strings.Contains(out, "event=7") {
 		t.Errorf("output missing event number: %q", out)
 	}
 	if !strings.Contains(out, "\x1b[") {
-		t.Errorf("colorize=true but no ANSI escape in output: %q", out)
+		t.Errorf("pretty+color on but no ANSI escape in output: %q", out)
 	}
 }
 
-// TestPrinter_NoColorWhenDisabled skips ANSI when colorize=false.
+// TestPrinter_NotPretty_EmitsJSONLines verifies the --pretty=false
+// path: each notification is a single JSON Lines record with the
+// expected fields and no ANSI escapes.
+func TestPrinter_NotPretty_EmitsJSONLines(t *testing.T) {
+	t.Parallel()
+
+	var sb strings.Builder
+	p := newPrinter(&sb, false /*pretty*/, false /*noColor*/)
+	p.printNotification(bundleHighlights{
+		Topic:       "http://demo.org/topics/lab-results",
+		Patient:     "Patient/ABC123",
+		EventNumber: 7,
+	})
+
+	out := sb.String()
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("JSON mode must not emit ANSI: %q", out)
+	}
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("expected exactly one line of JSON, got: %q", out)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &rec); err != nil {
+		t.Fatalf("not valid JSON: %v\n%s", err, out)
+	}
+	if rec["kind"] != "notification" {
+		t.Errorf(`kind: got %v, want "notification"`, rec["kind"])
+	}
+	if rec["label"] != "lab-results" {
+		t.Errorf(`label: got %v, want "lab-results"`, rec["label"])
+	}
+	fields, ok := rec["fields"].(map[string]any)
+	if !ok {
+		t.Fatalf("fields missing/wrong type: %v", rec["fields"])
+	}
+	if fields["patient"] != "Patient/ABC123" {
+		t.Errorf("fields.patient: got %v", fields["patient"])
+	}
+	if fields["event"] != "7" {
+		t.Errorf("fields.event: got %v", fields["event"])
+	}
+}
+
+// TestPrinter_NoColorWhenDisabled skips ANSI when noColor=true.
 func TestPrinter_NoColorWhenDisabled(t *testing.T) {
 	t.Parallel()
 
 	var sb strings.Builder
-	p := newPrinter(&sb, false)
+	p := newPrinter(&sb, true /*pretty*/, true /*noColor*/)
 	p.printNotification(bundleHighlights{
 		Topic:       "http://demo.org/topics/lab-results",
 		Patient:     "Patient/ABC123",
 		EventNumber: 1,
 	})
 	if strings.Contains(sb.String(), "\x1b[") {
-		t.Errorf("colorize=false but ANSI escape present: %q", sb.String())
-	}
-}
-
-// TestColorForTopic_Stable returns the same color for the same topic
-// across calls (so the operator sees consistent stripes).
-func TestColorForTopic_Stable(t *testing.T) {
-	t.Parallel()
-
-	a := colorForTopic("http://demo.org/topics/lab-results")
-	b := colorForTopic("http://demo.org/topics/lab-results")
-	if a != b {
-		t.Errorf("colorForTopic not stable: %q vs %q", a, b)
-	}
-	c := colorForTopic("http://demo.org/topics/encounters")
-	if c == a {
-		// Not strictly required, but the palette has 6 colors so
-		// this is overwhelmingly likely.
-		t.Logf("warning: two topics hashed to the same color (%q)", a)
+		t.Errorf("noColor=true but ANSI escape present: %q", sb.String())
 	}
 }

@@ -53,6 +53,7 @@ type cliFlags struct {
 	privateKey  string
 	kid         string
 	noColor     bool
+	pretty      bool
 	subscribeTO time.Duration
 }
 
@@ -71,7 +72,8 @@ func parseFlags(args []string) (cliFlags, error) {
 	fs.StringVar(&f.scope, "scope", "system/Subscription.cruds", "OAuth scope to request when minting a token")
 	fs.StringVar(&f.privateKey, "private-key", "", "path to a PEM-encoded RSA private key for client_assertion signing")
 	fs.StringVar(&f.kid, "kid", "", "JWS `kid` header for the client_assertion")
-	fs.BoolVar(&f.noColor, "no-color", false, "disable ANSI color in output")
+	fs.BoolVar(&f.noColor, "no-color", false, "disable ANSI color (kept for backward compat; prefer NO_COLOR env)")
+	fs.BoolVar(&f.pretty, "pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")
 	fs.DurationVar(&f.subscribeTO, "subscribe-timeout", 10*time.Second, "timeout for the POST /Subscription request")
 
 	if err := fs.Parse(args); err != nil {
@@ -124,8 +126,7 @@ func run(args []string, stdout *os.File) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	colorize := !f.noColor
-	rcv := newReceiver(stdout, colorize)
+	rcv := newReceiver(stdout, f.pretty, f.noColor)
 	logger := rcv.printer
 
 	// 1. Bring up the listener first so the activation handshake the

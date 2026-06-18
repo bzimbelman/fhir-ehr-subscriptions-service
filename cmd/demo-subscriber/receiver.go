@@ -19,10 +19,10 @@ type receiver struct {
 	printer *printer
 }
 
-func newReceiver(w io.Writer, colorize bool) *receiver {
+func newReceiver(w io.Writer, pretty, noColor bool) *receiver {
 	return &receiver{
 		hook:    mocksub.NewRestHookReceiver(),
-		printer: newPrinter(w, colorize),
+		printer: newPrinter(w, pretty, noColor),
 	}
 }
 
