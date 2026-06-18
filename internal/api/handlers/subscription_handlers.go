@@ -185,8 +185,11 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	s.recordCreated()
 
 	// Activation handshake — non-blocking. The 201 returns immediately
-	// with status=requested.
-	go s.activate(context.Background(), id)
+	// with status=requested. spawnActivate enrolls the goroutine in
+	// the lifecycle WaitGroup, bounds the per-call context with
+	// ActivationTimeout, and recovers any panic in the channel adapter
+	// (B-10).
+	s.spawnActivate(id)
 
 	stored, _ := s.deps.Subscriptions.GetByID(r.Context(), id)
 	if stored == nil {
@@ -436,7 +439,7 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	switch classification {
 	case routingReHandshake:
 		_ = s.deps.Subscriptions.UpdateStatus(r.Context(), id, repos.SubRequested, "")
-		go s.activate(context.Background(), id)
+		s.spawnActivate(id)
 	case routingDeactivate:
 		_ = s.deps.Subscriptions.UpdateStatus(r.Context(), id, repos.SubOff, "")
 	case routingDrainAndApply:

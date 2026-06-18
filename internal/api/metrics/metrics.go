@@ -43,6 +43,7 @@ type Metrics struct {
 	ValidationFailures   *prometheus.CounterVec
 	TokenIssued          prometheus.Counter
 	WSBindingTokenIssued prometheus.Counter
+	ActivatePanicTotal   prometheus.Counter
 }
 
 // New constructs the API metric set and registers it with reg. If reg
@@ -90,6 +91,10 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fhir_subs_api_ws_binding_token_issued_total",
 			Help: "WebSocket binding tokens issued by $get-ws-binding-token.",
 		}),
+		ActivatePanicTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fhir_subs_api_activate_panic_total",
+			Help: "Recovered panics in the fire-and-forget activation goroutines (B-10).",
+		}),
 	}
 
 	collectors := []prometheus.Collector{
@@ -102,6 +107,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.ValidationFailures,
 		m.TokenIssued,
 		m.WSBindingTokenIssued,
+		m.ActivatePanicTotal,
 	}
 
 	for _, c := range collectors {
@@ -187,6 +193,16 @@ func (m *Metrics) RecordWSBindingTokenIssued() {
 		return
 	}
 	m.WSBindingTokenIssued.Inc()
+}
+
+// RecordActivatePanic increments the activate_panic counter. Called by
+// the API handler's deferred recover() inside the activation goroutine
+// (B-10).
+func (m *Metrics) RecordActivatePanic() {
+	if m == nil || m.ActivatePanicTotal == nil {
+		return
+	}
+	m.ActivatePanicTotal.Inc()
 }
 
 // RequestMiddleware returns a chi-friendly HTTP middleware that records
