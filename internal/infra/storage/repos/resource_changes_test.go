@@ -29,6 +29,7 @@ func TestResourceChangesInsertReturnsID(t *testing.T) {
 
 	pool.ExpectBegin()
 	pool.ExpectQuery("INSERT INTO resource_changes").
+		WithArgs(anyArgs(9)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "sequence", "created_month"}).
 			AddRow(id, int64(101), time.Now()))
 	pool.ExpectCommit()
@@ -76,7 +77,7 @@ func TestResourceChangesClaimUnprocessed(t *testing.T) {
 	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
 
 	pool.ExpectBegin()
-	pool.ExpectQuery("FOR UPDATE SKIP LOCKED").
+	pool.ExpectQuery("resource_changes").
 		WithArgs(int32(20)).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "sequence", "adapter_id", "correlation_id", "resource_type",

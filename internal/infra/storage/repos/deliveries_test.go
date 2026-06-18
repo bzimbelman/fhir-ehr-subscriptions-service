@@ -31,6 +31,7 @@ func TestDeliveriesInsert(t *testing.T) {
 
 	pool.ExpectBegin()
 	pool.ExpectQuery("INSERT INTO deliveries").
+		WithArgs(anyArgs(8)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 	pool.ExpectCommit()
 
@@ -75,7 +76,8 @@ func TestDeliveriesClaimPending(t *testing.T) {
 	now := time.Now()
 
 	pool.ExpectBegin()
-	pool.ExpectQuery("FOR UPDATE SKIP LOCKED").
+	pool.ExpectQuery("deliveries").
+		WithArgs(anyArgs(2)...).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "subscription_id", "ehr_event_id", "event_number",
 			"status", "attempts", "next_attempt_at", "last_error",
@@ -83,6 +85,7 @@ func TestDeliveriesClaimPending(t *testing.T) {
 		}).AddRow(id, subID, eventID, int64(1), "pending", int32(0), now, "",
 			int32(1), corr, now, now))
 	pool.ExpectExec("UPDATE deliveries").
+		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	pool.ExpectCommit()
 

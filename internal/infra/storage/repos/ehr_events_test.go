@@ -30,6 +30,7 @@ func TestEhrEventsInsertReturnsID(t *testing.T) {
 
 	pool.ExpectBegin()
 	pool.ExpectQuery("INSERT INTO ehr_events").
+		WithArgs(anyArgs(10)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "event_number", "created_month"}).
 			AddRow(id, int64(7), time.Now()))
 	pool.ExpectCommit()

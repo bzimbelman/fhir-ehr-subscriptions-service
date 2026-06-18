@@ -27,6 +27,7 @@ func TestDeadLettersInsert(t *testing.T) {
 	srcID := uuid.New()
 
 	pool.ExpectQuery("INSERT INTO dead_letters").
+		WithArgs(anyArgs(8)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 
 	repo := repos.NewDeadLettersRepo(newCodec(t))
@@ -60,8 +61,10 @@ func TestPendingPairsInsertAndDelete(t *testing.T) {
 
 	srcID := uuid.New()
 	pool.ExpectExec("INSERT INTO pending_pairs").
+		WithArgs(anyArgs(6)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	pool.ExpectExec("DELETE FROM pending_pairs").
+		WithArgs(anyArgs(2)...).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	repo := repos.NewPendingPairsRepo(newCodec(t))
@@ -94,8 +97,10 @@ func TestAdapterStateUpsertAndGet(t *testing.T) {
 	ctx := context.Background()
 
 	pool.ExpectExec("INSERT INTO adapter_state").
+		WithArgs(anyArgs(5)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	pool.ExpectQuery("SELECT (.+) FROM adapter_state").
+		WithArgs(anyArgs(3)...).
 		WillReturnRows(pgxmock.NewRows([]string{"value", "key_version", "updated_at"}).
 			AddRow([]byte("vendor-token"), int32(1), time.Now()))
 
@@ -133,6 +138,7 @@ func TestAuthClientsInsertAndGet(t *testing.T) {
 	ctx := context.Background()
 
 	pool.ExpectExec("INSERT INTO auth_clients").
+		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	pool.ExpectQuery("SELECT (.+) FROM auth_clients").
 		WithArgs("client-a").
@@ -174,17 +180,19 @@ func TestSubscriptionTopicsInsertAndList(t *testing.T) {
 
 	id := uuid.New()
 	pool.ExpectQuery("INSERT INTO subscription_topics").
+		WithArgs(anyArgs(9)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 
+	now := time.Now()
 	pool.ExpectQuery("SELECT (.+) FROM subscription_topics WHERE status").
 		WithArgs("active").
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "url", "version", "title", "description", "status",
 			"date", "source", "body", "compiled_form", "created_at", "retired_at",
 		}).AddRow(id, "http://example.org/order-changed", "1.0", "Order Changed",
-			"desc", "active", time.Now(), "builtin",
+			"desc", "active", &now, "builtin",
 			[]byte(`{"resourceType":"SubscriptionTopic"}`),
-			[]byte(nil), time.Now(), nil))
+			[]byte(nil), now, (*time.Time)(nil)))
 
 	repo := repos.NewSubscriptionTopicsRepo()
 	got, err := repo.Insert(ctx, pool, repos.SubscriptionTopicRow{
@@ -225,6 +233,7 @@ func TestSubscriptionsInsertAndGet(t *testing.T) {
 
 	id := uuid.New()
 	pool.ExpectQuery("INSERT INTO subscriptions").
+		WithArgs(anyArgs(17)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 	pool.ExpectQuery("SELECT (.+) FROM subscriptions WHERE id").
 		WithArgs(id).
@@ -277,8 +286,10 @@ func TestWsBindingTokensInsertAndDelete(t *testing.T) {
 
 	subID := uuid.New()
 	pool.ExpectExec("INSERT INTO ws_binding_tokens").
+		WithArgs(anyArgs(4)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	pool.ExpectExec("DELETE FROM ws_binding_tokens").
+		WithArgs(pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	repo := repos.NewWsBindingTokensRepo()
@@ -309,6 +320,7 @@ func TestAuditLogAppend(t *testing.T) {
 	ctx := context.Background()
 
 	pool.ExpectQuery("INSERT INTO audit_log").
+		WithArgs(anyArgs(10)...).
 		WillReturnRows(pgxmock.NewRows([]string{"seq"}).AddRow(int64(42)))
 
 	repo := repos.NewAuditLogRepo()
