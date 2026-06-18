@@ -83,6 +83,12 @@ type ListenerConfig struct {
 	// to extend it (N-1).
 	AckWriteTimeout time.Duration
 
+	// ReadBufBytes is the size of the per-connection scratch buffer
+	// that the read loop reuses for each conn.Read call. Default 8 KiB.
+	// Larger values reduce syscall pressure on bursty senders at the
+	// cost of more idle memory per connection. (N-1.)
+	ReadBufBytes int
+
 	// NackThenDropAfter is the consecutive-persist-failure threshold
 	// at which the listener drops the connection. Default 5.
 	NackThenDropAfter int
@@ -182,6 +188,9 @@ func (c ListenerConfig) withDefaults() ListenerConfig {
 	}
 	if c.AckWriteTimeout <= 0 {
 		c.AckWriteTimeout = 2 * time.Second
+	}
+	if c.ReadBufBytes <= 0 {
+		c.ReadBufBytes = 8192
 	}
 	if c.NackThenDropAfter <= 0 {
 		c.NackThenDropAfter = 5

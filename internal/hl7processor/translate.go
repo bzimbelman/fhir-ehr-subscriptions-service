@@ -11,6 +11,18 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
+// # Charset normalization contract
+//
+// translate consumes the raw HL7 byte slice as-is. It performs NO
+// charset transcoding; MSH-18 (Charset) is not consulted. Adapters MUST
+// transcode any non-UTF-8 input to UTF-8 BEFORE calling translate so
+// downstream JSON marshaling is stable. An adapter that hands UTF-16
+// bytes through the framework will produce a parsed message whose
+// string fields are mis-interpreted at the resource layer; this is the
+// adapter's bug, not the framework's. The contract is enforced at the
+// SPI boundary and reaffirmed here for callers reading translate.go in
+// isolation (N-1).
+
 // translatedMessage bundles the four-step translation result. Pure data;
 // no DB references.
 type translatedMessage struct {

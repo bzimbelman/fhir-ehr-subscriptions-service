@@ -89,6 +89,15 @@ func (e *endpoint) addr() net.Addr {
 // immediately and a WARN log records the offending peer. The semaphore
 // release closure is bound to the connection lifetime so a slot is
 // reclaimed on disconnect even if the handler panics.
+//
+// N-1: PROXY protocol v2 (haproxy) is NOT yet decoded. Behind a
+// transparent LB / Envoy-with-PROXY-listener, every conn.RemoteAddr
+// reports the LB's address rather than the originating EHR. The fix
+// is to wrap the listener in a proxyproto.Listener so the v2 header
+// is transparently parsed and conn.RemoteAddr returns the real peer.
+// Tracked in the audit doc as a Reclassified follow-up; today the
+// listener treats RemoteAddr as authoritative and operators should
+// run it on a host-network listener or behind a non-PROXY LB.
 func (e *endpoint) run(ctx context.Context) {
 	endpointLabels := map[string]string{"listener_endpoint": e.cfg.Name}
 	for {

@@ -443,6 +443,14 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 		// Pre-flight error from the channel (e.g., invalid envelope) —
 		// treat as transient with a small backoff. The channel SPI
 		// reserves err for setup-time problems.
+		//
+		// N-1: setup errors flow through the standard transient retry
+		// budget (RetryConfig.MaxAttempts), so the row dead-letters on
+		// the Nth attempt rather than spinning forever. A future
+		// enhancement could classify-as-permanent the same setup-error
+		// string repeating across consecutive attempts; until then
+		// the channel module is responsible for not returning a
+		// retry-able error for genuinely permanent setup failures.
 		w.logger.ErrorContext(cctx, "scheduler: channel deliver setup error",
 			slog.String("channel_type", sub.ChannelType), slog.Any("err", deliverErr))
 		w.requeueAsTransient(cctx, row, "channel_setup_error: "+deliverErr.Error())

@@ -117,7 +117,7 @@ func HandleConnectionWithLogger(
 	endpointLabels := map[string]string{"listener_endpoint": ep.Name}
 
 	framer := NewFramer(cfg.MaxMessageBytes)
-	readBuf := make([]byte, 8192)
+	readBuf := make([]byte, cfg.ReadBufBytes)
 
 	// readCh is fed by a goroutine that does the blocking Read. We select
 	// on it AND on ctx.Done() so ctx cancellation can trigger shutdown
@@ -293,7 +293,10 @@ func handleOneFrame(
 		PeerAddr:         state.peerAddr,
 		MLLPMessageID:    mshFields.MessageControlID,
 		CorrelationID:    correlationID,
-		Body:             append([]byte(nil), body...),
+		// N-1: framer already hands us a fresh slice (see Framer.Next
+		// where body := append([]byte(nil), f.buf...)); the redundant
+		// copy here was a no-op double-allocation.
+		Body: body,
 	}
 	clog.emit(logLevelInfo, "frame_received", map[string]any{
 		"received_at":     now.Format(time.RFC3339Nano),

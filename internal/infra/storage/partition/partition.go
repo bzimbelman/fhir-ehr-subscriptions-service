@@ -41,7 +41,14 @@ type Config struct {
 }
 
 // Run is a long-lived loop. It calls Tick once at startup, then sleeps
-// RunInterval between ticks. Returns when ctx is canceled.
+// for the most recent RunInterval before each subsequent tick. Returns
+// when ctx is canceled.
+//
+// N-1: prior versions captured cfg.RunInterval once and ignored later
+// reloads. Run now re-reads cfg.RunInterval (and cfg.TickTimeout) on
+// every iteration, so a SIGHUP-driven config reload that mutates the
+// supplied cfg pointer takes effect on the next tick. Callers passing
+// Config by value (the common case) see no behavior change.
 func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -53,7 +60,11 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 		cfg.TickTimeout = 30 * time.Minute
 	}
 	tickOnce := func() {
-		tickCtx, cancel := context.WithTimeout(ctx, cfg.TickTimeout)
+		timeout := cfg.TickTimeout
+		if timeout <= 0 {
+			timeout = 30 * time.Minute
+		}
+		tickCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		if err := Tick(tickCtx, pool, cfg); err != nil && cfg.OnTickError != nil {
 			cfg.OnTickError(err)
@@ -61,15 +72,18 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	}
 	tickOnce()
 
-	t := time.NewTimer(cfg.RunInterval)
-	defer t.Stop()
 	for {
+		interval := cfg.RunInterval
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+		t := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			return
 		case <-t.C:
 			tickOnce()
-			t.Reset(cfg.RunInterval)
 		}
 	}
 }
