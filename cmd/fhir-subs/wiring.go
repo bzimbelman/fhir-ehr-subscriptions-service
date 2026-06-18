@@ -198,23 +198,30 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		"websocket": defaultActivator{},
 		"email":     defaultActivator{},
 	}
+	// S-3.3: per-client rate limits on the create + WS bind-token mint
+	// routes. nil when the operator config disables them (Burst <= 0).
+	subCreateLim := buildClientRateLimiter(cfg.Auth.SubscriptionCreateRateLimit)
+	wsTokenLim := buildClientRateLimiter(cfg.Auth.WSBindingTokenRateLimit)
+
 	deps := handlers.Deps{
-		Subscriptions:       handlers.NewPgSubscriptionsStore(pool),
-		Topics:              handlers.NewPgTopicsStore(pool),
-		Events:              handlers.NewPgEventsStore(pool),
-		Deliveries:          handlers.NewPgDeliveriesStore(pool),
-		WsTokens:            handlers.NewPgWsBindingTokensStore(pool),
-		Audit:               handlers.NewPgAuditStore(pool),
-		Channels:            channels,
-		Now:                 func() time.Time { return time.Now().UTC() },
-		WSBindingTTL:        5 * time.Minute,
-		BaseURL:             "https://" + cfg.Server.HTTP.Bind,
-		WSBaseURL:           "wss://" + cfg.Server.HTTP.Bind + "/ws",
-		ServerVersion:       Version,
-		URLValidator:        urlValidator,
-		LifecycleCtx:        ctx,
-		ActivationTimeout:   30 * time.Second,
-		ActivationWaitGroup: &rt.activationWG,
+		Subscriptions:               handlers.NewPgSubscriptionsStore(pool),
+		Topics:                      handlers.NewPgTopicsStore(pool),
+		Events:                      handlers.NewPgEventsStore(pool),
+		Deliveries:                  handlers.NewPgDeliveriesStore(pool),
+		WsTokens:                    handlers.NewPgWsBindingTokensStore(pool),
+		Audit:                       handlers.NewPgAuditStore(pool),
+		Channels:                    channels,
+		Now:                         func() time.Time { return time.Now().UTC() },
+		WSBindingTTL:                5 * time.Minute,
+		BaseURL:                     "https://" + cfg.Server.HTTP.Bind,
+		WSBaseURL:                   "wss://" + cfg.Server.HTTP.Bind + "/ws",
+		ServerVersion:               Version,
+		URLValidator:                urlValidator,
+		LifecycleCtx:                ctx,
+		ActivationTimeout:           30 * time.Second,
+		ActivationWaitGroup:         &rt.activationWG,
+		SubscriptionCreateRateLimit: subCreateLim,
+		WSBindingTokenRateLimit:     wsTokenLim,
 	}
 
 	r := chi.NewRouter()
@@ -626,6 +633,21 @@ func (p *poolClientLookup) GetByID(ctx context.Context, id string) (*auth.Client
 		JwksURL: row.JwksURL,
 		Scopes:  row.Scopes,
 	}, nil
+}
+
+// buildClientRateLimiter projects the operator's RateLimitConfig onto
+// the auth.ClientRateLimiter primitive used by the chi handlers (S-3.3).
+// Returns nil when the limiter is disabled (Burst <= 0) so handler
+// wiring is a no-op for legacy operators.
+func buildClientRateLimiter(cfg RateLimitConfig) *auth.ClientRateLimiter {
+	if cfg.Burst <= 0 {
+		return nil
+	}
+	return auth.NewClientRateLimiter(auth.RateLimit{
+		Burst:           cfg.Burst,
+		RefillPerSecond: cfg.RefillPerSecond,
+		MaxKeys:         cfg.MaxKeys,
+	}, func() time.Time { return time.Now().UTC() })
 }
 
 // buildMLLPListener constructs the MLLP TCP listener from cfg.

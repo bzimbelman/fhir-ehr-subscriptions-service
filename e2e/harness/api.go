@@ -94,6 +94,14 @@ type APIServerConfig struct {
 	// Metrics is the optional MetricsRecorder e2e tests inject to
 	// observe RecordActivatePanic counter increments (B-10).
 	Metrics handlers.MetricsRecorder
+
+	// SubscriptionCreateRateLimit, when non-nil, plumbs a per-client
+	// token bucket onto POST /Subscription (S-3.3).
+	SubscriptionCreateRateLimit *auth.ClientRateLimiter
+
+	// WSBindingTokenRateLimit, when non-nil, plumbs a per-client
+	// token bucket onto $get-ws-binding-token (S-3.3).
+	WSBindingTokenRateLimit *auth.ClientRateLimiter
 }
 
 // APIServer wraps an in-process HTTP server hosting the Subscriptions
@@ -150,24 +158,26 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	}
 
 	deps := handlers.Deps{
-		Subscriptions:       handlers.NewPgSubscriptionsStore(cfg.Pool),
-		Topics:              handlers.NewPgTopicsStore(cfg.Pool),
-		Events:              handlers.NewPgEventsStore(cfg.Pool),
-		Deliveries:          handlers.NewPgDeliveriesStore(cfg.Pool),
-		WsTokens:            handlers.NewPgWsBindingTokensStore(cfg.Pool),
-		Audit:               handlers.NewPgAuditStore(cfg.Pool),
-		Channels:            channels,
-		Now:                 func() time.Time { return time.Now().UTC() },
-		WSBindingTTL:        5 * time.Minute,
-		BaseURL:             cfg.BaseURL,
-		WSBaseURL:           cfg.WSBaseURL,
-		ServerVersion:       "harness",
-		URLValidator:        cfg.URLValidator,
-		LifecycleCtx:        cfg.LifecycleCtx,
-		ActivationTimeout:   cfg.ActivationTimeout,
-		ActivationWaitGroup: cfg.ActivationWaitGroup,
-		AuditMaxBytes:       cfg.AuditMaxBytes,
-		Metrics:             cfg.Metrics,
+		Subscriptions:               handlers.NewPgSubscriptionsStore(cfg.Pool),
+		Topics:                      handlers.NewPgTopicsStore(cfg.Pool),
+		Events:                      handlers.NewPgEventsStore(cfg.Pool),
+		Deliveries:                  handlers.NewPgDeliveriesStore(cfg.Pool),
+		WsTokens:                    handlers.NewPgWsBindingTokensStore(cfg.Pool),
+		Audit:                       handlers.NewPgAuditStore(cfg.Pool),
+		Channels:                    channels,
+		Now:                         func() time.Time { return time.Now().UTC() },
+		WSBindingTTL:                5 * time.Minute,
+		BaseURL:                     cfg.BaseURL,
+		WSBaseURL:                   cfg.WSBaseURL,
+		ServerVersion:               "harness",
+		URLValidator:                cfg.URLValidator,
+		LifecycleCtx:                cfg.LifecycleCtx,
+		ActivationTimeout:           cfg.ActivationTimeout,
+		ActivationWaitGroup:         cfg.ActivationWaitGroup,
+		AuditMaxBytes:               cfg.AuditMaxBytes,
+		Metrics:                     cfg.Metrics,
+		SubscriptionCreateRateLimit: cfg.SubscriptionCreateRateLimit,
+		WSBindingTokenRateLimit:     cfg.WSBindingTokenRateLimit,
 	}
 
 	r := chi.NewRouter()
