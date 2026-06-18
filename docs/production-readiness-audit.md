@@ -44,35 +44,40 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Construct the full router (subscriptions, $get-ws-binding-token, $events, $status, /metadata) inside run.go and mount it; gate behind auth + observability middleware.
 - **Status:** The new `buildHTTPMux` is the single seam where the lifecycle probes + `/metadata` are mounted today and where `handlers.RegisterRoutes` will plug in once the production binary gains config knobs for the database URL, codec key provider, auth issuer/audience/JWKS, channel constructors, and MLLP listener. The full wiring is intentionally deferred from this branch because each new dependency adds blast radius (DB connection failure modes, key rotation surface, channel TLS) that deserves its own RED/GREEN cycle on top of the lifecycle gate the B-1/B-2/B-3 fix already gives operators. The probe-only binary is now safe to deploy as a "known-not-yet-serving-API" stage; the same binary will gain the API + pipeline workers in the follow-up B-4-full commit.
 
-#### B-5: jwksCache map has no mutex; concurrent `/token` requests will fatal-error the process
+#### B-5: jwksCache map has no mutex; concurrent `/token` requests will fatal-error the process — **RESOLVED** (`f786914`)
 - **File:** `internal/api/auth/token_endpoint.go:352-393`
 - **What:** `jwksCache.entries` is a plain `map[string]jwksCacheEntry` read at line 370 and written at line 393 with no synchronization.
 - **Why it matters:** Two simultaneous token POSTs hit Go's runtime "concurrent map read and map write" fatal error → the entire process crashes. Trivial to trigger from a single attacker.
 - **Fix:** Wrap with `sync.Mutex` (mirroring `Verifier.jwksMu`), or use `sync.Map` / a singleflight wrapper.
+- **Status:** Fixed in `f786914`; jwksCache now gates entries via `sync.Mutex`. Race-detector regression test in `internal/api/auth/token_endpoint_jwks_race_test.go` and `e2e/orchestrator/auth_jwks_race_test.go` (50 concurrent /token POSTs).
 
-#### B-6: Token endpoint has no body size limit
+#### B-6: Token endpoint has no body size limit — **RESOLVED** (`c194ad3`)
 - **File:** `internal/api/auth/token_endpoint.go:118-126`
 - **What:** `r.ParseForm()` is called with no `http.MaxBytesReader` wrapping `r.Body`.
 - **Why it matters:** Unauthenticated endpoint — any attacker can flood multi-MB POSTs through `ParseForm` and exhaust memory/CPU.
 - **Fix:** `r.Body = http.MaxBytesReader(w, r.Body, 64*1024)` before `ParseForm`; configurable.
+- **Status:** Fixed in `c194ad3`; cap is `MaxTokenRequestBodyBytes` (64 KiB) by default and overridable via `TokenEndpointConfig.MaxRequestBodyBytes`. Oversized bodies receive `413 Request Entity Too Large`. Tests: `token_endpoint_body_limit_test.go` and `e2e/orchestrator/auth_body_size_test.go`.
 
-#### B-7: Missing `jti` is silently accepted (replay protection bypass)
+#### B-7: Missing `jti` is silently accepted (replay protection bypass) — **RESOLVED** (`284da10`)
 - **File:** `internal/api/auth/token_endpoint.go:231` and `internal/api/auth/verifier.go:243-249`
 - **What:** JTI replay-protection is gated on `jti != ""`; an assertion with no jti claim bypasses replay detection.
 - **Why it matters:** SMART Backend Services / RFC 7523 §3 mandates `jti`. A stolen assertion can be replayed for the entire validity window.
 - **Fix:** Reject assertions with missing/empty `jti` as malformed.
+- **Status:** Fixed in `284da10`; both the token endpoint and the verifier now treat missing/empty `jti` as malformed (401). Tests: `token_endpoint_jti_required_test.go` and `e2e/orchestrator/auth_jti_required_test.go`.
 
-#### B-8: Raw JWT parser error returned in HTTP response body
+#### B-8: Raw JWT parser error returned in HTTP response body — **RESOLVED** (`c544f01`)
 - **File:** `internal/api/auth/token_endpoint.go:194`
 - **What:** `fmt.Sprintf("assertion validation failed: %v", err)` is sent to the client as `OperationOutcome.diagnostics`.
 - **Why it matters:** jwt/v5 error strings can leak token internals, key IDs, algorithm names — info-disclosure aiding offline attacks.
 - **Fix:** Map errors to a fixed enum of generic strings; never echo `err.Error()` on the auth path.
+- **Status:** Fixed in `c544f01`; introduced `diagnosticForReason` enum, raw error redirected to optional `TokenEndpointConfig.Logger`. Tests: `token_endpoint_error_scrub_test.go` and `e2e/orchestrator/auth_error_scrubbing_test.go` (asserts response body contains no `crypto/rsa`, `verification error`, key ids, or `jwt:` phrases).
 
-#### B-9: JTI cache eviction is broken (memory leak + degraded replay protection)
+#### B-9: JTI cache eviction is broken (memory leak + degraded replay protection) — **RESOLVED** (`708c2ad`)
 - **File:** `internal/api/auth/jti_cache.go:64-81`
 - **What:** `Seen()` deletes expired entries from `entries` but not from `order`; `Put()` evicts `c.order[0]` which may already be absent from `entries`. `c.order = c.order[1:]` leaks the underlying array.
 - **Why it matters:** Map can grow past `cap` without further eviction → OOM under sustained churn; replay protection silently weakens.
 - **Fix:** Use `hashicorp/golang-lru`, or sweep `order` correctly on expire and rebuild slice when growth exceeds 2× cap.
+- **Status:** Fixed in `708c2ad`; `Seen()` now sweeps `order` via `removeLocked`, `Put()` loops eviction so multiple ghosts can clear at once, and `maybeCompactLocked` rebuilds the underlying slice when its `cap` exceeds 2× configured cap. Tests under race detector: `jti_cache_test.go` (internal-package introspection) and `e2e/orchestrator/auth_jti_cache_eviction_test.go` (behavioural).
 
 #### B-10: Fire-and-forget activation goroutines have no shutdown / timeout / panic-recover
 - **File:** `internal/api/handlers/subscription_handlers.go:189, 439`
@@ -86,11 +91,12 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** Classic SSRF — on EKS/GKE this exfiltrates IAM credentials. Egress filtering bypassed.
 - **Fix:** Allowlist schemes (`https://` only in prod), block private/link-local/loopback CIDRs, optional configurable allow-host list.
 
-#### B-12: JWKS fetch is unauthenticated, unrestricted, and uses `http.DefaultClient` (no timeout, no body cap)
+#### B-12: JWKS fetch is unauthenticated, unrestricted, and uses `http.DefaultClient` (no timeout, no body cap) — **RESOLVED** (`9045845`)
 - **File:** `internal/api/auth/token_endpoint.go:97-99`, `internal/api/auth/verifier.go:106`
 - **What:** Whatever URL is in `auth_clients.JwksURL` is GETted with no scheme/host validation, no body-size limit, no client timeout.
 - **Why it matters:** SSRF on the auth path; a slow/hostile JWKS host hangs every authentication call indefinitely; a 100MB "jwks" response exhausts memory.
 - **Fix:** Dedicated client with 5s timeout; require `https://`; enforce host allowlist; `io.LimitReader(resp.Body, 1MiB)`.
+- **Status:** Fixed in `9045845`; shared `jwksPolicy` used by both token endpoint and verifier — `https`-only by default (opt-in `AllowInsecureJWKS` for local dev), optional `JWKSAllowedHosts` allowlist, dedicated `http.Client` with `DefaultJWKSFetchTimeout` (5 s, configurable via `JWKSFetchTimeout`), `io.LimitReader` capped at `MaxJWKSBodyBytes` (1 MiB). Tests: `jwks_fetch_test.go` and `e2e/orchestrator/auth_jwks_https_only_test.go`.
 
 #### B-13: Audit log persists full request body (PHI / secrets at rest in plaintext)
 - **File:** `internal/api/handlers/subscription_handlers.go:184, 433`
