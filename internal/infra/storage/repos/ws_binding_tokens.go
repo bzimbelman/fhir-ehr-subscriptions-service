@@ -6,9 +6,34 @@ package repos
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+// ConsumeOutcome reports the result of a single-use token redemption.
+type ConsumeOutcome int
+
+// ConsumeOutcome values.
+const (
+	// ConsumeOK means the token existed, was unconsumed, and unexpired,
+	// and is now marked consumed. The bound subscription_id is returned.
+	ConsumeOK ConsumeOutcome = iota
+	// ConsumeNotFound means no row exists for the supplied token.
+	ConsumeNotFound
+	// ConsumeAlreadyUsed means the token has been redeemed previously.
+	ConsumeAlreadyUsed
+	// ConsumeExpired means the token's expires_at is in the past.
+	ConsumeExpired
+)
+
+// ConsumeResult is the typed result of a Consume call.
+type ConsumeResult struct {
+	Outcome        ConsumeOutcome
+	SubscriptionID uuid.UUID
+	ClientID       string
+}
 
 // WsBindingTokensRepo wraps the ws_binding_tokens table.
 type WsBindingTokensRepo struct{}
@@ -36,6 +61,61 @@ func (r *WsBindingTokensRepo) Delete(ctx context.Context, q Querier, token strin
 		return fmt.Errorf("ws_binding_tokens: delete: %w", err)
 	}
 	return nil
+}
+
+// Consume atomically marks a single-use token as consumed and returns the
+// bound subscription. The redemption is fail-closed: if the token has been
+// consumed before, has expired, or does not exist, the outcome reflects
+// that and no row is mutated.
+//
+// The implementation uses a single UPDATE ... RETURNING so that two
+// concurrent bind attempts cannot both succeed; the loser observes
+// ConsumeAlreadyUsed.
+func (r *WsBindingTokensRepo) Consume(ctx context.Context, q Querier, token string, now time.Time) (ConsumeResult, error) {
+	const sql = `
+		UPDATE ws_binding_tokens
+		SET consumed_at = $2
+		WHERE token = $1
+		  AND consumed_at IS NULL
+		  AND expires_at > $2
+		RETURNING subscription_id, client_id`
+
+	var subID uuid.UUID
+	var clientID string
+	err := q.QueryRow(ctx, sql, token, now).Scan(&subID, &clientID)
+	if err == nil {
+		return ConsumeResult{
+			Outcome:        ConsumeOK,
+			SubscriptionID: subID,
+			ClientID:       clientID,
+		}, nil
+	}
+	if err != pgx.ErrNoRows {
+		return ConsumeResult{}, fmt.Errorf("ws_binding_tokens: consume: %w", err)
+	}
+
+	// No row updated — diagnose why so the caller can surface a precise
+	// reason (and so a replay is distinguishable from an expiry).
+	const diag = `
+		SELECT consumed_at IS NOT NULL, expires_at <= $2
+		FROM ws_binding_tokens
+		WHERE token = $1`
+	var consumed, expired bool
+	derr := q.QueryRow(ctx, diag, token, now).Scan(&consumed, &expired)
+	if derr == pgx.ErrNoRows {
+		return ConsumeResult{Outcome: ConsumeNotFound}, nil
+	}
+	if derr != nil {
+		return ConsumeResult{}, fmt.Errorf("ws_binding_tokens: consume diag: %w", derr)
+	}
+	if consumed {
+		return ConsumeResult{Outcome: ConsumeAlreadyUsed}, nil
+	}
+	if expired {
+		return ConsumeResult{Outcome: ConsumeExpired}, nil
+	}
+	// Fell through despite zero-rows; treat as not found.
+	return ConsumeResult{Outcome: ConsumeNotFound}, nil
 }
 
 // Get returns the row for a token, or nil if missing.
