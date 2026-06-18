@@ -147,7 +147,69 @@ func (r *Registry) Load(_ context.Context, cfg LoadConfig) (spi.EhrAdapter, erro
 		return nil, err
 	}
 
+	// #65: capability vs builder cross-check. Each declared capability
+	// must have a non-nil builder return; otherwise the host would
+	// quietly skip a feature operators expect.
+	if err := validateCapabilities(cfg.AdapterID, adapter, manifest.Capabilities); err != nil {
+		return nil, err
+	}
+
 	return adapter, nil
+}
+
+// ValidateAll runs the full per-adapter Load checks against every
+// registered factory and then asserts cross-adapter invariants
+// (#65: contributed-topic URL uniqueness across adapters).
+//
+// The host calls ValidateAll at startup before delegating to Load
+// for the configured AdapterID. ValidateAll is strict: it returns
+// the first error it encounters so a misconfigured deployment
+// fails loud and fast.
+func (r *Registry) ValidateAll(ctx context.Context, hostSpiVer spi.SemVer) error {
+	r.mu.RLock()
+	ids := make([]string, 0, len(r.items))
+	for id := range r.items {
+		ids = append(ids, id)
+	}
+	r.mu.RUnlock()
+	sort.Strings(ids)
+
+	type topicLoc struct {
+		adapter string
+		index   int
+	}
+	urlOwners := map[string]topicLoc{}
+
+	for _, id := range ids {
+		adapter, err := r.Load(ctx, LoadConfig{AdapterID: id, HostSpiVer: hostSpiVer})
+		if err != nil {
+			return err
+		}
+		manifest := adapter.Manifest()
+		for i, raw := range manifest.ContributedTopics {
+			var doc struct {
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				continue
+			}
+			if doc.URL == "" {
+				continue
+			}
+			if prior, dup := urlOwners[doc.URL]; dup {
+				return &CrossAdapterTopicCollisionError{
+					URL:        doc.URL,
+					AdapterIDs: []string{prior.adapter, id},
+					FirstAt: fmt.Sprintf("%s:contributed_topics[%d]",
+						prior.adapter, prior.index),
+					SecondAt: fmt.Sprintf("%s:contributed_topics[%d]",
+						id, i),
+				}
+			}
+			urlOwners[doc.URL] = topicLoc{adapter: id, index: i}
+		}
+	}
+	return nil
 }
 
 // validateConfigSchema compiles manifest.ConfigSchema as a JSON Schema
@@ -206,6 +268,77 @@ func validateContributedTopicsUnique(adapterID string, topics [][]byte) error {
 		seen[doc.URL] = fmt.Sprintf("contributed_topics[%d]", i)
 	}
 	return nil
+}
+
+// validateCapabilities asserts that every declared Capability has a
+// non-nil builder return (#65). Each Build* call may receive a zero
+// AdapterContext because the cross-check only verifies the adapter
+// returns a non-nil concrete implementation, not that it is wired
+// into a runnable subsystem.
+func validateCapabilities(adapterID string, adapter spi.EhrAdapter, caps spi.Capabilities) error {
+	zeroCtx := spi.AdapterContext{AdapterID: adapterID}
+	if caps.HL7Processor && adapter.BuildHl7Processor(zeroCtx) == nil {
+		return &ManifestCapabilityMismatchError{
+			AdapterID:  adapterID,
+			Capability: "HL7Processor",
+			Builder:    "BuildHl7Processor",
+		}
+	}
+	if caps.FhirScanRunner && adapter.BuildFhirScanRunner(zeroCtx) == nil {
+		return &ManifestCapabilityMismatchError{
+			AdapterID:  adapterID,
+			Capability: "FhirScanRunner",
+			Builder:    "BuildFhirScanRunner",
+		}
+	}
+	if caps.VendorAPIClient && adapter.BuildVendorAPIClient(zeroCtx) == nil {
+		return &ManifestCapabilityMismatchError{
+			AdapterID:  adapterID,
+			Capability: "VendorAPIClient",
+			Builder:    "BuildVendorAPIClient",
+		}
+	}
+	if caps.HydrationService && adapter.BuildHydrationService(zeroCtx) == nil {
+		return &ManifestCapabilityMismatchError{
+			AdapterID:  adapterID,
+			Capability: "HydrationService",
+			Builder:    "BuildHydrationService",
+		}
+	}
+	return nil
+}
+
+// ManifestCapabilityMismatchError is returned when an adapter
+// declares a Capability=true whose corresponding Build* method
+// returns nil. The framework treats a declared capability that the
+// adapter cannot produce as a fatal startup error (#65 / SPI types
+// section "Capabilities").
+type ManifestCapabilityMismatchError struct {
+	AdapterID  string
+	Capability string
+	Builder    string
+}
+
+func (e *ManifestCapabilityMismatchError) Error() string {
+	return fmt.Sprintf("registry: adapter %q declares capability %s but %s returned nil",
+		e.AdapterID, e.Capability, e.Builder)
+}
+
+// CrossAdapterTopicCollisionError is returned when two distinct
+// adapters declare contributed topics with the same canonical URL
+// (#65). Per-adapter URL uniqueness is enforced separately by
+// ManifestContributedTopicCollisionError; this error names both
+// adapters that collide so operators can resolve the conflict.
+type CrossAdapterTopicCollisionError struct {
+	URL        string
+	AdapterIDs []string
+	FirstAt    string
+	SecondAt   string
+}
+
+func (e *CrossAdapterTopicCollisionError) Error() string {
+	return fmt.Sprintf("registry: contributed topic url %q is declared by multiple adapters %v (%s and %s)",
+		e.URL, e.AdapterIDs, e.FirstAt, e.SecondAt)
 }
 
 // ManifestConfigSchemaError is returned when an adapter manifest's
