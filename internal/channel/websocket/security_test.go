@@ -157,10 +157,18 @@ func TestUpgradeRejectsUnlistedOriginWhenPatternsConfigured(t *testing.T) {
 }
 
 // B-18: Concurrent ack-arrival + delivery-timeout must not panic by
-// closing an already-closed channel. The race is between Deliver's
-// `defer cancelAck` and an ack being processed by deliverAck. We can't
-// poke the unexported method, but we can drive the public surface with
-// a tight ack/deadline collision via the public deliver+client-ack path.
+// closing an already-closed channel. The race is between the Deliver
+// path's cleanup and deliverAck firing for the same sequence. We drive
+// many iterations sequentially through a single client connection (so
+// reads/writes on the *codingws.Conn stay serialized), interleaving:
+//
+//   - server-side Deliver with a tight ack deadline,
+//   - the client sending an ack BEFORE the deadline some of the time
+//     and AFTER the deadline others.
+//
+// Even though each iteration is sequential on the client, multiple
+// stray acks (duplicated client ack frames for the same sequence) and
+// the server's own cleanup defer must not race to close-of-closed.
 func TestAckRaceDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
@@ -173,7 +181,7 @@ func TestAckRaceDoesNotPanic(t *testing.T) {
 		Tokens:     tokens,
 		Replayer:   newFakeReplayer(),
 		Now:        now,
-		AckTimeout: 25 * time.Millisecond,
+		AckTimeout: 5 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new: %v", err)
@@ -203,46 +211,48 @@ func TestAckRaceDoesNotPanic(t *testing.T) {
 	}
 	rcancel()
 
-	// Race the ack against the delivery timeout. The client races the
-	// deadline by sending an ack that may arrive before, during, or after
-	// the deliver-side deadline elapses. We run many iterations to widen
-	// the window in which the race manifests.
+	// Run iterations sequentially per-connection. Each iteration kicks
+	// a Deliver in a goroutine, then writes an ack frame from the test
+	// goroutine. Because the test goroutine owns reads+writes on the
+	// conn, we avoid client-side data races; the server's cleanup vs.
+	// deliverAck race remains the actual subject under test.
 	const N = 200
-	var wg sync.WaitGroup
 	for i := 1; i <= N; i++ {
-		// Client side: read the inbound notification, then send an ack
-		// straight away (ack races the AckTimeout the server set).
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
-			_, _, _ = conn.Read(ctx)
-		}()
 		seq := uint64(i)
+		// Server-side Deliver: tight deadline so the cleanup (cancelAck
+		// + closeOnce) races whatever ack the client is about to send.
+		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			env := newEnvelope(subID, seq, []byte(`{"r":"x"}`))
-			env.Deadline = time.Now().Add(60 * time.Millisecond)
+			env.Deadline = time.Now().Add(15 * time.Millisecond)
 			_, _ = ch.Deliver(context.Background(), env)
 		}()
-		// Send a few stray acks to amplify the race window — these
-		// target the same sequence and must NOT close an already-closed
-		// channel.
-		go func() {
-			ackCtx, ackCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer ackCancel()
-			for j := 0; j < 3; j++ {
-				_ = conn.Write(ackCtx, codingws.MessageText,
-					[]byte(`{"type":"ack","eventNumber":`+itoa(seq)+`}`))
-			}
-		}()
+
+		// Drain the inbound notification frame so the per-message read
+		// loop on the server keeps draining.
+		readCtx, readCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, _, _ = conn.Read(readCtx)
+		readCancel()
+
+		// Send the matching ack (some on time, some after the deadline).
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_ = conn.Write(ackCtx, codingws.MessageText,
+			[]byte(`{"type":"ack","eventNumber":`+itoa(seq)+`}`))
+		// Send a duplicate ack for the SAME sequence: previously this
+		// could re-enter close on a recycled channel.
+		_ = conn.Write(ackCtx, codingws.MessageText,
+			[]byte(`{"type":"ack","eventNumber":`+itoa(seq)+`}`))
+		ackCancel()
+
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 // B-18: A direct race on cancelAck and deliverAck on the same sequence
-// must not panic. We exercise it by bombarding a freshly-bound session
-// with concurrent acks while delivers race their own cancellations.
+// must not panic. Exercised by sending duplicate acks in lockstep while
+// the matching Deliver goroutine times out.
 func TestConcurrentAckCancelDoesNotCloseClosedChannel(t *testing.T) {
 	t.Parallel()
 
@@ -255,7 +265,7 @@ func TestConcurrentAckCancelDoesNotCloseClosedChannel(t *testing.T) {
 		Tokens:     tokens,
 		Replayer:   newFakeReplayer(),
 		Now:        now,
-		AckTimeout: 5 * time.Millisecond,
+		AckTimeout: 2 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new: %v", err)
@@ -265,40 +275,32 @@ func TestConcurrentAckCancelDoesNotCloseClosedChannel(t *testing.T) {
 	defer ch.Close()
 
 	u := strings.Replace(srv.URL, "http://", "ws://", 1) + "/ws/subscriptions"
-	conn, _, err := codingws.Dial(context.Background(), u, &codingws.DialOptions{HTTPClient: srv.Client()})
+	dctx, dcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	conn, _, err := codingws.Dial(dctx, u, &codingws.DialOptions{HTTPClient: srv.Client()})
+	dcancel()
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.Close(codingws.StatusNormalClosure, "")
 
-	if err := conn.Write(context.Background(), codingws.MessageText,
+	bctx, bcancel := context.WithTimeout(context.Background(), 1*time.Second)
+	if err := conn.Write(bctx, codingws.MessageText,
 		[]byte(`{"type":"bind","subscriptionId":"`+subID.String()+`","token":"ack-cancel"}`)); err != nil {
 		t.Fatalf("write bind: %v", err)
 	}
-	if _, _, err := conn.Read(context.Background()); err != nil {
+	if _, _, err := conn.Read(bctx); err != nil {
 		t.Fatalf("read bind: %v", err)
 	}
+	bcancel()
 
-	// Drive concurrent delivers that immediately time out, while the
-	// client floods acks for every sequence. Without the fix, the
-	// `defer cancelAck` runs *after* deliverAck has already closed the
-	// channel, and on the second cancelAck path the runtime panics. With
-	// the fix, sync.Once / atomic.Bool keeps the close single-owner.
+	// Sequentially drive 200 deliver+ack iterations. The deliver path
+	// hits its 2ms ack deadline; the client ack we then send fires on
+	// a stale waiter (the cleanup already removed it). Without the fix,
+	// duplicate client acks could double-close the channel.
 	const N = 200
-	var wg sync.WaitGroup
 	for i := 1; i <= N; i++ {
 		seq := uint64(i)
-		// Client sends an ack with this seq; in flight before the deliver.
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			ackCtx, ackCancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer ackCancel()
-			_ = conn.Write(ackCtx, codingws.MessageText,
-				[]byte(`{"type":"ack","eventNumber":`+itoa(seq)+`}`))
-		}()
-		// Server-side deliver with a tight deadline so cancelAck races
-		// the freshly-arrived deliverAck.
+		var wg sync.WaitGroup
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -306,8 +308,21 @@ func TestConcurrentAckCancelDoesNotCloseClosedChannel(t *testing.T) {
 			env.Deadline = time.Now().Add(2 * time.Millisecond)
 			_, _ = ch.Deliver(context.Background(), env)
 		}()
+
+		readCtx, readCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, _, _ = conn.Read(readCtx)
+		readCancel()
+
+		ackCtx, ackCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// Send three acks in a row: a stale waiter could double-close
+		// without sync.Once on the channel close path.
+		for k := 0; k < 3; k++ {
+			_ = conn.Write(ackCtx, codingws.MessageText,
+				[]byte(`{"type":"ack","eventNumber":`+itoa(seq)+`}`))
+		}
+		ackCancel()
+		wg.Wait()
 	}
-	wg.Wait()
 }
 
 // itoa formats a non-negative integer for the test ack messages
