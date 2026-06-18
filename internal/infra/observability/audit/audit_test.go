@@ -126,7 +126,6 @@ func TestVerifyChain_DetectsMutation(t *testing.T) {
 	store.rows[1].Payload["i"] = 999
 	store.mu.Unlock()
 
-
 	if err := audit.VerifyChain(context.Background(), store); err == nil {
 		t.Fatalf("expected verification failure")
 	}

@@ -9,10 +9,10 @@
 //  2. The label-cardinality table in the observability LLD §4.2 is
 //     enforced at registration time:
 //     - subscription_id is permitted only on gauges, never on counters
-//       or histograms.
+//     or histograms.
 //     - peer_addr is permitted only on the MLLP listener's
-//       _received_total counters; never on histograms; never on other
-//       counters.
+//     _received_total counters; never on histograms; never on other
+//     counters.
 //
 // The Emitter wraps a *prometheus.Registry. Re-registering the same
 // metric (same name and same shape) returns the existing collector so
@@ -390,6 +390,16 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 		return nil, err
 	}
 	mr.Set(5, nil)
+	// Pre-register a zero-valued time series for each label-set we know
+	// about so the /metrics endpoint exposes them at scrape time even
+	// before the first event lands. This makes alert rules targeting
+	// "absent_over_time(...)" behave correctly during startup.
+	aw.Add(0, prometheus.Labels{"outcome": "success"})
+	aw.Add(0, prometheus.Labels{"outcome": "failure"})
+	aci.Add(0, nil)
+	asf.Add(0, prometheus.Labels{"sink": "stdout"})
+	lpd.Add(0, prometheus.Labels{"field": "body"})
+
 	return &Inventory{
 		MetricsRegistered:      mr,
 		AuditWritesTotal:       aw,

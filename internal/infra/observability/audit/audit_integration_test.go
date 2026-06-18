@@ -54,8 +54,8 @@ func TestPostgres_AuditTable_ChainAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new store: %v", err)
 	}
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
+	if migErr := store.Migrate(ctx); migErr != nil {
+		t.Fatalf("migrate: %v", migErr)
 	}
 
 	w, err := audit.NewWriter(audit.WriterOptions{
