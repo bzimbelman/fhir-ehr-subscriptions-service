@@ -87,6 +87,24 @@ func (r *Hl7MessageQueueRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, l
 	return out, nil
 }
 
+// IncrementAttemptCount bumps attempt_count by 1 and returns the new
+// value. Used by the hl7processor's BeginTx-failure path (S-9.9) to
+// enforce a per-row retry budget without depending on the (failed)
+// transaction. Runs on its own statement so a transient pool error
+// on the main processOne tx does not block the increment.
+func (r *Hl7MessageQueueRepo) IncrementAttemptCount(ctx context.Context, q Querier, id uuid.UUID) (int32, error) {
+	const sql = `
+		UPDATE hl7_message_queue
+		SET attempt_count = attempt_count + 1
+		WHERE id = $1
+		RETURNING attempt_count`
+	var n int32
+	if err := q.QueryRow(ctx, sql, id).Scan(&n); err != nil {
+		return 0, fmt.Errorf("hl7_message_queue: increment attempt_count: %w", err)
+	}
+	return n, nil
+}
+
 // MarkProcessed flips processed=true and stamps processed_at on the row
 // only if it was still false. Returns the number of rows affected
 // (0 means already processed by another worker).
@@ -106,17 +124,17 @@ func (r *Hl7MessageQueueRepo) MarkProcessed(ctx context.Context, q Querier, id u
 func (r *Hl7MessageQueueRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID) (*Hl7MessageQueueRow, error) {
 	const sql = `
 		SELECT id, listener_endpoint, peer_addr, received_at, mllp_message_id,
-		       correlation_id, raw_body, key_version, processed, processed_at
+		       correlation_id, raw_body, key_version, processed, processed_at,
+		       attempt_count
 		FROM hl7_message_queue
 		WHERE id = $1`
 	var rec Hl7MessageQueueRow
 	var enc []byte
-	var processedAt *string
 	row := q.QueryRow(ctx, sql, id)
 	if err := row.Scan(
 		&rec.ID, &rec.ListenerEndpoint, &rec.PeerAddr, &rec.ReceivedAt,
 		&rec.MllpMessageID, &rec.CorrelationID, &enc, &rec.KeyVersion,
-		&rec.Processed, &processedAt,
+		&rec.Processed, &rec.ProcessedAt, &rec.AttemptCount,
 	); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil

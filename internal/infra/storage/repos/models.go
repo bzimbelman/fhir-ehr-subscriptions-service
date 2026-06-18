@@ -72,6 +72,10 @@ type Hl7MessageQueueRow struct {
 	ProcessedAt      *time.Time
 	RawBody          []byte // plaintext after decryption
 	KeyVersion       int32
+	// AttemptCount mirrors hl7_message_queue.attempt_count (S-9.9
+	// per-row retry budget for hl7processor BeginTx failures). Bumped
+	// by IncrementAttemptCount; capped by hl7processor.Config.MaxRowAttempts.
+	AttemptCount int32
 }
 
 // ResourceChangeRow mirrors resource_changes.

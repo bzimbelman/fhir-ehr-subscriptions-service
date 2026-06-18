@@ -42,15 +42,22 @@ const (
 	// under the same correlation key — indicates a missed
 	// cancellation/replacement somewhere upstream (S-9.11).
 	MetricSameKindCollision = "fhir_subs_hl7processor_same_kind_collision"
+	// MetricHL7TxBeginFailed is bumped each time processOne's BeginTx
+	// fails (S-9.9). Operators alert on a sustained non-zero rate; the
+	// poison-row dead-letter pathway uses this signal jointly with
+	// MetricDeadLetteredTotal{error_class="tx_begin_failed"} for the
+	// cross-pipeline rollup tracked under S-10.6/S-12.3.
+	MetricHL7TxBeginFailed = "fhir_subs_hl7processor_tx_begin_failed_total"
 )
 
 // Outcome label values for [MetricMessagesProcessed].
 const (
-	OutcomeEmitted    = "emitted"
-	OutcomeHeld       = "held"
-	OutcomeResolved   = "resolved"
-	OutcomeRolledBack = "rolled_back"
-	OutcomeDeadLetter = "dead_letter"
+	OutcomeEmitted       = "emitted"
+	OutcomeHeld          = "held"
+	OutcomeResolved      = "resolved"
+	OutcomeRolledBack    = "rolled_back"
+	OutcomeDeadLetter    = "dead_letter"
+	OutcomeTxBeginFailed = "tx_begin_failed"
 )
 
 // MetricsEmitter is the metrics seam between the processor and the host's

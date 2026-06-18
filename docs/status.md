@@ -124,7 +124,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-9.6 | ReaperBatchSize/claim/idle knobs | PARTIAL | PARTIAL ✓ | acd798d | ReaperBatchSize added; others were already exposed |
 | audit | S-9.7 | No MetricClaimCycleErrors emission | RESOLVED | RESOLVED ✓ | acd798d | |
 | audit | S-9.8 | peekUnprocessed lost-race window | RESOLVED | RESOLVED ✓ (by-design) | — | FOR UPDATE SKIP LOCKED + processed=false |
-| audit | S-9.9 | BeginTx failure leaves row unprocessed | DEFERRED | DEFERRED ✓ | — | per-row retry budget |
+| audit | S-9.9 | BeginTx failure leaves row unprocessed | RESOLVED | RESOLVED ✓ | story/53 | Config.MaxRowAttempts (default 8) + attempt_count column + ErrorClassTxBeginFailed dead-letter |
 | audit | S-9.10 | MSH-7 not used for occurred timestamp | RESOLVED | RESOLVED ✓ | acd798d | messageDateTime(parsed) |
 | audit | S-9.11 | Same-kind paired-hold collision metric | RESOLVED | RESOLVED ✓ | acd798d | MetricSameKindCollision |
 | audit | S-9.12 | Translate panics misclassified | RESOLVED | RESOLVED ✓ | acd798d | vendorPanicError |

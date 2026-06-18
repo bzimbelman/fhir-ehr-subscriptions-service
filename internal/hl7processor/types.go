@@ -35,6 +35,11 @@ const (
 	ErrorClassMap        ErrorClass = "map"
 	ErrorClassValidation ErrorClass = "validation"
 	ErrorClassUnexpected ErrorClass = "unexpected"
+	// ErrorClassTxBeginFailed marks a row whose processOne BeginTx
+	// repeatedly failed past Config.MaxRowAttempts (S-9.9). Rows in
+	// this class never finished translation — there is no FHIR
+	// resource — so [dlKindForClass] routes them to `hl7_unparseable`.
+	ErrorClassTxBeginFailed ErrorClass = "tx_begin_failed"
 )
 
 // String returns the wire form used in metric labels and structured logs.
