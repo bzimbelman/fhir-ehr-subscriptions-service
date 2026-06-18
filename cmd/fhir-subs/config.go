@@ -75,6 +75,30 @@ type AuthConfig struct {
 	AllowInsecure  bool           `yaml:"allow_insecure_jwks"`
 	JWKSAllowed    []string       `yaml:"jwks_allowed_hosts"`
 	TrustedIssuers []TrustedIssue `yaml:"trusted_issuers"`
+
+	// SubscriptionCreateRateLimit configures the per-authenticated-client
+	// rate limit on POST /Subscription (S-3.3). Burst <= 0 disables.
+	SubscriptionCreateRateLimit RateLimitConfig `yaml:"subscription_create_rate_limit"`
+
+	// WSBindingTokenRateLimit configures the per-authenticated-client
+	// rate limit on the $get-ws-binding-token operation (S-3.3).
+	// Burst <= 0 disables.
+	WSBindingTokenRateLimit RateLimitConfig `yaml:"ws_binding_token_rate_limit"`
+}
+
+// RateLimitConfig is the operator-facing shape for a per-client token
+// bucket (S-3.3). Maps directly onto auth.RateLimit.
+type RateLimitConfig struct {
+	// Burst is the bucket capacity — the maximum number of immediate
+	// requests allowed before refill kicks in. Zero or negative
+	// disables the limit.
+	Burst int `yaml:"burst"`
+	// RefillPerSecond is the steady-state allowed rate. Zero is valid:
+	// it pins the bucket at Burst (strict cap, no replenishment).
+	RefillPerSecond float64 `yaml:"refill_per_second"`
+	// MaxKeys caps the number of distinct client identities tracked.
+	// Zero defaults to 65536; once full, the oldest bucket is evicted.
+	MaxKeys int `yaml:"max_keys"`
 }
 
 // TrustedIssue models one entry under auth.trusted_issuers[]. Today the

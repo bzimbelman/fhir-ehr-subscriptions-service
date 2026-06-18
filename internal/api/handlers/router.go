@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
@@ -194,6 +195,18 @@ type Deps struct {
 	// DeadLetters is the read-only dead-letters list adapter the admin
 	// surface needs. Nil disables /admin/dead_letters (returns 503).
 	DeadLetters DeadLettersListStore
+
+	// SubscriptionCreateRateLimit, when non-nil, gates POST /Subscription
+	// with a per-authenticated-client token bucket (S-3.3). On bucket
+	// exhaustion the handler returns 429 + Retry-After. Nil means no
+	// rate limit at the handler layer (legacy behavior).
+	SubscriptionCreateRateLimit *auth.ClientRateLimiter
+
+	// WSBindingTokenRateLimit, when non-nil, gates the
+	// $get-ws-binding-token operation with a per-authenticated-client
+	// token bucket (S-3.3). Token mints are CPU + DB writes, so an
+	// uncapped client can starve the system. Nil means no rate limit.
+	WSBindingTokenRateLimit *auth.ClientRateLimiter
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
@@ -243,8 +256,14 @@ func RegisterRoutes(r chi.Router, d Deps) {
 
 	h := &server{deps: d}
 
+	// S-3.3: per-route rate-limit middlewares. Both are no-ops when the
+	// corresponding Deps field is nil so existing call sites compile
+	// unchanged.
+	createMW := d.SubscriptionCreateRateLimit.Middleware()
+	wsTokenMW := d.WSBindingTokenRateLimit.Middleware()
+
 	r.Route("/Subscription", func(r chi.Router) {
-		r.Post("/", h.createSubscription)
+		r.With(createMW).Post("/", h.createSubscription)
 		r.Get("/", h.searchSubscriptions)
 		r.Get("/{id}", h.readSubscription)
 		r.Put("/{id}", h.updateSubscription)
@@ -252,7 +271,7 @@ func RegisterRoutes(r chi.Router, d Deps) {
 		r.Get("/{id}/$status", h.opStatusSingle)
 		r.Get("/$status", h.opStatusBulk)
 		r.Get("/{id}/$events", h.opEvents)
-		r.Post("/{id}/$get-ws-binding-token", h.opGetWsBindingToken)
+		r.With(wsTokenMW).Post("/{id}/$get-ws-binding-token", h.opGetWsBindingToken)
 	})
 
 	r.Get("/SubscriptionTopic", h.searchTopics)
