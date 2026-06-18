@@ -123,8 +123,8 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-8.4 | `MaxAttempts` not per-channel-type | RESOLVED | `acd798d` | `RetryConfig.PerChannel` |
 | S-8.5 | Jitter uncapped | RESOLVED | `acd798d` | `MaxJitter=0.5` clamp |
 | S-8.6 | Inline UPDATE SQL in worker | DEFERRED | — | full migration to DeliveriesRepo tracked under storage refactor |
-| S-9.1 | MLLP read goroutine no per-message frame deadline | DEFERRED | — | mitigated by S-9.4; true per-message deadline future work |
-| S-9.2 | `persistCtx` decoupled — `PersistTimeout` cap missing | DEFERRED | — | tracked under config validation |
+| S-9.1 | MLLP read goroutine no per-message frame deadline | RESOLVED | story/52 | `FrameAssemblyTimeout` (default 30s) on `ListenerConfig`; `ErrFrameDeadline` + `MetricFrameDeadlineExceeded` |
+| S-9.2 | `persistCtx` decoupled — `PersistTimeout` cap missing | RESOLVED | story/52 | `Validate` rejects `PersistTimeout > ShutdownDrainGrace` with explicit error |
 | S-9.3 | `isClosedConnErr` substring-matches "closed" | RESOLVED | `acd798d` | `errors.Is(net.ErrClosed)` |
 | S-9.4 | Framer no pending-byte bound | RESOLVED | `acd798d` | `pendingExceeded()` returns Malformed{Oversized} at 2× maxBody |
 | S-9.5 | `ExtractMSH` doesn't surface MSH-7/MSH-18 | RESOLVED | `acd798d` | new `MessageDateTime`, `Charset` |
@@ -598,9 +598,9 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 - **`internal/engine/scheduler/scheduler.go:118-123`** — RESOLVED in `acd798d`: `MaxJitter=0.5` constant; `applyDefaults` now clamps Jitter to [0, 0.5] so the (1+offset) multiplier cannot approach zero.
 - **`internal/engine/scheduler/worker.go:336-378`** — DEFERRED: inline UPDATE SQL in worker still present. The shared `applyBailoutDecision` consolidates the bail-out paths; full migration of the Decision SQL to the DeliveriesRepo is tracked under follow-up storage refactor.
 
-#### S-9: Pipeline / MLLP / HL7 processor — RESOLVED in merge `c1c6b32` (2 sub-bullets DEFERRED — per-message frame deadline + persistCtx hardening; 1 PARTIALLY)
-- **`internal/mllp/connection.go:130-145`** — DEFERRED: read goroutine has no per-message frame-assembly deadline. Mitigated by S-9.4 (framer pending bound) which forces Malformed once the peer streams junk past 2× maxBody, but a true per-message deadline is still future work.
-- **`internal/mllp/connection.go:316-322`** — DEFERRED: `persistCtx` is intentionally decoupled per the LLD's drain rule (in-flight persists complete after ctx cancel). `PersistTimeout ≤ ShutdownDrainGrace` cap at Validate is tracked under config validation work.
+#### S-9: Pipeline / MLLP / HL7 processor — RESOLVED in merge `c1c6b32` + `story/52-mllp-frame-deadline` (1 sub-bullet PARTIALLY)
+- **`internal/mllp/connection.go:130-145`** — RESOLVED on `story/52-mllp-frame-deadline`: per-message `FrameAssemblyTimeout` (default 30s) added to `ListenerConfig`. The deadline arms when the framer transitions to in-flight (after the first `0x0B` of a frame) and resets on every successfully delivered `FrameEvent`; idle connections are still governed by `ReadIdleTimeout` only. On expiry the listener emits `MetricFrameDeadlineExceeded{listener_endpoint}`, logs `frame_deadline_exceeded` (with `ErrFrameDeadline.Error()`), and closes the connection. New `Framer.AssemblyInProgress()` predicate exposes the in-flight state; new `ErrFrameDeadline` sentinel matches the typed-error contract used by `ErrPersistTransient` / `ErrPersistPermanent`.
+- **`internal/mllp/connection.go:316-322`** — RESOLVED on `story/52-mllp-frame-deadline`: `ListenerConfig.Validate()` now rejects `PersistTimeout > ShutdownDrainGrace` with the explicit error `"mllp listener: persist_timeout (X) must be <= shutdown_drain_grace (Y)"`. Equality is accepted (operators tuning to the boundary should not be rejected). `persistCtx` itself remains decoupled from request ctx per LLD §5.7's drain rule — the cap closes the misconfiguration window where the supervisor would force-close in-flight connections while their persists were still running.
 - **`internal/mllp/connection.go:483`** — RESOLVED in `acd798d`: `isClosedConnErr` now uses `errors.Is(net.ErrClosed)` plus narrow string matches for two known sentinels (was substring "closed" — caught vendor errors like "JWKS host closed for maintenance").
 - **`internal/mllp/framer.go:113`** — RESOLVED in `acd798d`: `pendingExceeded()` returns Malformed{Oversized} once pending grows past 2× maxBody.
 - **`internal/mllp/msh.go:33-97`** — RESOLVED in `acd798d`: `ExtractMSH` now surfaces MSH-7 (`MessageDateTime`) and MSH-18 (`Charset`) so callers can metric encoding and source `occurred` from sender's stamp.

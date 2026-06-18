@@ -119,6 +119,20 @@ func HandleConnectionWithLogger(
 	framer := NewFramer(cfg.MaxMessageBytes)
 	readBuf := make([]byte, cfg.ReadBufBytes)
 
+	// assemblyStart tracks when the framer transitioned from "no frame in
+	// flight" to "frame in flight" — i.e. the first byte after the most
+	// recent 0x0B. Zero means no frame is in flight. The read loop uses
+	// this to arm the FrameAssemblyTimeout deadline (S-9.1): the deadline
+	// runs only while we are actively assembling a frame, not while the
+	// connection is idle between frames.
+	var assemblyStart time.Time
+
+	// frameDeadlineFired records whether the most recent read deadline
+	// expiry was the frame-assembly deadline (vs the read-idle deadline).
+	// We need this to disambiguate after net.OpError surfaces a generic
+	// timeout — Read() doesn't tell us which deadline fired.
+	frameDeadlineFired := false
+
 	// readCh is fed by a goroutine that does the blocking Read. We select
 	// on it AND on ctx.Done() so ctx cancellation can trigger shutdown
 	// without waiting for the read to return.
@@ -129,10 +143,25 @@ func HandleConnectionWithLogger(
 	}
 	readCh := make(chan readResult, 1)
 	startRead := func() {
-		// Set read deadline from the main goroutine to avoid racing with
-		// the ctx.Done case below: we are the only writer of the deadline.
+		// Compute the effective read deadline as the earlier of the
+		// read-idle timeout (silent connection) and the frame-assembly
+		// timeout (peer streamed start byte but never finishes). Setting
+		// the deadline from the main goroutine avoids racing with the
+		// ctx.Done case below: we are the only writer of the deadline.
+		var deadline time.Time
 		if cfg.ReadIdleTimeout > 0 {
-			_ = conn.SetReadDeadline(time.Now().Add(cfg.ReadIdleTimeout))
+			deadline = time.Now().Add(cfg.ReadIdleTimeout)
+		}
+		frameDeadlineFired = false
+		if cfg.FrameAssemblyTimeout > 0 && !assemblyStart.IsZero() {
+			frameDeadline := assemblyStart.Add(cfg.FrameAssemblyTimeout)
+			if deadline.IsZero() || frameDeadline.Before(deadline) {
+				deadline = frameDeadline
+				frameDeadlineFired = true
+			}
+		}
+		if !deadline.IsZero() {
+			_ = conn.SetReadDeadline(deadline)
 		}
 		go func() {
 			n, err := conn.Read(readBuf)
@@ -170,8 +199,19 @@ func HandleConnectionWithLogger(
 					}
 					return
 				}
-				// Read deadline / timeout — close.
+				// Read deadline / timeout — close. The deadline may be
+				// either the read-idle timeout (silent connection) or
+				// the frame-assembly timeout (S-9.1, peer streamed
+				// start byte but never finished); frameDeadlineFired
+				// tells us which.
 				if isTimeoutErr(r.err) {
+					if frameDeadlineFired {
+						metrics.Inc(MetricFrameDeadlineExceeded, endpointLabels)
+						clog.emit(logLevelWarn, "frame_deadline_exceeded", map[string]any{
+							"frame_assembly_timeout": cfg.FrameAssemblyTimeout.String(),
+							"error":                  ErrFrameDeadline.Error(),
+						})
+					}
 					return
 				}
 				metrics.Inc(MetricReadErrorsTotal, endpointLabels)
@@ -203,6 +243,17 @@ func HandleConnectionWithLogger(
 						return
 					}
 				}
+			}
+			// S-9.1: arm / disarm the per-frame assembly deadline based on
+			// whether the framer is currently mid-frame. The deadline runs
+			// only while a frame is in flight; idle connections are
+			// governed by ReadIdleTimeout.
+			if framer.AssemblyInProgress() {
+				if assemblyStart.IsZero() {
+					assemblyStart = time.Now()
+				}
+			} else {
+				assemblyStart = time.Time{}
 			}
 			startRead()
 		}

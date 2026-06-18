@@ -650,16 +650,17 @@ func buildMLLPListener(cfg MLLPConfig, pool *pgxpool.Pool, hl7Q *repos.Hl7Messag
 		drain = 10 * time.Second
 	}
 	listener := mllp.New(mllp.ListenerConfig{
-		Endpoints:           endpoints,
-		MaxMessageBytes:     maxBytes,
-		ReadIdleTimeout:     30 * time.Second,
-		PersistTimeout:      persistTimeout,
-		NackThenDropAfter:   5,
-		ShutdownDrainGrace:  drain,
-		InflightCapPerConn:  64,
-		OnPersistFail:       mllp.OnPersistFailNack,
-		MaxConnections:      cfg.MaxConnections,
-		MaxConnectionsPerIP: cfg.MaxConnectionsPerIP,
+		Endpoints:            endpoints,
+		MaxMessageBytes:      maxBytes,
+		ReadIdleTimeout:      30 * time.Second,
+		PersistTimeout:       persistTimeout,
+		FrameAssemblyTimeout: cfg.FrameAssemblyTimeout,
+		NackThenDropAfter:    5,
+		ShutdownDrainGrace:   drain,
+		InflightCapPerConn:   64,
+		OnPersistFail:        mllp.OnPersistFailNack,
+		MaxConnections:       cfg.MaxConnections,
+		MaxConnectionsPerIP:  cfg.MaxConnectionsPerIP,
 	}, &poolMLLPPersister{pool: pool, repo: hl7Q}, nil, nil)
 	return listener, nil
 }

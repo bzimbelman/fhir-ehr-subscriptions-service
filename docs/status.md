@@ -116,8 +116,8 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-8.4 | MaxAttempts not per-channel-type | RESOLVED | RESOLVED ✓ | acd798d | RetryConfig.PerChannel |
 | audit | S-8.5 | Jitter uncapped | RESOLVED | RESOLVED ✓ | acd798d | MaxJitter=0.5 |
 | audit | S-8.6 | Inline UPDATE SQL in worker | DEFERRED | DEFERRED ✓ | — | DeliveriesRepo refactor |
-| audit | S-9.1 | MLLP read no per-message frame deadline | DEFERRED | DEFERRED ✓ | — | mitigated by S-9.4 |
-| audit | S-9.2 | persistCtx decoupled — PersistTimeout cap | DEFERRED | DEFERRED ✓ | — | config validation work |
+| audit | S-9.1 | MLLP read no per-message frame deadline | RESOLVED | RESOLVED ✓ | story/52 | `FrameAssemblyTimeout` (default 30s); `ErrFrameDeadline` + `MetricFrameDeadlineExceeded` |
+| audit | S-9.2 | persistCtx decoupled — PersistTimeout cap | RESOLVED | RESOLVED ✓ | story/52 | `Validate` rejects `PersistTimeout > ShutdownDrainGrace` |
 | audit | S-9.3 | isClosedConnErr substring-matches "closed" | RESOLVED | RESOLVED ✓ | acd798d | errors.Is(net.ErrClosed) |
 | audit | S-9.4 | Framer no pending-byte bound | RESOLVED | RESOLVED ✓ | acd798d | pendingExceeded |
 | audit | S-9.5 | ExtractMSH doesn't surface MSH-7/MSH-18 | RESOLVED | RESOLVED ✓ | acd798d | |

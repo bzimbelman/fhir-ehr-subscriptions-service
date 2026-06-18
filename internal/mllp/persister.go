@@ -64,4 +64,11 @@ var (
 	// ErrPersistPermanent signals a non-retryable persistence failure:
 	// integrity violation, schema drift, or a programmer error.
 	ErrPersistPermanent = errors.New("persist permanent failure")
+
+	// ErrFrameDeadline signals that a single inter-marker frame failed to
+	// assemble within ListenerConfig.FrameAssemblyTimeout (S-9.1). The
+	// connection is dropped on this error; callers / log adapters compare
+	// against this sentinel via errors.Is to disambiguate it from generic
+	// read errors.
+	ErrFrameDeadline = errors.New("mllp frame assembly deadline exceeded")
 )
