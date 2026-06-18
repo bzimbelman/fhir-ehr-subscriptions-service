@@ -70,16 +70,18 @@ func TestParseCLIRejectsBadSet(t *testing.T) {
 
 // TestReadEnvForKnownKeys asserts that the loader walks a known-key table
 // (provided by the schemas module at startup) and reads only those env vars,
-// silently ignoring unknown env vars. Array indices are positional.
+// silently ignoring unknown env vars. The known list is path-keyed so
+// multi-word config keys like "trusted_issuers" survive the round-trip.
+// Array indices are positional.
 func TestReadEnvForKnownKeys(t *testing.T) {
 	t.Setenv("STORAGE_POSTGRES_URL", "postgres://example")
 	t.Setenv("AUTH_TRUSTED_ISSUERS_0_ISSUER", "https://idp.example.org")
 	t.Setenv("RANDOM_UNKNOWN_VAR", "should be ignored")
 
 	known := []string{
-		"STORAGE_POSTGRES_URL",
-		"AUTH_TRUSTED_ISSUERS_0_ISSUER",
-		"AUTH_TRUSTED_ISSUERS_0_JWKS_URL", // unset, must not appear
+		"storage.postgres.url",
+		"auth.trusted_issuers.0.issuer",
+		"auth.trusted_issuers.0.jwks_url", // unset, must not appear
 	}
 	got := loader.ReadEnvForKnownKeys(known)
 	want := map[string]interface{}{
