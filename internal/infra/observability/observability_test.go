@@ -66,6 +66,13 @@ func TestStart_DefaultsAreSane(t *testing.T) {
 		"fhir_subs_audit_sink_failures_total",
 		"fhir_subs_logging_phi_dropped_total",
 		"fhir_subs_dead_letters_total",
+		"fhir_subs_matcher_resource_changes_claimed_total",
+		// Per-topic metrics (topics_evaluated_total, topic_match_total,
+		// fhirpath_timeouts_total, evaluate_duration_seconds) need at
+		// least one observation before their families appear at scrape;
+		// they are not seeded with a placeholder topic_id since the
+		// catalog is the source of truth on which topic IDs exist.
+		"fhir_subs_matcher_ehr_events_emitted_total",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("/metrics missing %q in: %s", want, body)
