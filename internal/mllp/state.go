@@ -65,8 +65,3 @@ func (s *connectionState) recordPersistResult(err error) int32 {
 	}
 	return atomic.AddInt32(&s.consecutiveFails, 1)
 }
-
-// consecutiveFailures returns the current consecutive-failure count.
-func (s *connectionState) consecutiveFailures() int32 {
-	return atomic.LoadInt32(&s.consecutiveFails)
-}

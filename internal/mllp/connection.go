@@ -236,7 +236,7 @@ func handleOneFrame(
 
 	// Inflight cap gate (LLD §5.6). Cap == 0 disables the cap; otherwise
 	// the listener NACKs without calling persist.
-	if cfg.InflightCapPerConn > 0 && state.inflightCount() >= int32(cfg.InflightCapPerConn) {
+	if cfg.InflightCapPerConn > 0 && int(state.inflightCount()) >= cfg.InflightCapPerConn {
 		metrics.Inc(MetricNackTotal, map[string]string{
 			"listener_endpoint": ep.Name, "reason": "inflight_cap",
 		})
@@ -247,7 +247,7 @@ func handleOneFrame(
 			"reason":          "inflight_cap",
 			"mllp_message_id": mshFields.MessageControlID,
 		})
-		writeNACK(conn, mshFields, "inflight cap reached", now)
+		_ = writeNACK(conn, mshFields, "inflight cap reached", now)
 		return false
 	}
 
@@ -264,7 +264,7 @@ func handleOneFrame(
 				"reason":          "msh9_unparseable",
 				"mllp_message_id": mshFields.MessageControlID,
 			})
-			writeNACK(conn, mshFields, "msh9_unparseable", now)
+			_ = writeNACK(conn, mshFields, "msh9_unparseable", now)
 			return false
 		}
 		if !messageTypeAllowed(mshFields.MessageType, ep.AllowedMessageTypes) {
@@ -280,7 +280,7 @@ func handleOneFrame(
 				"type":            mshFields.MessageType,
 				"mllp_message_id": mshFields.MessageControlID,
 			})
-			writeNACK(conn, mshFields, "message type not allowed", now)
+			_ = writeNACK(conn, mshFields, "message type not allowed", now)
 			return false
 		}
 	}
@@ -374,7 +374,7 @@ func handleOneFrame(
 				"mllp_message_id": mshFields.MessageControlID,
 				"error":           err.Error(),
 			})
-			writeNACK(conn, mshFields, persistErrorReason(err), now)
+			_ = writeNACK(conn, mshFields, persistErrorReason(err), now)
 			if int(consecutiveFails) >= cfg.NackThenDropAfter {
 				metrics.Inc(MetricDropForPersistFails, endpointLabels)
 				clog.emit(logLevelError, "dropped", map[string]any{
@@ -482,4 +482,3 @@ func isClosedConnErr(err error) bool {
 	// net.Pipe surfaces "io: read/write on closed pipe".
 	return strings.Contains(err.Error(), "closed")
 }
-
