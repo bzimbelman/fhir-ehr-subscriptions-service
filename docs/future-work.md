@@ -200,37 +200,49 @@ Note: per the cardinality validator (S-2.20) `topic_url` is forbidden as a metri
 
 These items are not strictly required to deploy, but they materially limit the system's usefulness or make on-call painful.
 
-### 2.1 FHIR Scan Runner adapter framework worker
+### 2.1 FHIR Scan Runner adapter framework worker — PARTIAL (MVP)
 
 **Source:** [docs/low-level-design/e2e-harness.md](low-level-design/e2e-harness.md) (`cancel_and_replace_scan` scenario); `internal/adapter/spi/interfaces.go:185-187`
 
-**Status:** `FhirScanRunner` SPI interface exists. No production worker invokes `ScanPlan`/`RunScan` and emits to `resource_changes`. The 13th e2e scenario (`cancel_and_replace_scan`) is the documented DEFERRED scenario waiting on this.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/adapter/scanrunner/` ships a production worker that drives the `FhirScanRunner` SPI: at startup it reads `ScanPlan()`, runs each target on its declared `Cadence` via a per-target ticker, and writes one `resource_changes` row per yielded resource. Successive scans of the same `(resourceType, id)` are gated by `ContentHash` — same hash → no row. First-sighting → `create`; different hash → `update`. The hash cache is in-memory and cold on restart (re-emits every resource as `create` after a process restart).
 
-**What's missing:**
+**What landed:**
 
-- Production worker that:
-  - Reads adapter-supplied scan plans (which FHIR endpoints to poll, how often, what resource types)
-  - Diffs successive snapshots to produce `resource_changes` rows
-  - Handles pagination, etag caching, conditional GET
-  - Schedules per-plan with jittered intervals
-- Unblocks the `cancel_and_replace_scan` scenario
+- `internal/adapter/scanrunner/scanrunner.go`: `Worker` + `RowSink` SPI + `NewRepoSink` adapter
+- Per-target ticker driven by `ScanTarget.Cadence`; immediate-on-startup tick
+- ContentHash dedup with in-memory cache
+- `TickOne` exported test seam
+- Unit tests: first-sighting create, dedup on identical content, update on content change, empty-plan idle, New validation
 
-**Why this is P2:** vendors that don't push HL7 v2 (e.g., FHIR-native EHRs that publish a Subscription endpoint but don't implement Subscriptions) are not supported until this lands. With it, a polling adapter becomes a generic option for any vendor.
+**What's still pending (post-MVP):**
 
-### 2.2 Vendor API Client framework worker
+- Persistent ContentHash store (so the cache survives restart)
+- etag / Last-Modified / conditional GET
+- Supervisor restart-on-panic with per-adapter labels (LLD framework §3 "Supervisors")
+- DELETE detection (the SPI's current `ScanIterator` does not surface tombstones)
+- Production wiring into `buildProductionRuntime` (one Worker per registered adapter that declares `FhirScanRunner` capability) — the package is import-ready
+- e2e scenario `cancel_and_replace_scan` activation
+
+### 2.2 Vendor API Client framework worker — PARTIAL (MVP)
 
 **Source:** [docs/low-level-design/adapter-spi-framework.md](low-level-design/adapter-spi-framework.md), `internal/adapter/spi/interfaces.go`; e2e scenario `TestScenario_VendorChangeFeedEmitsResourceChange` (skipped)
 
-**Status:** SPI exists. No worker invokes it.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/adapter/vendorclient/` ships a production worker that drives the `VendorAPIClient` SPI: it hands the adapter an `EventSink`, calls `Consume(ctx, sink, cursor)`, and on each `sink.Push(record)` translates the record via `VendorAPIClient.Translate` and persists a `resource_changes` row. Cursor advances after a successful insert; on a `Consume` error the worker retries with exponential backoff (1s → 60s default). The cursor is in-memory only — on restart, `Consume` is called with `Options.InitialCursor`.
 
-**What's missing:**
+**What landed:**
 
-- Production worker that:
-  - Polls or streams from a vendor's proprietary API per `VendorAPIClient.Stream()` or equivalent
-  - Translates vendor-shaped messages into `resource_changes` rows
-  - Implements backoff, reconnect, dead-letter on persistent failure
+- `internal/adapter/vendorclient/vendorclient.go`: `Worker`, `RowSink` SPI, `NewRepoSink` adapter, `eventSink` private impl
+- Backoff loop in `Run` with configurable initial/max
+- `PushOne` test seam
+- Unit tests: PushOne translates+persists+advances cursor, translate error suppresses persistence and cursor advance, Run drives Consume to completion on ctx cancel, New validation
 
-**Why this is P2:** unblocks adapters for vendors whose change feed isn't HL7 v2 or FHIR REST polling — Athena, NextGen, Cerner Code, etc.
+**What's still pending (post-MVP):**
+
+- Persistent cursor store (LLD's `adapter_state` table) so cursor survives restart
+- Supervisor restart-on-panic with per-adapter labels
+- Dead-letter on persistent translate / insert failure (today errors propagate; production would benefit from a per-record dead-letter sink)
+- Production wiring into `buildProductionRuntime` (one Worker per adapter that declares `VendorAPIClient` capability) — the package is import-ready
+- e2e scenario `TestScenario_VendorChangeFeedEmitsResourceChange` activation
 
 ### 2.3 Email channel S/MIME + Direct SMTP support
 
