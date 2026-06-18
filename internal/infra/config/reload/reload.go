@@ -23,10 +23,10 @@ type Outcome string
 // Outcome constants. Match metric label values for
 // fhir_subs_config_reload_total.
 const (
-	OutcomeApplied             Outcome = "applied"
-	OutcomeRejectedImmutable   Outcome = "rejected_immutable_change"
-	OutcomeRejectedValidation  Outcome = "rejected_validation"
-	OutcomePartial             Outcome = "partial"
+	OutcomeApplied            Outcome = "applied"
+	OutcomeRejectedImmutable  Outcome = "rejected_immutable_change"
+	OutcomeRejectedValidation Outcome = "rejected_validation"
+	OutcomePartial            Outcome = "partial"
 )
 
 // Diff is one changed path between prior and next.

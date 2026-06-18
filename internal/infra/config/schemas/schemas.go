@@ -41,7 +41,10 @@ func NewRegistry() *Registry {
 		raw:             map[string]map[string]interface{}{},
 		domainPathPrefx: map[string]string{},
 	}
-	type core struct{ name string; data []byte }
+	type core struct {
+		name string
+		data []byte
+	}
 	cores := []core{
 		{"deployment", coreDeploymentJSON},
 		{"server", coreServerJSON},

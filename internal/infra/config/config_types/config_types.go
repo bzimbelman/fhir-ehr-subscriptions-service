@@ -4,9 +4,11 @@
 // Package configtypes holds the typed structs that mirror the architecture's
 // canonical YAML shape, one per domain. Mirrors `architecture.md` "Configuration"
 // and the per-domain LLDs.
+//
+// Duration-typed fields are kept as strings here so the generic JSON/YAML
+// round-trip through map[string]interface{} works without bespoke
+// unmarshalers; consumers convert via time.ParseDuration.
 package configtypes
-
-import "time"
 
 // DeploymentConfig — `deployment.*` per architecture.md.
 type DeploymentConfig struct {
@@ -41,17 +43,18 @@ type ServerConfig struct {
 	WebSocket ServerWebSocketConfig `yaml:"websocket" toml:"websocket" json:"websocket"`
 }
 
-// LifecycleConfig — `lifecycle.*`.
+// LifecycleConfig — `lifecycle.*`. Durations are operator-supplied Go
+// duration strings (e.g., "30s", "2s"). Consumers parse via time.ParseDuration.
 type LifecycleConfig struct {
-	ShutdownGracePeriod  time.Duration `yaml:"shutdown_grace_period"   toml:"shutdown_grace_period"   json:"shutdown_grace_period"`
-	PostgresProbeTimeout time.Duration `yaml:"postgres_probe_timeout"  toml:"postgres_probe_timeout"  json:"postgres_probe_timeout"`
+	ShutdownGracePeriod  string `yaml:"shutdown_grace_period"   toml:"shutdown_grace_period"   json:"shutdown_grace_period"`
+	PostgresProbeTimeout string `yaml:"postgres_probe_timeout"  toml:"postgres_probe_timeout"  json:"postgres_probe_timeout"`
 }
 
 // StoragePostgresConfig — `storage.postgres.*`.
 type StoragePostgresConfig struct {
-	URL              string        `yaml:"url"               toml:"url"               json:"url"`
-	PoolSize         int           `yaml:"pool_size"         toml:"pool_size"         json:"pool_size"`
-	StatementTimeout time.Duration `yaml:"statement_timeout" toml:"statement_timeout" json:"statement_timeout"`
+	URL              string `yaml:"url"               toml:"url"               json:"url"`
+	PoolSize         int    `yaml:"pool_size"         toml:"pool_size"         json:"pool_size"`
+	StatementTimeout string `yaml:"statement_timeout" toml:"statement_timeout" json:"statement_timeout"`
 }
 
 // StorageEncryptionConfig — `storage.encryption.*`.
@@ -59,14 +62,14 @@ type StorageEncryptionConfig struct {
 	AtRestKey string `yaml:"at_rest_key" toml:"at_rest_key" json:"at_rest_key"`
 }
 
-// StorageRetentionConfig — `storage.retention.*`.
+// StorageRetentionConfig — `storage.retention.*`. Values are durations.
 type StorageRetentionConfig struct {
-	HL7MessageQueue time.Duration `yaml:"hl7_message_queue" toml:"hl7_message_queue" json:"hl7_message_queue"`
-	ResourceChanges time.Duration `yaml:"resource_changes"  toml:"resource_changes"  json:"resource_changes"`
-	EHREvents       time.Duration `yaml:"ehr_events"        toml:"ehr_events"        json:"ehr_events"`
-	Deliveries      time.Duration `yaml:"deliveries"        toml:"deliveries"        json:"deliveries"`
-	DeadLetters     time.Duration `yaml:"dead_letters"      toml:"dead_letters"      json:"dead_letters"`
-	AuditLog        time.Duration `yaml:"audit_log"         toml:"audit_log"         json:"audit_log"`
+	HL7MessageQueue string `yaml:"hl7_message_queue" toml:"hl7_message_queue" json:"hl7_message_queue"`
+	ResourceChanges string `yaml:"resource_changes"  toml:"resource_changes"  json:"resource_changes"`
+	EHREvents       string `yaml:"ehr_events"        toml:"ehr_events"        json:"ehr_events"`
+	Deliveries      string `yaml:"deliveries"        toml:"deliveries"        json:"deliveries"`
+	DeadLetters     string `yaml:"dead_letters"      toml:"dead_letters"      json:"dead_letters"`
+	AuditLog        string `yaml:"audit_log"         toml:"audit_log"         json:"audit_log"`
 }
 
 // StorageConfig — `storage.*`.
@@ -78,7 +81,7 @@ type StorageConfig struct {
 
 // AuthJWKSConfig — `auth.jwks.*`.
 type AuthJWKSConfig struct {
-	CacheTTL time.Duration `yaml:"cache_ttl" toml:"cache_ttl" json:"cache_ttl"`
+	CacheTTL string `yaml:"cache_ttl" toml:"cache_ttl" json:"cache_ttl"`
 }
 
 // AuthTrustedIssuer — `auth.trusted_issuers[]`.
@@ -146,12 +149,13 @@ type ChannelsConfig struct {
 	Custom    []CustomChannelConfig  `yaml:"custom"    toml:"custom"    json:"custom"`
 }
 
-// DeliveryRetryBackoffConfig — `delivery.retry.backoff.*`.
+// DeliveryRetryBackoffConfig — `delivery.retry.backoff.*`. Initial/Max are
+// duration strings.
 type DeliveryRetryBackoffConfig struct {
-	Kind    string        `yaml:"kind"    toml:"kind"    json:"kind"`
-	Initial time.Duration `yaml:"initial" toml:"initial" json:"initial"`
-	Max     time.Duration `yaml:"max"     toml:"max"     json:"max"`
-	Jitter  float64       `yaml:"jitter"  toml:"jitter"  json:"jitter"`
+	Kind    string  `yaml:"kind"    toml:"kind"    json:"kind"`
+	Initial string  `yaml:"initial" toml:"initial" json:"initial"`
+	Max     string  `yaml:"max"     toml:"max"     json:"max"`
+	Jitter  float64 `yaml:"jitter"  toml:"jitter"  json:"jitter"`
 }
 
 // DeliveryRetryConfig — `delivery.retry.*`.
@@ -160,17 +164,18 @@ type DeliveryRetryConfig struct {
 	Backoff     DeliveryRetryBackoffConfig `yaml:"backoff"      toml:"backoff"      json:"backoff"`
 }
 
-// DeliveryHeartbeatConfig — `delivery.heartbeat.*`.
+// DeliveryHeartbeatConfig — `delivery.heartbeat.*`. All three fields are
+// duration strings.
 type DeliveryHeartbeatConfig struct {
-	DefaultPeriod time.Duration `yaml:"default_period" toml:"default_period" json:"default_period"`
-	MinPeriod     time.Duration `yaml:"min_period"     toml:"min_period"     json:"min_period"`
-	MaxPeriod     time.Duration `yaml:"max_period"     toml:"max_period"     json:"max_period"`
+	DefaultPeriod string `yaml:"default_period" toml:"default_period" json:"default_period"`
+	MinPeriod     string `yaml:"min_period"     toml:"min_period"     json:"min_period"`
+	MaxPeriod     string `yaml:"max_period"     toml:"max_period"     json:"max_period"`
 }
 
 // DeliveryConfig — `delivery.*`.
 type DeliveryConfig struct {
 	DefaultMaxCount int                     `yaml:"default_max_count" toml:"default_max_count" json:"default_max_count"`
-	MaxBatchWait    time.Duration           `yaml:"max_batch_wait"    toml:"max_batch_wait"    json:"max_batch_wait"`
+	MaxBatchWait    string                  `yaml:"max_batch_wait"    toml:"max_batch_wait"    json:"max_batch_wait"`
 	Retry           DeliveryRetryConfig     `yaml:"retry"             toml:"retry"             json:"retry"`
 	Heartbeat       DeliveryHeartbeatConfig `yaml:"heartbeat"         toml:"heartbeat"         json:"heartbeat"`
 }

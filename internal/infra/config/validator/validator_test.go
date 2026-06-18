@@ -93,7 +93,7 @@ func TestSchemaRegistration(t *testing.T) {
 	}
 	tree := goodMinimalTree()
 	tree["adapter"] = map[string]interface{}{
-		"id": "epic",
+		"id":     "epic",
 		"config": map[string]interface{}{
 			// fhir_base_url missing — manifest validation should fail
 		},

@@ -45,30 +45,30 @@ func TestIntegrationLoadsArchitectureExampleYAML(t *testing.T) {
 
 	// Copy the canonical YAML into a temp file (the test is isolated from any
 	// real /etc/fhir-subs/config.yaml).
-	src, err := os.ReadFile("testdata/architecture_example.yaml")
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+	src, readErr := os.ReadFile("testdata/architecture_example.yaml")
+	if readErr != nil {
+		t.Fatalf("read fixture: %v", readErr)
 	}
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, src, 0o600); err != nil {
-		t.Fatalf("write tmp config: %v", err)
+	if writeErr := os.WriteFile(cfgPath, src, 0o600); writeErr != nil {
+		t.Fatalf("write tmp config: %v", writeErr)
 	}
 
 	// Boot the module.
 	ctx := context.Background()
-	mod, h, err := config.Start(ctx, config.CliArgs{
+	mod, h, startErr := config.Start(ctx, config.CliArgs{
 		ConfigPath: cfgPath,
 	}, config.Context{
 		Clock:  time.Now,
 		Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
 	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+	if startErr != nil {
+		t.Fatalf("Start: %v", startErr)
 	}
 	defer func() {
-		if err := mod.Shutdown(ctx); err != nil {
-			t.Fatalf("Shutdown: %v", err)
+		if shutdownErr := mod.Shutdown(ctx); shutdownErr != nil {
+			t.Fatalf("Shutdown: %v", shutdownErr)
 		}
 	}()
 
@@ -192,16 +192,16 @@ func TestIntegrationRejectMissingFacilityID(t *testing.T) {
 func nestedString(tree map[string]interface{}, path ...string) (string, bool) {
 	cur := tree
 	for i, k := range path {
-		v, ok := cur[k]
-		if !ok {
+		v, present := cur[k]
+		if !present {
 			return "", false
 		}
 		if i == len(path)-1 {
-			s, ok := v.(string)
-			return s, ok
+			s, isString := v.(string)
+			return s, isString
 		}
-		m, ok := v.(map[string]interface{})
-		if !ok {
+		m, isMap := v.(map[string]interface{})
+		if !isMap {
 			return "", false
 		}
 		cur = m
