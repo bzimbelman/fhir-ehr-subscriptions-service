@@ -59,6 +59,7 @@ func (c *captureLogger) snapshot() []logEntry {
 	copy(out, c.entries)
 	return out
 }
+
 // hasWarn reports whether any captured WARN entry has either the
 // needle in its message OR in any of its field keys / string values.
 // Matches what an SRE would grep for in production logs.
