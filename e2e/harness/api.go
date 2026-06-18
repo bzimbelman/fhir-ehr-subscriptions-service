@@ -94,6 +94,13 @@ type APIServerConfig struct {
 	// Metrics is the optional MetricsRecorder e2e tests inject to
 	// observe RecordActivatePanic counter increments (B-10).
 	Metrics handlers.MetricsRecorder
+
+	// SubscriptionCreateRateLimit and WSBindingTokenRateLimit plumb the
+	// per-client token-bucket limiters through to handlers.Deps so e2e
+	// tests can drive the S-3.3 429 path without standing up a parallel
+	// chi router.
+	SubscriptionCreateRateLimit *auth.ClientRateLimiter
+	WSBindingTokenRateLimit     *auth.ClientRateLimiter
 }
 
 // APIServer wraps an in-process HTTP server hosting the Subscriptions
@@ -179,6 +186,9 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		ActivationWaitGroup: cfg.ActivationWaitGroup,
 		AuditMaxBytes:       cfg.AuditMaxBytes,
 		Metrics:             cfg.Metrics,
+
+		SubscriptionCreateRateLimit: cfg.SubscriptionCreateRateLimit,
+		WSBindingTokenRateLimit:     cfg.WSBindingTokenRateLimit,
 	}
 
 	r := chi.NewRouter()
