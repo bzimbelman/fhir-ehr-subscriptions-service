@@ -39,6 +39,11 @@ type ChannelActivator interface {
 
 // ChannelRegistry maps channel-type code (e.g., "rest-hook",
 // "websocket") to its activator.
+//
+// The registry is constructed once at startup, frozen, and read across
+// goroutines without a mutex. Mutating it after RegisterRoutes returns
+// is undefined and will race; the runtime treats it as immutable
+// (S-2.5).
 type ChannelRegistry map[string]ChannelActivator
 
 // MetricsRecorder is the narrow surface handlers use to record
