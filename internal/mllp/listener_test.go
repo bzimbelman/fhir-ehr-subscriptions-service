@@ -495,6 +495,67 @@ func TestListener_AllowedMessageTypes_Filter(t *testing.T) {
 	}
 }
 
+// InflightCapPerConn is enforced per LLD §5.6: when the per-connection
+// inflight counter is at the cap on entry to handleOneFrame, the message
+// is NACKed with reason=inflight_cap and Persist is NOT called.
+//
+// We exercise the gate two ways:
+//   - the boundary case (cap = 0) which always NACKs the first frame
+//     with no persist call,
+//   - the contention case (cap = 1 with a held first persist) where a
+//     concurrent ingestion of a second frame attempted while the first
+//     is in flight is rejected. The handler is single-threaded per
+//     connection by design (LLD §5.3), so we drive the contention path
+//     by invoking handleOneFrame directly with a pre-incremented counter.
+
+// Direct test of the gate via handleOneFrame: with InflightCapPerConn = 1
+// and the per-connection state's inflight already at 1 (simulating a
+// concurrent in-flight persist in some future fan-out implementation),
+// a new frame must NACK with reason=inflight_cap and must NOT call
+// Persist. This is the LLD §5.6 contract.
+func TestListener_InflightCap_DirectGate(t *testing.T) {
+	persistCalls := int64(0)
+	p := &fakePersister{
+		persistFn: func(_ context.Context, _ QueueRow) error {
+			atomic.AddInt64(&persistCalls, 1)
+			return nil
+		},
+	}
+	m := newFakeMetrics()
+	ep := EndpointConfig{Name: "adt-feed"}
+	cfg := defaultConfig(ep)
+	cfg.InflightCapPerConn = 1
+
+	server, client := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	state := newConnectionState("adt-feed", "127.0.0.1:9999")
+	state.markInflightForTest() // pre-increment to simulate concurrent in-flight
+
+	clog := newConnectionLogger(nopLogger{}, ep.Name, "127.0.0.1:9999", state.id)
+	endpointLabels := map[string]string{"listener_endpoint": ep.Name}
+	receiveLabels := map[string]string{"listener_endpoint": ep.Name, "peer_addr": "127.0.0.1:9999"}
+
+	go func() {
+		body := []byte("MSH|^~\\&|S|F|||20240101||ADT^A01|CAPPED|P|2.5\r")
+		_ = handleOneFrame(context.Background(), server, body, ep, cfg, p, m, clog, state, endpointLabels, receiveLabels, false)
+	}()
+
+	ack := readFrame(t, client)
+	if !strings.Contains(string(ack), "MSA|AE|CAPPED") {
+		t.Fatalf("expected NACK echoing CAPPED; got %q", ack)
+	}
+	if got := atomic.LoadInt64(&persistCalls); got != 0 {
+		t.Fatalf("persister called %d times; want 0 (cap reached)", got)
+	}
+	if got := m.counter(MetricNackTotal, map[string]string{
+		"listener_endpoint": "adt-feed", "reason": "inflight_cap",
+	}); got != 1 {
+		t.Fatalf("nack_total{reason=inflight_cap} = %v, want 1", got)
+	}
+}
+
 // Graceful shutdown: in-flight persist completes, then handler exits without
 // accepting new frames.
 func TestListener_ShutdownDrainsInFlight(t *testing.T) {
