@@ -240,12 +240,17 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		return nil, http.StatusUnauthorized, "audience mismatch"
 	}
 
+	// RFC 7523 §3 mandates jti; without it, replay detection silently
+	// disengages (B-7). Reject tokens with missing/empty jti as
+	// malformed.
 	jti, _ := verifiedClaims["jti"].(string)
-	if jti != "" {
-		if v.cfg.JTICache.Seen(jti) {
-			v.recordFailure("replayed_jti")
-			return nil, http.StatusUnauthorized, "token replay"
-		}
+	if jti == "" {
+		v.recordFailure("malformed")
+		return nil, http.StatusUnauthorized, "missing jti"
+	}
+	if v.cfg.JTICache.Seen(jti) {
+		v.recordFailure("replayed_jti")
+		return nil, http.StatusUnauthorized, "token replay"
 	}
 
 	exp, err := claimToTime(verifiedClaims["exp"])
@@ -262,9 +267,7 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		return nil, http.StatusForbidden, "no authorized scopes"
 	}
 
-	if jti != "" {
-		v.cfg.JTICache.Put(jti, exp)
-	}
+	v.cfg.JTICache.Put(jti, exp)
 
 	return &Principal{
 		ClientID: client.ID,

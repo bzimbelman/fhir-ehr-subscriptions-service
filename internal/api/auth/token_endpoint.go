@@ -249,18 +249,21 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Replay protection within the token endpoint — same JTI cannot be
-	// re-used to mint a new token even if it's still in its validity
-	// window.
-	if jti, _ := vc["jti"].(string); jti != "" {
-		exp, _ := claimToTime(vc["exp"])
-		if te.jtiCache.Seen(jti) {
-			te.fail(w, http.StatusUnauthorized, "invalid_client",
-				"assertion jti replay", "replayed_jti")
-			return
-		}
-		te.jtiCache.Put(jti, exp)
+	// RFC 7523 §3 mandates jti; without it, replay detection is
+	// silently bypassed (B-7). Treat missing/empty jti as malformed.
+	jti, _ := vc["jti"].(string)
+	if jti == "" {
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"missing jti", "malformed")
+		return
 	}
+	assertionExp, _ := claimToTime(vc["exp"])
+	if te.jtiCache.Seen(jti) {
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"assertion jti replay", "replayed_jti")
+		return
+	}
+	te.jtiCache.Put(jti, assertionExp)
 
 	// Compute granted scopes — intersect requested with client.Scopes.
 	requested := splitScope(r.PostForm.Get("scope"))
