@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"io"
 	"net"
 	"net/smtp"
@@ -601,10 +600,10 @@ func TestPlainAuthFailureIsPermanent(t *testing.T) {
 func TestLoginAuthSuccess(t *testing.T) {
 	t.Parallel()
 	srv := startTestRelay(t, relayConfig{
-		EnableSTARTTLS:   true,
-		AuthUser:         "user",
-		AuthPass:         "pass",
-		AdvertiseLOGIN:   true,
+		EnableSTARTTLS:    true,
+		AuthUser:          "user",
+		AuthPass:          "pass",
+		AdvertiseLOGIN:    true,
 		HandleLOGINByHand: true,
 	})
 	defer srv.Stop()
@@ -829,13 +828,13 @@ func (r *testRelay) handle(rawConn net.Conn) {
 	}
 
 	var (
-		mailFrom    string
-		recipients  []string
-		usedTLS     bool
-		authOK      bool
-		needAuth    = r.cfg.AuthUser != ""
-		didAuth     bool
-		extensions  = ehloExtensions(r.cfg, false)
+		mailFrom      string
+		recipients    []string
+		usedTLS       bool
+		authOK        bool
+		needAuth      = r.cfg.AuthUser != ""
+		didAuth       bool
+		extensions    = ehloExtensions(r.cfg, false)
 		extensionsTLS = ehloExtensions(r.cfg, true)
 	)
 
@@ -995,7 +994,7 @@ func handleAuthLogin(conn *smtpConn, user, pass string) bool {
 	if err != nil {
 		return false
 	}
-	if err := conn.WriteLine("334 " + base64Encode("Password:")); err != nil {
+	if writeErr := conn.WriteLine("334 " + base64Encode("Password:")); writeErr != nil {
 		return false
 	}
 	pline, err := conn.ReadLine()
@@ -1102,6 +1101,3 @@ func newChannelWithMetrics(t *testing.T, cfg email.Config, m *fakeMetrics) *emai
 // the expected error type. The test does not exercise net/smtp directly;
 // it merely fails fast at compile time if the import goes away.
 var _ = smtp.PlainAuth
-
-// errInjected is an error string used in helper tests below.
-var errInjected = errors.New("injected")
