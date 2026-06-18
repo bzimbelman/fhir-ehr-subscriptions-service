@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -148,3 +149,31 @@ func (h *Harness) QueueSize(ctx context.Context) (int, error) {
 	err := h.DB.QueryRow(ctx, `select count(*) from hl7_message_queue`).Scan(&n)
 	return n, err
 }
+
+// postScenario POSTs a JSON body to the EHR mock's scenario control plane
+// and returns the response body. Fails the test on any transport error
+// or non-2xx status.
+func postScenario(t *testing.T, ctx context.Context, h *Harness, path string, body any) []byte {
+	t.Helper()
+	url := fmt.Sprintf("http://%s%s", h.MockEHR.HTTPAddr, path)
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("post %s: status %d body=%s", path, resp.StatusCode, respBody)
+	}
+	return respBody
+}
+
