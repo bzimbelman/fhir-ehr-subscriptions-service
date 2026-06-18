@@ -217,9 +217,8 @@ var (
 	supportedTokenModifiers     = stringSet("not", "missing", "in")
 	supportedReferenceModifiers = stringSet("identifier", "missing")
 	supportedStringModifiers    = stringSet("contains", "missing")
-	supportedDateComparators    = stringSet("eq", "ne", "gt", "lt", "ge", "le")
 	// Unsupported modifiers we explicitly call out so the rejection
-	// message names them.
+	// message names them. Compile-time list per ADR 0006.
 	knownUnsupportedModifiers = stringSet("above", "below", "type", "text")
 )
 
@@ -546,11 +545,11 @@ type rawSubscriptionTopic struct {
 }
 
 type rawResourceTrigger struct {
-	Description          string           `json:"description"`
-	Resource             string           `json:"resource"`
-	SupportedInteraction []string         `json:"supportedInteraction"`
-	QueryCriteria        *rawQueryCrit    `json:"queryCriteria"`
-	FhirPathCriteria     string           `json:"fhirPathCriteria"`
+	Description          string        `json:"description"`
+	Resource             string        `json:"resource"`
+	SupportedInteraction []string      `json:"supportedInteraction"`
+	QueryCriteria        *rawQueryCrit `json:"queryCriteria"`
+	FhirPathCriteria     string        `json:"fhirPathCriteria"`
 }
 
 type rawQueryCrit struct {

@@ -424,14 +424,14 @@ func matchIdentifier(v any, value string) bool {
 }
 
 // parseDateComparator splits "gt2026-01-01" → (cmp="gt", val=...).
-func parseDateComparator(s string) (string, string, bool) {
-	for _, cmp := range []string{"eq", "ne", "gt", "lt", "ge", "le"} {
-		if strings.HasPrefix(s, cmp) {
-			rest := s[len(cmp):]
+func parseDateComparator(s string) (cmp, value string, ok bool) {
+	for _, c := range []string{"eq", "ne", "gt", "lt", "ge", "le"} {
+		if strings.HasPrefix(s, c) {
+			rest := s[len(c):]
 			if rest == "" || rest[0] < '0' || rest[0] > '9' {
 				return "", "", false
 			}
-			return cmp, rest, true
+			return c, rest, true
 		}
 	}
 	return "", "", false
@@ -637,10 +637,10 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 }
 
-func nextBackoff(cur, max time.Duration) time.Duration {
+func nextBackoff(cur, ceiling time.Duration) time.Duration {
 	next := cur * 2
-	if next > max {
-		return max
+	if next > ceiling {
+		return ceiling
 	}
 	return next
 }
@@ -691,7 +691,8 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 		OccurredAt:       row.OccurredAt,
 	})
 
-	for _, m := range matches {
+	for i := range matches {
+		m := &matches[i]
 		_, _, err := w.ehrRepo.Insert(ctx, tx, repos.EhrEventRow{
 			TopicURL:              m.TopicURL,
 			Focus:                 m.Focus,

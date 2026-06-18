@@ -128,9 +128,9 @@ const integrationTopic = `{
 // TestIntegrationMatcherEndToEnd inserts a resource_changes row,
 // constructs a catalog with one topic that should match, runs the
 // worker once, and asserts that:
-//   1. The source row is processed=true.
-//   2. An ehr_events row is written with the right topic_url and
-//      focus.
+//  1. The source row is processed=true.
+//  2. An ehr_events row is written with the right topic_url and
+//     focus.
 func TestIntegrationMatcherEndToEnd(t *testing.T) {
 	t.Parallel()
 	url := startPostgres(t)

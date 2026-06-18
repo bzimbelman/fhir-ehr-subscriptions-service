@@ -13,13 +13,13 @@ import (
 
 // orderChangedTopic exercises the seven-step algorithm:
 //
-//   1: resource type ServiceRequest
-//   2: interactions create+update
-//   3: previous status not active
-//   4: current status active
-//   5: requireBoth=true → AND
-//   6: fhirPathCriteria absent (skipped)
-//   7: emit
+//	1: resource type ServiceRequest
+//	2: interactions create+update
+//	3: previous status not active
+//	4: current status active
+//	5: requireBoth=true → AND
+//	6: fhirPathCriteria absent (skipped)
+//	7: emit
 const orderChangedTopic = `{
   "resourceType": "SubscriptionTopic",
   "url": "http://example.org/topics/order-changed",
