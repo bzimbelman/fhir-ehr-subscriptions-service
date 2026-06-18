@@ -28,11 +28,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"mime"
 	"net"
 	"net/mail"
 	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"time"
@@ -102,6 +104,12 @@ const (
 	MetricDeliveryDurationSec = "fhir_subs_channel_email_delivery_duration_seconds"
 	MetricSMTPResponsesTotal  = "fhir_subs_channel_email_smtp_responses_total"
 	MetricSMTPPoolInUse       = "fhir_subs_channel_email_smtp_pool_in_use"
+	// MetricSTARTTLSOutcomeTotal records the negotiated STARTTLS outcome
+	// per dial. Labels: channel=email, policy={required,preferred,disabled},
+	// upgraded={true,false}. Operators can alert on
+	// rate(...{policy="preferred",upgraded="false"}) > 0 to detect a
+	// strip-STARTTLS MITM or relay regression. (S-6 #2)
+	MetricSTARTTLSOutcomeTotal = "fhir_subs_channel_email_starttls_outcome_total"
 )
 
 // Config configures a Channel at construction time. Zero values fall
@@ -178,11 +186,6 @@ type Config struct {
 	Metrics channel.MetricsEmitter
 	// Logger is the structured logger. nil falls back to slog.Default().
 	Logger *slog.Logger
-
-	// dialFunc is an optional override that returns a connected SMTP
-	// client. Tests use this to skip TLS bring-up by passing a plain
-	// connection. Production callers leave it nil.
-	dialFunc func(ctx context.Context, host string, port int, tlsConf *tls.Config, policy STARTTLSPolicy, localName string) (*smtp.Client, error)
 }
 
 // Channel implements the email delivery channel. Construct with New;
@@ -273,9 +276,6 @@ func New(cfg Config) (*Channel, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if cfg.dialFunc == nil {
-		cfg.dialFunc = defaultDial
-	}
 	// B-14: surface the strip-STARTTLS risk loud and clear when the
 	// operator opts into Preferred (or Disabled with AllowCleartextAuth).
 	switch cfg.STARTTLS {
@@ -335,12 +335,27 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 	attemptCtx, cancel := c.applyDeadline(ctx, env.Deadline)
 	defer cancel()
 
-	client, err := c.cfg.dialFunc(attemptCtx, c.cfg.SMTPHost, c.cfg.SMTPPort, c.cfg.TLSConfig, c.cfg.STARTTLS, c.cfg.LocalName)
+	client, upgraded, err := c.dial(attemptCtx)
 	if err != nil {
 		return classifyDialError(err)
 	}
+	// S-6 #2: record the negotiated STARTTLS outcome so operators can
+	// alert on policy=preferred,upgraded=false (strip-STARTTLS / relay
+	// regression).
+	c.metrics.Inc(MetricSTARTTLSOutcomeTotal, map[string]string{
+		"channel":  channelName,
+		"policy":   string(c.cfg.STARTTLS),
+		"upgraded": boolLabel(upgraded),
+	})
 	defer func() {
-		_ = client.Close()
+		// S-6 #4: log Close() errors instead of silently swallowing them.
+		if cerr := client.Close(); cerr != nil && !isBenignCloseErr(cerr) {
+			c.logger.WarnContext(ctx, "smtp client close error",
+				slog.String("channel", channelName),
+				slog.String("err", cerr.Error()),
+				slog.String("smtp_host", c.cfg.SMTPHost),
+				slog.Int("smtp_port", c.cfg.SMTPPort))
+		}
 	}()
 
 	if c.cfg.AuthMechanism != AuthNone {
@@ -636,39 +651,62 @@ func newBoundary() (string, error) {
 	return mimeBoundaryPrefix + base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
-// defaultDial dials the relay, runs EHLO, optionally upgrades via
-// STARTTLS, and returns the prepared client. The caller is responsible
-// for closing the returned client.
-func defaultDial(ctx context.Context, host string, port int, tlsConf *tls.Config, policy STARTTLSPolicy, localName string) (*smtp.Client, error) {
+// dial dials the relay, runs EHLO, optionally upgrades via STARTTLS, and
+// returns the prepared client along with whether STARTTLS upgraded the
+// connection. The caller is responsible for closing the returned client.
+//
+// S-6 #1: applies dialer.Timeout from the configured RequestTimeout in
+// addition to ctx.Deadline so a missing envelope deadline still bounds
+// the connect attempt. Without this the dialer was relying solely on
+// ctx.Deadline; if the caller passed a zero envelope deadline (and the
+// scheduler did not propagate one through ctx) the dialer had no timeout
+// and the connect could block on a hung listener until the OS kicked in.
+func (c *Channel) dial(ctx context.Context) (*smtp.Client, bool, error) {
+	host := c.cfg.SMTPHost
+	port := c.cfg.SMTPPort
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	dialer := &net.Dialer{}
+
+	dialer := &net.Dialer{Timeout: c.cfg.RequestTimeout}
 	if d, ok := ctx.Deadline(); ok {
 		dialer.Deadline = d
+		if rem := time.Until(d); rem > 0 && rem < dialer.Timeout {
+			dialer.Timeout = rem
+		}
 	}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Apply the deadline at the socket level so EHLO / STARTTLS / AUTH
 	// inherit the wall-clock budget.
 	if d, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(d)
+	} else {
+		// No ctx deadline means we still need a wall-clock bound on
+		// post-dial chatter; otherwise a misbehaving relay can hang the
+		// channel goroutine indefinitely.
+		_ = conn.SetDeadline(time.Now().Add(c.cfg.RequestTimeout))
 	}
 	client, err := smtp.NewClient(conn, host)
 	if err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, false, err
 	}
-	if err := client.Hello(localName); err != nil {
-		_ = client.Close()
-		return nil, err
+	if err := client.Hello(c.cfg.LocalName); err != nil {
+		if cerr := client.Close(); cerr != nil && !isBenignCloseErr(cerr) {
+			c.logger.WarnContext(ctx, "smtp client close error after Hello failure",
+				slog.String("channel", channelName),
+				slog.String("err", cerr.Error()))
+		}
+		return nil, false, err
 	}
-	switch policy {
+	upgraded := false
+	switch c.cfg.STARTTLS {
 	case STARTTLSDisabled:
 		// No upgrade.
 	case STARTTLSRequired, STARTTLSPreferred:
 		if ok, _ := client.Extension("STARTTLS"); ok {
-			tc := tlsConf
+			tc := c.cfg.TLSConfig
 			if tc == nil {
 				tc = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
 			} else if tc.ServerName == "" {
@@ -676,19 +714,57 @@ func defaultDial(ctx context.Context, host string, port int, tlsConf *tls.Config
 				tc.ServerName = host
 			}
 			if err := client.StartTLS(tc); err != nil {
-				_ = client.Close()
-				return nil, fmt.Errorf("starttls: %w", err)
+				if cerr := client.Close(); cerr != nil && !isBenignCloseErr(cerr) {
+					c.logger.WarnContext(ctx, "smtp client close error after StartTLS failure",
+						slog.String("channel", channelName),
+						slog.String("err", cerr.Error()))
+				}
+				return nil, false, fmt.Errorf("starttls: %w", err)
 			}
+			upgraded = true
 			// Re-EHLO after STARTTLS so capability list reflects the
 			// authenticated extensions (per RFC 3207). net/smtp does
 			// this internally on StartTLS, but we explicitly Hello
 			// again to keep behavior obvious.
-		} else if policy == STARTTLSRequired {
-			_ = client.Close()
-			return nil, errors.New("starttls required by config but relay does not advertise it")
+		} else if c.cfg.STARTTLS == STARTTLSRequired {
+			if cerr := client.Close(); cerr != nil && !isBenignCloseErr(cerr) {
+				c.logger.WarnContext(ctx, "smtp client close error after STARTTLS-required check",
+					slog.String("channel", channelName),
+					slog.String("err", cerr.Error()))
+			}
+			return nil, false, errors.New("starttls required by config but relay does not advertise it")
 		}
 	}
-	return client, nil
+	return client, upgraded, nil
+}
+
+// boolLabel returns "true"/"false" for metric label values.
+func boolLabel(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// isBenignCloseErr reports whether err is a Close error we should treat
+// as benign (no log emission). io.EOF and "use of closed network
+// connection" are common when the peer hangs up cleanly after our QUIT.
+//
+// We deliberately log everything else, including "broken pipe" and
+// timeouts, because those indicate server misbehavior the operator wants
+// to see.
+func isBenignCloseErr(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, io.EOF) {
+		return false
+	}
+	s := err.Error()
+	if strings.Contains(s, "use of closed network connection") {
+		return true
+	}
+	return false
 }
 
 // buildAuth constructs the configured smtp.Auth.
@@ -795,57 +871,62 @@ func classifyAuthError(err error) channel.DeliveryOutcome {
 	return out
 }
 
-// smtpErrorCode pulls the numeric code off an SMTP error from net/smtp.
-// net/smtp returns errors of type *smtp.SMTPError for protocol
-// responses, but exposes Code/Message via field access. We treat any
-// error matching that shape as protocol-level.
+// smtpErrorCode pulls the numeric code off an SMTP error returned by
+// net/smtp. net/smtp surfaces protocol responses as *textproto.Error;
+// errors.As is the documented way to extract the code (S-6 #3). Any
+// error not wrapping *textproto.Error returns 0 — including stringy
+// "451 graylist"-style errors that don't carry the typed value, which
+// keeps the classifier from accidentally treating arbitrary text as a
+// protocol code.
 func smtpErrorCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	// net/smtp.Error is the documented type for protocol responses.
-	type smtpErr interface{ error }
-	_ = smtpErr(err)
-
-	// The concrete type is *textproto.Error wrapped, OR *smtp.Error.
-	// We avoid importing textproto by parsing the leading number off
-	// the Error() string.
-	s := err.Error()
-	s = strings.TrimSpace(s)
-	if len(s) < 3 {
-		return 0
+	var perr *textproto.Error
+	if errors.As(err, &perr) {
+		return perr.Code
 	}
-	// Skip a leading "smtp: " prefix net/smtp adds.
-	if strings.HasPrefix(s, "smtp: ") {
-		s = strings.TrimPrefix(s, "smtp: ")
-	}
-	// Parse the leading 3-digit code.
-	if len(s) < 3 {
-		return 0
-	}
-	if !isDigit(s[0]) || !isDigit(s[1]) || !isDigit(s[2]) {
-		return 0
-	}
-	code := int(s[0]-'0')*100 + int(s[1]-'0')*10 + int(s[2]-'0')
-	return code
+	return 0
 }
 
-// smtpErrorMessage strips the leading code and prefixes from the
-// canonical error string and returns the human portion.
+// smtpErrorMessage returns the human-readable portion of an SMTP error
+// when it wraps *textproto.Error, or the raw error string otherwise
+// (with the net/smtp "smtp: " prefix trimmed).
 func smtpErrorMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	s := strings.TrimSpace(err.Error())
-	s = strings.TrimPrefix(s, "smtp: ")
-	if len(s) >= 4 && isDigit(s[0]) && isDigit(s[1]) && isDigit(s[2]) && (s[3] == ' ' || s[3] == '-') {
-		return strings.TrimSpace(s[4:])
+	var perr *textproto.Error
+	if errors.As(err, &perr) {
+		return perr.Msg
 	}
-	return s
+	s := strings.TrimSpace(err.Error())
+	return strings.TrimPrefix(s, "smtp: ")
 }
 
-// isDigit reports whether b is an ASCII digit.
-func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+// SMTPErrorCodeForTest exposes smtpErrorCode for in-package tests that
+// need to assert the typed-error path without driving a full SMTP
+// session. Not part of the public API.
+func SMTPErrorCodeForTest(err error) int { return smtpErrorCode(err) }
+
+// IsBenignCloseErrForTest exposes isBenignCloseErr for tests so the
+// classifier's behavior is pinned and a future refactor cannot silently
+// swallow real Close errors. Not part of the public API.
+func IsBenignCloseErrForTest(err error) bool { return isBenignCloseErr(err) }
+
+// LogClientCloseErrForTest exercises the channel's Close-error log path
+// without requiring an SMTP relay that can produce a non-benign Close
+// error on demand. Not part of the public API.
+func LogClientCloseErrForTest(c *Channel, err error) {
+	if err == nil || isBenignCloseErr(err) {
+		return
+	}
+	c.logger.WarnContext(context.Background(), "smtp client close error",
+		slog.String("channel", channelName),
+		slog.String("err", err.Error()),
+		slog.String("smtp_host", c.cfg.SMTPHost),
+		slog.Int("smtp_port", c.cfg.SMTPPort))
+}
 
 // outcomeLabel renders an OutcomeKind as the metric label.
 func outcomeLabel(k channel.OutcomeKind) string {
