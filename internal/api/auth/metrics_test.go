@@ -73,9 +73,10 @@ func newVerifierWithMetrics(t *testing.T, audience, jwksURL, clientID string, sc
 		ClientLookup: fakeClientLookup{
 			clientID: {ID: clientID, JwksURL: jwksURL, Scopes: scopes},
 		},
-		ClockSkew: 60 * time.Second,
-		Now:       now,
-		Metrics:   m,
+		ClockSkew:         60 * time.Second,
+		Now:               now,
+		Metrics:           m,
+		AllowInsecureJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
@@ -228,8 +229,9 @@ func TestTokenEndpoint_Happy_RecordsTokenIssued(t *testing.T) {
 		ClientLookup: fakeClientLookup{
 			clientID: {ID: clientID, JwksURL: srv.URL + "/jwks", Scopes: []string{"system/Subscription.r"}},
 		},
-		Now:     now,
-		Metrics: rec,
+		Now:               now,
+		Metrics:           rec,
+		AllowInsecureJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewTokenEndpoint: %v", err)

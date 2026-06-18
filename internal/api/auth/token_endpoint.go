@@ -9,14 +9,33 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+// MaxTokenRequestBodyBytes is the default ceiling on the size of a
+// /token request body, applied via http.MaxBytesReader before
+// ParseForm. The endpoint is unauthenticated; without a body cap an
+// attacker can OOM the process with a single multi-MB POST.
+const MaxTokenRequestBodyBytes = 64 * 1024
+
+// MaxJWKSBodyBytes caps each JWKS HTTP response. Operators are
+// expected to host JWKS docs an order of magnitude smaller; 1 MiB is
+// a generous ceiling that prevents a hostile or misconfigured JWKS
+// host from exhausting auth memory (B-12).
+const MaxJWKSBodyBytes = 1024 * 1024
+
+// DefaultJWKSFetchTimeout is the per-fetch timeout applied when no
+// override is supplied via TokenEndpointConfig.JWKSFetchTimeout (B-12).
+const DefaultJWKSFetchTimeout = 5 * time.Second
 
 // TokenEndpointConfig configures the OAuth2 token endpoint.
 type TokenEndpointConfig struct {
@@ -63,6 +82,29 @@ type TokenEndpointConfig struct {
 
 	// Now returns the current time. Tests substitute.
 	Now func() time.Time
+
+	// MaxRequestBodyBytes caps the request body size accepted by
+	// ServeHTTP. Default MaxTokenRequestBodyBytes (64 KiB).
+	MaxRequestBodyBytes int64
+
+	// Logger receives detailed assertion-failure errors so operators
+	// can debug client misbehaviour. The HTTP response body never
+	// contains the underlying jwt library error string. Optional; if
+	// nil, detailed errors are dropped.
+	Logger *slog.Logger
+
+	// AllowInsecureJWKS permits client JWKS URLs whose scheme is
+	// `http://`. The default refuses them (B-12). Local-dev only.
+	AllowInsecureJWKS bool
+
+	// JWKSAllowedHosts, when non-empty, restricts the hostnames that
+	// can be used as a client JWKS URL. The default (empty) permits
+	// any host but logs a warning at startup. Hostnames are compared
+	// case-insensitively (no port).
+	JWKSAllowedHosts []string
+
+	// JWKSFetchTimeout caps each JWKS HTTP fetch. Default 5s (B-12).
+	JWKSFetchTimeout time.Duration
 }
 
 // TokenEndpoint implements the SMART on FHIR Backend Services token
@@ -94,8 +136,14 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	if cfg.AccessTokenIssuer == "" {
 		cfg.AccessTokenIssuer = cfg.Audience
 	}
+	if cfg.JWKSFetchTimeout <= 0 {
+		cfg.JWKSFetchTimeout = DefaultJWKSFetchTimeout
+	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = http.DefaultClient
+		// Dedicated client with timeout — http.DefaultClient has none,
+		// which lets a slow/hostile JWKS host hang every authentication
+		// call indefinitely (B-12).
+		cfg.HTTPClient = &http.Client{Timeout: cfg.JWKSFetchTimeout}
 	}
 	if cfg.JWKSCacheTTL == 0 {
 		cfg.JWKSCacheTTL = time.Hour
@@ -106,9 +154,16 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.MaxRequestBodyBytes <= 0 {
+		cfg.MaxRequestBodyBytes = MaxTokenRequestBodyBytes
+	}
+	policy := jwksPolicy{
+		allowInsecure: cfg.AllowInsecureJWKS,
+		allowedHosts:  normalizeHosts(cfg.JWKSAllowedHosts),
+	}
 	return &TokenEndpoint{
 		cfg:       cfg,
-		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now),
+		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now, policy),
 		jtiCache:  NewJTIReplayCache(0, cfg.Now),
 	}, nil
 }
@@ -120,7 +175,17 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		te.fail(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed", "malformed")
 		return
 	}
+	// Cap the request body before ParseForm consumes it. The endpoint
+	// is unauthenticated, so without this an attacker can flood
+	// arbitrary-sized POSTs to exhaust memory (B-6).
+	r.Body = http.MaxBytesReader(w, r.Body, te.cfg.MaxRequestBodyBytes)
 	if err := r.ParseForm(); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			te.fail(w, http.StatusRequestEntityTooLarge, "invalid_request",
+				"request body too large", "malformed")
+			return
+		}
 		te.fail(w, http.StatusBadRequest, "invalid_request", "could not parse form", "malformed")
 		return
 	}
@@ -190,9 +255,13 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		jwt.WithTimeFunc(te.cfg.Now),
 	).Parse(assertion, kf.Keyfunc)
 	if err != nil {
+		// B-8: golang-jwt error strings include "crypto/rsa:
+		// verification error", key ids, algorithm names. Map to a
+		// fixed enum of generic strings; log the detail server-side.
+		reason := classifyAssertionErr(err)
+		te.logAssertionFailure(r, clientID, reason, err)
 		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			fmt.Sprintf("assertion validation failed: %v", err),
-			classifyAssertionErr(err))
+			diagnosticForReason(reason), reason)
 		return
 	}
 	if !verified.Valid {
@@ -225,18 +294,21 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Replay protection within the token endpoint — same JTI cannot be
-	// re-used to mint a new token even if it's still in its validity
-	// window.
-	if jti, _ := vc["jti"].(string); jti != "" {
-		exp, _ := claimToTime(vc["exp"])
-		if te.jtiCache.Seen(jti) {
-			te.fail(w, http.StatusUnauthorized, "invalid_client",
-				"assertion jti replay", "replayed_jti")
-			return
-		}
-		te.jtiCache.Put(jti, exp)
+	// RFC 7523 §3 mandates jti; without it, replay detection is
+	// silently bypassed (B-7). Treat missing/empty jti as malformed.
+	jti, _ := vc["jti"].(string)
+	if jti == "" {
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"missing jti", "malformed")
+		return
 	}
+	assertionExp, _ := claimToTime(vc["exp"])
+	if te.jtiCache.Seen(jti) {
+		te.fail(w, http.StatusUnauthorized, "invalid_client",
+			"assertion jti replay", "replayed_jti")
+		return
+	}
+	te.jtiCache.Put(jti, assertionExp)
 
 	// Compute granted scopes — intersect requested with client.Scopes.
 	requested := splitScope(r.PostForm.Get("scope"))
@@ -308,6 +380,40 @@ func classifyAssertionErr(err error) string {
 	}
 }
 
+// diagnosticForReason returns a fixed, generic diagnostic string for
+// each canonical auth-failure reason. The message MUST NOT include any
+// caller-controlled data, library-internal phrases, or key material;
+// see B-8.
+func diagnosticForReason(reason string) string {
+	switch reason {
+	case "expired":
+		return "assertion expired"
+	case "audience":
+		return "assertion audience mismatch"
+	case "malformed":
+		return "assertion malformed"
+	case "unknown_client":
+		return "unknown client"
+	case "replayed_jti":
+		return "assertion jti replay"
+	default:
+		return "assertion invalid"
+	}
+}
+
+// logAssertionFailure emits a single structured log line with the raw
+// jwt error so operators can debug; never reaches the wire.
+func (te *TokenEndpoint) logAssertionFailure(r *http.Request, clientID, reason string, err error) {
+	if te.cfg.Logger == nil {
+		return
+	}
+	te.cfg.Logger.LogAttrs(r.Context(), slog.LevelInfo, "auth: assertion validation failed",
+		slog.String("client_id", clientID),
+		slog.String("reason", reason),
+		slog.String("error", err.Error()),
+	)
+}
+
 // writeOAuthError emits the RFC 6749 OAuth error code wrapped in a FHIR
 // OperationOutcome. LLD §10 requires every error response from the API
 // — including the token endpoint — to be an OperationOutcome. The OAuth
@@ -345,11 +451,20 @@ func writeOAuthError(w http.ResponseWriter, status int, code, desc string) {
 // jwksCache is a tiny TTL cache of compiled keyfuncs keyed by URL.
 // Sharing a cache between Verifier and TokenEndpoint avoids
 // re-fetching JWKS for every request.
+//
+// All access to entries is gated by mu. Concurrent /token requests
+// otherwise race the map and Go's runtime fatal-errors the process
+// (B-5). The cache also enforces the JWKS-URL policy from
+// TokenEndpointConfig (B-12): default-https, optional host allowlist,
+// 1 MiB body cap.
 type jwksCache struct {
 	httpClient *http.Client
 	ttl        time.Duration
 	now        func() time.Time
-	entries    map[string]jwksCacheEntry
+	policy     jwksPolicy
+
+	mu      sync.Mutex
+	entries map[string]jwksCacheEntry
 }
 
 type jwksCacheEntry struct {
@@ -357,20 +472,41 @@ type jwksCacheEntry struct {
 	expires time.Time
 }
 
-func newJwksCache(httpClient *http.Client, ttl time.Duration, now func() time.Time) *jwksCache {
+// jwksPolicy captures the validation rules applied to a candidate
+// JWKS URL before any network I/O. Empty allowedHosts means
+// "any host" (with the deployment expected to surface a startup
+// warning).
+type jwksPolicy struct {
+	allowInsecure bool
+	allowedHosts  map[string]struct{}
+}
+
+func newJwksCache(httpClient *http.Client, ttl time.Duration, now func() time.Time, policy jwksPolicy) *jwksCache {
 	return &jwksCache{
 		httpClient: httpClient,
 		ttl:        ttl,
 		now:        now,
+		policy:     policy,
 		entries:    map[string]jwksCacheEntry{},
 	}
 }
 
-func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, error) {
-	if e, ok := c.entries[url]; ok && c.now().Before(e.expires) {
+// errInvalidJWKSURL is returned when the JWKS URL fails policy checks
+// (scheme, host allowlist). Callers map this to a generic 401.
+var errInvalidJWKSURL = errors.New("auth: invalid jwks_url")
+
+func (c *jwksCache) fetch(ctx context.Context, rawURL string) (keyfunc.Keyfunc, error) {
+	if err := c.policy.validate(rawURL); err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if e, ok := c.entries[rawURL]; ok && c.now().Before(e.expires) {
+		c.mu.Unlock()
 		return e.kf, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	c.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +518,7 @@ func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, err
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("jwks: HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxJWKSBodyBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +526,54 @@ func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, err
 	if err != nil {
 		return nil, err
 	}
-	c.entries[url] = jwksCacheEntry{kf: kf, expires: c.now().Add(c.ttl)}
+	c.mu.Lock()
+	c.entries[rawURL] = jwksCacheEntry{kf: kf, expires: c.now().Add(c.ttl)}
+	c.mu.Unlock()
 	return kf, nil
+}
+
+// validate enforces JWKS URL policy: reject anything that isn't
+// `https://` unless allowInsecure is set; reject hosts not on the
+// allowlist if one is configured.
+func (p jwksPolicy) validate(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return errInvalidJWKSURL
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		// always allowed
+	case "http":
+		if !p.allowInsecure {
+			return errInvalidJWKSURL
+		}
+	default:
+		return errInvalidJWKSURL
+	}
+	if u.Host == "" {
+		return errInvalidJWKSURL
+	}
+	if len(p.allowedHosts) == 0 {
+		return nil
+	}
+	host := strings.ToLower(u.Hostname())
+	if _, ok := p.allowedHosts[host]; !ok {
+		return errInvalidJWKSURL
+	}
+	return nil
+}
+
+func normalizeHosts(hosts []string) map[string]struct{} {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		h = strings.TrimSpace(strings.ToLower(h))
+		if h == "" {
+			continue
+		}
+		out[h] = struct{}{}
+	}
+	return out
 }

@@ -73,6 +73,19 @@ type VerifierConfig struct {
 
 	// Now returns the current time. Tests substitute. Default time.Now.
 	Now func() time.Time
+
+	// AllowInsecureJWKS permits client JWKS URLs whose scheme is
+	// `http://`. The default refuses them (B-12). Local-dev only.
+	AllowInsecureJWKS bool
+
+	// JWKSAllowedHosts, when non-empty, restricts the hostnames that
+	// can be used as a client JWKS URL. The default (empty) permits
+	// any host but the deployment is expected to log a warning at
+	// startup.
+	JWKSAllowedHosts []string
+
+	// JWKSFetchTimeout caps each JWKS HTTP fetch. Default 5s (B-12).
+	JWKSFetchTimeout time.Duration
 }
 
 // Verifier authenticates SMART Backend Services bearer tokens.
@@ -81,6 +94,7 @@ type Verifier struct {
 
 	jwksMu    sync.Mutex
 	jwksCache map[string]jwksEntry
+	jwksPolicy
 }
 
 type jwksEntry struct {
@@ -102,8 +116,11 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if cfg.JWKSCacheTTL == 0 {
 		cfg.JWKSCacheTTL = time.Hour
 	}
+	if cfg.JWKSFetchTimeout <= 0 {
+		cfg.JWKSFetchTimeout = DefaultJWKSFetchTimeout
+	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = http.DefaultClient
+		cfg.HTTPClient = &http.Client{Timeout: cfg.JWKSFetchTimeout}
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -114,6 +131,10 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	return &Verifier{
 		cfg:       cfg,
 		jwksCache: make(map[string]jwksEntry),
+		jwksPolicy: jwksPolicy{
+			allowInsecure: cfg.AllowInsecureJWKS,
+			allowedHosts:  normalizeHosts(cfg.JWKSAllowedHosts),
+		},
 	}, nil
 }
 
@@ -240,12 +261,17 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		return nil, http.StatusUnauthorized, "audience mismatch"
 	}
 
+	// RFC 7523 §3 mandates jti; without it, replay detection silently
+	// disengages (B-7). Reject tokens with missing/empty jti as
+	// malformed.
 	jti, _ := verifiedClaims["jti"].(string)
-	if jti != "" {
-		if v.cfg.JTICache.Seen(jti) {
-			v.recordFailure("replayed_jti")
-			return nil, http.StatusUnauthorized, "token replay"
-		}
+	if jti == "" {
+		v.recordFailure("malformed")
+		return nil, http.StatusUnauthorized, "missing jti"
+	}
+	if v.cfg.JTICache.Seen(jti) {
+		v.recordFailure("replayed_jti")
+		return nil, http.StatusUnauthorized, "token replay"
 	}
 
 	exp, err := claimToTime(verifiedClaims["exp"])
@@ -262,9 +288,7 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		return nil, http.StatusForbidden, "no authorized scopes"
 	}
 
-	if jti != "" {
-		v.cfg.JTICache.Put(jti, exp)
-	}
+	v.cfg.JTICache.Put(jti, exp)
 
 	return &Principal{
 		ClientID: client.ID,
@@ -295,6 +319,9 @@ func (v *Verifier) Middleware(next http.Handler) http.Handler {
 }
 
 func (v *Verifier) keyfuncFor(ctx context.Context, jwksURL string) (keyfunc.Keyfunc, error) {
+	if err := v.jwksPolicy.validate(jwksURL); err != nil {
+		return nil, err
+	}
 	v.jwksMu.Lock()
 	entry, ok := v.jwksCache[jwksURL]
 	v.jwksMu.Unlock()
@@ -314,7 +341,7 @@ func (v *Verifier) keyfuncFor(ctx context.Context, jwksURL string) (keyfunc.Keyf
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("auth: jwks status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxJWKSBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("auth: read jwks body: %w", err)
 	}

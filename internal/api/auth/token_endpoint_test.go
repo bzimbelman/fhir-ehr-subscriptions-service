@@ -35,7 +35,8 @@ func newTokenEndpoint(t *testing.T, audience, tokenURL, clientID, jwksURL string
 				Scopes:  scopes,
 			},
 		},
-		Now: now,
+		Now:               now,
+		AllowInsecureJWKS: true, // httptest servers are http://
 	})
 	if err != nil {
 		t.Fatalf("NewTokenEndpoint: %v", err)
@@ -182,11 +183,12 @@ func TestTokenEndpoint_RoundTripIssuedTokenIsAcceptedByVerifier(t *testing.T) {
 	// server-signed-tokens path: client_id resolves the registered
 	// client; signature is server-signed, not client-signed.
 	v, err := auth.NewVerifier(auth.VerifierConfig{
-		Audience:     "https://api.example/aud",
-		ClientLookup: fakeClientLookup{clientID: {ID: clientID, JwksURL: srv.URL + "/jwks", Scopes: []string{"system/Subscription.r"}}},
-		IssuedSecret: []byte("test-server-signing-key-must-be-32-bytes!"),
-		IssuedIssuer: "https://api.example/aud",
-		Now:          func() time.Time { return now.Add(30 * time.Second) },
+		Audience:          "https://api.example/aud",
+		ClientLookup:      fakeClientLookup{clientID: {ID: clientID, JwksURL: srv.URL + "/jwks", Scopes: []string{"system/Subscription.r"}}},
+		IssuedSecret:      []byte("test-server-signing-key-must-be-32-bytes!"),
+		IssuedIssuer:      "https://api.example/aud",
+		Now:               func() time.Time { return now.Add(30 * time.Second) },
+		AllowInsecureJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)

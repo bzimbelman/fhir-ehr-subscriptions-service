@@ -107,8 +107,9 @@ func newVerifier(t *testing.T, audience, jwksURL, clientID string, scopes []stri
 				Scopes:  scopes,
 			},
 		},
-		ClockSkew: 60 * time.Second,
-		Now:       now,
+		ClockSkew:         60 * time.Second,
+		Now:               now,
+		AllowInsecureJWKS: true, // httptest servers are http://
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
