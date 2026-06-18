@@ -5,6 +5,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -266,6 +267,12 @@ func (m *LifecycleModule) racePhase(parent context.Context, phase Phase, totalDe
 		outcome string
 	}
 	results := make([]hookOutcome, len(hooks))
+	// resultsMu guards results — both the hook goroutines and the
+	// phase-deadline path write into the same backing slice. The
+	// previous code read `results[i].name` from the deadline path
+	// while hook goroutines were still writing, which the race
+	// detector flagged. S-15 #7.
+	var resultsMu sync.Mutex
 
 	var wg sync.WaitGroup
 	for i, h := range hooks {
@@ -273,7 +280,13 @@ func (m *LifecycleModule) racePhase(parent context.Context, phase Phase, totalDe
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = runOneShutdownHook(phaseCtx, h)
+			out := runOneShutdownHook(phaseCtx, h)
+			resultsMu.Lock()
+			// Don't clobber a timeout written by the deadline path.
+			if results[i].name == "" {
+				results[i] = out
+			}
+			resultsMu.Unlock()
 		}()
 	}
 
@@ -284,24 +297,32 @@ func (m *LifecycleModule) racePhase(parent context.Context, phase Phase, totalDe
 	// until the process exits; that is the contract.
 	doneCh := make(chan struct{})
 	go func() { wg.Wait(); close(doneCh) }()
+	deadlineTimer := time.NewTimer(time.Until(phaseDeadline))
+	defer deadlineTimer.Stop()
 	select {
 	case <-doneCh:
-	case <-time.After(time.Until(phaseDeadline)):
+	case <-deadlineTimer.C:
 		// Phase deadline fired. Mark all not-yet-completed hooks as
 		// failed; their goroutines are already cancelled via phaseCtx.
 		// We still wait for them to return so we never report on a
 		// not-yet-written slot, but bound that wait to a small slack
 		// window so a truly hung hook does not stall WaitForExit.
+		slack := time.NewTimer(50 * time.Millisecond)
+		defer slack.Stop()
 		select {
 		case <-doneCh:
-		case <-time.After(50 * time.Millisecond):
+		case <-slack.C:
 			// Mark every result entry that has not been written by
-			// the hook goroutine yet as a timeout, by name.
+			// the hook goroutine yet as a timeout, by name. Done
+			// under resultsMu so it can never race with a hook
+			// finishing concurrently.
+			resultsMu.Lock()
 			for i, h := range hooks {
 				if results[i].name == "" {
 					results[i] = hookOutcome{name: h.Name, failed: true, outcome: "timed_out"}
 				}
 			}
+			resultsMu.Unlock()
 		}
 	}
 
@@ -310,9 +331,16 @@ func (m *LifecycleModule) racePhase(parent context.Context, phase Phase, totalDe
 		"phase": phase.String(),
 	})
 
+	// Snapshot under the same mutex used by the hook + deadline writers
+	// so the metric/report loop never observes torn state.
+	resultsMu.Lock()
+	snapshot := make([]hookOutcome, len(results))
+	copy(snapshot, results)
+	resultsMu.Unlock()
+
 	var failed []string
 	var anyTimedOut bool
-	for _, r := range results {
+	for _, r := range snapshot {
 		m.lctx.Metrics.Inc(MetricShutdownHookOutcomeTotal, map[string]string{
 			"hook":    r.name,
 			"outcome": r.outcome,
@@ -359,13 +387,16 @@ func runOneShutdownHook(phaseCtx context.Context, h ShutdownHook) (out struct {
 
 // isDeadlineExceeded is a small helper so the sequencer is independent of
 // the exact error chain shape components return on cancellation.
+//
+// Uses errors.Is so wrapped sentinels (e.g., fmt.Errorf("%w", ctx.Err()))
+// are classified the same as the bare context error. The previous
+// pointer-equality form misclassified any wrapped chain as "errored",
+// which mislabeled cleanly-cancelled hooks. S-15 #8.
 func isDeadlineExceeded(err error) bool {
-	return err != nil && (err == context.DeadlineExceeded ||
-		err == context.Canceled ||
-		// Errors.Is would also work, but the two sentinel checks
-		// above cover both the direct-return and wrapped-via-ctx
-		// cases the LLD calls out (LLD §10).
-		false)
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // fractionOf returns max(0, total*frac), capped at total.

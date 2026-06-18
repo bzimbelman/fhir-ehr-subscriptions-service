@@ -94,11 +94,32 @@ func JoinIndex(base string, index int) string {
 // serialization time.
 const Redacted = "[redacted]"
 
+// MaxRedactDepth caps the recursion depth of Redact. YAML / JSON inputs
+// nesting deeper than this collapse to a sentinel rather than blowing
+// the stack. The value is generous (operators rarely exceed 32 levels);
+// it exists to bound a hostile / malformed config tree, not to constrain
+// reasonable schemas. S-15 #3.
+const MaxRedactDepth = 256
+
+// RedactedTooDeep is returned in place of the subtree when MaxRedactDepth
+// is exceeded.
+const RedactedTooDeep = "[redacted: depth-limited]"
+
 // Redact walks v and substitutes Redacted for every value whose path was
 // tagged sensitive in m. Maps and slices recurse; scalars at sensitive
 // paths become the sentinel. The returned tree is a fresh structure — the
 // caller's tree is not mutated.
+//
+// Recursion is depth-capped at MaxRedactDepth so a maliciously nested
+// YAML document cannot stack-overflow the redactor.
 func (m *Map) Redact(v interface{}, basePath string) interface{} {
+	return m.redact(v, basePath, 0)
+}
+
+func (m *Map) redact(v interface{}, basePath string, depth int) interface{} {
+	if depth > MaxRedactDepth {
+		return RedactedTooDeep
+	}
 	if m.IsSensitive(basePath) {
 		return Redacted
 	}
@@ -106,13 +127,13 @@ func (m *Map) Redact(v interface{}, basePath string) interface{} {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(x))
 		for k, vv := range x {
-			out[k] = m.Redact(vv, JoinPath(basePath, k))
+			out[k] = m.redact(vv, JoinPath(basePath, k), depth+1)
 		}
 		return out
 	case []interface{}:
 		out := make([]interface{}, len(x))
 		for i, item := range x {
-			out[i] = m.Redact(item, JoinIndex(basePath, i))
+			out[i] = m.redact(item, JoinIndex(basePath, i), depth+1)
 		}
 		return out
 	default:

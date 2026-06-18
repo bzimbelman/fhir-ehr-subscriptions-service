@@ -109,10 +109,55 @@ func EnvVarFromPath(path string) string {
 // (see schemas/). It is keyed by *config path* (e.g., "auth.trusted_issuers.0.jwks_url"),
 // not by env-var name, so multi-word config keys like "trusted_issuers" survive
 // the round-trip cleanly.
+//
+// Multiple distinct config paths that map to the same env-var name (e.g.,
+// "auth.trusted_issuers.0.jwks_url" and "auth.trusted_issuers_0.jwks_url"
+// both round-trip to AUTH_TRUSTED_ISSUERS_0_JWKS_URL) are dropped when
+// the env var is set: ambiguous overrides must be addressed at the
+// schema layer rather than silently taking one path. S-15 #2.
 func ReadEnvForKnownKeys(known []string) map[string]interface{} {
+	return ReadEnvForKnownKeysWithCollisions(known)
+}
+
+// ReadEnvForKnownKeysWithCollisions returns the env-derived tree along with
+// the set of env-var names whose target config paths collided. Callers
+// surface this to the operator so the ambiguity is visible at boot.
+func ReadEnvForKnownKeysWithCollisions(known []string) map[string]interface{} {
+	tree, _ := readEnvForKnownKeys(known)
+	return tree
+}
+
+// EnvCollisions returns the env-var names that map to more than one
+// distinct config path. Callable independently of any env state so
+// startup wiring can fail fast on a schema that produces collisions
+// even before the operator sets the offending env var.
+func EnvCollisions(known []string) []string {
+	seen := map[string][]string{}
+	for _, path := range known {
+		envName := EnvVarFromPath(path)
+		seen[envName] = append(seen[envName], path)
+	}
+	var out []string
+	for env, paths := range seen {
+		if len(paths) > 1 {
+			out = append(out, env)
+		}
+	}
+	return out
+}
+
+func readEnvForKnownKeys(known []string) (tree map[string]interface{}, collisions []string) {
+	collisions = EnvCollisions(known)
+	collisionSet := map[string]struct{}{}
+	for _, c := range collisions {
+		collisionSet[c] = struct{}{}
+	}
 	out := map[string]interface{}{}
 	for _, path := range known {
 		envName := EnvVarFromPath(path)
+		if _, isCollision := collisionSet[envName]; isCollision {
+			continue
+		}
 		raw, ok := os.LookupEnv(envName)
 		if !ok {
 			continue
@@ -120,7 +165,7 @@ func ReadEnvForKnownKeys(known []string) map[string]interface{} {
 		segs := strings.Split(path, ".")
 		_ = setMixedNested(out, segs, raw)
 	}
-	return out
+	return out, collisions
 }
 
 // setMixedNested writes value at segs in tree, where any numeric segment marks

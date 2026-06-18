@@ -194,23 +194,36 @@ func ApplyOverrides(prior map[string]interface{}, diffs []Diff) map[string]inter
 	return out
 }
 
+// splitPath splits a dotted config path into segments with a single
+// escape rule: a backslash before a dot keeps the dot as a literal.
+// "a.b" -> ["a", "b"]; `a\.b` -> ["a.b"]; `a\\b` -> [`a\b`]. Used by
+// ApplyOverrides so a Diff against a key that genuinely contains a
+// dot ("subscribers.acme.com") still routes to the right slot. S-15 #6.
 func splitPath(path string) []string {
 	if path == "" {
 		return nil
 	}
 	out := []string{}
-	cur := ""
+	var cur []byte
 	for i := 0; i < len(path); i++ {
 		c := path[i]
+		if c == '\\' && i+1 < len(path) {
+			next := path[i+1]
+			if next == '.' || next == '\\' {
+				cur = append(cur, next)
+				i++
+				continue
+			}
+		}
 		if c == '.' {
-			out = append(out, cur)
-			cur = ""
+			out = append(out, string(cur))
+			cur = cur[:0]
 			continue
 		}
-		cur += string(c)
+		cur = append(cur, c)
 	}
-	if cur != "" {
-		out = append(out, cur)
+	if len(cur) > 0 {
+		out = append(out, string(cur))
 	}
 	return out
 }
