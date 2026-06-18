@@ -69,14 +69,14 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-2.5 | Channel registry plain-map race | RESOLVED | RESOLVED ✓ (doc-only) | caa68a4 | doc-comment marks registry immutable post-RegisterRoutes; no compile-time enforcement |
 | audit | S-2.6 | ETag id, not version; If-Match unquoted | RESOLVED | RESOLVED ✓ | 4743ce7 | requires W/"<id>" |
 | audit | S-2.7 | Six `_ = err` swallows in activate | RESOLVED | RESOLVED ✓ | a9f96f7 | Deps.Logger |
-| audit | S-2.8 | searchSubscriptions no pagination | RESOLVED | RESOLVED ✓ | story/47 | keyset cursor + `_count` (default 50, cap 200); Bundle.link self/next |
+| audit | S-2.8 | searchSubscriptions no pagination | DEFERRED | DEFERRED ✓ | — | repo interface growth |
 | audit | S-2.9 | Magic timestamp format repeated 5× | RESOLVED | RESOLVED ✓ | 4743ce7 | instantFormat const |
 | audit | S-2.10 | since, _ := strconv.ParseInt discards err | RESOLVED | RESOLVED ✓ | 4743ce7 | parseEventNumberParam |
 | audit | S-2.11 | $status bulk no cap on id params | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.MaxStatusBulkIDs (256) |
 | audit | S-2.12 | buildSubscriptionStatus uses context.Background() | RESOLVED | RESOLVED ✓ | a9f96f7 | r.Context() threaded |
 | audit | S-2.13 | fhirVersion hardcoded "5.0.0" | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.FHIRVersion |
-| audit | S-2.14 | pg_stores no per-query deadline | DEFERRED | DEFERRED ✓ | — | needs B-4 fully landed |
-| audit | S-2.15 | $events replay hardcoded LIMIT 1000 | RESOLVED | RESOLVED ✓ | story/47 | `EventReplayPageSize` knob; Bundle.link next on truncation |
+| audit | S-2.14 | pg_stores no per-query deadline | RESOLVED | RESOLVED ✓ | story/48 | QueryTimeouts (5s/10s defaults); typed ErrQueryTimeout; TranslateQueryErr keeps caller-cancellations distinct |
+| audit | S-2.15 | $events replay hardcoded LIMIT 1000 | DEFERRED | DEFERRED ✓ | — | follows S-2.8 |
 | audit | S-2.16 | Hash: []byte{0} placeholder | DEFERRED | DEFERRED ✓ | — | replaced by observability/audit hash-chained store under B-4 |
 | audit | S-2.17 | Unvalidated X-Correlation-ID reflected | RESOLVED | RESOLVED ✓ | a9f96f7 | drops non-UUID |
 | audit | S-2.18 | /metrics has no auth | RESOLVED | RESOLVED ✓ | a9f96f7 | metrics.AuthGuard at metrics.go:269 |
@@ -115,7 +115,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-8.3 | Permanent build errors retried | RESOLVED | RESOLVED ✓ | acd798d | isPermanentBuildError |
 | audit | S-8.4 | MaxAttempts not per-channel-type | RESOLVED | RESOLVED ✓ | acd798d | RetryConfig.PerChannel |
 | audit | S-8.5 | Jitter uncapped | RESOLVED | RESOLVED ✓ | acd798d | MaxJitter=0.5 |
-| audit | S-8.6 | Inline UPDATE SQL in worker | RESOLVED | RESOLVED ✓ | story/51 | `DeliveriesRepo.{MarkDelivered, MarkPending, MarkDead}` |
+| audit | S-8.6 | Inline UPDATE SQL in worker | DEFERRED | DEFERRED ✓ | — | DeliveriesRepo refactor |
 | audit | S-9.1 | MLLP read no per-message frame deadline | RESOLVED | RESOLVED ✓ | story/52 | `FrameAssemblyTimeout` (default 30s); `ErrFrameDeadline` + `MetricFrameDeadlineExceeded` |
 | audit | S-9.2 | persistCtx decoupled — PersistTimeout cap | RESOLVED | RESOLVED ✓ | story/52 | `Validate` rejects `PersistTimeout > ShutdownDrainGrace` |
 | audit | S-9.3 | isClosedConnErr substring-matches "closed" | RESOLVED | RESOLVED ✓ | acd798d | errors.Is(net.ErrClosed) |
@@ -146,7 +146,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-12.6 | Builder sort non-deterministic on tie | RESOLVED | RESOLVED ✓ | d3fad44 | sort.SliceStable + ID tiebreaker |
 | audit | S-12.7 | Bundle/notificationEvent timestamps RFC3339 | RESOLVED | RESOLVED ✓ | d3fad44 | RFC3339Nano |
 | audit | S-12.8 | Handshake/heartbeat correlation_id non-deterministic | RESOLVED | RESOLVED ✓ | d3fad44 | deterministic v5 UUID |
-| audit | S-12.9 | fhir+xml rejection at builder, not API | RESOLVED | RESOLVED ✓ | 8642b71 (story/57) | rejected at POST/PUT /Subscription with 400 OperationOutcome citing `fhir+xml`; builder hardcode kept as defense-in-depth |
+| audit | S-12.9 | fhir+xml rejection at builder, not API | DEFERRED | DEFERRED ✓ | — | belongs at subscription-create API path |
 | audit | S-13.1 | AES-GCM rotation cadence undocumented | RESOLVED | RESOLVED ✓ | c765c8e | NIST 2^32 limit doc'd |
 | audit | S-13.2 | Audit log no chained-append + prev-hash verify | RESOLVED | RESOLVED ✓ | c765c8e | AppendChained |
 | audit | S-13.3 | ListActiveByTopic no streaming/page variant | RESOLVED | RESOLVED ✓ | c765c8e | StreamActiveByTopic, ListActiveByTopicPage |
@@ -242,7 +242,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.10 | Multi-instance / horizontal scale | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | algorithmic support already shipping (claim loops, advisory locks, partition rotator); recipe docs at `docs/operations/horizontal-scale.md`; read-replica plumbing genuinely deferred to v1.0 follow-up |
 | future | P3.1 | Adapter authoring guide | (no status) | OPEN ✗ | — | docs only |
 | future | P3.2 | More EHR adapters | (no status) | OPEN ✗ | — | community ask |
-| future | P3.3 | Repository unused code cleanup | RESOLVED | RESOLVED ✓ | story/76-repo-cleanup | WsBindingTokensRepo.Get + Delete deleted; placeholder t.Skip test removed; /metadata stub kept (active in probe-only mode) |
+| future | P3.3 | Repository unused code cleanup | (no status) | OPEN ✗ | — | WsBindingTokensRepo.Get/Delete unused |
 | future | P3.4 | Container / Helm packaging | (no status) | OPEN ✗ | — | Dockerfile exists; no Helm |
 | future | P3.5 | Documentation site | (no status) | OPEN ✗ | — | |
 | future | P3.6 | CI/CD | (no status) | OPEN ✗ | — | `.github/` is sparse; only basics |

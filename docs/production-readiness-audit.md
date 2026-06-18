@@ -82,7 +82,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-2.11 | `$status` bulk no cap on id params | RESOLVED | `4743ce7` | new `Deps.MaxStatusBulkIDs` (256) |
 | S-2.12 | `buildSubscriptionStatus` uses `context.Background()` | RESOLVED | `a9f96f7` | threaded `r.Context()` |
 | S-2.13 | `fhirVersion` hardcoded `"5.0.0"` | RESOLVED | `4743ce7` | sourced from `Deps.FHIRVersion` |
-| S-2.14 | `pg_stores` no per-query deadline | DEFERRED | — | needs B-4 wiring fully landed |
+| S-2.14 | `pg_stores` no per-query deadline | RESOLVED | story/48 | `QueryTimeouts{Read:5s,Write:10s}`, typed `ErrQueryTimeout`, `TranslateQueryErr` translates inner DeadlineExceeded; integration test holds ACCESS EXCLUSIVE LOCK on `subscriptions` and asserts the typed error fires under the deadline |
 | S-2.15 | `$events` replay hardcoded `LIMIT 1000` | DEFERRED | — | follows S-2.8 pagination |
 | S-2.16 | `Hash: []byte{0}` placeholder; no chain integrity | DEFERRED | — | replaced by observability/audit hash-chained store under B-4 |
 | S-2.17 | Unvalidated `X-Correlation-ID` reflected | RESOLVED | `a9f96f7` | drops non-UUID values |
@@ -531,7 +531,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 - **S-2.11 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:558-589` — `$status` bulk has no cap on `id` query params. New `Deps.MaxStatusBulkIDs` (default 256); over-cap requests return 400.
 - **S-2.12 RESOLVED (a9f96f7)** `internal/api/handlers/subscription_handlers.go:786-805` — `buildSubscriptionStatus` uses `context.Background()` for DB read. Threaded `r.Context()` through every caller.
 - **S-2.13 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:898-899` — `fhirVersion` hardcoded `"5.0.0"`. Now sourced from `Deps.FHIRVersion` (default `5.0.0`).
-- **S-2.14 DEFERRED (out of scope)** `internal/api/handlers/pg_stores.go:43-188` — no per-query deadline. Requires production wiring (B-4) to fully land before per-query timeouts can be tuned end-to-end.
+- **S-2.14 RESOLVED (story/48)** `internal/api/handlers/pg_stores.go` — every Pg query path now wraps the caller's context with a per-query deadline derived from `handlers.QueryTimeouts` (5s read / 10s write defaults; both configurable). A typed `handlers.ErrQueryTimeout` sentinel surfaces deadline-exceeded queries; `TranslateQueryErr` keeps caller-cancellation errors unmodified so operators distinguish "the database is slow" from "the client gave up". Integration test (`pg_stores_deadline_integration_test.go`) holds an ACCESS EXCLUSIVE lock on `subscriptions` and asserts the typed error fires within the configured 100ms deadline.
 - **S-2.15 DEFERRED (out of scope)** `internal/api/handlers/pg_stores.go:159-188` — `$events` replay capped at hardcoded `LIMIT 1000` with no client signal of truncation. Surfaces best after S-2.8 pagination lands.
 - **S-2.16 DEFERRED (out of scope)** `internal/api/handlers/pg_stores.go:251-263` — `Hash: []byte{0}` placeholder; production path silently has no hash-chain integrity. Replaced by the observability/audit hash-chained store under B-4 production wiring.
 - **S-2.17 RESOLVED (a9f96f7)** `internal/api/handlers/tracing.go:32, 44` — unvalidated `X-Correlation-ID` reflected into spans / outbound headers. `correlation.ExtractFromHeaders` now drops non-UUID values and generates a fresh one.
