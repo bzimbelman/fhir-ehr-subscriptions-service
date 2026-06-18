@@ -522,7 +522,7 @@ type pendingFull struct {
 func (p *Processor) lockPending(ctx context.Context, tx pgx.Tx, key, endpoint string) (pendingFull, bool, error) {
 	const sql = `
 		SELECT correlation_key, listener_endpoint, pending_resource, pending_kind,
-		       source_message_id, expires_at, created_at
+		       source_message_id, expires_at, created_at, key_version
 		FROM pending_pairs
 		WHERE correlation_key = $1 AND listener_endpoint = $2
 		FOR UPDATE`
@@ -531,7 +531,7 @@ func (p *Processor) lockPending(ctx context.Context, tx pgx.Tx, key, endpoint st
 	var kind string
 	err := tx.QueryRow(ctx, sql, key, endpoint).Scan(
 		&row.CorrelationKey, &row.ListenerEndpoint, &enc, &kind,
-		&row.SourceMessageID, &row.ExpiresAt, &row.CreatedAt,
+		&row.SourceMessageID, &row.ExpiresAt, &row.CreatedAt, &row.KeyVersion,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return pendingFull{}, false, nil
@@ -541,8 +541,9 @@ func (p *Processor) lockPending(ctx context.Context, tx pgx.Tx, key, endpoint st
 	}
 	row.PendingKind = repos.PendingKind(kind)
 
-	// Active key version (the existing PendingPairsRepo also assumes 1).
-	body, err := p.deps.Codec.Decrypt(enc, 1)
+	// Decrypt with the row's persisted key_version so a key rotation
+	// after the half-pair was held still resolves to the correct cipher.
+	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion)
 	if err != nil {
 		return pendingFull{}, false, fmt.Errorf("decrypt pending: %w", err)
 	}

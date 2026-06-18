@@ -152,6 +152,7 @@ type PendingPairRow struct {
 	SourceMessageID  uuid.UUID
 	ExpiresAt        time.Time
 	CreatedAt        time.Time
+	KeyVersion       int32
 }
 
 // AdapterStateRow mirrors adapter_state.

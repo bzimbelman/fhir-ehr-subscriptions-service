@@ -70,7 +70,7 @@ func TestPendingPairsInsertAndDelete(t *testing.T) {
 
 	srcID := uuid.New()
 	pool.ExpectExec("INSERT INTO pending_pairs").
-		WithArgs(anyArgs(6)...).
+		WithArgs(anyArgs(7)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	pool.ExpectExec("DELETE FROM pending_pairs").
 		WithArgs(anyArgs(2)...).

@@ -180,7 +180,7 @@ type reapedPending struct {
 func (p *Processor) lockPendingForReap(ctx context.Context, tx pgx.Tx, key, endpoint string) (reapedPending, bool, error) {
 	const sql = `
 		SELECT correlation_key, listener_endpoint, pending_resource, pending_kind,
-		       source_message_id, expires_at, created_at
+		       source_message_id, expires_at, created_at, key_version
 		FROM pending_pairs
 		WHERE correlation_key = $1 AND listener_endpoint = $2 AND expires_at <= $3
 		FOR UPDATE`
@@ -189,7 +189,7 @@ func (p *Processor) lockPendingForReap(ctx context.Context, tx pgx.Tx, key, endp
 	var kind string
 	err := tx.QueryRow(ctx, sql, key, endpoint, p.deps.Now()).Scan(
 		&row.CorrelationKey, &row.ListenerEndpoint, &enc, &kind,
-		&row.SourceMessageID, &row.ExpiresAt, &row.CreatedAt,
+		&row.SourceMessageID, &row.ExpiresAt, &row.CreatedAt, &row.KeyVersion,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return reapedPending{}, false, nil
@@ -198,7 +198,7 @@ func (p *Processor) lockPendingForReap(ctx context.Context, tx pgx.Tx, key, endp
 		return reapedPending{}, false, err
 	}
 	row.PendingKind = repos.PendingKind(kind)
-	body, err := p.deps.Codec.Decrypt(enc, 1)
+	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion)
 	if err != nil {
 		return reapedPending{}, false, fmt.Errorf("decrypt pending: %w", err)
 	}
