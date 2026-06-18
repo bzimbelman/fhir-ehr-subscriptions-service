@@ -89,10 +89,11 @@ lifecycle:
 		}
 	})
 
-	// Poll /startup; once startup_complete is set, /startup mirrors /readyz
-	// (503 because no components are wired). Before that, /startup returns
-	// 503 with status="starting". Either way the test asserts the response
-	// shape after the listener is up.
+	// Poll /startup. The lifecycle module's behavior:
+	//   - before MarkStartupComplete: 503 status="starting"
+	//   - after MarkStartupComplete + zero registered checks: 200 status="ready"
+	// Our run.go calls MarkStartupComplete after the listener binds, so
+	// the steady state in this minimal config is 200/ready.
 	startupURL := "http://" + addr + "/startup"
 	deadline := time.Now().Add(5 * time.Second)
 	var (
@@ -113,9 +114,9 @@ lifecycle:
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		_ = resp.Body.Close()
-		// Once the server is bound, startup_complete is true so we expect
-		// status="unready" failed=[all_components].
-		if resp.StatusCode == 503 && (body.Status == "starting" || body.Status == "unready") {
+		// Acceptable in either order observed: starting (pre-mark) or ready (post-mark).
+		if (resp.StatusCode == 503 && body.Status == "starting") ||
+			(resp.StatusCode == 200 && body.Status == "ready") {
 			ok = true
 			break
 		}
@@ -279,7 +280,10 @@ lifecycle:
 		t.Fatalf("/healthz never returned 200: %v\nstderr: %s", lastErr, stderr.String())
 	}
 
-	// /readyz should be 503 with failed=[all_components].
+	// /readyz returns 200 ready in this minimal config because no
+	// readiness checks are registered (audit B-1 fix). When B-4's
+	// storage/handler/pipeline wiring lands, those modules register
+	// per-component checks and 503/unready will reflect real failures.
 	{
 		resp, err := http.Get("http://" + addr + "/readyz")
 		if err != nil {
@@ -291,11 +295,11 @@ lifecycle:
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		_ = resp.Body.Close()
-		if resp.StatusCode != 503 {
-			t.Fatalf("readyz status: %d", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("readyz status: %d body=%+v", resp.StatusCode, body)
 		}
-		if len(body.Failed) != 1 || body.Failed[0] != "all_components" {
-			t.Fatalf("readyz failed: %v", body.Failed)
+		if body.Status != "ready" {
+			t.Fatalf("readyz status: %q", body.Status)
 		}
 	}
 
