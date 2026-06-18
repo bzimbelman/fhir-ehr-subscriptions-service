@@ -242,7 +242,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.10 | Multi-instance / horizontal scale | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | algorithmic support already shipping (claim loops, advisory locks, partition rotator); recipe docs at `docs/operations/horizontal-scale.md`; read-replica plumbing genuinely deferred to v1.0 follow-up |
 | future | P3.1 | Adapter authoring guide | (no status) | OPEN ✗ | — | docs only |
 | future | P3.2 | More EHR adapters | (no status) | OPEN ✗ | — | community ask |
-| future | P3.3 | Repository unused code cleanup | (no status) | OPEN ✗ | — | WsBindingTokensRepo.Get/Delete unused |
+| future | P3.3 | Repository unused code cleanup | RESOLVED | RESOLVED ✓ | story/76-repo-cleanup | WsBindingTokensRepo.Get + Delete deleted; placeholder t.Skip test removed; /metadata stub kept (active in probe-only mode) |
 | future | P3.4 | Container / Helm packaging | (no status) | OPEN ✗ | — | Dockerfile exists; no Helm |
 | future | P3.5 | Documentation site | (no status) | OPEN ✗ | — | |
 | future | P3.6 | CI/CD | (no status) | OPEN ✗ | — | `.github/` is sparse; only basics |

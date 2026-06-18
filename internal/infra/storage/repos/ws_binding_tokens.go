@@ -67,17 +67,6 @@ func (r *WsBindingTokensRepo) Insert(ctx context.Context, q Querier, row WsBindi
 	return nil
 }
 
-// Delete removes a token. Used for single-use redemption. Caller passes
-// cleartext; the repo hashes to match the stored value.
-func (r *WsBindingTokensRepo) Delete(ctx context.Context, q Querier, token string) error {
-	const sql = `DELETE FROM ws_binding_tokens WHERE token = $1`
-	_, err := q.Exec(ctx, sql, hashToken(token))
-	if err != nil {
-		return fmt.Errorf("ws_binding_tokens: delete: %w", err)
-	}
-	return nil
-}
-
 // Consume atomically marks a single-use token as consumed and returns the
 // bound subscription. The redemption is fail-closed: if the token has been
 // consumed before, has expired, or does not exist, the outcome reflects
@@ -132,23 +121,4 @@ func (r *WsBindingTokensRepo) Consume(ctx context.Context, q Querier, token stri
 	}
 	// Fell through despite zero-rows; treat as not found.
 	return ConsumeResult{Outcome: ConsumeNotFound}, nil
-}
-
-// Get returns the row for a token, or nil if missing. Caller passes the
-// cleartext token; the repo hashes to match the stored column value.
-func (r *WsBindingTokensRepo) Get(ctx context.Context, q Querier, token string) (*WsBindingTokenRow, error) {
-	const sql = `
-		SELECT token, subscription_id, client_id, expires_at, created_at
-		FROM ws_binding_tokens
-		WHERE token = $1`
-	var rec WsBindingTokenRow
-	if err := q.QueryRow(ctx, sql, hashToken(token)).Scan(
-		&rec.Token, &rec.SubscriptionID, &rec.ClientID, &rec.ExpiresAt, &rec.CreatedAt,
-	); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("ws_binding_tokens: get: %w", err)
-	}
-	return &rec, nil
 }

@@ -440,15 +440,15 @@ Nice-to-haves that improve developer/operator experience but don't block product
 - Allscripts adapter
 - Direct SMTP adapter (for facilities that only expose Direct)
 
-### 3.3 Repository unused code cleanup
+### 3.3 Repository unused code cleanup — RESOLVED (story/76-repo-cleanup)
 
 **Source:** WSS verifier note, e2e wireup post-merge survey
 
-**What's missing:**
+**Resolution:**
 
-- `WsBindingTokensRepo.Get` and `Delete` are now unused on main (the API uses `Insert` and the channel uses `Consume`). Either keep with tests or remove.
-- `cmd/fhir-subs/probes.go` `/metadata` stub will be obsolete once the real CapabilityStatement lands (P1.7)
-- `internal/api/handlers/handlers_test.go:701` has `t.Skip("compile-time placeholder only")` — verify this is still needed once P1.7 lands
+- `WsBindingTokensRepo.Get` and `WsBindingTokensRepo.Delete` deleted from `internal/infra/storage/repos/ws_binding_tokens.go`. The API path uses `Insert` only and the WSS bind path uses `Consume`; nothing called these methods. Their unit test (`TestWsBindingTokensInsertAndDelete`) has been replaced with `TestWsBindingTokensInsert` covering Insert + the storage-boundary hash invariant.
+- `cmd/fhir-subs/probes.go` `/metadata` stub kept as-is. P1.7 ships the real CapabilityStatement only when the production runtime is wired (DB pool + auth + topics catalog). The stub is still actively mounted in probe-only mode (`run.go:267-270`, `if prod == nil || prod.router == nil`) and exercised by `cmd/fhir-subs/probes_test.go`, `api_routes_test.go`, and `integration_test.go`. It's not dead.
+- `internal/api/handlers/handlers_test.go` placeholder `TestPipelineErrors` (gated on `errors.Is(io.EOF, io.EOF)` so the body never executes) removed.
 
 ### 3.4 Container / Helm packaging
 
