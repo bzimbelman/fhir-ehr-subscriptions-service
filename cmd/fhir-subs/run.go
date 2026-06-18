@@ -15,6 +15,18 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
 )
 
+// testForceCloseHook is a test seam: when non-nil, the shutdown path
+// calls it instead of srv.Close after the grace period is exhausted, so
+// tests can assert that a Close failure is logged (S-1.5). Production
+// builds leave this nil.
+var testForceCloseHook func() error
+
+// testShutdownErrHook is a test seam: when non-nil, runWithHooks treats
+// it as the result of srv.Shutdown so the grace-exhaustion / Close
+// branch can be exercised deterministically without timing tricks
+// (S-1.5).
+var testShutdownErrHook func() error
+
 // runHooks lets tests observe internal state transitions deterministically. In
 // production the hooks are nil. The hooks are intentionally minimal: enough to
 // drive the shutdown-window readiness assertion without freezing test time.
@@ -155,11 +167,23 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Lifecycle.ShutdownGracePeriod)
 	defer cancel()
 
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	shutdownErr := srv.Shutdown(shutdownCtx)
+	if testShutdownErrHook != nil {
+		shutdownErr = testShutdownErrHook()
+	}
+	if shutdownErr != nil {
 		// On grace-period exhaustion srv.Shutdown returns context.DeadlineExceeded.
-		// We log and force-close so the goroutine exits.
-		logger.Warn("graceful shutdown exceeded budget; forcing close", "err", err.Error())
-		_ = srv.Close()
+		// We log and force-close so the goroutine exits. The Close error
+		// is also logged — silently dropping it would hide listener/file
+		// descriptor leaks during shutdown (S-1.5).
+		logger.Warn("graceful shutdown exceeded budget; forcing close", "err", shutdownErr.Error())
+		closeFn := srv.Close
+		if testForceCloseHook != nil {
+			closeFn = testForceCloseHook
+		}
+		if cErr := closeFn(); cErr != nil {
+			logger.Warn("force close failed", "err", cErr.Error())
+		}
 	}
 
 	// Wait for the serve goroutine to actually exit so we don't return while

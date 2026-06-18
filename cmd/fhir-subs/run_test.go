@@ -207,10 +207,13 @@ func TestRun_LogsCloseErrorAfterShutdownTimeout(t *testing.T) {
 
 	logs := &strings.Builder{}
 	prevForceCloseHook := testForceCloseHook
-	t.Cleanup(func() { testForceCloseHook = prevForceCloseHook })
-	testForceCloseHook = func() error {
-		return errSimulatedClose
-	}
+	prevShutdownErrHook := testShutdownErrHook
+	t.Cleanup(func() {
+		testForceCloseHook = prevForceCloseHook
+		testShutdownErrHook = prevShutdownErrHook
+	})
+	testShutdownErrHook = func() error { return fmt.Errorf("simulated shutdown failure") }
+	testForceCloseHook = func() error { return errSimulatedClose }
 
 	started := make(chan struct{})
 	hooks := runHooks{onListening: func(_ string) { close(started) }}
