@@ -14,6 +14,53 @@ import (
 	"github.com/google/uuid"
 )
 
+// connectionLogger wraps the package-level Logger with the per-connection
+// fields (endpoint, peer_addr, connection_id) so call sites only supply
+// the event name and any per-event extras. nil-safe.
+type connectionLogger struct {
+	log    Logger
+	fields map[string]any
+}
+
+func newConnectionLogger(log Logger, ep, peer string, connID uuid.UUID) connectionLogger {
+	if log == nil {
+		log = nopLogger{}
+	}
+	return connectionLogger{
+		log: log,
+		fields: map[string]any{
+			"listener_endpoint": ep,
+			"peer_addr":         peer,
+			"connection_id":     connID.String(),
+		},
+	}
+}
+
+func (l connectionLogger) emit(level int, event string, extra map[string]any) {
+	merged := make(map[string]any, len(l.fields)+len(extra)+1)
+	for k, v := range l.fields {
+		merged[k] = v
+	}
+	for k, v := range extra {
+		merged[k] = v
+	}
+	merged["event"] = event
+	switch level {
+	case logLevelInfo:
+		l.log.Info(event, merged)
+	case logLevelWarn:
+		l.log.Warn(event, merged)
+	case logLevelError:
+		l.log.Error(event, merged)
+	}
+}
+
+const (
+	logLevelInfo = iota
+	logLevelWarn
+	logLevelError
+)
+
 // HandleConnection runs the per-connection read/persist/ACK loop on conn.
 // It returns when the peer closes the connection, the framer reports a
 // malformed stream, the persist failure threshold is reached, the read
@@ -32,16 +79,40 @@ func HandleConnection(
 	metrics MetricsEmitter,
 	peerAddr string,
 ) {
+	HandleConnectionWithLogger(ctx, conn, ep, cfg, persister, metrics, nopLogger{}, peerAddr)
+}
+
+// HandleConnectionWithLogger is HandleConnection with an explicit Logger.
+// The Listener uses this in production; tests use HandleConnection.
+func HandleConnectionWithLogger(
+	ctx context.Context,
+	conn net.Conn,
+	ep EndpointConfig,
+	cfg ListenerConfig,
+	persister Persister,
+	metrics MetricsEmitter,
+	logger Logger,
+	peerAddr string,
+) {
 	cfg = cfg.withDefaults()
 	if metrics == nil {
 		metrics = nopMetrics{}
+	}
+	if logger == nil {
+		logger = nopLogger{}
 	}
 	if peerAddr == "" {
 		if ra := conn.RemoteAddr(); ra != nil {
 			peerAddr = ra.String()
 		}
 	}
-	defer func() { _ = conn.Close() }()
+	connID := uuid.New()
+	clog := newConnectionLogger(logger, ep.Name, peerAddr, connID)
+	clog.emit(logLevelInfo, "accept", nil)
+	defer func() {
+		_ = conn.Close()
+		clog.emit(logLevelInfo, "disconnect", nil)
+	}()
 
 	endpointLabels := map[string]string{"listener_endpoint": ep.Name}
 	receiveLabels := map[string]string{"listener_endpoint": ep.Name, "peer_addr": peerAddr}
@@ -92,6 +163,7 @@ func HandleConnection(
 				if errors.Is(r.err, io.EOF) || isClosedConnErr(r.err) {
 					if framer.hasOpenFrame() {
 						metrics.Inc(MetricDisconnectMidFrame, endpointLabels)
+						clog.emit(logLevelWarn, "disconnect_mid_frame", nil)
 					}
 					return
 				}
@@ -100,6 +172,7 @@ func HandleConnection(
 					return
 				}
 				metrics.Inc(MetricReadErrorsTotal, endpointLabels)
+				clog.emit(logLevelWarn, "read_error", map[string]any{"error": r.err.Error()})
 				return
 			}
 			if r.n > 0 {
@@ -117,9 +190,10 @@ func HandleConnection(
 						"listener_endpoint": ep.Name,
 						"reason":            string(ev.Reason),
 					})
+					clog.emit(logLevelWarn, "malformed", map[string]any{"reason": string(ev.Reason)})
 					return
 				case FrameEvent:
-					stop := handleOneFrame(ctx, conn, ev.Body, ep, cfg, persister, metrics,
+					stop := handleOneFrame(ctx, conn, ev.Body, ep, cfg, persister, metrics, clog,
 						peerAddr, &consecutivePersistFailures, endpointLabels, receiveLabels)
 					if stop {
 						return
@@ -142,6 +216,7 @@ func handleOneFrame(
 	cfg ListenerConfig,
 	persister Persister,
 	metrics MetricsEmitter,
+	clog connectionLogger,
 	peerAddr string,
 	consecutivePersistFailures *int,
 	endpointLabels, receiveLabels map[string]string,
@@ -159,6 +234,10 @@ func handleOneFrame(
 			metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 				"listener_endpoint": ep.Name, "outcome": OutcomeAE,
 			})
+			clog.emit(logLevelWarn, "nacked", map[string]any{
+				"reason":          "msh9_unparseable",
+				"mllp_message_id": mshFields.MessageControlID,
+			})
 			writeNACK(conn, mshFields, "msh9_unparseable", now)
 			return false
 		}
@@ -170,20 +249,32 @@ func handleOneFrame(
 			metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 				"listener_endpoint": ep.Name, "outcome": OutcomeAE,
 			})
+			clog.emit(logLevelWarn, "nacked", map[string]any{
+				"reason":          "message_type",
+				"type":            mshFields.MessageType,
+				"mllp_message_id": mshFields.MessageControlID,
+			})
 			writeNACK(conn, mshFields, "message type not allowed", now)
 			return false
 		}
 	}
 
+	correlationID := uuid.New()
 	row := QueueRow{
 		ID:               uuid.New(),
 		ReceivedAt:       now,
 		ListenerEndpoint: ep.Name,
 		PeerAddr:         peerAddr,
 		MLLPMessageID:    mshFields.MessageControlID,
-		CorrelationID:    uuid.New(),
+		CorrelationID:    correlationID,
 		Body:             append([]byte(nil), body...),
 	}
+	clog.emit(logLevelInfo, "frame_received", map[string]any{
+		"received_at":     now.Format(time.RFC3339Nano),
+		"correlation_id":  correlationID.String(),
+		"mllp_message_id": mshFields.MessageControlID,
+		"bytes":           len(body),
+	})
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), cfg.PersistTimeout)
 	// We deliberately do not chain off ctx for persistCtx: the LLD's
@@ -201,23 +292,44 @@ func handleOneFrame(
 
 	if err != nil {
 		*consecutivePersistFailures++
+		reason := persistFailureReason(err)
 		switch cfg.OnPersistFail {
 		case OnPersistFailDrop:
 			metrics.Inc(MetricDropForPersistFails, endpointLabels)
 			metrics.Inc(MetricNackTotal, map[string]string{
-				"listener_endpoint": ep.Name, "reason": persistFailureReason(err),
+				"listener_endpoint": ep.Name, "reason": reason,
+			})
+			clog.emit(logLevelError, "dropped", map[string]any{
+				"reason":          reason,
+				"correlation_id":  correlationID.String(),
+				"mllp_message_id": mshFields.MessageControlID,
+				"error":           err.Error(),
 			})
 			return true
 		default: // OnPersistFailNack
 			metrics.Inc(MetricNackTotal, map[string]string{
-				"listener_endpoint": ep.Name, "reason": persistFailureReason(err),
+				"listener_endpoint": ep.Name, "reason": reason,
 			})
 			metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 				"listener_endpoint": ep.Name, "outcome": OutcomeAE,
 			})
+			level := logLevelWarn
+			if errors.Is(err, ErrPersistPermanent) {
+				level = logLevelError
+			}
+			clog.emit(level, "nacked", map[string]any{
+				"reason":          reason,
+				"correlation_id":  correlationID.String(),
+				"mllp_message_id": mshFields.MessageControlID,
+				"error":           err.Error(),
+			})
 			writeNACK(conn, mshFields, persistErrorReason(err), now)
 			if *consecutivePersistFailures >= cfg.NackThenDropAfter {
 				metrics.Inc(MetricDropForPersistFails, endpointLabels)
+				clog.emit(logLevelError, "dropped", map[string]any{
+					"reason":   "consecutive_persist_failures",
+					"failures": *consecutivePersistFailures,
+				})
 				return true
 			}
 			return false
@@ -229,7 +341,17 @@ func handleOneFrame(
 	metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 		"listener_endpoint": ep.Name, "outcome": OutcomeAA,
 	})
+	clog.emit(logLevelInfo, "persisted", map[string]any{
+		"correlation_id":  correlationID.String(),
+		"mllp_message_id": mshFields.MessageControlID,
+		"row_id":          row.ID.String(),
+	})
 	writeACK(conn, mshFields, now)
+	clog.emit(logLevelInfo, "acked", map[string]any{
+		"outcome":         OutcomeAA,
+		"correlation_id":  correlationID.String(),
+		"mllp_message_id": mshFields.MessageControlID,
+	})
 	return false
 }
 

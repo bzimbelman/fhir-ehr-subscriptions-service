@@ -87,7 +87,7 @@ func (e *endpoint) run(ctx context.Context) {
 		go func(c net.Conn) {
 			defer e.connsWG.Done()
 			defer e.untrackConn(c)
-			HandleConnection(ctx, c, e.cfg, e.listenCfg, e.persister, e.metrics, c.RemoteAddr().String())
+			HandleConnectionWithLogger(ctx, c, e.cfg, e.listenCfg, e.persister, e.metrics, e.logger, c.RemoteAddr().String())
 		}(conn)
 	}
 }

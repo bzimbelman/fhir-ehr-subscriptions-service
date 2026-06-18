@@ -185,3 +185,55 @@ type EndpointStatus struct {
 	Bound             bool
 	ActiveConnections int
 }
+
+// Options bundles the optional dependencies for the package-level Start.
+// Persister is required; the rest default to no-ops.
+type Options struct {
+	Persister Persister
+	Metrics   MetricsEmitter
+	Logger    Logger
+}
+
+// defaultListener holds the package-level singleton managed by Start /
+// Shutdown. The host process typically uses this; tests instantiate
+// Listener directly via New.
+var (
+	defaultListenerMu sync.Mutex
+	defaultListener   *Listener
+)
+
+// Start binds every configured endpoint and begins accepting on the
+// process-wide singleton listener. It is safe to call once per process;
+// a second Start without an intervening Shutdown returns an error.
+//
+// Persister is required (Options.Persister); Metrics and Logger default
+// to no-op emitters. ctx is used only as the parent context for binding;
+// Shutdown drives the actual lifecycle.
+func Start(ctx context.Context, cfg ListenerConfig, opts Options) error {
+	defaultListenerMu.Lock()
+	defer defaultListenerMu.Unlock()
+	if defaultListener != nil {
+		return errors.New("mllp: Start called while a listener is already running")
+	}
+	l := New(cfg, opts.Persister, opts.Metrics, opts.Logger)
+	if err := l.Start(ctx); err != nil {
+		return err
+	}
+	defaultListener = l
+	return nil
+}
+
+// Shutdown gracefully shuts down the process-wide singleton listener.
+// It is a no-op if Start was never called or if Shutdown has already run.
+// The supplied ctx bounds the drain phase; ListenerConfig.ShutdownDrainGrace
+// caps it independently.
+func Shutdown(ctx context.Context) error {
+	defaultListenerMu.Lock()
+	l := defaultListener
+	defaultListener = nil
+	defaultListenerMu.Unlock()
+	if l == nil {
+		return nil
+	}
+	return l.Shutdown(ctx)
+}
