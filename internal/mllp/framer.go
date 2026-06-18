@@ -1,0 +1,205 @@
+// Copyright the fhir-subscriptions-foss authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package mllp
+
+// MLLP framing constants per the HL7 MLLP transport specification.
+const (
+	frameStart = 0x0B
+	frameEnd1  = 0x1C
+	frameEnd2  = 0x0D
+)
+
+// MalformedReason categorizes why the framer rejected a stream of bytes.
+type MalformedReason string
+
+// MalformedReason values reported by the framer. Names match the LLD's
+// MalformedReason enum and are used as label values on the malformed metric.
+const (
+	ReasonOversizedMessage           MalformedReason = "oversized_message"
+	ReasonUnexpectedStartByteMidFrame MalformedReason = "unexpected_start_byte_mid_frame"
+)
+
+// FramerEvent is the discriminated union returned by Framer.Next.
+// Production code switches on the concrete type rather than a tag.
+type FramerEvent interface {
+	isFramerEvent()
+}
+
+// FrameEvent surfaces a complete inter-marker body. Body is owned by the
+// caller after this event is returned: the framer does not retain it.
+type FrameEvent struct {
+	Body []byte
+}
+
+func (FrameEvent) isFramerEvent() {}
+
+// MalformedEvent indicates the byte stream cannot be reframed: the caller
+// must drop the connection. The reason is reported as a metric label.
+type MalformedEvent struct {
+	Reason MalformedReason
+}
+
+func (MalformedEvent) isFramerEvent() {}
+
+// NeedMoreEvent indicates the framer's accumulator does not yet contain
+// a complete frame. The caller must read more bytes and call Next again.
+type NeedMoreEvent struct{}
+
+func (NeedMoreEvent) isFramerEvent() {}
+
+// framerState is the framer's internal mode.
+type framerState int
+
+const (
+	stateClosed framerState = iota // looking for 0x0B; bytes outside a frame are noise.
+	stateOpen                      // accumulating an in-flight frame body.
+)
+
+// Framer is a stateful, allocation-light MLLP de-framer. It is NOT safe for
+// concurrent use; callers ensure each TCP connection owns one framer.
+//
+// Usage:
+//
+//	f := NewFramer(maxBytes)
+//	for {
+//	    f.Append(read)
+//	    for {
+//	        switch ev := f.Next().(type) {
+//	        case FrameEvent: handle(ev.Body)
+//	        case MalformedEvent: dropConnection(); return
+//	        case NeedMoreEvent: break // outer loop, read again
+//	        }
+//	    }
+//	}
+type Framer struct {
+	maxBody int
+	state   framerState
+
+	// buf accumulates bytes across calls. When state == stateOpen, buf
+	// contains exactly the candidate frame body so far (no start byte,
+	// no end bytes); when state == stateClosed, buf is empty (any pre-VT
+	// noise is consumed before being appended into the frame body).
+	buf []byte
+
+	// pending holds bytes received before they have been classified into
+	// either "noise to discard" (stateClosed) or "frame body" (stateOpen).
+	// Specifically: in stateClosed, pending may hold bytes preceding the
+	// next 0x0B; in stateOpen, pending is unused (bytes go straight to buf).
+	pending []byte
+}
+
+// NewFramer constructs a framer with the given maximum frame body size in
+// bytes. A non-positive max disables the size limit and is intended only
+// for tests.
+func NewFramer(maxBody int) *Framer {
+	return &Framer{maxBody: maxBody, state: stateClosed}
+}
+
+// Append feeds raw bytes from the wire into the framer. The framer copies
+// only what it needs, so callers may reuse the input slice immediately.
+func (f *Framer) Append(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	f.pending = append(f.pending, p...)
+}
+
+// Next returns the next event. Callers must keep calling Next until it
+// returns a NeedMoreEvent or a MalformedEvent.
+func (f *Framer) Next() FramerEvent {
+	for {
+		switch f.state {
+		case stateClosed:
+			// Find 0x0B; bytes before it are noise (per LLD section 5.4).
+			idx := indexOf(f.pending, frameStart)
+			if idx < 0 {
+				// All pending bytes are noise; discard them and ask for more.
+				f.pending = f.pending[:0]
+				return NeedMoreEvent{}
+			}
+			// Drop noise + the start byte itself; transition to Open.
+			f.pending = f.pending[idx+1:]
+			f.state = stateOpen
+			f.buf = f.buf[:0]
+			// Fall through to process any bytes already in pending.
+
+		case stateOpen:
+			// Scan pending for a 0x0B (malformed) or 0x1C 0x0D (frame end).
+			i := 0
+			for i < len(f.pending) {
+				b := f.pending[i]
+				if b == frameStart {
+					// Reset state so a subsequent Next returns NeedMoreEvent
+					// from a clean Closed accumulator if the caller chooses
+					// to keep reading anyway. We discard pending; the caller
+					// is expected to drop the connection.
+					f.state = stateClosed
+					f.buf = f.buf[:0]
+					f.pending = f.pending[:0]
+					return MalformedEvent{Reason: ReasonUnexpectedStartByteMidFrame}
+				}
+				if b == frameEnd1 {
+					// Need to peek the next byte. If we don't have it yet,
+					// keep these bytes in pending and ask for more.
+					if i+1 >= len(f.pending) {
+						break
+					}
+					if f.pending[i+1] == frameEnd2 {
+						// Bytes [0..i) belong to the body. Append them and emit.
+						if !f.appendBody(f.pending[:i]) {
+							// Append rejected for size; reset and report.
+							f.state = stateClosed
+							f.buf = f.buf[:0]
+							f.pending = f.pending[:0]
+							return MalformedEvent{Reason: ReasonOversizedMessage}
+						}
+						body := append([]byte(nil), f.buf...)
+						f.buf = f.buf[:0]
+						f.state = stateClosed
+						// Drop the body bytes plus the two end bytes.
+						f.pending = f.pending[i+2:]
+						return FrameEvent{Body: body}
+					}
+					// 0x1C followed by something other than 0x0D is treated
+					// as ordinary body content (not malformed). Continue scanning.
+				}
+				i++
+			}
+			// We consumed up to len(pending) without finding the end. Move
+			// the scanned bytes into buf (they are body so far) and ask for more.
+			if i > 0 {
+				if !f.appendBody(f.pending[:i]) {
+					f.state = stateClosed
+					f.buf = f.buf[:0]
+					f.pending = f.pending[:0]
+					return MalformedEvent{Reason: ReasonOversizedMessage}
+				}
+				f.pending = f.pending[i:]
+			}
+			return NeedMoreEvent{}
+		}
+	}
+}
+
+// appendBody appends src to the framer's in-flight body buffer, enforcing
+// the maxBody cap. Returns false if appending would exceed maxBody.
+func (f *Framer) appendBody(src []byte) bool {
+	if f.maxBody > 0 && len(f.buf)+len(src) > f.maxBody {
+		return false
+	}
+	f.buf = append(f.buf, src...)
+	return true
+}
+
+// indexOf returns the position of the first occurrence of c in b, or -1.
+// Inlined to avoid the bytes.IndexByte test-overhead in hot loops; the
+// stdlib helper is a fine alternative if the compiler stops inlining this.
+func indexOf(b []byte, c byte) int {
+	for i, v := range b {
+		if v == c {
+			return i
+		}
+	}
+	return -1
+}
