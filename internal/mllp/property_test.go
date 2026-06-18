@@ -51,8 +51,14 @@ func TestProperty_Framer_NeverPanics(t *testing.T) {
 						rt.Fatalf("frame body %d exceeds maxBody %d", len(e.Body), maxBody)
 					}
 				case MalformedEvent:
-					// Acceptable. Verify enum value.
-					if e.Reason != ReasonOversizedMessage && e.Reason != ReasonUnexpectedStartByteMidFrame {
+					// Acceptable. Verify the reason is one of the four
+					// LLD §4 enum values.
+					switch e.Reason {
+					case ReasonOversizedMessage,
+						ReasonUnexpectedStartByteMidFrame,
+						ReasonEndBeforeStart,
+						ReasonStartWithoutEnd:
+					default:
 						rt.Fatalf("unknown malformed reason %q", e.Reason)
 					}
 					// Continue: subsequent calls must still not panic.
