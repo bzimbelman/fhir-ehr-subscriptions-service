@@ -23,12 +23,14 @@ func newSignalDispatcher(mod *LifecycleModule) *signalDispatcher {
 	return &signalDispatcher{mod: mod}
 }
 
-// dispatchSignal maps a signal to a shutdown reason and forwards to
-// RequestShutdown. Signals other than SIGTERM and SIGINT are ignored —
-// SIGKILL is non-recoverable (LLD §9), and the deployment is free to
-// reserve other signals (e.g. SIGHUP for config reload) for unrelated
-// purposes.
+// dispatchSignal routes a signal to its handler. SIGTERM/SIGINT begin
+// shutdown; SIGHUP triggers the configured reload handler (B-35).
+// Other signals are ignored — SIGKILL is non-recoverable (LLD §9).
 func (d *signalDispatcher) dispatchSignal(sig os.Signal) {
+	if sig == syscall.SIGHUP {
+		d.mod.invokeReloadHandler(context.Background())
+		return
+	}
 	reason, ok := signalReason(sig)
 	if !ok {
 		return
@@ -50,16 +52,16 @@ func signalReason(sig os.Signal) (string, bool) {
 	}
 }
 
-// installSignalHandlers wires SIGTERM and SIGINT to a fresh
+// installSignalHandlers wires SIGTERM, SIGINT, and SIGHUP to a fresh
 // signalDispatcher and starts a goroutine that forwards every signal it
 // receives. The goroutine exits when ctx fires; SIGKILL is never received
-// here (LLD §9).
+// here (LLD §9). SIGHUP routes to the registered reload handler (B-35).
 //
 // The function is safe to call once per LifecycleModule.
 func installSignalHandlers(ctx context.Context, mod *LifecycleModule) error {
 	d := newSignalDispatcher(mod)
-	ch := make(chan os.Signal, 2)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT)
+	ch := make(chan os.Signal, 4)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 
 	go func() {
 		defer signal.Stop(ch)

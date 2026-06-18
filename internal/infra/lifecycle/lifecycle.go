@@ -178,6 +178,32 @@ type LifecycleModule struct {
 	closeOnce   sync.Once
 	reportMu    sync.Mutex
 	report      ShutdownReport
+
+	// reloadHandlerMu guards reloadHandler. SIGHUP routes through the
+	// dispatcher to whatever handler the host has registered (typically
+	// config.Module.Reload). nil means SIGHUP is a no-op (B-35).
+	reloadHandlerMu sync.Mutex
+	reloadHandler   func(context.Context)
+}
+
+// SetReloadHandler registers (or replaces) the SIGHUP-driven reload
+// handler. nil clears the handler. Safe under concurrent calls.
+// Established for B-35.
+func (m *LifecycleModule) SetReloadHandler(fn func(context.Context)) {
+	m.reloadHandlerMu.Lock()
+	defer m.reloadHandlerMu.Unlock()
+	m.reloadHandler = fn
+}
+
+// invokeReloadHandler invokes the registered handler if any. Used by
+// the signal dispatcher; nil-safe.
+func (m *LifecycleModule) invokeReloadHandler(ctx context.Context) {
+	m.reloadHandlerMu.Lock()
+	fn := m.reloadHandler
+	m.reloadHandlerMu.Unlock()
+	if fn != nil {
+		fn(ctx)
+	}
 }
 
 // Start initializes the lifecycle module: builds the registry, mounts the

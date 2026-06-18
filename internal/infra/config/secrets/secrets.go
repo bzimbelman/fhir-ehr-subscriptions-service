@@ -35,23 +35,36 @@ const (
 // A missing referenced env var or unreadable file is returned as an error;
 // the caller (boot path) refuses to start.
 func Resolve(tree map[string]interface{}, rmap *redaction.Map) (map[string]interface{}, *redaction.Map, error) {
+	resolved, rmap, _, err := ResolveWithFilePaths(tree, rmap)
+	return resolved, rmap, err
+}
+
+// ResolveWithFilePaths is Resolve plus the deduplicated set of on-disk
+// paths actually read for ${file:...} placeholders. Used by the secret
+// rotation watcher (B-35) so it knows which paths to mtime-poll.
+func ResolveWithFilePaths(tree map[string]interface{}, rmap *redaction.Map) (map[string]interface{}, *redaction.Map, []string, error) {
 	if rmap == nil {
 		rmap = redaction.NewMap()
 	}
-	out, err := walk(tree, "", rmap)
+	seen := map[string]struct{}{}
+	out, err := walk(tree, "", rmap, seen)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	resolved, _ := out.(map[string]interface{})
-	return resolved, rmap, nil
+	paths := make([]string, 0, len(seen))
+	for p := range seen {
+		paths = append(paths, p)
+	}
+	return resolved, rmap, paths, nil
 }
 
-func walk(v interface{}, path string, rmap *redaction.Map) (interface{}, error) {
+func walk(v interface{}, path string, rmap *redaction.Map, files map[string]struct{}) (interface{}, error) {
 	switch x := v.(type) {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(x))
 		for k, vv := range x {
-			r, err := walk(vv, redaction.JoinPath(path, k), rmap)
+			r, err := walk(vv, redaction.JoinPath(path, k), rmap, files)
 			if err != nil {
 				return nil, err
 			}
@@ -61,7 +74,7 @@ func walk(v interface{}, path string, rmap *redaction.Map) (interface{}, error) 
 	case []interface{}:
 		out := make([]interface{}, len(x))
 		for i, item := range x {
-			r, err := walk(item, redaction.JoinIndex(path, i), rmap)
+			r, err := walk(item, redaction.JoinIndex(path, i), rmap, files)
 			if err != nil {
 				return nil, err
 			}
@@ -69,15 +82,17 @@ func walk(v interface{}, path string, rmap *redaction.Map) (interface{}, error) 
 		}
 		return out, nil
 	case string:
-		return resolveString(x, path, rmap)
+		return resolveString(x, path, rmap, files)
 	default:
 		return v, nil
 	}
 }
 
 // resolveString returns the substituted value if s is a placeholder, otherwise
-// s as-is. A path tagged here is added to rmap.
-func resolveString(s, path string, rmap *redaction.Map) (string, error) {
+// s as-is. A path tagged here is added to rmap. When files is non-nil and
+// the placeholder is a ${file:...} form, the resolved on-disk path is
+// recorded so callers can later mtime-poll it for rotation.
+func resolveString(s, path string, rmap *redaction.Map, files map[string]struct{}) (string, error) {
 	if strings.HasPrefix(s, envPrefix) && strings.HasSuffix(s, suffix) {
 		name := s[len(envPrefix) : len(s)-len(suffix)]
 		if name == "" {
@@ -104,6 +119,9 @@ func resolveString(s, path string, rmap *redaction.Map) (string, error) {
 			return "", fmt.Errorf("file %s referenced by %s is unreadable: %w", raw, path, err)
 		}
 		rmap.TagSensitive(path)
+		if files != nil {
+			files[clean] = struct{}{}
+		}
 		return strings.TrimRightFunc(string(data), unicode.IsSpace), nil
 	}
 	return s, nil
