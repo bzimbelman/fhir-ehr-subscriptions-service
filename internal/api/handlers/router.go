@@ -122,7 +122,41 @@ type Deps struct {
 	// channel.header[] and similar secret-bearing fields never reach
 	// disk in plaintext.
 	AuditMaxBytes int
+
+	// MaxBodyBytes caps the request body the create / update handlers
+	// will read. Zero means DefaultMaxBodyBytes. (S-2.2)
+	MaxBodyBytes int64
+
+	// FHIRVersion is rendered into CapabilityStatement.fhirVersion.
+	// Empty means DefaultFHIRVersion. (S-2.13)
+	FHIRVersion string
+
+	// MaxStatusBulkIDs caps the number of `id` query parameters
+	// accepted by GET /Subscription/$status. Zero means
+	// DefaultMaxStatusBulkIDs. (S-2.11)
+	MaxStatusBulkIDs int
+
+	// MaxSchemaErrorBytes caps OperationOutcome.diagnostics for
+	// JSON-schema validation errors. Zero means
+	// DefaultMaxSchemaErrorBytes. (S-2.3)
+	MaxSchemaErrorBytes int
 }
+
+// DefaultMaxBodyBytes is the default request-body cap.
+const DefaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
+
+// DefaultFHIRVersion is the default CapabilityStatement.fhirVersion.
+const DefaultFHIRVersion = "5.0.0"
+
+// DefaultMaxStatusBulkIDs caps GET /Subscription/$status?id=... fan-out.
+const DefaultMaxStatusBulkIDs = 256
+
+// DefaultMaxSchemaErrorBytes caps schema-validation diagnostics length.
+const DefaultMaxSchemaErrorBytes = 1024
+
+// instantFormat is the canonical FHIR `instant` rendering with
+// millisecond precision and a `Z` suffix (not `+00:00`). (S-2.9)
+const instantFormat = "2006-01-02T15:04:05.000Z"
 
 // RegisterRoutes wires every handler onto r. Auth middleware MUST be
 // installed upstream of these routes; the handlers depend on the
@@ -139,6 +173,18 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	}
 	if d.ActivationTimeout == 0 {
 		d.ActivationTimeout = DefaultActivationTimeout
+	}
+	if d.MaxBodyBytes <= 0 {
+		d.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if d.FHIRVersion == "" {
+		d.FHIRVersion = DefaultFHIRVersion
+	}
+	if d.MaxStatusBulkIDs <= 0 {
+		d.MaxStatusBulkIDs = DefaultMaxStatusBulkIDs
+	}
+	if d.MaxSchemaErrorBytes <= 0 {
+		d.MaxSchemaErrorBytes = DefaultMaxSchemaErrorBytes
 	}
 
 	h := &server{deps: d}
