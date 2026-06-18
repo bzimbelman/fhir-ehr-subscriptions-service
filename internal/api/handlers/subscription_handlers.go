@@ -346,34 +346,22 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 // `If-None-Exist` header. The criteria are FHIR-search query string
 // fragments like `topic=http://... &channelType=rest-hook`. This is
 // intentionally narrow — only the LLD §4.1 fields participate.
+//
+// S-2.4: the predicate is pushed into SQL via FindByClientAndCriteria
+// so a high-fan-out client (thousands of subscriptions) does not pay an
+// O(N) materialise-then-filter cost on every POST. Tombstoned (`off`)
+// rows are excluded by the store so the recreate-after-delete path
+// stays unblocked.
 func (s *server) matchingSubscriptions(ctx context.Context, clientID, criteria string) ([]repos.SubscriptionRow, error) {
-	rows, err := s.deps.Subscriptions.ListByClient(ctx, clientID)
-	if err != nil {
-		return nil, err
-	}
 	q, parseErr := url.ParseQuery(criteria)
 	if parseErr != nil {
 		return nil, parseErr
 	}
-	var out []repos.SubscriptionRow
-	for i := range rows {
-		row := &rows[i]
-		if v := q.Get("topic"); v != "" && row.TopicURL != v {
-			continue
-		}
-		if v := q.Get("channelType"); v != "" && row.ChannelType != v {
-			continue
-		}
-		if v := q.Get("endpoint"); v != "" && row.Endpoint != v {
-			continue
-		}
-		// off subscriptions are tombstones — they don't block creates.
-		if row.Status == repos.SubOff {
-			continue
-		}
-		out = append(out, *row)
-	}
-	return out, nil
+	return s.deps.Subscriptions.FindByClientAndCriteria(ctx, clientID, SubscriptionMatchCriteria{
+		Topic:       q.Get("topic"),
+		ChannelType: q.Get("channelType"),
+		Endpoint:    q.Get("endpoint"),
+	})
 }
 
 // findActiveTopicByURL returns the active topic with the highest

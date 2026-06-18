@@ -30,9 +30,9 @@ type memSubs struct {
 	rows map[uuid.UUID]repos.SubscriptionRow
 
 	// Counters / capture for S-2.4 If-None-Exist tests.
-	listByClientCount      int
-	findByCriteriaCount    int
-	lastFindCriteria       *handlers.SubscriptionMatchCriteria
+	listByClientCount   int
+	findByCriteriaCount int
+	lastFindCriteria    *handlers.SubscriptionMatchCriteria
 }
 
 func newMemSubs() *memSubs {
