@@ -390,7 +390,19 @@ func handleOneFrame(
 		"mllp_message_id": mshFields.MessageControlID,
 		"row_id":          row.ID.String(),
 	})
-	writeACK(conn, mshFields, now)
+	if err := writeACK(conn, mshFields, now); err != nil {
+		// Per LLD §8: ACK write failure after commit does not change row
+		// state — the row is durable, the EHR will time out and retry,
+		// and downstream idempotency dedupes. Log warn so operators can
+		// see the EHR-side blip.
+		clog.emit(logLevelWarn, "ack_write_failed", map[string]any{
+			"outcome":         OutcomeAA,
+			"correlation_id":  correlationID.String(),
+			"mllp_message_id": mshFields.MessageControlID,
+			"error":           err.Error(),
+		})
+		return false
+	}
 	clog.emit(logLevelInfo, "acked", map[string]any{
 		"outcome":         OutcomeAA,
 		"correlation_id":  correlationID.String(),
@@ -399,14 +411,14 @@ func handleOneFrame(
 	return false
 }
 
-func writeACK(conn net.Conn, msh MSHFields, now time.Time) {
+func writeACK(conn net.Conn, msh MSHFields, now time.Time) error {
 	frame := buildACK(ackAA, msh, "", now)
-	_ = writeFrame(conn, frame)
+	return writeFrame(conn, frame)
 }
 
-func writeNACK(conn net.Conn, msh MSHFields, reason string, now time.Time) {
+func writeNACK(conn net.Conn, msh MSHFields, reason string, now time.Time) error {
 	frame := buildACK(ackAE, msh, reason, now)
-	_ = writeFrame(conn, frame)
+	return writeFrame(conn, frame)
 }
 
 func writeFrame(conn net.Conn, frame []byte) error {
