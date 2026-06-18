@@ -35,30 +35,15 @@ This document covers what we'd need to assemble that demo from what's already on
 
 ## What's missing — gaps to close before the demo runs
 
-### Gap 1 — Production binary doesn't serve the FHIR API
+### Gap 1 — Production binary doesn't serve the FHIR API — RESOLVED
 
 **Source:** Production-readiness audit B-4
 
-**What's broken:** `cmd/fhir-subs/run.go` builds an `http.Server` but only mounts the probe mux. `handlers.RegisterRoutes` (the real `/Subscription`, `$get-ws-binding-token`, `$events` endpoints) is invoked from tests and the e2e harness — never from the production binary.
+**Status:** RESOLVED via B-4 full production wiring (merged in `e615c31`, branch `fix/b4-full-production-wiring`). `cmd/fhir-subs/wiring.go::buildProductionRuntime` now constructs the DB pool, AES-GCM codec, SMART Backend Services verifier, and chi router with `handlers.RegisterRoutes` mounted; `RegisterPublicRoutes` exposes `/metadata` outside auth. The production binary serves the full Subscription API end-to-end and the demo can rely on it.
 
-**What the demo needs:** the binary actually serves the API. The pieces all exist; they just aren't wired together in `run.go`.
+### Gap 2 — Production binary doesn't start the pipeline workers — RESOLVED
 
-**Estimated work:** small — assemble the same router the e2e harness builds (`e2e/harness/api.go::buildAPIRouter`-equivalent) inside `run.go` and mount it under the same listener as the probes (or a second configurable listener).
-
-### Gap 2 — Production binary doesn't start the pipeline workers
-
-**Related to Gap 1:** even if the API serves, `run.go` doesn't start the pipeline claim loops:
-- `hl7processor.Worker.Run`
-- `matcher.Worker.Run`
-- `submatcher.Worker.Run`
-- `scheduler.Worker.Run`
-- `mllp.Listener.Serve`
-
-These are also wired only in `e2e/harness/pipeline.go`.
-
-**What the demo needs:** the binary starts every claim loop on boot, gates `/readyz` on all of them being live, and shuts them down cleanly. The audit also flags B-1 (readyz hardcoded 503) and B-3 (healthz flips OK too early) — those need to be fixed for the demo to work as a "deploy and forget" experience.
-
-**Estimated work:** medium — copy the `e2e/harness/pipeline.go` wiring into a real production assembler. Most of the work is already done in the harness; the production version needs to be config-driven and gated behind the lifecycle module.
+**Related to Gap 1:** RESOLVED via the same B-4 full production wiring (`e615c31`). `cmd/fhir-subs/wiring.go` (around lines 311-315) launches all four pipeline workers (`hl7processor.Worker`, `matcher.Worker`, `submatcher.Worker`, `scheduler.Worker`) plus the MLLP listener, gates `/readyz` on the lifecycle Probes, and lifecycle phases drive a clean shutdown. B-1 (readyz hardcoded 503) and B-3 (healthz flips OK too early) were closed earlier in `8096936`.
 
 ### Gap 3 — No CLI publisher tool
 
@@ -166,15 +151,11 @@ This is what the matcher will compare against when the publisher sends ORU^R01 m
 
 **Estimated work:** small — write 1–3 demo topics.
 
-### Gap 7 — Subscription filter shape that's demo-friendly
+### Gap 7 — Subscription filter shape that's demo-friendly — RESOLVED
 
 **Source:** Production-readiness audit B-23
 
-**Current state:** the matcher today only honors a hardcoded shortlist of FHIR search parameters (`status`, `subject`, `patient`, `code`, `category`, `name`, `_lastUpdated`). For the demo we'd use `patient=ABC123` which is on the shortlist, so this is **fine for the demo**, but worth flagging that any non-trivial filter outside this shortlist silently fails closed.
-
-**What the demo needs:** stick to the shortlist parameters. `patient`, `code`, `category` are sufficient for a lab-results scenario.
-
-**Estimated work:** none — pick filters carefully.
+**Status:** RESOLVED via B-23 (`3d80c7d`, cherry-pick of `04e2c36`, merged in `8096936`). The topic catalog now rejects unsupported FHIR search parameters at load time and the matcher fails-closed on the recognised shortlist (`status`, `subject`, `patient`, `code`, `category`, `name`, `_lastUpdated`). A demo using `patient=ABC123` works against the production code path; any unsupported filter is rejected at catalog load rather than silently falling through.
 
 ### Gap 8 — Default adapter HL7 → FHIR translation
 
@@ -287,7 +268,7 @@ If we tackle this in priority order:
 
 | Step | Description | Effort | Blocker for demo? |
 |---|---|---|---|
-| 1 | Wire API + pipeline workers into `cmd/fhir-subs/run.go` (gaps 1–2) | 1–2 days | Yes |
+| 1 | ~~Wire API + pipeline workers into `cmd/fhir-subs/run.go`~~ — **DONE** (gaps 1–2 RESOLVED via B-4 wiring `e615c31`) | — | — |
 | 2 | Build `cmd/demo-publisher/` (gap 3) | 0.5 day | Yes |
 | 3 | Build `cmd/demo-subscriber/` (gap 4) | 0.5 day | Yes |
 | 4 | Demo adapter for ORU^R01 → Observation (gap 8) | 1 day | Yes |
@@ -296,9 +277,9 @@ If we tackle this in priority order:
 | 7 | Pretty-printed terminal output (gap 9) | 0.5 day | Nice-to-have |
 | 8 | demo/README.md with screenshots (gap 10) | 0.5 day | Nice-to-have |
 
-**Total:** roughly **4–5 days of focused work** for a minimum-viable demo, **1 week** for the polished version.
+**Total:** roughly **2–3 days of focused work** for a minimum-viable demo (down from 4–5 now that B-4 wiring has landed), **~1 week** for the polished version.
 
-The biggest single dependency is **gap 1+2 (production wiring)**. Until `cmd/fhir-subs/run.go` mounts the API and starts the pipeline workers, there is nothing to demo against — every existing path goes through the e2e harness, which is not a deployable artifact.
+The original biggest dependency — gap 1+2 (production wiring) — is now closed. `cmd/fhir-subs/wiring.go::buildProductionRuntime` mounts the Subscription API on the production binary and starts the pipeline workers, so the demo can target the real binary instead of the e2e harness.
 
 ---
 

@@ -5,11 +5,11 @@ Single-source-of-truth status for every tracked work item across the audit, futu
 ## Headline
 
 - **Code state:** `go build ./...` clean, `go vet ./...` clean. Race tests, lint, and the full `go test ./... -race -count=1` suite were not re-run for this snapshot — the audit doc's prior verification of those is taken on faith here, but trustworthiness of THIS doc does not depend on them.
-- **Doc trustworthiness:** the audit doc (`production-readiness-audit.md`) is materially accurate for the BLOCKER cohort (35/35 verified RESOLVED) and ~95% accurate for the SHOULD-FIX cohort. The **future-work doc carries no resolution status at all**, so any reader looking at `future-work.md` alone would think every P1/P2 item is still open — three of them are now in flight or done. The audit's `## Discovered during B-4` section correctly lists D-1..D-4 as OPEN. The N-1 polish section is accurate.
+- **Doc trustworthiness:** the audit doc (`production-readiness-audit.md`) is materially accurate for the BLOCKER cohort (35/35 verified RESOLVED) and ~95% accurate for the SHOULD-FIX cohort; pointers for S-1.8 and S-2.20 have been corrected. The **future-work doc** has been reconciled with shipped code: P1.7 and P1.12 reclassified PARTIAL (with explicit gap lists), P1.11 marked RESOLVED, P2.8 marked RESOLVED — recipe docs pending. Demo doc gaps 1, 2, and 7 have been marked RESOLVED. The audit's `## Discovered during B-4` section still correctly lists D-1..D-4 as OPEN (note: bd has since closed several of these — see Currently in flight).
 - **Top items to land next** (impact-ordered):
   1. Land `feat/future-work-p1-batch` (P1.4 ICU folding + P1.12 dead-letter metric) — already committed on a branch ahead of main. P1.4 also has a real correctness bug still latent in `equalsToken`/`equalsString` (see Discrepancies).
   2. P1.5 matcher metrics (in-flight per `bd` task #165, code not yet present).
-  3. P1.7 CapabilityStatement — actually has a `buildCapabilityStatement` implementation now, but `bd` and future-work both still call it pending. Verify the impl is real and close the task, or call out what's still missing.
+  3. P1.7 CapabilityStatement — base implementation lives at `subscription_handlers.go:1014` (mounted via `RegisterPublicRoutes`); reclassified PARTIAL in future-work doc with explicit gaps (multi-version `fhirVersion`, OAuth/JWKS discovery, IG `instantiates` URI). The unmerged `feat/future-work-p1-batch` commit `033f942` fills these in.
   4. D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator) — these silently break end-to-end notification correctness in production despite all B-1..B-35 being green.
   5. P1.9 WSS Sec-WebSocket-Protocol bind transport — subscribers written against the spec cannot bind today.
 
@@ -61,7 +61,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-1.5 | srv.Close() error after Shutdown dropped | RESOLVED | RESOLVED ✓ | dbc8356 | |
 | audit | S-1.6 | Magic 2s slack on shutdown wait | RESOLVED | RESOLVED ✓ | (earlier B-1/B-3 work) | only ShutdownGracePeriod used at run.go:209,233 |
 | audit | S-1.7 | /metadata should mount production CapabilityStatement | RESOLVED | RESOLVED ✓ (with caveat) | a9f96f7 | RegisterPublicRoutes wires it; the CapabilityStatement body is real now (subscription_handlers.go:1014) — see P1.7 discrepancy below |
-| audit | S-1.8 | Default 0.0.0.0 bind, no loopback opt-in | RESOLVED | RESOLVED ✓ | 6807f87 | warn-log on wildcard+insecure |
+| audit | S-1.8 | Default 0.0.0.0 bind, no loopback opt-in | RESOLVED | RESOLVED ✓ | 6807f87 | warn-log on wildcard+insecure at `cmd/fhir-subs/run.go:161-167`; default at `cmd/fhir-subs/config.go:214` (audit's `defaults.go`/`metrics.go` pointers were stale; doc corrected) |
 | audit | S-2.1 | /metadata mounted inside auth middleware | RESOLVED | RESOLVED ✓ | a9f96f7 | RegisterPublicRoutes |
 | audit | S-2.2 | Body size limit hardcoded 1<<20 | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.MaxBodyBytes |
 | audit | S-2.3 | json-schema error returned verbatim | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.MaxSchemaErrorBytes |
@@ -81,7 +81,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-2.17 | Unvalidated X-Correlation-ID reflected | RESOLVED | RESOLVED ✓ | a9f96f7 | drops non-UUID |
 | audit | S-2.18 | /metrics has no auth | RESOLVED | RESOLVED ✓ | a9f96f7 | metrics.AuthGuard at metrics.go:269 |
 | audit | S-2.19 | routePattern falls back to URL.Path | RESOLVED | RESOLVED ✓ | a9f96f7 | unmatchedRouteLabel const at metrics.go:253 |
-| audit | S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | RESOLVED ✓ | caa68a4 | enforced in `internal/infra/observability/metrics/metrics.go:309-338` not `internal/api/metrics/metrics.go` (audit's pointer is misleading but the fix is real) |
+| audit | S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | RESOLVED ✓ | caa68a4 | enforced at `internal/infra/observability/metrics/metrics.go:309-338`; audit doc pointer corrected (was incorrectly pointing at `internal/api/metrics/metrics.go`) |
 | audit | S-3.1 | 60s ClockSkew default too generous | RESOLVED | RESOLVED ✓ | a2318e9 | 30s default |
 | audit | S-3.2 | No rate limit on token endpoint | RESOLVED | RESOLVED ✓ | a2318e9 | RateLimitPerSource |
 | audit | S-3.3 | No per-client rate limit on subscription create / WS bind-token | DEFERRED | DEFERRED ✓ | — | RateLimit primitive exposed |
@@ -224,12 +224,12 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P1.4 | ICU root-locale folding for all string equality | (no status) | OPEN ✗ | feat/future-work-p1-batch (48fc2af) | bd #164 marks completed, but `equalsToken` (matcher.go:419) and `equalsString` (matcher.go:449) STILL use raw `==` with no `foldICURoot` wrapper. Folding only applied on `:contains`. ADR 0010 #4 mandates folding on ALL string equality. The branch commit may be incomplete or scoped narrowly — verify before merge |
 | future | P1.5 | Topic Matcher metrics | (no status) | OPEN ✗ | — | bd #165 in_progress; zero `fhir_subs_matcher_*` metrics emitted from `internal/matcher/` |
 | future | P1.6 | Admin API operator surface | (no status) | OPEN ✗ | — | bd #173 pending; no admin endpoints |
-| future | P1.7 | CapabilityStatement implementation | (no status) | RESOLVED ✓ (likely) | — | bd #166 pending, but `internal/api/handlers/subscription_handlers.go:1014::buildCapabilityStatement` exists and is wired through `RegisterPublicRoutes`. Verify the body is real (not the legacy probe stub) and either close P1.7 or document what remaining gap is |
+| future | P1.7 | CapabilityStatement implementation | PARTIAL | PARTIAL ⚠ | — | future-work doc reclassified PARTIAL: `internal/api/handlers/subscription_handlers.go:1014::buildCapabilityStatement` exists, mounted via `RegisterPublicRoutes`; body covers FHIR version + Subscription/SubscriptionTopic + 3 operations + channels + topics + SMART-on-FHIR security code. Remaining gaps: multi-version `fhirVersion` (R4B + R5), OAuth token/JWKS discovery URI extensions, `instantiates` IG URI. Enrichment queued on `feat/future-work-p1-batch` (033f942) |
 | future | P1.8 | Hydration `_include` / `_revinclude` | (no status) | OPEN ✗ | — | bd #174 pending; default adapter Hydration returns ErrHydrationUnsupported |
 | future | P1.9 | WSS Sec-WebSocket-Protocol bind transport | (no status) | OPEN ✗ | — | bd #167 pending; no `Sec-WebSocket-Protocol` parsing in `internal/channel/websocket/` |
 | future | P1.10 | Adapter manifest config_schema validation | (no status) | OPEN ✗ | — | bd #169 pending; no manifest validator in `internal/adapter/` |
-| future | P1.11 | Authn/Authz hardening of WSS bind token storage | (no status) | RESOLVED ✓ | — | bd #163 completed; `internal/infra/storage/repos/ws_binding_tokens.go:23` hashes internally via `hashToken` |
-| future | P1.12 | Dead-letter operational runbook | (no status) | RESOLVED ✓ (likely) | feat/future-work-p1-batch (6ac7051) | bd #168 completed; metric `fhir_subs_hl7processor_dead_letters_total` exists at `internal/hl7processor/metrics.go:34`. Branch commit also adds runbook docs |
+| future | P1.11 | Authn/Authz hardening of WSS bind token storage | RESOLVED | RESOLVED ✓ | b624b7d (7b5b7c2) | future-work doc updated to RESOLVED; `internal/infra/storage/repos/ws_binding_tokens.go:22-23 hashToken` applied on Insert/Consume/expiry/lookup; harness workaround removed |
+| future | P1.12 | Dead-letter operational runbook | PARTIAL | PARTIAL ⚠ | (metric on main; runbook on feat/future-work-p1-batch 6ac7051) | future-work doc reclassified PARTIAL: metric `fhir_subs_hl7processor_dead_letters_total` registered at `internal/hl7processor/metrics.go:34` and emitted from `processor.go:777` on origin/main. Runbook (`docs/operations/dead-letters-runbook.md`) and cross-pipeline `fhir_subs_dead_letters_total{reason}` rollup queued on unmerged `feat/future-work-p1-batch` (6ac7051) |
 | future | P2.1 | FHIR Scan Runner adapter framework worker | (no status) | OPEN ✗ | — | no production worker invokes ScanPlan/RunScan |
 | future | P2.2 | Vendor API Client framework worker | (no status) | OPEN ✗ | — | SPI exists; no worker |
 | future | P2.3 | Email channel S/MIME + Direct SMTP | (no status) | OPEN ✗ | — | v1 ships SMTP-only |
@@ -237,7 +237,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.5 | Audit chain verifier CLI | (no status) | OPEN ✗ | — | no `fhir-subs audit verify` subcommand |
 | future | P2.6 | Heartbeats and handshakes | (no status) | OPEN ✗ | — | scheduler doesn't emit heartbeats |
 | future | P2.7 | Auth re-check at delivery prep | (no status) | OPEN ✗ | — | submatcher has FanoutAuthRevoked decision but no AuthValidator.Recheck SPI |
-| future | P2.8 | OpenTelemetry trace export configuration | (no status) | RESOLVED ✓ (likely) | — | S-14.9 added timeout/TLS/Headers/Insecure knobs at `9e7fa45`. Future-work doc claims defaults to no-op; that's still true (operator must configure exporter), but the *configuration surface* now exists. Reclassify as DOCUMENTATION-OPEN (deployment recipes) |
+| future | P2.8 | OpenTelemetry trace export configuration | RESOLVED — recipe docs pending | RESOLVED ✓ | 9e7fa45 (S-14.9) | future-work doc reclassified RESOLVED — recipe docs pending: configuration surface (`ExporterTimeout`, `TLSConfig`, `Headers`, `Insecure`) exists at `internal/infra/observability/tracing/tracing.go:54-65`. Deployment recipes (Datadog/Honeycomb/Jaeger) and a "start-with-traces" smoke test still pending |
 | future | P2.9 | Webhook ingress (vendor push) | (no status) | OPEN ✗ | — | explicitly out of scope for v1 |
 | future | P2.10 | Multi-instance / horizontal scale | (no status) | OPEN ✗ | — | per ADR 0002 single-instance |
 | future | P3.1 | Adapter authoring guide | (no status) | OPEN ✗ | — | docs only |
@@ -248,13 +248,13 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P3.6 | CI/CD | (no status) | OPEN ✗ | — | `.github/` is sparse; only basics |
 | future | P4.1 | FHIR R6 support | (no status) | OPEN ✗ | — | spec dependency |
 | future | P4.2 | Spec extensions | (no status) | OPEN ✗ | — | by-design out-of-scope |
-| demo | gap-1 | Production binary doesn't serve FHIR API | (open in doc) | RESOLVED ✓ | (B-4 wiring) | wiring.go::buildProductionRuntime wires it; demo doc text predates B-4 close-out |
-| demo | gap-2 | Production binary doesn't start pipeline workers | (open in doc) | RESOLVED ✓ | (B-4 wiring) | wiring.go:311-315 launches all four pipeline workers |
+| demo | gap-1 | Production binary doesn't serve FHIR API | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | demo doc updated; `cmd/fhir-subs/wiring.go::buildProductionRuntime` wires DB/codec/auth/handlers/MLLP/pipeline |
+| demo | gap-2 | Production binary doesn't start pipeline workers | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | demo doc updated; `cmd/fhir-subs/wiring.go:311-315` launches all four pipeline workers |
 | demo | gap-3 | No CLI publisher tool | (open in doc) | OPEN ✗ | — | no `cmd/demo-publisher/` |
 | demo | gap-4 | No CLI subscriber tool | (open in doc) | OPEN ✗ | — | no `cmd/demo-subscriber/` |
 | demo | gap-5 | Docker-compose for one-command spin-up | (open in doc) | OPEN ✗ | — | Dockerfile exists; no compose under demo/ |
 | demo | gap-6 | Demo topic catalog | (open in doc) | OPEN ✗ | — | no demo/topics/ |
-| demo | gap-7 | Subscription filter shape demo-friendly | (open in doc — by design) | RESOLVED ✓ | (B-23 work) | filter shortlist now strict at catalog load |
+| demo | gap-7 | Subscription filter shape demo-friendly | RESOLVED | RESOLVED ✓ | 3d80c7d / 04e2c36 (B-23, merged 8096936) | demo doc updated; topic catalog rejects unsupported filters at load, matcher fail-closes on shortlist |
 | demo | gap-8 | Default adapter HL7 → FHIR translation | (open in doc) | OPEN ✗ | — | adapters/default/ is still passthrough |
 | demo | gap-9 | Pretty-printable terminal output | (open in doc) | OPEN ✗ | — | depends on gap-3, gap-4 |
 | demo | gap-10 | README for demo path | (open in doc) | OPEN ✗ | — | |
@@ -267,19 +267,21 @@ Where Documented Status diverges from Verified Status. Three categories.
 
 - **P1.4 (future-work, ICU root-locale folding):** `bd` task #164 is marked completed, and `feat/future-work-p1-batch` carries commit `48fc2af "feat(matcher): P1.4 ICU root-locale folding for all string equality"`. But on origin/main `internal/matcher/matcher.go:419 (equalsToken)` and `:449 (equalsString)` still use raw `==` against `c.Value` with no `foldICURoot`. Only the `:contains` path at line 266 folds. ADR 0010 #4 mandates folding on **all** string comparisons. **Action:** verify the branch commit actually folds in the equality paths, or expand it before merging. As of the current main, the bug is not fixed. (The audit doc itself does not claim P1.4 is resolved — it does not track future-work — but `bd` and the branch label imply it is.)
 
-### Documented as deferred/open, actually done or close to done
+### Documented as deferred/open, actually done or close to done — RECONCILED
 
-- **Demo gap-1 / gap-2 (production binary doesn't serve API / start pipeline):** the demo doc lists these as the "biggest single dependency." Both are now done — B-4 full-wiring closed them. The demo doc text appears to predate B-4 closure and should be updated or marked superseded.
-- **Demo gap-7 (subscription filter shape demo-friendly):** the doc treats this as "fine for the demo by sticking to whitelisted parameters." B-23 went further and made the catalog reject unsupported parameters at load, which is the right behavior for any deployment. Done.
-- **P1.7 (CapabilityStatement):** future-work doc and `bd` #166 say pending. The code at `internal/api/handlers/subscription_handlers.go:1014::buildCapabilityStatement` exists and is mounted via `RegisterPublicRoutes`. Either P1.7 is done (close the bd task and add a status line to future-work) or there is a specific gap (R4B Backport, OAuth/SMART discovery, etc.) — call out which.
-- **P1.11 (WSS bind token hashing):** future-work doc says "in flight on `fix/wss-bind-token-hashing`" but `bd` #163 marks it done and `internal/infra/storage/repos/ws_binding_tokens.go:23` shows `hashToken` doing sha256 internally. The future-work doc text is stale; the work landed.
-- **P1.12 (dead-letter metric):** future-work doc says metric is "missing"; `internal/hl7processor/metrics.go:34` shows `MetricDeadLettersTotal = "fhir_subs_hl7processor_dead_letters_total"` registered, and `feat/future-work-p1-batch` adds a runbook. Done in branch; future-work doc not updated.
-- **P2.8 (OTel trace export configuration):** future-work doc says missing; S-14.9 in the audit doc shows the configuration surface (timeout, TLS, Headers, Insecure) was added at `9e7fa45`. The remaining gap is documentation-only (deployment recipes for Datadog/Honeycomb/Jaeger). Reclassify as `RESOLVED — recipe docs pending`.
+The items below were stale at status.md's first generation; the source docs have now been updated in commit `docs: reconcile stale future-work status with shipped code`.
 
-### Documented as RESOLVED but with caveats / location drift
+- **Demo gap-1 / gap-2 (production binary doesn't serve API / start pipeline):** RESOLVED via B-4 full wiring (`e615c31`). Demo doc updated: gap-1 and gap-2 now carry a "RESOLVED" header pointing at `cmd/fhir-subs/wiring.go::buildProductionRuntime`.
+- **Demo gap-7 (subscription filter shape demo-friendly):** RESOLVED via B-23 (`3d80c7d`, cherry-pick of `04e2c36`, merged in `8096936`). Demo doc updated: gap-7 now carries a "RESOLVED" header.
+- **P1.7 (CapabilityStatement):** PARTIAL/RESOLVED-WITH-GAP. `internal/api/handlers/subscription_handlers.go::buildCapabilityStatement` (line 1014) exists and is mounted via `RegisterPublicRoutes` (`router.go:251`). The body covers FHIR version, Subscription/SubscriptionTopic resources with all CRUD interactions, the three operations, channels, topics, and SMART-on-FHIR security service code. Specific gaps remaining: (a) multi-version `fhirVersion` (R4B Backport IG + R5 native), (b) OAuth token endpoint URL + JWKS URL discovery extensions on `security.service`, (c) `instantiates` URI for the Subscriptions R5 Backport IG. The unmerged `feat/future-work-p1-batch` commit `033f942` enriches this surface. future-work P1.7 reclassified to PARTIAL with the gap list.
+- **P1.11 (WSS bind token hashing):** RESOLVED at `b624b7d` (commit `7b5b7c2`); `internal/infra/storage/repos/ws_binding_tokens.go:22-23 hashToken` applied on Insert/Consume/expiry/lookup. future-work doc updated to RESOLVED with commit reference.
+- **P1.12 (dead-letter metric + runbook):** PARTIAL on origin/main. The metric `fhir_subs_hl7processor_dead_letters_total` is registered at `internal/hl7processor/metrics.go:34` and emitted from `processor.go:777`. The runbook (`docs/operations/dead-letters-runbook.md`) and the cross-pipeline `fhir_subs_dead_letters_total{reason}` rollup counter are queued on the unmerged `feat/future-work-p1-batch` commit `6ac7051`. future-work P1.12 reclassified to PARTIAL — metric done, runbook + rollup pending.
+- **P2.8 (OTel trace export configuration):** RESOLVED — recipe docs pending. S-14.9 added the configuration surface (`ExporterTimeout`, `TLSConfig`, `Headers`, `Insecure`) at `internal/infra/observability/tracing/tracing.go` in commit `9e7fa45`. Deployment recipes for Datadog/Honeycomb/Jaeger remain to be written. future-work P2.8 reclassified accordingly.
 
-- **S-2.20 (audit, cardinality validator):** RESOLVED, but the audit's file pointer (`internal/api/metrics/metrics.go`) is wrong. The validator lives in `internal/infra/observability/metrics/metrics.go:309-338`. The fix is genuine; the audit pointer is misleading.
-- **S-1.8 (audit, default 0.0.0.0 bind):** RESOLVED, but the audit's pointer to `defaults.go`/`metrics.go` under `cmd/fhir-subs/` — those files don't exist. The actual fix is in `cmd/fhir-subs/config.go`. The fix is real; the pointer is stale.
+### Documented as RESOLVED but with caveats / location drift — RECONCILED
+
+- **S-2.20 (audit, cardinality validator):** RESOLVED. Audit doc fixed: file pointer corrected to `internal/infra/observability/metrics/metrics.go:309-338` (was incorrectly pointing at `internal/api/metrics/metrics.go`).
+- **S-1.8 (audit, default 0.0.0.0 bind):** RESOLVED. Audit doc fixed: pointers updated from non-existent `cmd/fhir-subs/defaults.go`/`metrics.go` to `cmd/fhir-subs/config.go:214` (default) and `cmd/fhir-subs/run.go:161-167` (warn-log).
 
 ## Counts
 
@@ -289,25 +291,25 @@ audit B-*         35 |       35 |    0 |       0 |        0
 audit S-*.X      125 |      107 |    0 |       4 |       14
 audit N-*.X       35 |       32 |    0 |       0 |        3
 audit D-*          4 |        0 |    4 |       0 |        0
-future P1         12 |        2 |    7 |       2 |        0
-                     | (P1.11,    | (P1.1, | (P1.2, |
-                     |  P1.12)    |  P1.5, |  P1.3) |
-                     |            |  P1.6, |        |
-                     |            |  P1.7*,|        |
-                     |            |  P1.8, |        |
-                     |            |  P1.9, |        |
-                     |            |  P1.10,|        |
-                     |            |  P1.4*)|        |
+future P1         12 |        1 |    7 |       4 |        0
+                     | (P1.11)   | (P1.1, | (P1.2, |
+                     |           |  P1.4*,|  P1.3, |
+                     |           |  P1.5, |  P1.7*,|
+                     |           |  P1.6, |  P1.12*|
+                     |           |  P1.8, |  )     |
+                     |           |  P1.9, |        |
+                     |           |  P1.10)|        |
 future P2         10 |        1 |    9 |       0 |        0
                      | (P2.8†)   |        |        |        |
 future P3          6 |        0 |    6 |       0 |        0
 future P4          2 |        0 |    2 |       0 |        0
 demo              10 |        3 |    7 |       0 |        0
-TOTAL            239 |      180 |   35 |       6 |       17
+TOTAL            239 |      179 |   35 |        8 |       17
 
-* P1.7: code exists; bd/future-work claim pending. Marked OPEN to reflect doc state; reclassify upon verification.
+* P1.7: implementation exists at `subscription_handlers.go:1014`; specific gaps (multi-version fhirVersion, OAuth/JWKS discovery, IG `instantiates`) keep it PARTIAL. Reclassified from OPEN.
+* P1.12: metric on main; runbook + cross-pipeline rollup pending on unmerged `feat/future-work-p1-batch`. Reclassified from RESOLVED.
 * P1.4: branch commit exists; main code still has the bug in equalsToken/equalsString.
-† P2.8: configuration surface done; deployment recipes pending. Mixed.
+† P2.8: configuration surface done at `9e7fa45`; deployment recipes pending. RESOLVED — recipe docs pending.
 ```
 
 ## Currently in flight
