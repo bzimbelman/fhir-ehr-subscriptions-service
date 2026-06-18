@@ -5,6 +5,8 @@ package repos_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -13,6 +15,13 @@ import (
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
+
+// hashTokenForTest mirrors the unexported hashing convention used by
+// WsBindingTokensRepo: sha256 of the cleartext, hex-encoded.
+func hashTokenForTest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 func TestDeadLettersInsert(t *testing.T) {
 	t.Parallel()
@@ -285,23 +294,30 @@ func TestWsBindingTokensInsertAndDelete(t *testing.T) {
 	ctx := context.Background()
 
 	subID := uuid.New()
+	expires := time.Now().Add(time.Minute)
+	cleartext := "tok"
+	hashed := hashTokenForTest(cleartext)
+
+	// Insert must hash internally — the SQL receives sha256(cleartext)
+	// while the caller still passes cleartext.
 	pool.ExpectExec("INSERT INTO ws_binding_tokens").
-		WithArgs(anyArgs(4)...).
+		WithArgs(hashed, subID, "client-a", expires).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// Delete must also hash internally so callers stay symmetric.
 	pool.ExpectExec("DELETE FROM ws_binding_tokens").
-		WithArgs(pgxmock.AnyArg()).
+		WithArgs(hashed).
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	repo := repos.NewWsBindingTokensRepo()
 	if err := repo.Insert(ctx, pool, repos.WsBindingTokenRow{
-		Token:          "tok",
+		Token:          cleartext,
 		SubscriptionID: subID,
 		ClientID:       "client-a",
-		ExpiresAt:      time.Now().Add(time.Minute),
+		ExpiresAt:      expires,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if err := repo.Delete(ctx, pool, "tok"); err != nil {
+	if err := repo.Delete(ctx, pool, cleartext); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if err := pool.ExpectationsWereMet(); err != nil {
@@ -329,8 +345,9 @@ func TestWsBindingTokensConsume(t *testing.T) {
 		defer pool.Close()
 
 		subID := uuid.New()
+		// Caller passes cleartext; repo must hash before the WHERE match.
 		pool.ExpectQuery("UPDATE ws_binding_tokens").
-			WithArgs("tok-ok", now).
+			WithArgs(hashTokenForTest("tok-ok"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}).
 				AddRow(subID, "client-a"))
 
@@ -362,11 +379,11 @@ func TestWsBindingTokensConsume(t *testing.T) {
 
 		// UPDATE returns 0 rows -> pgx.ErrNoRows on Scan.
 		pool.ExpectQuery("UPDATE ws_binding_tokens").
-			WithArgs("tok-missing", now).
+			WithArgs(hashTokenForTest("tok-missing"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}))
 		// Diagnostic SELECT also returns 0 rows.
 		pool.ExpectQuery("SELECT consumed_at IS NOT NULL").
-			WithArgs("tok-missing", now).
+			WithArgs(hashTokenForTest("tok-missing"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"consumed", "expired"}))
 
 		got, err := repo.Consume(context.Background(), pool, "tok-missing", now)
@@ -390,11 +407,11 @@ func TestWsBindingTokensConsume(t *testing.T) {
 		defer pool.Close()
 
 		pool.ExpectQuery("UPDATE ws_binding_tokens").
-			WithArgs("tok-used", now).
+			WithArgs(hashTokenForTest("tok-used"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}))
 		// Diagnostic: consumed_at IS NOT NULL -> consumed=true.
 		pool.ExpectQuery("SELECT consumed_at IS NOT NULL").
-			WithArgs("tok-used", now).
+			WithArgs(hashTokenForTest("tok-used"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"consumed", "expired"}).
 				AddRow(true, false))
 
@@ -419,11 +436,11 @@ func TestWsBindingTokensConsume(t *testing.T) {
 		defer pool.Close()
 
 		pool.ExpectQuery("UPDATE ws_binding_tokens").
-			WithArgs("tok-stale", now).
+			WithArgs(hashTokenForTest("tok-stale"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}))
 		// Diagnostic: expires_at <= now -> expired=true.
 		pool.ExpectQuery("SELECT consumed_at IS NOT NULL").
-			WithArgs("tok-stale", now).
+			WithArgs(hashTokenForTest("tok-stale"), now).
 			WillReturnRows(pgxmock.NewRows([]string{"consumed", "expired"}).
 				AddRow(false, true))
 

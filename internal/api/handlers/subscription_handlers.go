@@ -7,9 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -686,12 +684,10 @@ func (s *server) opGetWsBindingToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
-	hashSum := sha256.Sum256([]byte(token))
-	hashed := hex.EncodeToString(hashSum[:])
 	expires := s.deps.Now().Add(s.deps.WSBindingTTL)
 
 	if err := s.deps.WsTokens.Insert(r.Context(), repos.WsBindingTokenRow{
-		Token:          hashed,
+		Token:          token,
 		SubscriptionID: id,
 		ClientID:       p.ClientID,
 		ExpiresAt:      expires,
