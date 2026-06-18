@@ -61,19 +61,17 @@ These items must land before any production deployment. They are not optional po
 
 **Why this is P1:** topics with `:in` filters compile but never fire. Operators get no warning and silently miss notifications.
 
-### 1.4 ICU root-locale folding for all string equality
+### 1.4 ICU root-locale folding for all string equality — RESOLVED
 
 **Source:** ADR 0010 #4, [docs/low-level-design/topic-matcher.md](low-level-design/topic-matcher.md)
 
-**Status:** `internal/matcher/` applies ICU folding only on `:contains`. ADR 0010 #4 mandates folding on **all** string comparisons including default `=`.
+**Status:** RESOLVED on `fix/p14-icu-folding-equality` (commit `8d4bbf9`). Both `internal/matcher/matcher.go` and `internal/engine/submatcher/submatcher.go` now route every string equality through a `foldEqual(a, b) = foldICURoot(a) == foldICURoot(b)` helper. Affected functions in each file: `equalsToken`, `equalsReference`, `equalsString`, `matchIdentifier`. The `:not` and bare-`=` clause paths inherit folding via these helpers; `:contains` was already folded. As a side fix, the package-level `transform.Chain` was replaced with a `sync.Pool` of fresh chains because `transform.Chain` is stateful and not goroutine-safe — the previous shared chain was a latent panic risk under concurrent fold calls.
 
-**What's missing:**
+**Notes:**
 
-- Apply `foldICURoot` to both LHS and RHS in `evaluateClause` before the equality check
-- Same for the topic catalog's filter normalization
-- Tests covering accented characters in `subject:identifier` filters
-
-**Why this is P1:** spec-compliant FHIR search-parameter matching is locale-insensitive. A subscription with `subject:identifier=Müller` would silently miss events for `mUller` today.
+- `:exact` is intentionally case-sensitive per FHIR spec; the matcher's switch never accepts it (falls through to default → returns false), so no change needed.
+- ValueSet `:in` (P1.3) is unrelated and tracked separately.
+- The catalog itself stores authored string values verbatim; folding is applied at compare time, not at load.
 
 ### 1.5 Topic Matcher metrics
 
