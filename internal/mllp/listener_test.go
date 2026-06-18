@@ -763,6 +763,128 @@ func (s *snoopingMetrics) Set(name string, v float64, labels map[string]string) 
 	}
 }
 
+// recordingLogger captures every emitted log line for inspection.
+type recordingLogger struct {
+	mu    sync.Mutex
+	lines []recordedLogLine
+}
+
+type recordedLogLine struct {
+	level  string
+	event  string
+	fields map[string]any
+}
+
+func (l *recordingLogger) Info(event string, fields map[string]any) {
+	l.record("info", event, fields)
+}
+func (l *recordingLogger) Warn(event string, fields map[string]any) {
+	l.record("warn", event, fields)
+}
+func (l *recordingLogger) Error(event string, fields map[string]any) {
+	l.record("error", event, fields)
+}
+func (l *recordingLogger) record(level, event string, fields map[string]any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cp := make(map[string]any, len(fields))
+	for k, v := range fields {
+		cp[k] = v
+	}
+	l.lines = append(l.lines, recordedLogLine{level: level, event: event, fields: cp})
+}
+func (l *recordingLogger) findEvent(event string) []recordedLogLine {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []recordedLogLine
+	for _, ln := range l.lines {
+		if ln.event == event {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
+// LLD §8 entry: "ACK write failure after commit ... Log; metrics already
+// incremented for received_total; let connection_task exit." We emit
+// ack_write_failed at warn carrying correlation_id when the ACK write
+// returns an error.
+func TestListener_AckWriteFailure_LogsWarn(t *testing.T) {
+	persistEntered := make(chan struct{}, 1)
+	release := make(chan struct{})
+
+	p := &fakePersister{}
+	p.persistFn = func(ctx context.Context, row QueueRow) error {
+		persistEntered <- struct{}{}
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		// Record the row so Rows() returns it (we bypass the normal
+		// path since persistFn is set).
+		p.mu.Lock()
+		p.rows = append(p.rows, row)
+		p.mu.Unlock()
+		return nil
+	}
+	m := newFakeMetrics()
+	logger := &recordingLogger{}
+	ep := EndpointConfig{Name: "adt-feed"}
+	cfg := defaultConfig(ep)
+	cfg.PersistTimeout = 10 * time.Second
+
+	server, client := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleConnectionWithLogger(context.Background(), server, ep, cfg, p, m, logger, "127.0.0.1:1010")
+	}()
+
+	if _, err := client.Write(frameBytes(sampleORU)); err != nil {
+		t.Fatalf("write framed message: %v", err)
+	}
+
+	// Wait until persist is in flight, then close the client side. Any
+	// subsequent ACK write on the server side will fail.
+	select {
+	case <-persistEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("persist never entered")
+	}
+	_ = client.Close()
+
+	// Release persist so the row commits and writeACK is called against
+	// the now-broken pipe.
+	close(release)
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("handler did not exit")
+	}
+
+	// Persist must have run before the failed ACK write (the LLD
+	// invariant: row durable, ACK best-effort).
+	if len(p.Rows()) != 1 {
+		t.Fatalf("rows = %d, want 1", len(p.Rows()))
+	}
+
+	failed := logger.findEvent("ack_write_failed")
+	if len(failed) == 0 {
+		t.Fatalf("expected ack_write_failed warn log; lines=%v", logger.lines)
+	}
+	for _, ln := range failed {
+		if ln.level != "warn" {
+			t.Fatalf("ack_write_failed level = %q, want warn", ln.level)
+		}
+		if _, ok := ln.fields["correlation_id"]; !ok {
+			t.Fatalf("ack_write_failed must carry correlation_id; fields=%v", ln.fields)
+		}
+	}
+}
+
 // Threshold-then-drop: with OnPersistFailNack and NackThenDropAfter=N,
 // N consecutive persist failures produce N NACKs and then close the
 // connection. Per LLD §5.6 + §8.
