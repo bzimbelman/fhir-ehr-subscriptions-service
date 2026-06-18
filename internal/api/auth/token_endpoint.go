@@ -81,6 +81,19 @@ type TokenEndpointConfig struct {
 	// contains the underlying jwt library error string. Optional; if
 	// nil, detailed errors are dropped.
 	Logger *slog.Logger
+
+	// AllowInsecureJWKS permits client JWKS URLs whose scheme is
+	// `http://`. The default refuses them (B-12). Local-dev only.
+	AllowInsecureJWKS bool
+
+	// JWKSAllowedHosts, when non-empty, restricts the hostnames that
+	// can be used as a client JWKS URL. The default (empty) permits
+	// any host but logs a warning at startup. Hostnames are compared
+	// case-insensitively (no port).
+	JWKSAllowedHosts []string
+
+	// JWKSFetchTimeout caps each JWKS HTTP fetch. Default 5s (B-12).
+	JWKSFetchTimeout time.Duration
 }
 
 // TokenEndpoint implements the SMART on FHIR Backend Services token
