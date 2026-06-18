@@ -6,7 +6,6 @@ package handlers_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -825,12 +824,5 @@ func TestRoutes_NotFoundIsOperationOutcome(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "OperationOutcome") {
 		t.Errorf("body should be OperationOutcome; got %s", body)
-	}
-}
-
-func TestPipelineErrors(t *testing.T) {
-	t.Parallel()
-	if !errors.Is(io.EOF, io.EOF) {
-		t.Skip("compile-time placeholder only")
 	}
 }

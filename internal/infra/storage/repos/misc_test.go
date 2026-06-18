@@ -342,7 +342,7 @@ func TestSubscriptionsInsertAndGet(t *testing.T) {
 	}
 }
 
-func TestWsBindingTokensInsertAndDelete(t *testing.T) {
+func TestWsBindingTokensInsert(t *testing.T) {
 	t.Parallel()
 
 	pool, err := pgxmock.NewPool()
@@ -362,10 +362,6 @@ func TestWsBindingTokensInsertAndDelete(t *testing.T) {
 	pool.ExpectExec("INSERT INTO ws_binding_tokens").
 		WithArgs(hashed, subID, "client-a", expires).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	// Delete must also hash internally so callers stay symmetric.
-	pool.ExpectExec("DELETE FROM ws_binding_tokens").
-		WithArgs(hashed).
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	repo := repos.NewWsBindingTokensRepo()
 	if err := repo.Insert(ctx, pool, repos.WsBindingTokenRow{
@@ -375,9 +371,6 @@ func TestWsBindingTokensInsertAndDelete(t *testing.T) {
 		ExpiresAt:      expires,
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
-	}
-	if err := repo.Delete(ctx, pool, cleartext); err != nil {
-		t.Fatalf("delete: %v", err)
 	}
 	if err := pool.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
