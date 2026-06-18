@@ -79,6 +79,56 @@ func (s *PgSubscriptionsStore) ListByClient(ctx context.Context, clientID string
 	return out, nil
 }
 
+// FindByClientAndCriteria runs the If-None-Exist (LLD §4.1) match
+// entirely in SQL. The composite index `subscriptions_client_match_idx`
+// (migration 0005) covers the equality predicates so the query never
+// materialises the full client subscription list (S-2.4). Tombstoned
+// (`status = 'off'`) rows are excluded so the recreate-after-delete
+// path is unblocked. LIMIT 1 keeps the round-trip flat — the caller
+// only checks for presence.
+func (s *PgSubscriptionsStore) FindByClientAndCriteria(ctx context.Context, clientID string, criteria SubscriptionMatchCriteria) ([]repos.SubscriptionRow, error) {
+	const sql = `
+		SELECT id, client_id, status, topic_url, channel_type,
+		       COALESCE(endpoint, ''), header, filter_by, content,
+		       heartbeat_period, timeout, max_count,
+		       events_since_subscription_start, COALESCE(reason, ''),
+		       end_time, COALESCE(error, ''), contact, last_handshake_at,
+		       created_at, updated_at
+		FROM subscriptions
+		WHERE client_id = $1
+		  AND status <> 'off'
+		  AND ($2 = '' OR topic_url = $2)
+		  AND ($3 = '' OR channel_type = $3)
+		  AND ($4 = '' OR COALESCE(endpoint, '') = $4)
+		LIMIT 1`
+	rows, err := s.Pool.Query(ctx, sql, clientID, criteria.Topic, criteria.ChannelType, criteria.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("subscriptions: find by criteria: %w", err)
+	}
+	defer rows.Close()
+	out := make([]repos.SubscriptionRow, 0, 1)
+	for rows.Next() {
+		var rec repos.SubscriptionRow
+		var status string
+		if err := rows.Scan(
+			&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
+			&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
+			&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
+			&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+			&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
+			&rec.CreatedAt, &rec.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("subscriptions: scan: %w", err)
+		}
+		rec.Status = repos.SubscriptionStatus(status)
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UpdateResource overwrites the row's mutable fields. Audit/version
 // state is up to the caller.
 func (s *PgSubscriptionsStore) UpdateResource(ctx context.Context, id uuid.UUID, row repos.SubscriptionRow) error {
