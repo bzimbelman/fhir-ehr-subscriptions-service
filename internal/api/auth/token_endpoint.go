@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -74,6 +75,12 @@ type TokenEndpointConfig struct {
 	// MaxRequestBodyBytes caps the request body size accepted by
 	// ServeHTTP. Default MaxTokenRequestBodyBytes (64 KiB).
 	MaxRequestBodyBytes int64
+
+	// Logger receives detailed assertion-failure errors so operators
+	// can debug client misbehaviour. The HTTP response body never
+	// contains the underlying jwt library error string. Optional; if
+	// nil, detailed errors are dropped.
+	Logger *slog.Logger
 }
 
 // TokenEndpoint implements the SMART on FHIR Backend Services token
@@ -214,9 +221,13 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		jwt.WithTimeFunc(te.cfg.Now),
 	).Parse(assertion, kf.Keyfunc)
 	if err != nil {
+		// B-8: golang-jwt error strings include "crypto/rsa:
+		// verification error", key ids, algorithm names. Map to a
+		// fixed enum of generic strings; log the detail server-side.
+		reason := classifyAssertionErr(err)
+		te.logAssertionFailure(r, clientID, reason, err)
 		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			fmt.Sprintf("assertion validation failed: %v", err),
-			classifyAssertionErr(err))
+			diagnosticForReason(reason), reason)
 		return
 	}
 	if !verified.Valid {
@@ -333,6 +344,40 @@ func classifyAssertionErr(err error) string {
 	default:
 		return "signature"
 	}
+}
+
+// diagnosticForReason returns a fixed, generic diagnostic string for
+// each canonical auth-failure reason. The message MUST NOT include any
+// caller-controlled data, library-internal phrases, or key material;
+// see B-8.
+func diagnosticForReason(reason string) string {
+	switch reason {
+	case "expired":
+		return "assertion expired"
+	case "audience":
+		return "assertion audience mismatch"
+	case "malformed":
+		return "assertion malformed"
+	case "unknown_client":
+		return "unknown client"
+	case "replayed_jti":
+		return "assertion jti replay"
+	default:
+		return "assertion invalid"
+	}
+}
+
+// logAssertionFailure emits a single structured log line with the raw
+// jwt error so operators can debug; never reaches the wire.
+func (te *TokenEndpoint) logAssertionFailure(r *http.Request, clientID, reason string, err error) {
+	if te.cfg.Logger == nil {
+		return
+	}
+	te.cfg.Logger.LogAttrs(r.Context(), slog.LevelInfo, "auth: assertion validation failed",
+		slog.String("client_id", clientID),
+		slog.String("reason", reason),
+		slog.String("error", err.Error()),
+	)
 }
 
 // writeOAuthError emits the RFC 6749 OAuth error code wrapped in a FHIR
