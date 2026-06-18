@@ -140,6 +140,36 @@ func (m *fakeMetrics) counter(name string, labels map[string]string) float64 {
 	return m.counters[metricKey(name, labels)]
 }
 
+func (m *fakeMetrics) allCounterKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.counters))
+	for k := range m.counters {
+		out = append(out, k)
+	}
+	return out
+}
+
+func (m *fakeMetrics) allHistKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.hist))
+	for k := range m.hist {
+		out = append(out, k)
+	}
+	return out
+}
+
+func (m *fakeMetrics) allGaugeKeys() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.gauges))
+	for k := range m.gauges {
+		out = append(out, k)
+	}
+	return out
+}
+
 // frameBytes wraps body in MLLP markers.
 func frameBytes(body string) []byte {
 	out := make([]byte, 0, len(body)+3)
@@ -245,11 +275,21 @@ func TestMetrics_ReceivedTotal_NoPeerAddrLabel(t *testing.T) {
 	server, client := net.Pipe()
 	defer client.Close()
 
-	go HandleConnection(context.Background(), server, ep, cfg, p, m, "10.0.0.1:1234")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleConnection(context.Background(), server, ep, cfg, p, m, "10.0.0.1:1234")
+	}()
 	if _, err := client.Write(frameBytes(sampleORU)); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	_ = readFrame(t, client)
+	_ = client.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("handler did not exit")
+	}
 
 	// The expected key has only listener_endpoint as a label.
 	if got := m.counter(MetricMessagesReceivedTotal,
@@ -257,17 +297,17 @@ func TestMetrics_ReceivedTotal_NoPeerAddrLabel(t *testing.T) {
 		t.Fatalf("expected received_total{listener_endpoint=adt-feed} = 1; got %v", got)
 	}
 	// No emission key may carry peer_addr.
-	for k := range m.counters {
+	for _, k := range m.allCounterKeys() {
 		if strings.Contains(k, "peer_addr=") {
 			t.Fatalf("metric counter key contains peer_addr label: %q", k)
 		}
 	}
-	for k := range m.hist {
+	for _, k := range m.allHistKeys() {
 		if strings.Contains(k, "peer_addr=") {
 			t.Fatalf("metric histogram key contains peer_addr label: %q", k)
 		}
 	}
-	for k := range m.gauges {
+	for _, k := range m.allGaugeKeys() {
 		if strings.Contains(k, "peer_addr=") {
 			t.Fatalf("metric gauge key contains peer_addr label: %q", k)
 		}
@@ -334,7 +374,7 @@ func TestListener_HandleConn_RoundTrip(t *testing.T) {
 	}
 
 	// Counters
-	if got := m.counter(MetricMessagesReceivedTotal, map[string]string{"listener_endpoint": "adt-feed", "peer_addr": "127.0.0.1:1234"}); got != 1 {
+	if got := m.counter(MetricMessagesReceivedTotal, map[string]string{"listener_endpoint": "adt-feed"}); got != 1 {
 		t.Fatalf("received_total = %v, want 1", got)
 	}
 	if got := m.counter(MetricMessagesAckedTotal, map[string]string{"listener_endpoint": "adt-feed", "outcome": OutcomeAA}); got != 1 {
@@ -615,11 +655,10 @@ func TestListener_InflightCap_DirectGate(t *testing.T) {
 
 	clog := newConnectionLogger(nopLogger{}, ep.Name, "127.0.0.1:9999", state.id)
 	endpointLabels := map[string]string{"listener_endpoint": ep.Name}
-	receiveLabels := map[string]string{"listener_endpoint": ep.Name, "peer_addr": "127.0.0.1:9999"}
 
 	go func() {
 		body := []byte("MSH|^~\\&|S|F|||20240101||ADT^A01|CAPPED|P|2.5\r")
-		_ = handleOneFrame(context.Background(), server, body, ep, cfg, p, m, clog, state, endpointLabels, receiveLabels, false)
+		_ = handleOneFrame(context.Background(), server, body, ep, cfg, p, m, clog, state, endpointLabels, false)
 	}()
 
 	ack := readFrame(t, client)

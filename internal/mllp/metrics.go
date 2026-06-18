@@ -8,9 +8,9 @@ package mllp
 // host translates them to Prometheus, OTLP, or whatever the deployment
 // wires up. Tests use a fake.
 //
-// All counter / histogram names below carry the `fhir_subs_` prefix when
-// rendered to the wire by the host adapter (per ADR 0010's metric naming
-// rule). The listener emits the unprefixed event name and labels.
+// All counter / histogram / gauge names emitted from this package carry
+// the canonical fhir_subs_mllp_ prefix already (ADR 0008 #10, LLD §7).
+// Emitters render them on the wire as-is — no host-side rewrap.
 type MetricsEmitter interface {
 	// Inc bumps a counter by 1 with the given labels.
 	Inc(name string, labels map[string]string)
@@ -22,21 +22,21 @@ type MetricsEmitter interface {
 	Set(name string, value float64, labels map[string]string)
 }
 
-// Metric event names emitted by the listener. The host adapter renders
-// these as `fhir_subs_<name>` on the wire.
+// Metric names emitted by the listener. These are the canonical wire
+// names (LLD §7); emitters render them as-is.
 const (
-	MetricMessagesReceivedTotal = "hl7_messages_received_total"
-	MetricMessagesAckedTotal    = "hl7_messages_acked_total"
-	MetricMessageBytes          = "hl7_message_bytes"
-	MetricMalformedTotal        = "hl7_malformed_total"
-	MetricNackTotal             = "hl7_nack_total"
-	MetricPersistDurationMS     = "hl7_persist_duration_ms"
-	MetricActiveConnections     = "hl7_active_connections"
-	MetricInflightPerConnection = "hl7_inflight_per_connection"
-	MetricAcceptErrorsTotal     = "hl7_accept_errors_total"
-	MetricReadErrorsTotal       = "hl7_read_errors_total"
-	MetricDisconnectMidFrame    = "hl7_disconnect_mid_frame_total"
-	MetricDropForPersistFails   = "hl7_drop_for_persist_failures_total"
+	MetricMessagesReceivedTotal = "fhir_subs_mllp_received_total"
+	MetricMessagesAckedTotal    = "fhir_subs_mllp_ack_total"
+	MetricMessageBytes          = "fhir_subs_mllp_message_bytes"
+	MetricMalformedTotal        = "fhir_subs_mllp_malformed_total"
+	MetricNackTotal             = "fhir_subs_mllp_nack_total"
+	MetricPersistDurationMS     = "fhir_subs_mllp_persist_duration_ms"
+	MetricActiveConnections     = "fhir_subs_mllp_active_connections"
+	MetricInflightPerConnection = "fhir_subs_mllp_inflight_per_connection"
+	MetricAcceptErrorsTotal     = "fhir_subs_mllp_accept_errors"
+	MetricReadErrorsTotal       = "fhir_subs_mllp_read_errors"
+	MetricDisconnectMidFrame    = "fhir_subs_mllp_disconnect_mid_frame"
+	MetricDropForPersistFails   = "fhir_subs_mllp_drop_for_persist_failures"
 )
 
 // Outcome label values for MetricMessagesAckedTotal.

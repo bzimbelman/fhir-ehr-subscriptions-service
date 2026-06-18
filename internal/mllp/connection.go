@@ -115,7 +115,6 @@ func HandleConnectionWithLogger(
 	}()
 
 	endpointLabels := map[string]string{"listener_endpoint": ep.Name}
-	receiveLabels := map[string]string{"listener_endpoint": ep.Name, "peer_addr": peerAddr}
 
 	framer := NewFramer(cfg.MaxMessageBytes)
 	readBuf := make([]byte, 8192)
@@ -175,7 +174,7 @@ func HandleConnectionWithLogger(
 			}
 			if r.n > 0 {
 				framer.Append(r.buf)
-				metrics.Add(MetricMessageBytes, float64(r.n), receiveLabels)
+				metrics.Add(MetricMessageBytes, float64(r.n), endpointLabels)
 			}
 
 		drainFrames:
@@ -193,7 +192,7 @@ func HandleConnectionWithLogger(
 				case FrameEvent:
 					draining := ctx.Err() != nil
 					stop := handleOneFrame(ctx, conn, ev.Body, ep, cfg, persister, metrics, clog,
-						state, endpointLabels, receiveLabels, draining)
+						state, endpointLabels, draining)
 					if stop {
 						return
 					}
@@ -222,7 +221,7 @@ func handleOneFrame(
 	metrics MetricsEmitter,
 	clog connectionLogger,
 	state *connectionState,
-	endpointLabels, receiveLabels map[string]string,
+	endpointLabels map[string]string,
 	draining bool,
 ) bool {
 	now := time.Now().UTC()
@@ -298,14 +297,14 @@ func handleOneFrame(
 	})
 
 	// Track inflight across the persist call: LLD §7 inflight gauge and
-	// the LLD §5.6 cap gate above both rely on this counter.
+	// the LLD §5.6 cap gate above both rely on this counter. The gauge
+	// is endpoint-labeled only per LLD §7 (per-connection cardinality
+	// stays on log lines, not metric labels).
 	state.incInflight()
-	metrics.Set(MetricInflightPerConnection, float64(state.inflightCount()),
-		map[string]string{"listener_endpoint": ep.Name, "connection_id": state.id.String()})
+	metrics.Set(MetricInflightPerConnection, float64(state.inflightCount()), endpointLabels)
 	defer func() {
 		state.decInflight()
-		metrics.Set(MetricInflightPerConnection, float64(state.inflightCount()),
-			map[string]string{"listener_endpoint": ep.Name, "connection_id": state.id.String()})
+		metrics.Set(MetricInflightPerConnection, float64(state.inflightCount()), endpointLabels)
 	}()
 
 	persistCtx, cancel := context.WithTimeout(context.Background(), cfg.PersistTimeout)
@@ -382,7 +381,7 @@ func handleOneFrame(
 		}
 	}
 
-	metrics.Inc(MetricMessagesReceivedTotal, receiveLabels)
+	metrics.Inc(MetricMessagesReceivedTotal, endpointLabels)
 	metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 		"listener_endpoint": ep.Name, "outcome": OutcomeAA,
 	})
