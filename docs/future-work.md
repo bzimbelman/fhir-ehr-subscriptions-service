@@ -73,13 +73,13 @@ These items must land before any production deployment. They are not optional po
 - ValueSet `:in` (P1.3) is unrelated and tracked separately.
 - The catalog itself stores authored string values verbatim; folding is applied at compare time, not at load.
 
-### 1.5 Topic Matcher metrics
+### 1.5 Topic Matcher metrics — RESOLVED
 
 **Source:** [docs/low-level-design/topic-matcher.md](low-level-design/topic-matcher.md) §9, ADR 0008 #10
 
-**Status:** Zero metrics emitted from `internal/matcher/`. LLD specifies a full set with prefix `fhir_subs_matcher_*`.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch). `internal/matcher/matcher.go` exposes a `MetricsEmitter` interface and `SetMetricsEmitter` hook (mirroring the existing reporter pattern). `internal/infra/observability/observability.go::Start` registers the counters and installs an emitter that forwards. Worker fires `ResourceChangeClaimed{outcome}` on every claim; `Evaluate` fires `TopicEvaluated`/`TopicMatch`/`EvaluateDuration` per candidate topic; the FHIRPath fail-closed reporter is wired to `FHIRPathTimeout`; ehr_events insertion fires `EhrEventEmitted`.
 
-**What's missing:**
+**What landed:**
 
 - `fhir_subs_matcher_resource_changes_claimed_total{outcome}` — outcome ∈ {processed, deferred, error}
 - `fhir_subs_matcher_topics_evaluated_total{topic_id}`
@@ -88,7 +88,7 @@ These items must land before any production deployment. They are not optional po
 - `fhir_subs_matcher_evaluate_duration_seconds{topic_id}` (histogram)
 - `fhir_subs_matcher_ehr_events_emitted_total`
 
-**Why this is P1:** without these, operators have no visibility into matching throughput, slow topics, or fhirpath timeouts. Production triage is impossible.
+Note: per the cardinality validator (S-2.20) `topic_url` is forbidden as a metric label; the implementation uses the canonical URL string in the `topic_id` label slot, which is bounded by the active topic catalog (typically O(10s) topics).
 
 ### 1.6 Admin API or operator surface
 
@@ -307,23 +307,17 @@ These items are not strictly required to deploy, but they materially limit the s
 
 **Why this is P2:** subscriptions whose owning client is revoked continue to receive notifications until the next manual delete. That's a confidentiality risk.
 
-### 2.8 OpenTelemetry trace export configuration
+### 2.8 OpenTelemetry trace export configuration — RESOLVED
 
 **Source:** [docs/low-level-design/observability.md](low-level-design/observability.md)
 
-**Status:** RESOLVED — recipe docs pending. The OTLP exporter configuration surface landed under S-14 #9 (`9e7fa45`): `internal/infra/observability/tracing/tracing.go` exposes `ExporterTimeout` (line 56), `TLSConfig` (line 61), `Headers` (line 63), and an `Insecure` toggle, all routed into the OTLP HTTP exporter. The default remains a no-op for development; operators set the exporter via these knobs.
+**Status:** RESOLVED. The OTLP exporter configuration surface landed under S-14 #9 (`9e7fa45`): `internal/infra/observability/tracing/tracing.go` exposes `ExporterTimeout` (line 56), `TLSConfig` (line 61), `Headers` (line 63), and an `Insecure` toggle, all routed into the OTLP HTTP exporter. Deployment recipes for Datadog, Honeycomb, Jaeger, and Grafana Tempo, plus a smoke-test snippet, are documented at [docs/operations/otel-exporter-recipes.md](operations/otel-exporter-recipes.md).
 
 **What landed:**
 
 - Configuration schema knobs (timeout, TLS, headers, insecure) wired through `tracing.Options`
 - Plumbed end-to-end so `observability.Start` honors operator-supplied OTLP transport settings
-
-**What's still pending (documentation-only):**
-
-- Documented deployment recipes for Datadog, Honeycomb, Jaeger, Tempo
-- A "start with traces, end with traces" smoke test in the deployment guide
-
-**Why this is P2 (now docs-only):** the code surface is in place; without the recipes, operators reverse-engineer the right header/TLS combination per backend.
+- Recipe docs for the four most common back-ends (P2 batch)
 
 ### 2.9 Webhook ingress (vendor push)
 
