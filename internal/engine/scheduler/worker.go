@@ -66,8 +66,8 @@ type Metrics interface {
 
 type nopMetrics struct{}
 
-func (nopMetrics) Outcome(string, Action)                    {}
-func (nopMetrics) DeliveryDuration(string, time.Duration)    {}
+func (nopMetrics) Outcome(string, Action)                 {}
+func (nopMetrics) DeliveryDuration(string, time.Duration) {}
 
 // ChannelRegistry resolves a Channel by its registered name (the
 // subscriptions.channel_type column). The scheduler does not call
@@ -108,18 +108,18 @@ func (r *MapRegistry) Lookup(name string) (channel.Channel, bool) {
 
 // Worker is the Stage 5 claim/dispatch loop.
 type Worker struct {
-	pool        *pgxpool.Pool
-	subs        *repos.SubscriptionsRepo
-	ehr         *repos.EhrEventsRepo
-	dlv         *repos.DeliveriesRepo
-	dl          *repos.DeadLettersRepo
-	registry    ChannelRegistry
-	bldr        *builder.Builder
-	cfg         Config
-	metrics     Metrics
-	logger      *slog.Logger
-	clock       func() time.Time
-	rng         RNG
+	pool     *pgxpool.Pool
+	subs     *repos.SubscriptionsRepo
+	ehr      *repos.EhrEventsRepo
+	dlv      *repos.DeliveriesRepo
+	dl       *repos.DeadLettersRepo
+	registry ChannelRegistry
+	bldr     *builder.Builder
+	cfg      Config
+	metrics  Metrics
+	logger   *slog.Logger
+	clock    func() time.Time
+	rng      RNG
 }
 
 // Options configure a Worker.
@@ -263,7 +263,7 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 		PerSubEventNumbers: map[uuid.UUID]int64{
 			ev.ID: row.EventNumber,
 		},
-		Attempt:               uint32(row.Attempts),
+		Attempt:               attemptsToUint32(row.Attempts),
 		CorrelationIDOverride: row.CorrelationID.String(),
 	}
 	envelope, err := w.bldr.Build(cctx, job)
@@ -477,4 +477,16 @@ func nextBackoff(cur, ceiling time.Duration) time.Duration {
 		return ceiling
 	}
 	return next
+}
+
+// attemptsToUint32 narrows the deliveries.attempts int32 column onto
+// the channel.NotificationEnvelope.Attempt uint32 field. Attempts is
+// always non-negative (the schema sets it to 0 and only increments);
+// negative attempts are clamped to 0 defensively. This is a
+// gosec-G115-safe conversion.
+func attemptsToUint32(a int32) uint32 {
+	if a < 0 {
+		return 0
+	}
+	return uint32(a)
 }

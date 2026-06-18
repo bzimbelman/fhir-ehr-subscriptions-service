@@ -137,7 +137,8 @@ func Evaluate(event EhrEvent, candidates []repos.SubscriptionRow) []CandidateDec
 		_ = json.Unmarshal(event.Resource, &resourceBody)
 	}
 
-	for _, sub := range candidates {
+	for i := range candidates {
+		sub := candidates[i]
 		if sub.TopicURL != event.TopicURL {
 			out = append(out, CandidateDecision{
 				Subscription: sub,
@@ -164,8 +165,8 @@ func Evaluate(event EhrEvent, candidates []repos.SubscriptionRow) []CandidateDec
 
 		matched := true
 		var failReason string
-		for i := range clauses {
-			ok, why := evaluateClause(clauses[i], resourceBody)
+		for j := range clauses {
+			ok, why := evaluateClause(clauses[j], resourceBody)
 			if !ok {
 				matched = false
 				failReason = why
@@ -205,7 +206,7 @@ func decodeFilterBy(raw []byte) ([]filterClause, error) {
 
 // evaluateClause returns (matched, skipReason). The skipReason is
 // populated only on the no-match return so callers can label metrics.
-func evaluateClause(c filterClause, body map[string]any) (bool, string) {
+func evaluateClause(c filterClause, body map[string]any) (matched bool, skipReason string) {
 	values := extractFieldValues(body, c.FilterParameter)
 
 	switch c.Modifier {

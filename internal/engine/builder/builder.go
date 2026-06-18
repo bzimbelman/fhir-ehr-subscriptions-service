@@ -209,9 +209,13 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 		corr = uuid.NewString()
 	}
 
+	seq := uint64(0)
+	if highest > 0 {
+		seq = uint64(highest)
+	}
 	env := channel.NotificationEnvelope{
 		SubscriptionID:       job.Subscription.ID,
-		Sequence:             uint64(highest),
+		Sequence:             seq,
 		BundleBytes:          bytes,
 		BundleKind:           job.NotificationType,
 		PayloadType:          payloadType(job.Subscription),

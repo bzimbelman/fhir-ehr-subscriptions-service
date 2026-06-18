@@ -269,7 +269,8 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 	decisions := Evaluate(event, candidates)
 
 	matched := 0
-	for _, d := range decisions {
+	for i := range decisions {
+		d := &decisions[i]
 		w.metrics.FanoutOutcome(row.TopicURL, d.Decision)
 		switch d.Decision {
 		case FanoutMatch:
@@ -334,16 +335,16 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 // monotonic, assigned at fanout (Stage 3). Computed as
 // max(deliveries.event_number) + 1 WHERE subscription_id = ?".
 func nextEventNumber(ctx context.Context, tx pgx.Tx, subID uuid.UUID) (int64, error) {
-	var max *int64
+	var maxEvent *int64
 	if err := tx.QueryRow(ctx,
 		`SELECT MAX(event_number) FROM deliveries WHERE subscription_id = $1`, subID,
-	).Scan(&max); err != nil {
+	).Scan(&maxEvent); err != nil {
 		return 0, fmt.Errorf("submatcher: select max event_number: %w", err)
 	}
-	if max == nil {
+	if maxEvent == nil {
 		return 1, nil
 	}
-	return *max + 1, nil
+	return *maxEvent + 1, nil
 }
 
 // resourceTypeOf reads the top-level resourceType field. Used to fill

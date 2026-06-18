@@ -28,7 +28,7 @@
 package scheduler
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
 	"github.com/fhir-subscriptions-foss/fhir-subs/internal/channel"
@@ -77,10 +77,14 @@ type RNG interface {
 
 // DeterministicRNG returns an RNG seeded with the given value, useful
 // for tests that need reproducible jitter.
+//
+// Jitter is not security-relevant; math/rand/v2 PCG is intentional
+// here. crypto/rand would consume entropy for no benefit.
+//
+//nolint:gosec // G404 / G115: jitter RNG is non-security; seed mixing is intentional.
 func DeterministicRNG(seed int64) RNG {
-	// math/rand v1; v2 is available but the chosen seed contract here
-	// is "the same seed produces the same stream", which v1 honors.
-	return rand.New(rand.NewSource(seed))
+	s := uint64(seed)
+	return rand.New(rand.NewPCG(s, s^0x9E3779B97F4A7C15))
 }
 
 // ComputeBackoff returns the duration to wait before the next attempt
@@ -91,7 +95,10 @@ func DeterministicRNG(seed int64) RNG {
 func ComputeBackoff(cfg RetryConfig, attempts int32, retryAfter time.Duration, rng RNG) time.Duration {
 	cfg.applyDefaults()
 	if rng == nil {
-		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
+		//nolint:gosec // G115: UnixNano is monotonic positive; truncation is intentional.
+		seed := uint64(time.Now().UnixNano())
+		//nolint:gosec // G404: jitter RNG is non-security; PCG is fine.
+		rng = rand.New(rand.NewPCG(seed, seed^0x9E3779B97F4A7C15))
 	}
 	if retryAfter > 0 {
 		return clamp(retryAfter, cfg.Min, cfg.Max)
