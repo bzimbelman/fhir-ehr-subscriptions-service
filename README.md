@@ -59,6 +59,14 @@ There is no runnable code yet. To start contributing:
 When the first component begins implementation, this section will grow to
 include build, test, and run commands.
 
+## Demo
+
+A self-contained walkthrough of the bridge's happy path lives under
+[`demo/`](demo/). It boots the bridge in Docker, registers a rest-hook
+Subscription via `demo-subscriber`, and replays a small HL7 v2 catalog via
+`demo-publisher` so the matcher and channel pipeline are visible end-to-end.
+Start with [`demo/README.md`](demo/README.md).
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0. See
