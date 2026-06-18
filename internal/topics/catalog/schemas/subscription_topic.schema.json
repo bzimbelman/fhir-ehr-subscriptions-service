@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fhir-subscriptions-foss.org/schemas/subscription_topic.schema.json",
+  "title": "SubscriptionTopic (subset enforced by fhir-subscriptions-foss)",
+  "description": "Validates the subset of FHIR R5 SubscriptionTopic that the fhir-subscriptions-foss catalog can compile. Anything beyond the subset is rejected at catalog load (ADR 0006).",
+  "type": "object",
+  "required": ["resourceType", "url", "version", "status"],
+  "properties": {
+    "resourceType": {"const": "SubscriptionTopic"},
+    "url": {"type": "string", "minLength": 1},
+    "version": {"type": "string", "minLength": 1},
+    "title": {"type": "string"},
+    "description": {"type": "string"},
+    "status": {"enum": ["draft", "active", "retired", "unknown"]},
+    "experimental": {"type": "boolean"},
+    "date": {"type": "string"},
+    "publisher": {"type": "string"},
+    "resourceTrigger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {
+          "description": {"type": "string"},
+          "resource": {"type": "string", "minLength": 1},
+          "supportedInteraction": {
+            "type": "array",
+            "items": {"enum": ["create", "update", "delete"]}
+          },
+          "queryCriteria": {
+            "type": "object",
+            "properties": {
+              "previous": {"type": "string"},
+              "current": {"type": "string"},
+              "requireBoth": {"type": "boolean"}
+            }
+          },
+          "fhirPathCriteria": {"type": "string"}
+        }
+      }
+    },
+    "eventTrigger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["event"],
+        "properties": {
+          "description": {"type": "string"},
+          "event": {
+            "type": "object",
+            "properties": {
+              "coding": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "system": {"type": "string"},
+                    "code": {"type": "string"}
+                  }
+                }
+              }
+            }
+          },
+          "resource": {"type": "string"}
+        }
+      }
+    },
+    "canFilterBy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["filterParameter"],
+        "properties": {
+          "resource": {"type": "string"},
+          "filterParameter": {"type": "string", "minLength": 1},
+          "comparator": {"type": "array", "items": {"type": "string"}},
+          "modifier": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "notificationShape": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["resource"],
+        "properties": {
+          "resource": {"type": "string"},
+          "include": {"type": "array", "items": {"type": "string"}},
+          "revInclude": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  },
+  "anyOf": [
+    {"required": ["resourceTrigger"]},
+    {"required": ["eventTrigger"]}
+  ]
+}
