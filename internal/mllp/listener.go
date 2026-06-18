@@ -23,12 +23,32 @@ type Listener struct {
 
 	endpoints []*endpoint
 
+	// admit is the cross-endpoint admission semaphore that enforces
+	// MaxConnections (B-19). nil when MaxConnections is zero.
+	admit chan struct{}
+
+	// perIPMu guards perIP. perIP counts active connections per remote
+	// IP for MaxConnectionsPerIP enforcement (B-19).
+	perIPMu sync.Mutex
+	perIP   map[string]int
+
 	cancel  context.CancelFunc
 	runCtx  context.Context
 	startMu sync.Mutex
 	started bool
 	stopMu  sync.Mutex
 	stopped bool
+}
+
+// admissionDecision records the outcome of the per-connection admission
+// check. The endpoint accept loop uses this to decide whether to launch
+// a handler or close the conn outright.
+type admissionDecision struct {
+	allow  bool
+	reason string
+	// release is called when the connection terminates so the
+	// admission slots are returned to the pool.
+	release func()
 }
 
 // New constructs a Listener but does not bind sockets. Call Start to bind
@@ -41,12 +61,101 @@ func New(cfg ListenerConfig, p Persister, m MetricsEmitter, log Logger) *Listene
 	if log == nil {
 		log = nopLogger{}
 	}
-	return &Listener{
-		cfg:       cfg.withDefaults(),
+	cfg = cfg.withDefaults()
+	l := &Listener{
+		cfg:       cfg,
 		persister: p,
 		metrics:   m,
 		logger:    log,
+		perIP:     map[string]int{},
 	}
+	if cfg.MaxConnections > 0 {
+		l.admit = make(chan struct{}, cfg.MaxConnections)
+	}
+	return l
+}
+
+// admitConnection is invoked by an endpoint's accept loop for every
+// freshly accepted TCP socket. It enforces both MaxConnections (a
+// non-blocking semaphore acquire) and MaxConnectionsPerIP. When the
+// connection cannot be admitted, allow is false and the caller MUST
+// close the conn; the release closure is a no-op in that case. When
+// admitted, the caller MUST invoke release exactly once on
+// disconnect.
+func (l *Listener) admitConnection(remoteAddr string) admissionDecision {
+	host := remoteHost(remoteAddr)
+
+	// Step 1: per-IP cap. Cheap to test; rejects loud peers fast.
+	if l.cfg.MaxConnectionsPerIP > 0 {
+		l.perIPMu.Lock()
+		if l.perIP[host] >= l.cfg.MaxConnectionsPerIP {
+			cur := l.perIP[host]
+			l.perIPMu.Unlock()
+			return admissionDecision{
+				allow:  false,
+				reason: fmt.Sprintf("max_connections_per_ip exceeded for %s (current %d, limit %d)", host, cur, l.cfg.MaxConnectionsPerIP),
+			}
+		}
+		l.perIP[host]++
+		l.perIPMu.Unlock()
+	}
+
+	// Step 2: global cap. Non-blocking acquire so an accept-flood does
+	// not block the accept loop on a closed channel.
+	if l.admit != nil {
+		select {
+		case l.admit <- struct{}{}:
+			// admitted
+		default:
+			// Roll back the per-IP increment we just took.
+			if l.cfg.MaxConnectionsPerIP > 0 {
+				l.perIPMu.Lock()
+				if l.perIP[host] > 0 {
+					l.perIP[host]--
+				}
+				l.perIPMu.Unlock()
+			}
+			return admissionDecision{
+				allow:  false,
+				reason: fmt.Sprintf("max_connections exceeded (limit %d, peer %s)", l.cfg.MaxConnections, host),
+			}
+		}
+	}
+
+	released := false
+	var releaseMu sync.Mutex
+	release := func() {
+		releaseMu.Lock()
+		defer releaseMu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		if l.admit != nil {
+			<-l.admit
+		}
+		if l.cfg.MaxConnectionsPerIP > 0 {
+			l.perIPMu.Lock()
+			if l.perIP[host] > 0 {
+				l.perIP[host]--
+				if l.perIP[host] == 0 {
+					delete(l.perIP, host)
+				}
+			}
+			l.perIPMu.Unlock()
+		}
+	}
+	return admissionDecision{allow: true, release: release}
+}
+
+// remoteHost extracts the host portion of a "host:port" remote
+// address. Falls back to the input on parse failure.
+func remoteHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	return host
 }
 
 // Start binds every configured endpoint and spawns its accept loop.
@@ -72,6 +181,7 @@ func (l *Listener) Start(ctx context.Context) error {
 	endpoints := make([]*endpoint, 0, len(l.cfg.Endpoints))
 	for _, epCfg := range l.cfg.Endpoints {
 		ep := newEndpoint(epCfg, l.cfg, l.persister, l.metrics, l.logger)
+		ep.parent = l
 		if err := ep.bind(); err != nil {
 			// Roll back: close any endpoint we already bound.
 			for _, prev := range endpoints {

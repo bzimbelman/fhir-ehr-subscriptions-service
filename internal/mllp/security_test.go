@@ -59,10 +59,24 @@ func (c *captureLogger) snapshot() []logEntry {
 	copy(out, c.entries)
 	return out
 }
+// hasWarn reports whether any captured WARN entry has either the
+// needle in its message OR in any of its field keys / string values.
+// Matches what an SRE would grep for in production logs.
 func (c *captureLogger) hasWarn(needle string) bool {
 	for _, e := range c.snapshot() {
-		if e.level == "warn" && strings.Contains(e.msg, needle) {
+		if e.level != "warn" {
+			continue
+		}
+		if strings.Contains(e.msg, needle) {
 			return true
+		}
+		for k, v := range e.fields {
+			if strings.Contains(k, needle) {
+				return true
+			}
+			if s, ok := v.(string); ok && strings.Contains(s, needle) {
+				return true
+			}
 		}
 	}
 	return false

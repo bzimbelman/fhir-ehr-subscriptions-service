@@ -4,10 +4,32 @@
 package mllp
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"time"
 )
+
+// TLSConfig configures TLS / mTLS for an MLLP listener (B-20). When
+// non-nil, the listener wraps every accepted TCP socket with
+// tls.NewListener, refusing plaintext connections. Operators on a
+// hospital network must configure TLS — HL7 messages carry PHI.
+type TLSConfig struct {
+	// Config is the base *tls.Config. Required when TLSConfig is set.
+	// MinVersion defaults to TLS 1.2 when zero. Cipher suites default
+	// to the Go standard AEAD suites; operators may override.
+	Config *tls.Config
+
+	// RequireAndVerifyClientCert enables mutual TLS — the listener
+	// rejects connections that do not present a client certificate
+	// signed by a CA in ClientCAs.
+	RequireAndVerifyClientCert bool
+
+	// ClientCAs is the trust pool used to verify peer certificates when
+	// RequireAndVerifyClientCert is true. Required for mTLS.
+	ClientCAs *x509.CertPool
+}
 
 // OnPersistFail enumerates how the listener responds when a persist call
 // fails. Per LLD §8: NACK lets the EHR hold and re-send; Drop closes the
@@ -70,6 +92,25 @@ type ListenerConfig struct {
 
 	// OnPersistFail selects the behavior on persist failure. Default Nack.
 	OnPersistFail OnPersistFail
+
+	// MaxConnections caps the total number of concurrent connections
+	// across all endpoints (B-19). When the cap is reached, additional
+	// accepted TCP sockets are immediately closed and a WARN log line
+	// records the offending peer. Zero (default) disables the cap.
+	// Operators should size this from the upstream EHR's expected
+	// concurrent senders plus headroom.
+	MaxConnections int
+
+	// MaxConnectionsPerIP caps concurrent connections from a single
+	// remote IP (B-19). A misbehaving sender that opens hundreds of
+	// connections can no longer monopolize accept-loop capacity. Zero
+	// (default) disables the per-IP cap.
+	MaxConnectionsPerIP int
+
+	// TLS, when non-nil, wraps every accepted TCP socket in TLS (B-20).
+	// HL7 messages carry PHI; running plaintext on a hospital network
+	// is an OCR / HIPAA finding. Required for production deployments.
+	TLS *TLSConfig
 }
 
 // Validate returns an error if any required field is missing or any tunable
@@ -100,6 +141,20 @@ func (c ListenerConfig) Validate() error {
 	}
 	if c.NackThenDropAfter <= 0 {
 		return errors.New("mllp listener: nack_then_drop_after must be > 0")
+	}
+	if c.MaxConnections < 0 {
+		return errors.New("mllp listener: max_connections must be >= 0")
+	}
+	if c.MaxConnectionsPerIP < 0 {
+		return errors.New("mllp listener: max_connections_per_ip must be >= 0")
+	}
+	if c.TLS != nil {
+		if c.TLS.Config == nil {
+			return errors.New("mllp listener: tls.config required when TLS is set")
+		}
+		if c.TLS.RequireAndVerifyClientCert && c.TLS.ClientCAs == nil {
+			return errors.New("mllp listener: tls.client_cas required when require_and_verify_client_cert is true")
+		}
 	}
 	return nil
 }
