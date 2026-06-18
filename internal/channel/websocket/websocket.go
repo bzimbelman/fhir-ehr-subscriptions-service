@@ -138,8 +138,8 @@ type session struct {
 	sendMu sync.Mutex
 
 	// ackMu protects the ack waiters map.
-	ackMu     sync.Mutex
-	ackWaits  map[uint64]chan struct{}
+	ackMu    sync.Mutex
+	ackWaits map[uint64]chan struct{}
 
 	// closing is set when the read loop has terminated.
 	closing chan struct{}
@@ -251,8 +251,8 @@ func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
 		Token                   string `json:"token"`
 		LastReceivedEventNumber *int64 `json:"lastReceivedEventNumber"`
 	}
-	if err := json.Unmarshal(raw, &msg); err != nil {
-		_ = conn.Write(ctx, codingws.MessageText, mustJSON(bindError("invalid bind json: "+err.Error())))
+	if uerr := json.Unmarshal(raw, &msg); uerr != nil {
+		_ = conn.Write(ctx, codingws.MessageText, mustJSON(bindError("invalid bind json: "+uerr.Error())))
 		_ = conn.Close(codingws.StatusUnsupportedData, "invalid bind")
 		return
 	}

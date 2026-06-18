@@ -42,12 +42,6 @@ func (f *fakeMetrics) Add(name string, delta float64, labels map[string]string) 
 func (f *fakeMetrics) Observe(string, float64, map[string]string) {}
 func (f *fakeMetrics) Set(string, float64, map[string]string)     {}
 
-func (f *fakeMetrics) get(name string, labels map[string]string) float64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.counters[mkKey(name, labels)]
-}
-
 func mkKey(name string, labels map[string]string) string {
 	keys := make([]string, 0, len(labels))
 	for k := range labels {
@@ -74,10 +68,10 @@ func mkKey(name string, labels map[string]string) string {
 // fakeTokens is an in-memory websocket.TokenConsumer used to drive the
 // bind handler without a database.
 type fakeTokens struct {
-	mu     sync.Mutex
-	rows   map[string]*tokenRow
-	now    func() time.Time
-	calls  int
+	mu    sync.Mutex
+	rows  map[string]*tokenRow
+	now   func() time.Time
+	calls int
 }
 
 type tokenRow struct {
