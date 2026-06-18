@@ -26,6 +26,7 @@ package submatcher
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -365,29 +366,36 @@ func stringify(v any) string {
 	return string(b)
 }
 
+// foldEqual is the locale-folded string equality helper used by every
+// non-:contains equality path. ADR 0010 #4 requires ICU root-locale
+// folding on ALL string equality, not just :contains (P1.4).
+func foldEqual(a, b string) bool {
+	return foldICURoot(a) == foldICURoot(b)
+}
+
 func equalsToken(v any, value string) bool {
 	switch x := v.(type) {
 	case string:
-		return x == value
+		return foldEqual(x, value)
 	case map[string]any:
 		sys, _ := x["system"].(string)
 		code, _ := x["code"].(string)
 		if strings.Contains(value, "|") {
 			parts := strings.SplitN(value, "|", 2)
-			return parts[0] == sys && parts[1] == code
+			return foldEqual(parts[0], sys) && foldEqual(parts[1], code)
 		}
-		return value == code
+		return foldEqual(value, code)
 	}
 	return false
 }
 
 func equalsReference(v any, value string) bool {
 	if s, ok := v.(string); ok {
-		return s == value
+		return foldEqual(s, value)
 	}
 	if m, ok := v.(map[string]any); ok {
 		if ref, ok := m["reference"].(string); ok {
-			return ref == value
+			return foldEqual(ref, value)
 		}
 	}
 	return false
@@ -395,7 +403,7 @@ func equalsReference(v any, value string) bool {
 
 func equalsString(v any, value string) bool {
 	if s, ok := v.(string); ok {
-		return s == value
+		return foldEqual(s, value)
 	}
 	return false
 }
@@ -413,23 +421,39 @@ func matchIdentifier(v any, value string) bool {
 	idSys, _ := id["system"].(string)
 	if strings.Contains(value, "|") {
 		parts := strings.SplitN(value, "|", 2)
-		return parts[0] == idSys && parts[1] == idVal
+		return foldEqual(parts[0], idSys) && foldEqual(parts[1], idVal)
 	}
-	return idVal == value
+	return foldEqual(idVal, value)
 }
 
-// icuFoldChain is the canonical case+accent fold chain pinned by ADR
-// 0010 #4. NFD → strip combining marks → fold (lower) → NFC. Same
-// chain the topic matcher uses; kept private to avoid an import cycle.
-var icuFoldChain = transform.Chain(
-	norm.NFD,
-	runes.Remove(runes.In(unicode.Mn)),
-	cases.Fold(),
-	norm.NFC,
-)
+// newFoldChain builds a fresh case+accent fold chain pinned by ADR
+// 0010 #4. NFD → strip combining marks → fold (lower) → NFC. Kept
+// private to avoid an import cycle with the matcher (which keeps its
+// own copy for the same reason).
+//
+// transform.Chain instances are stateful: a single chain is NOT
+// goroutine-safe AND retains state across consecutive transform.String
+// calls. Once foldICURoot started being called from every equality
+// path (matcher + submatcher hot paths), a shared package-level chain
+// produced torn output. We pool fresh chains and Reset() before use.
+func newFoldChain() transform.Transformer {
+	return transform.Chain(
+		norm.NFD,
+		runes.Remove(runes.In(unicode.Mn)),
+		cases.Fold(),
+		norm.NFC,
+	)
+}
+
+var foldChainPool = sync.Pool{
+	New: func() any { return newFoldChain() },
+}
 
 func foldICURoot(s string) string {
-	out, _, err := transform.String(icuFoldChain, s)
+	t := foldChainPool.Get().(transform.Transformer)
+	t.Reset()
+	defer foldChainPool.Put(t)
+	out, _, err := transform.String(t, s)
 	if err != nil {
 		return strings.ToLower(s)
 	}

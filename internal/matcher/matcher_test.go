@@ -228,6 +228,101 @@ func TestEvaluateStringCaseAndAccentInsensitive(t *testing.T) {
 	}
 }
 
+// P1.4: ADR 0010 #4 mandates ICU root-locale folding for ALL string
+// equality, not just :contains. A subscription with `name=Müller`
+// should match an event whose name field is `mUller` (or `muller`,
+// `MULLER`, etc.). Today this fails because the default modifier path
+// uses raw equality.
+func TestEvaluateBareStringEqualityIsICUFolded(t *testing.T) {
+	t.Parallel()
+
+	const bareTopic = `{
+		"resourceType": "SubscriptionTopic",
+		"url": "http://example.org/topics/bare-equal",
+		"version": "1.0.0",
+		"status": "active",
+		"resourceTrigger": [{
+			"resource": "Patient",
+			"supportedInteraction": ["create"],
+			"queryCriteria": {
+				"current": "name=Müller"
+			}
+		}]
+	}`
+	cat := loadCatalog(t, bareTopic)
+
+	row := matcher.ResourceChange{
+		ResourceType: "Patient",
+		ChangeKind:   "create",
+		Resource:     []byte(`{"resourceType":"Patient","name":[{"family":"mUller"}]}`),
+	}
+	got := matcher.Evaluate(cat, row)
+	if len(got) != 1 {
+		t.Errorf("expected ICU-folded bare name= to match Müller via mUller; got %d", len(got))
+	}
+}
+
+// Token equality (status=ACTIVE vs status=active) is case-insensitive
+// per ADR 0010 #4 once root-locale folding is applied throughout.
+func TestEvaluateBareTokenEqualityIsICUFolded(t *testing.T) {
+	t.Parallel()
+
+	const tokenTopic = `{
+		"resourceType": "SubscriptionTopic",
+		"url": "http://example.org/topics/bare-token",
+		"version": "1.0.0",
+		"status": "active",
+		"resourceTrigger": [{
+			"resource": "ServiceRequest",
+			"supportedInteraction": ["create"],
+			"queryCriteria": {
+				"current": "status=ACTIVE"
+			}
+		}]
+	}`
+	cat := loadCatalog(t, tokenTopic)
+	row := matcher.ResourceChange{
+		ResourceType: "ServiceRequest",
+		ChangeKind:   "create",
+		Resource:     []byte(`{"resourceType":"ServiceRequest","status":"active"}`),
+	}
+	got := matcher.Evaluate(cat, row)
+	if len(got) != 1 {
+		t.Errorf("expected case-folded status=ACTIVE to match active; got %d", len(got))
+	}
+}
+
+// :not equality also folds (negated equality). A subscription with
+// `status:not=ACTIVE` should still exclude an event whose status is
+// `active` once folding is applied.
+func TestEvaluateNotModifierIsICUFolded(t *testing.T) {
+	t.Parallel()
+
+	const notTopic = `{
+		"resourceType": "SubscriptionTopic",
+		"url": "http://example.org/topics/not-fold",
+		"version": "1.0.0",
+		"status": "active",
+		"resourceTrigger": [{
+			"resource": "ServiceRequest",
+			"supportedInteraction": ["create"],
+			"queryCriteria": {
+				"current": "status:not=ACTIVE"
+			}
+		}]
+	}`
+	cat := loadCatalog(t, notTopic)
+	row := matcher.ResourceChange{
+		ResourceType: "ServiceRequest",
+		ChangeKind:   "create",
+		Resource:     []byte(`{"resourceType":"ServiceRequest","status":"active"}`),
+	}
+	got := matcher.Evaluate(cat, row)
+	if len(got) != 0 {
+		t.Errorf("expected case-folded status:not=ACTIVE to exclude active; got %d matches", len(got))
+	}
+}
+
 // MatchResult is what the package returns per matched topic. The test
 // asserts on TopicURL above; the rest of the row is built by the
 // caller from the source ResourceChange.

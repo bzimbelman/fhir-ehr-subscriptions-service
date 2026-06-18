@@ -191,6 +191,86 @@ func TestEvaluateStringContainsICUFold(t *testing.T) {
 	}
 }
 
+// P1.4: ICU folding applies to bare-equality clauses too, not just
+// :contains. ADR 0010 #4 mandates locale-folded comparison everywhere.
+func TestEvaluateBareStringEqualityIsICUFolded(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID:       uuid.New(),
+		TopicURL: "http://example.org/patient-name",
+		Status:   repos.SubActive,
+		FilterBy: fb(map[string]string{
+			"resourceType":    "Patient",
+			"filterParameter": "name",
+			"value":           "Müller",
+		}),
+	}
+	ev := submatcher.EhrEvent{
+		EventNumber:  201,
+		TopicURL:     "http://example.org/patient-name",
+		ResourceType: "Patient",
+		ChangeKind:   "update",
+		Resource:     mustResource(t, `{"resourceType":"Patient","id":"p-1","name":[{"family":"mUller"}]}`),
+	}
+	out := submatcher.Evaluate(ev, []repos.SubscriptionRow{sub})
+	if len(out) != 1 || out[0].Decision != submatcher.FanoutMatch {
+		t.Fatalf("want Match (ICU-folded bare =), got %#v", out)
+	}
+}
+
+func TestEvaluateBareTokenEqualityIsICUFolded(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID:       uuid.New(),
+		TopicURL: "http://example.org/order-status",
+		Status:   repos.SubActive,
+		FilterBy: fb(map[string]string{
+			"resourceType":    "ServiceRequest",
+			"filterParameter": "status",
+			"value":           "ACTIVE",
+		}),
+	}
+	ev := submatcher.EhrEvent{
+		EventNumber:  202,
+		TopicURL:     "http://example.org/order-status",
+		ResourceType: "ServiceRequest",
+		ChangeKind:   "update",
+		Resource:     mustResource(t, `{"resourceType":"ServiceRequest","id":"sr-1","status":"active"}`),
+	}
+	out := submatcher.Evaluate(ev, []repos.SubscriptionRow{sub})
+	if len(out) != 1 || out[0].Decision != submatcher.FanoutMatch {
+		t.Fatalf("want Match (case-folded token), got %#v", out)
+	}
+}
+
+// :not equality also folds. status:not=ACTIVE should still mark an
+// active event as NoMatch once folding is applied.
+func TestEvaluateNotModifierIsICUFolded(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID:       uuid.New(),
+		TopicURL: "http://example.org/order-status",
+		Status:   repos.SubActive,
+		FilterBy: fb(map[string]string{
+			"resourceType":    "ServiceRequest",
+			"filterParameter": "status",
+			"modifier":        "not",
+			"value":           "ACTIVE",
+		}),
+	}
+	ev := submatcher.EhrEvent{
+		EventNumber:  203,
+		TopicURL:     "http://example.org/order-status",
+		ResourceType: "ServiceRequest",
+		ChangeKind:   "update",
+		Resource:     mustResource(t, `{"resourceType":"ServiceRequest","id":"sr-1","status":"active"}`),
+	}
+	out := submatcher.Evaluate(ev, []repos.SubscriptionRow{sub})
+	if len(out) != 1 || out[0].Decision != submatcher.FanoutNoMatch {
+		t.Fatalf("want NoMatch (case-folded :not), got %#v", out)
+	}
+}
+
 // TestEvaluateStatusNotModifier: filterBy status:not=cancelled excludes
 // cancelled rows.
 func TestEvaluateStatusNotModifier(t *testing.T) {
