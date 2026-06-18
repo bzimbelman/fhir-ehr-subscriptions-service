@@ -22,7 +22,6 @@ package lifecycle
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -303,8 +302,3 @@ func (m *LifecycleModule) installSignalHandlers(ctx context.Context) error {
 func (m *LifecycleModule) maybeStartProbeListener() error {
 	return maybeStartProbeListener(m)
 }
-
-// errProbeListenerNotImplemented is a sentinel kept to avoid the unused
-// import warning when the probe listener glue is wired up. It is replaced
-// by the real binder.
-var _ = errors.New
