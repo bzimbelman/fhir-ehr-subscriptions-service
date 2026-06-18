@@ -220,12 +220,18 @@ func referenceForResource(resourceType string, body []byte) string {
 
 // evaluateSearchExpression runs every clause in expr against resource;
 // AND across clauses. Returns false if a clause cannot be satisfied.
+//
+// S-10.1: a malformed resource body silently fails the topic match.
+// We notify the reporter (if installed) so wiring can bump a metric;
+// the behavior is unchanged (fail-closed) since resuming with a
+// malformed body would produce wrong matches.
 func evaluateSearchExpression(expr *catalog.SearchExpression, resource []byte) bool {
 	if expr == nil {
 		return true
 	}
 	var m map[string]any
 	if err := json.Unmarshal(resource, &m); err != nil {
+		reportMalformedResource("search_expression", err)
 		return false
 	}
 	for _, c := range expr.Clauses {
@@ -274,7 +280,9 @@ func evaluateClause(c catalog.SearchClause, body map[string]any) bool {
 	case "in":
 		// :in ValueSet — ValueSet expansion not wired through yet;
 		// fail closed so a topic depending on :in does not silently
-		// pass.
+		// pass. Notify the reporter so wiring can bump a counter
+		// (S-10.3).
+		reportUnsupportedModifier("in", c.Parameter)
 		return false
 	case "":
 		if cmp, dateVal, ok := parseDateComparator(c.Value); ok {
@@ -290,6 +298,11 @@ func evaluateClause(c catalog.SearchClause, body map[string]any) bool {
 				return true
 			}
 			if equalsReference(v, c.Value) {
+				return true
+			}
+			// S-10.2: parity with submatcher.bareClause — string
+			// equality (e.g., for `name=John`) was missing here.
+			if equalsString(v, c.Value) {
 				return true
 			}
 		}
@@ -428,6 +441,16 @@ func equalsReference(v any, value string) bool {
 	return false
 }
 
+// equalsString is plain string equality. Mirrors submatcher.equalsString
+// so the bare-clause path here matches the bare-clause path there
+// (S-10.2). Falls through with false for non-string values.
+func equalsString(v any, value string) bool {
+	if s, ok := v.(string); ok {
+		return s == value
+	}
+	return false
+}
+
 func matchIdentifier(v any, value string) bool {
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -487,18 +510,33 @@ func compareDate(have, cmp, want string) bool {
 }
 
 func parseFlexibleDate(s string) (time.Time, bool) {
+	t, _, ok := parseFlexibleDateWithFlag(s)
+	return t, ok
+}
+
+// parseFlexibleDateWithFlag is parseFlexibleDate with an extra boolean
+// reporting whether the imputed timezone was UTC (i.e., the input had
+// no explicit tz). Callers that care can metric this so operators can
+// tell when a topic's date comparator is silently coercing local time
+// to UTC near boundaries (S-10.4).
+func parseFlexibleDateWithFlag(s string) (time.Time, bool, bool) {
+	// First try layouts WITH explicit timezone — RFC3339 already
+	// includes ones like "2026-01-01T00:00:00Z" / "+05:00".
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, false, true
+	}
+	// Then layouts WITHOUT timezone — those parse-as-UTC silently.
 	for _, layout := range []string{
-		time.RFC3339,
 		"2006-01-02T15:04:05",
 		"2006-01-02",
 		"2006-01",
 		"2006",
 	} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t, true
+			return t, true, true
 		}
 	}
-	return time.Time{}, false
+	return time.Time{}, false, false
 }
 
 // foldICURoot applies ADR 0010 #4 case+accent folding using
@@ -544,6 +582,7 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 	}
 	var body map[string]any
 	if err := json.Unmarshal(resource, &body); err != nil {
+		reportMalformedResource("fhirpath", err)
 		return false
 	}
 	if strings.HasSuffix(expr, ".exists()") {
@@ -622,6 +661,60 @@ func SetUnknownFHIRPathReporter(fn func(expr string)) {
 	unknownFHIRPathReporter.Store(&fn)
 }
 
+// unsupportedModifierReporter is the reporter for clauses whose
+// modifier is recognized at catalog-load (e.g., :in) but the matcher
+// has no implementation for. The :in modifier is the canonical case
+// (S-10.3); ValueSet expansion is not wired through. The reporter
+// fires once per fail-closed evaluation so wiring can bump a counter.
+var unsupportedModifierReporter atomic.Pointer[func(modifier, parameter string)]
+
+// SetUnsupportedModifierReporter installs (or unsets, with nil) the
+// callback for unsupported-modifier hits. The matcher fails closed
+// regardless; the reporter exists purely to emit a metric.
+func SetUnsupportedModifierReporter(fn func(modifier, parameter string)) {
+	if fn == nil {
+		unsupportedModifierReporter.Store(nil)
+		return
+	}
+	unsupportedModifierReporter.Store(&fn)
+}
+
+// reportUnsupportedModifier invokes the reporter (if any) with the
+// modifier and parameter names. nil-safe.
+func reportUnsupportedModifier(modifier, parameter string) {
+	if r := unsupportedModifierReporter.Load(); r != nil {
+		(*r)(modifier, parameter)
+	}
+}
+
+// EvaluateClauseForTest is a thin testing seam over evaluateClause so
+// the package-external test suite can drive the modifier-routing
+// logic. Production callers route through Evaluate.
+func EvaluateClauseForTest(c catalog.SearchClause, body map[string]any) bool {
+	return evaluateClause(c, body)
+}
+
+// malformedResourceReporter fires when the matcher hits a JSON-decode
+// failure on a resource body. The reporter exists so wiring can bump a
+// counter while the matcher continues to fail closed (S-10.1).
+var malformedResourceReporter atomic.Pointer[func(stage string, err error)]
+
+// SetMalformedResourceReporter installs the reporter for malformed
+// resource bodies. nil unsets.
+func SetMalformedResourceReporter(fn func(stage string, err error)) {
+	if fn == nil {
+		malformedResourceReporter.Store(nil)
+		return
+	}
+	malformedResourceReporter.Store(&fn)
+}
+
+func reportMalformedResource(stage string, err error) {
+	if r := malformedResourceReporter.Load(); r != nil {
+		(*r)(stage, err)
+	}
+}
+
 // ---------- Worker / claim loop ----------
 
 // CatalogProvider lets the worker re-read the snapshot per iteration
@@ -697,6 +790,11 @@ type Config struct {
 	// backoff.
 	DBBackoffInitial time.Duration
 	DBBackoffMax     time.Duration
+	// MaxRowAttempts caps how many times a single resource_changes
+	// row may fail the matcher transaction before it gets dead-lettered
+	// (S-10.6). Default 8. A poison row that always panics or always
+	// produces a tx error otherwise pins the worker forever.
+	MaxRowAttempts int32
 }
 
 // ApplyDefaults fills zero values per the LLD §"Configuration Knobs".
@@ -715,6 +813,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.DBBackoffMax == 0 {
 		c.DBBackoffMax = 5 * time.Second
+	}
+	if c.MaxRowAttempts == 0 {
+		c.MaxRowAttempts = 8
 	}
 }
 
