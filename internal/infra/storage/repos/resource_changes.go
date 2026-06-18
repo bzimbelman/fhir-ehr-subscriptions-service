@@ -38,11 +38,18 @@ func (r *ResourceChangesRepo) Insert(ctx context.Context, q Querier, row Resourc
 		}
 	}
 
+	// created_month is set explicitly here (in addition to the BEFORE
+	// INSERT trigger in the v0 schema) so partition routing has a
+	// non-null value to dispatch on. The trigger's behavior is identical;
+	// we belt-and-suspender it because Postgres routes partitions before
+	// BEFORE triggers fire on the parent partitioned relation.
 	const sql = `
 		INSERT INTO resource_changes
 			(adapter_id, correlation_id, resource_type, change_kind,
-			 resource, previous_resource, key_version, occurred_at, event_code)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			 resource, previous_resource, key_version, occurred_at, event_code,
+			 created_month)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+		        date_trunc('month', now())::date)
 		ON CONFLICT (adapter_id, correlation_id, created_month) DO NOTHING
 		RETURNING id, sequence, created_month`
 

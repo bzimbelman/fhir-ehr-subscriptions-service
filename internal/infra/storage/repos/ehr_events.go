@@ -36,12 +36,16 @@ func (r *EhrEventsRepo) Insert(ctx context.Context, q Querier, row EhrEventRow) 
 			return uuid.Nil, 0, fmt.Errorf("ehr_events: encrypt previous: %w", err)
 		}
 	}
+	// created_month is set explicitly so partition routing has a non-null
+	// value; the v0 trigger normally sets it but Postgres routes
+	// partitions before BEFORE triggers fire on the parent.
 	const sql = `
 		INSERT INTO ehr_events
 			(topic_url, focus, change_kind, resource, previous_resource,
 			 key_version, correlation_id, occurred_at, notification_shape_hint,
-			 resource_change_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 resource_change_id, created_month)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		        date_trunc('month', now())::date)
 		RETURNING id, event_number, created_month`
 	var id uuid.UUID
 	var ev int64
