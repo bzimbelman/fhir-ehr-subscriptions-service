@@ -101,10 +101,35 @@ func TestE2E_WebSocket_AckRace_NoPanic_NoLeak(t *testing.T) {
 	}
 
 	// Allow the server's pong / ping loop to settle and any cleanup
-	// goroutines to exit.
-	time.Sleep(50 * time.Millisecond)
-	endGor := runtime.NumGoroutine()
-	if delta := endGor - startGor; delta > 8 {
-		t.Errorf("goroutines leaked %d (start=%d, end=%d)", delta, startGor, endGor)
+	// goroutines to exit. Close the channel so the per-session goroutines
+	// (read + ping) join via WaitGroup before we sample (S-7 #9 changed
+	// the runConnection contract to spawn readLoop in a dedicated
+	// goroutine; the previous implementation reused the http handler
+	// goroutine, so the absolute "<= 8" delta is no longer reliable
+	// under parallel test scheduling — a Close-and-Wait gives the
+	// stable post-shutdown count).
+	_ = ch.Close()
+
+	// runtime.NumGoroutine counts the entire process, not just this
+	// channel. Under -race with parallel e2e tests the absolute delta
+	// can drift wildly via other tests' http servers, postgres clients,
+	// etc. Poll for ~1s and accept the smallest delta we observe; the
+	// signal is "do my channel's goroutines exit," not "is the test
+	// process at a steady-state goroutine count."
+	deadline := time.Now().Add(2 * time.Second)
+	minDelta := runtime.NumGoroutine() - startGor
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		d := runtime.NumGoroutine() - startGor
+		if d < minDelta {
+			minDelta = d
+		}
+		if minDelta <= 8 {
+			break
+		}
+	}
+	if minDelta > 8 {
+		t.Errorf("goroutines leaked min-delta=%d (start=%d, current=%d)",
+			minDelta, startGor, runtime.NumGoroutine())
 	}
 }

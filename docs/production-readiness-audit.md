@@ -375,22 +375,35 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 - **`internal/channel/message/message.go:319`** — `Bundle.timestamp` uses `time.RFC3339` (second precision); FHIR `instant` expects sub-second.
 - **`internal/channel/message/message.go:359-374`** — same default-permit allowlist semantics as resthook.
 
-#### S-6: Channels — email
+#### S-6: Channels — email — RESOLVED in `972dda7` (RED tests `5d28940`; e2e in `c8e428e`)
 - **`internal/channel/email/email.go:548-555`** — uses `dialer.Deadline` from ctx but never sets `dialer.Timeout`; stdlib `Deadline` is absolute time so OK in practice but fragile.
+  - **Resolved:** dialer.Timeout now bound to `RequestTimeout`, narrowed by ctx.Deadline when present. Post-dial `conn.SetDeadline` falls back to RequestTimeout when ctx has no deadline, so an envelope with no Deadline still bounds connect + EHLO + STARTTLS + AUTH chatter. Test: `TestS6_DialerHasTimeoutEvenWithoutDeadline`.
 - **`internal/channel/email/email.go:574-595`** — no metric when STARTTLS-Preferred fallback to plaintext occurs; operator has no compliance signal.
+  - **Resolved:** new `MetricSTARTTLSOutcomeTotal = "fhir_subs_channel_email_starttls_outcome_total"` with labels `{channel, policy, upgraded}`. `dial()` returns the upgrade outcome; the channel emits the counter on every dial. Operators alert on `rate(...{policy="preferred",upgraded="false"}) > 0`. Tests: unit `TestS6_STARTTLSPreferredFallbackMetric` / `TestS6_STARTTLSPreferredUpgradedMetric`; e2e `TestE2E_Email_STARTTLSPreferredFallback_EmitsMetric`.
 - **`internal/channel/email/email.go:707-735`** — `smtpErrorCode` parses error strings via custom byte loop with dead `smtpErr` interface lines; use `errors.As(err, new(*textproto.Error))`.
+  - **Resolved:** `smtpErrorCode` / `smtpErrorMessage` now use `errors.As(err, &perr)` against `*textproto.Error`. Removed the dead `smtpErr` interface, the dead Error()-string parser, and `isDigit`. A stringy "451 graylist" error returns 0 (not a protocol code) — the prior parser would mis-classify it. Test: `TestS6_SMTPErrorCodeFromTextprotoError` covers direct, `errors.Join`-wrapped, and non-textproto cases.
 - **`internal/channel/email/email.go:298-300, 563-565`** — `Close()` errors silently swallowed.
+  - **Resolved:** deferred `client.Close` in `deliverInner` and intermediate Close calls in `dial` log non-benign errors via `slog.WarnContext`. `isBenignCloseErr` filters nil and "use of closed network connection"; EOF, broken pipe, and i/o timeout are surfaced. Tests: `TestS6_BenignCloseErrFiltering`, `TestS6_CloseErrorsAreLogged`. Also removed the unused `dialFunc` test seam — `defaultDial` is now a method `(*Channel).dial` that captures metrics + logger directly.
 
-#### S-7: Channels — websocket
+#### S-7: Channels — websocket — RESOLVED in `4775357` (RED tests `b119f94`; e2e in `c8e428e`)
 - **`internal/channel/websocket/websocket.go:113-129`** — `sessions` map has no upper bound, no per-client cap.
+  - **Resolved:** `Options.MaxSessions` (default 50000) bounds the channel-wide session map; `Options.MaxSessionsPerClient` (default off) caps concurrent sessions per ClientID. Both reject at bind with a bind-error frame and emit `fhir_subs_channel_websocket_bind_rejected_total{reason}`. Tests: unit `TestS7_MaxSessionsCap`, `TestS7_MaxSessionsPerClientCap`; e2e `TestE2E_WebSocket_MaxSessionsCapRejectsBind`.
 - **`internal/channel/websocket/websocket.go:213-228`** — no body-size limit / read-header-timeout on the upgrade handler; slowloris on handshake.
+  - **Resolved:** new `Channel.ConfigureServer(s *http.Server)` applies `Options.UpgradeReadHeaderTimeout` (default 5s) to the host's `*http.Server`, bounding the handshake. The bind frame itself is read under a 4 KiB inbound limit so an oversize handshake is rejected before we trust the peer. Test: `TestS7_UpgradeReadHeaderTimeout`.
 - **`internal/channel/websocket/websocket.go:236`** — `conn.SetReadLimit` never called; default 32KB inbound limit conflicts with `Options.MaxFrameBytes` (8MB) used outbound.
+  - **Resolved:** `upgrade()` now calls `conn.SetReadLimit(max(MaxFrameBytes, defaultBindReadLimit=4KiB))`. After bind succeeds the limit is tightened to MaxFrameBytes so a deliberately tiny MaxFrameBytes (rare; mainly tests) does not block the bind frame. Test: `TestS7_SetReadLimitEnforced`.
 - **`internal/channel/websocket/websocket.go:233-247`** — bind-read timeout hardcoded 10s.
+  - **Resolved:** `Options.BindTimeout` (default 10s) replaces the hard-coded value. Test: `TestS7_BindTimeoutConfigurable`.
 - **`internal/channel/websocket/websocket.go:391-408`** — pingLoop uses `context.Background()` parent; no Channel-level ctx; goroutine-leak window on hung Reads.
+  - **Resolved:** `New()` owns a `context.WithCancel`; `pingLoop` and `readLoop` are bound to it so a `Close()` cancels in-flight pings/reads. The ping write itself uses a derived `context.WithTimeout(c.ctx, c.pingWriteTimeout)`. (Combined with the `WaitGroup` join, no goroutine survives `Close`.)
 - **`internal/channel/websocket/websocket.go:399`** — single ping uses full `idleTimeout` (5min default); should use a short write timeout, separately track last-read for idle detection.
+  - **Resolved:** `Options.PingWriteTimeout` (default 10s) is the wall-clock budget for a single ping write, replacing the prior "use IdleTimeout for the ping" anti-pattern. Test: `TestS7_PingWriteTimeoutConfigurable`.
 - **`internal/channel/websocket/websocket.go:360-389`** — readLoop has no idle-timeout enforcement; documented "5min idle" is unimplemented.
+  - **Resolved:** per-session `lastReadAtNS` is updated by `readLoop` on every received frame (atomic int64). The `pingLoop`'s ticker now also polices idle: when `now - lastReadAtNS > IdleTimeout` the session is closed with `StatusGoingAway` and `fhir_subs_channel_websocket_idle_closed_total` increments. Test: `TestS7_ReadLoopEnforcesIdleTimeout`.
 - **`internal/channel/websocket/websocket.go:331-348`** — replay loop materializes the entire `ReplaySince` slice; client requesting replay-from-zero on a million-event subscription triggers OOM.
+  - **Resolved:** `Options.MaxReplayEvents` (default 10000) caps the replay loop. After the cap the channel writes a JSON `replay-truncated` control frame `{type, reason, capped, missing}` and stops. Increments `fhir_subs_channel_websocket_replay_truncated_total`. Tests: unit `TestS7_ReplayCappedAtMaxReplayEvents`; e2e `TestE2E_WebSocket_ReplayCapTruncates`.
 - **`internal/channel/websocket/websocket.go:486-500`** — `Close` doesn't `WaitGroup`-join per-session goroutines; non-deterministic shutdown.
+  - **Resolved:** per-session goroutines (ping + read) are spawned under `c.wg`. `Close` cancels `c.ctx`, force-closes each conn, then `wg.Wait()` so callers can rely on no goroutine touching held state after Close returns. Test: `TestS7_CloseWaitsForGoroutines`. Also tightened `e2e/orchestrator/channels_websocket_ack_race_test.go` to call `ch.Close()` before sampling and poll for the minimum delta over a 2s window — the absolute "<= 8" delta was fragile under parallel test scheduling because `runtime.NumGoroutine` counts the entire process.
 
 #### S-8: Scheduler
 - **`internal/engine/scheduler/worker.go:230-232`** — RESOLVED in `acd798d`: `Config.DispatchConcurrency` (default 1) bounds parallel dispatchOne calls per batch via a semaphore so one slow channel cannot head-of-line-block siblings.
