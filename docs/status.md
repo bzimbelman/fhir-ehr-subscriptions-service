@@ -115,7 +115,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-8.3 | Permanent build errors retried | RESOLVED | RESOLVED ✓ | acd798d | isPermanentBuildError |
 | audit | S-8.4 | MaxAttempts not per-channel-type | RESOLVED | RESOLVED ✓ | acd798d | RetryConfig.PerChannel |
 | audit | S-8.5 | Jitter uncapped | RESOLVED | RESOLVED ✓ | acd798d | MaxJitter=0.5 |
-| audit | S-8.6 | Inline UPDATE SQL in worker | DEFERRED | DEFERRED ✓ | — | DeliveriesRepo refactor |
+| audit | S-8.6 | Inline UPDATE SQL in worker | RESOLVED | RESOLVED ✓ | story/51 | `DeliveriesRepo.{MarkDelivered, MarkPending, MarkDead}` |
 | audit | S-9.1 | MLLP read no per-message frame deadline | RESOLVED | RESOLVED ✓ | story/52 | `FrameAssemblyTimeout` (default 30s); `ErrFrameDeadline` + `MetricFrameDeadlineExceeded` |
 | audit | S-9.2 | persistCtx decoupled — PersistTimeout cap | RESOLVED | RESOLVED ✓ | story/52 | `Validate` rejects `PersistTimeout > ShutdownDrainGrace` |
 | audit | S-9.3 | isClosedConnErr substring-matches "closed" | RESOLVED | RESOLVED ✓ | acd798d | errors.Is(net.ErrClosed) |

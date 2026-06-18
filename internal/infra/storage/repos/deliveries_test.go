@@ -59,6 +59,85 @@ func TestDeliveriesInsert(t *testing.T) {
 	}
 }
 
+// TestDeliveriesMarkDelivered — S-8.6: scheduler ActionMarkDelivered seam.
+// Writes status='delivered', attempts, clears last_error, bumps updated_at.
+func TestDeliveriesMarkDelivered(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	id := uuid.New()
+	pool.ExpectExec(`UPDATE deliveries`).
+		WithArgs(id, int32(3)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	repo := repos.NewDeliveriesRepo()
+	if err := repo.MarkDelivered(ctx, pool, id, int32(3)); err != nil {
+		t.Fatalf("mark delivered: %v", err)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestDeliveriesMarkPending — S-8.6: scheduler ActionRescheduleTransient
+// seam. Writes status='pending' + attempts, next_attempt_at, last_error.
+func TestDeliveriesMarkPending(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	id := uuid.New()
+	nextAt := time.Now().UTC().Add(30 * time.Second)
+	pool.ExpectExec(`UPDATE deliveries`).
+		WithArgs(id, int32(2), nextAt, "5xx").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	repo := repos.NewDeliveriesRepo()
+	if err := repo.MarkPending(ctx, pool, id, int32(2), nextAt, "5xx"); err != nil {
+		t.Fatalf("mark pending: %v", err)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestDeliveriesMarkDead — S-8.6: scheduler ActionDeadLetter seam. Writes
+// status='dead' + attempts + last_error.
+func TestDeliveriesMarkDead(t *testing.T) {
+	t.Parallel()
+
+	pool, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+
+	id := uuid.New()
+	pool.ExpectExec(`UPDATE deliveries`).
+		WithArgs(id, int32(8), "max_attempts_exhausted").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	repo := repos.NewDeliveriesRepo()
+	if err := repo.MarkDead(ctx, pool, id, int32(8), "max_attempts_exhausted"); err != nil {
+		t.Fatalf("mark dead: %v", err)
+	}
+	if err := pool.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
 func TestDeliveriesClaimPending(t *testing.T) {
 	t.Parallel()
 

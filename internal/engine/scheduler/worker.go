@@ -492,12 +492,7 @@ func (w *Worker) applyDecision(
 
 	switch decision.Action {
 	case ActionMarkDelivered:
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'delivered', attempts = $2, last_error = NULL, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts,
-		); err != nil {
+		if err := w.dlv.MarkDelivered(ctx, tx, row.ID, postAttempts); err != nil {
 			return fmt.Errorf("mark delivered: %w", err)
 		}
 		// Advance the subscription cursor to the per-subscription
@@ -516,23 +511,12 @@ func (w *Worker) applyDecision(
 
 	case ActionRescheduleTransient:
 		nextAt := w.clock().Add(ComputeBackoff(w.cfg.Retry, postAttempts-1, outcome.RetryAfter, w.rng))
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'pending', attempts = $2, next_attempt_at = $3,
-			        last_error = $4, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts, nextAt, decision.Reason,
-		); err != nil {
+		if err := w.dlv.MarkPending(ctx, tx, row.ID, postAttempts, nextAt, decision.Reason); err != nil {
 			return fmt.Errorf("reschedule: %w", err)
 		}
 
 	case ActionDeadLetter:
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'dead', attempts = $2, last_error = $3, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts, decision.Reason,
-		); err != nil {
+		if err := w.dlv.MarkDead(ctx, tx, row.ID, postAttempts, decision.Reason); err != nil {
 			return fmt.Errorf("mark dead: %w", err)
 		}
 		subID := sub.ID
@@ -581,23 +565,12 @@ func (w *Worker) requeueAsTransient(ctx context.Context, row *repos.DeliveryRow,
 	switch decision.Action {
 	case ActionRescheduleTransient:
 		nextAt := w.clock().Add(ComputeBackoff(w.cfg.Retry, postAttempts-1, 0, w.rng))
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'pending', attempts = $2, next_attempt_at = $3,
-			        last_error = $4, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts, nextAt, reason,
-		); err != nil {
+		if err := w.dlv.MarkPending(ctx, tx, row.ID, postAttempts, nextAt, reason); err != nil {
 			w.logger.ErrorContext(ctx, "scheduler: requeue update failed", slog.Any("err", err))
 			return
 		}
 	case ActionDeadLetter:
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'dead', attempts = $2, last_error = $3, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts, decision.Reason,
-		); err != nil {
+		if err := w.dlv.MarkDead(ctx, tx, row.ID, postAttempts, decision.Reason); err != nil {
 			w.logger.ErrorContext(ctx, "scheduler: deadletter update failed", slog.Any("err", err))
 			return
 		}
@@ -659,13 +632,7 @@ func (w *Worker) applyBailoutDecision(ctx context.Context, row *repos.DeliveryRo
 	switch decision.Action {
 	case ActionRescheduleTransient:
 		nextAt := w.clock().Add(ComputeBackoff(w.cfg.Retry, postAttempts-1, 0, w.rng))
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'pending', attempts = $2, next_attempt_at = $3,
-			        last_error = $4, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts, nextAt, decision.Reason,
-		); err != nil {
+		if err := w.dlv.MarkPending(ctx, tx, row.ID, postAttempts, nextAt, decision.Reason); err != nil {
 			w.logger.ErrorContext(ctx, "scheduler: requeue update failed", slog.Any("err", err))
 			return
 		}
@@ -674,12 +641,7 @@ func (w *Worker) applyBailoutDecision(ctx context.Context, row *repos.DeliveryRo
 		if reason == "" {
 			reason = fallbackReason
 		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE deliveries
-			    SET status = 'dead', attempts = $2, last_error = $3, updated_at = now()
-			  WHERE id = $1`,
-			row.ID, postAttempts, reason,
-		); err != nil {
+		if err := w.dlv.MarkDead(ctx, tx, row.ID, postAttempts, reason); err != nil {
 			w.logger.ErrorContext(ctx, "scheduler: deadletter update failed", slog.Any("err", err))
 			return
 		}
