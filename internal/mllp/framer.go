@@ -13,11 +13,19 @@ const (
 // MalformedReason categorizes why the framer rejected a stream of bytes.
 type MalformedReason string
 
-// MalformedReason values reported by the framer. Names match the LLD's
+// MalformedReason values reported by the framer. Names match the LLD's §4
 // MalformedReason enum and are used as label values on the malformed metric.
 const (
 	ReasonOversizedMessage            MalformedReason = "oversized_message"
 	ReasonUnexpectedStartByteMidFrame MalformedReason = "unexpected_start_byte_mid_frame"
+	// ReasonEndBeforeStart fires when 0x1C 0x0D appears in the byte
+	// stream before any 0x0B has been seen. Per LLD §4 this is a peer
+	// software bug; the connection task drops the connection.
+	ReasonEndBeforeStart MalformedReason = "end_before_start"
+	// ReasonStartWithoutEnd is the framer's terminal classification when
+	// Finalize is called while a frame body is in flight (i.e. peer
+	// disconnected after 0x0B and before 0x1C 0x0D).
+	ReasonStartWithoutEnd MalformedReason = "start_without_end"
 )
 
 // FramerEvent is the discriminated union returned by Framer.Next.
@@ -111,15 +119,22 @@ func (f *Framer) Next() FramerEvent {
 	for {
 		switch f.state {
 		case stateClosed:
-			// Find 0x0B; bytes before it are noise (per LLD section 5.4).
-			idx := indexOf(f.pending, frameStart)
-			if idx < 0 {
+			// Find 0x0B; bytes before it are noise (per LLD section 5.4),
+			// EXCEPT a 0x1C 0x0D pair before the first 0x0B is per LLD §4
+			// EndBeforeStart — a peer software bug that triggers a drop.
+			startIdx := indexOf(f.pending, frameStart)
+			endBeforeStart := scanEndPair(f.pending, startIdx)
+			if endBeforeStart {
+				f.pending = f.pending[:0]
+				return MalformedEvent{Reason: ReasonEndBeforeStart}
+			}
+			if startIdx < 0 {
 				// All pending bytes are noise; discard them and ask for more.
 				f.pending = f.pending[:0]
 				return NeedMoreEvent{}
 			}
 			// Drop noise + the start byte itself; transition to Open.
-			f.pending = f.pending[idx+1:]
+			f.pending = f.pending[startIdx+1:]
 			f.state = stateOpen
 			f.buf = f.buf[:0]
 			// Fall through to process any bytes already in pending.
@@ -202,4 +217,39 @@ func indexOf(b []byte, c byte) int {
 		}
 	}
 	return -1
+}
+
+// scanEndPair reports whether b contains the 0x1C 0x0D end-byte pair at
+// any position before startIdx (the first 0x0B). startIdx == -1 means
+// no 0x0B was found, so the entire buffer is "before" the start.
+func scanEndPair(b []byte, startIdx int) bool {
+	limit := startIdx
+	if limit < 0 {
+		limit = len(b)
+	}
+	for i := 0; i+1 < limit; i++ {
+		if b[i] == frameEnd1 && b[i+1] == frameEnd2 {
+			return true
+		}
+	}
+	return false
+}
+
+// Finalize is the framer's terminal classification surface. The caller
+// invokes it once on peer disconnect (or any other read-loop exit) so the
+// framer can report whether an in-flight frame was abandoned. Returns:
+//
+//   - NeedMoreEvent{}   — framer is closed; nothing to clean up.
+//   - MalformedEvent{Reason: ReasonStartWithoutEnd} — body in flight, no
+//     end bytes; peer disconnected mid-frame.
+//
+// Subsequent calls return NeedMore (Finalize is idempotent).
+func (f *Framer) Finalize() FramerEvent {
+	if f.state == stateOpen || len(f.buf) > 0 {
+		f.state = stateClosed
+		f.buf = f.buf[:0]
+		f.pending = f.pending[:0]
+		return MalformedEvent{Reason: ReasonStartWithoutEnd}
+	}
+	return NeedMoreEvent{}
 }

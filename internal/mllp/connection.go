@@ -158,9 +158,15 @@ func HandleConnectionWithLogger(
 		case r := <-readCh:
 			if r.err != nil {
 				if errors.Is(r.err, io.EOF) || isClosedConnErr(r.err) {
-					if framer.hasOpenFrame() {
+					if final, ok := framer.Finalize().(MalformedEvent); ok {
 						metrics.Inc(MetricDisconnectMidFrame, endpointLabels)
-						clog.emit(logLevelWarn, "disconnect_mid_frame", nil)
+						metrics.Inc(MetricMalformedTotal, map[string]string{
+							"listener_endpoint": ep.Name,
+							"reason":            string(final.Reason),
+						})
+						clog.emit(logLevelWarn, "disconnect_mid_frame", map[string]any{
+							"reason": string(final.Reason),
+						})
 					}
 					return
 				}
@@ -477,8 +483,3 @@ func isClosedConnErr(err error) bool {
 	return strings.Contains(err.Error(), "closed")
 }
 
-// hasOpenFrame is exposed on Framer for the connection task's
-// disconnect-mid-frame metric. Defined here as a small accessor.
-func (f *Framer) hasOpenFrame() bool {
-	return f.state == stateOpen || len(f.buf) > 0
-}
