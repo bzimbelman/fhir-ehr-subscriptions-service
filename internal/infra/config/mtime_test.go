@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,22 +19,47 @@ import (
 // resolved ${file:...} placeholder and trigger a reload when the file
 // changes. Without this, secret rotation by Vault Agent / cert-manager
 // is unreachable when the orchestrator does not signal SIGHUP.
+//
+// We boot off the canonical architecture_example.yaml fixture (the same
+// one TestIntegrationLoadsArchitectureExampleYAML uses) but rewrite a
+// single placeholder to ${file:...} so the watcher has at least one
+// path to poll.
 func TestWatchSecretFiles_TriggersReloadOnMtimeChange(t *testing.T) {
 	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "secret.txt")
-	if err := os.WriteFile(secretPath, []byte("first-value"), 0o600); err != nil {
+	secretPath := filepath.Join(dir, "encryption-key.txt")
+	if err := os.WriteFile(secretPath, []byte("01234567890abcdef01234567890abcdef"), 0o600); err != nil {
 		t.Fatalf("seed secret: %v", err)
 	}
-	cfgYAML := `deployment:
-  facility_id: testbench
-  log_level: info
-storage:
-  postgres:
-    encryption_key: ${file:` + secretPath + `}
-`
+
+	src, readErr := os.ReadFile("testdata/architecture_example.yaml")
+	if readErr != nil {
+		t.Fatalf("read fixture: %v", readErr)
+	}
+	rewritten := strings.Replace(
+		string(src),
+		"at_rest_key: \"${env:STORAGE_ENCRYPTION_KEY}\"",
+		"at_rest_key: \"${file:"+secretPath+"}\"",
+		1,
+	)
+	if !strings.Contains(rewritten, "${file:"+secretPath+"}") {
+		t.Fatalf("rewrite did not land in fixture")
+	}
 	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(rewritten), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+
+	for k, v := range map[string]string{
+		"DATABASE_URL":                "postgres://example.org/db",
+		"EPIC_CLIENT_ID":              "epic-client-id-x",
+		"EPIC_INTERCONNECT_KEY":       "epic-interconnect-key-x",
+		"SMTP_USERNAME":               "smtp-user",
+		"SMTP_PASSWORD":               "smtp-pass",
+		"KAFKA_USER":                  "kafka-user",
+		"KAFKA_PASSWORD":              "kafka-pass",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example/v1/traces",
+	} {
+		t.Setenv(k, v)
 	}
 
 	mod, _, err := config.Start(context.Background(), config.CliArgs{
@@ -55,14 +81,13 @@ storage:
 	defer cancel()
 	mod.WatchSecretFiles(ctx, 50*time.Millisecond)
 
-	// Mutate the secret on disk. mtime must move forward — sleep a tick
-	// past the filesystem timestamp granularity.
+	// Mutate the secret on disk. Bump mtime explicitly to be robust
+	// against fast-clock filesystems where consecutive WriteFile calls
+	// can land on the same nanosecond.
 	time.Sleep(20 * time.Millisecond)
-	if err := os.WriteFile(secretPath, []byte("second-value"), 0o600); err != nil {
+	if err := os.WriteFile(secretPath, []byte("ffffffffffffffffffffffffffffffff"), 0o600); err != nil {
 		t.Fatalf("rotate secret: %v", err)
 	}
-	// On HFS/APFS, mtime granularity is ~1ns but Linux can be 1s; bump
-	// it explicitly to make the test robust on both.
 	future := time.Now().Add(time.Second)
 	if err := os.Chtimes(secretPath, future, future); err != nil {
 		t.Fatalf("chtimes: %v", err)
