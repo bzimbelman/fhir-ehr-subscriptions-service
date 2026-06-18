@@ -3,6 +3,7 @@ module github.com/fhir-subscriptions-foss/fhir-subs
 go 1.25.0
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pashagolub/pgxmock/v3 v3.4.0
 )
