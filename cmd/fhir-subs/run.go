@@ -140,6 +140,15 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	}()
 
 	logger.Info("http server listening", "addr", addr, "insecure", cfg.Server.HTTP.Insecure)
+	// S-1.8: warn when the listener binds the wildcard interface AND TLS
+	// is off. Both defaults today (`0.0.0.0:8443`, `insecure=true` for
+	// dev/test) trip this; production clusters should set
+	// server.http.bind explicitly to the loopback interface or disable
+	// `insecure`.
+	if isWildcardBind(cfg.Server.HTTP.Bind) && cfg.Server.HTTP.Insecure {
+		logger.Warn("wildcard bind in insecure mode; restrict server.http.bind or set server.http.insecure=false in production",
+			"bind", cfg.Server.HTTP.Bind)
+	}
 	if hooks.onListening != nil {
 		hooks.onListening(addr)
 	}
@@ -235,6 +244,19 @@ func buildHTTPMux(lcMod *lifecycle.LifecycleModule) http.Handler {
 	mux.Handle("/startup", probes.Startup)
 	mux.HandleFunc("/metadata", makeMetadata())
 	return mux
+}
+
+// isWildcardBind reports whether bind targets every interface
+// (`0.0.0.0:port` or `:port`).
+func isWildcardBind(bind string) bool {
+	if bind == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(bind)
+	if err != nil {
+		return false
+	}
+	return host == "" || host == "0.0.0.0" || host == "::"
 }
 
 func slogLevel(level string) slog.Level {
