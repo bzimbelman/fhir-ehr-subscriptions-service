@@ -1,0 +1,142 @@
+site_name: fhir-ehr-subscriptions-service
+site_description: A FHIR Subscriptions <-> EHR bridge. Free and open source.
+site_url: https://bzimbelman.github.io/fhir-ehr-subscriptions-service/
+repo_url: https://github.com/bzimbelman/fhir-ehr-subscriptions-service
+repo_name: bzimbelman/fhir-ehr-subscriptions-service
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - content.action.view
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+  - pymdownx.caret
+  - pymdownx.keys
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Concept: high-level-concept.md
+  - Architecture: architecture.md
+  - Status: status.md
+  - High-Level Design:
+      - Overview: high-level-design/README.md
+      - Domain Overview: high-level-design/overview.md
+      - Domains:
+          - Subscriptions API: high-level-design/domains/subscriptions-api.md
+          - Subscriptions Engine: high-level-design/domains/subscriptions-engine.md
+          - Topic Matcher: high-level-design/domains/topic-matcher.md
+          - Topics: high-level-design/domains/topics.md
+          - Channels: high-level-design/domains/channels.md
+          - MLLP Listener: high-level-design/domains/mllp-listener.md
+          - EHR Adapter: high-level-design/domains/ehr-adapter.md
+          - Storage: high-level-design/domains/storage.md
+          - Lifecycle: high-level-design/domains/lifecycle.md
+          - Configuration: high-level-design/domains/configuration.md
+          - Observability: high-level-design/domains/observability.md
+      - Contracts:
+          - Adapter SPI: high-level-design/contracts/adapter-spi.md
+          - Channel SPI: high-level-design/contracts/channel-spi.md
+          - Internal Tables: high-level-design/contracts/internal-tables.md
+          - Notification Bundle: high-level-design/contracts/notification-bundle.md
+          - Subscriber API: high-level-design/contracts/subscriber-api.md
+      - Decisions (ADRs):
+          - Index: high-level-design/decisions/index.md
+          - 0001 — Postgres only: high-level-design/decisions/0001-postgres-only.md
+          - 0002 — Single instance, no leader election: high-level-design/decisions/0002-single-instance-no-leader-election.md
+          - 0003 — MLLP listener vendor-neutral: high-level-design/decisions/0003-mllp-listener-vendor-neutral.md
+          - 0004 — FHIR version strategy: high-level-design/decisions/0004-fhir-version-strategy.md
+          - 0005 — Cancel-and-replace in adapter: high-level-design/decisions/0005-cancel-and-replace-in-adapter.md
+          - 0006 — No CQL, no regex: high-level-design/decisions/0006-no-cql-no-regex.md
+          - 0007 — Spec-bounded scope: high-level-design/decisions/0007-spec-bounded-scope.md
+          - 0008 — Resolved design questions: high-level-design/decisions/0008-resolved-design-questions.md
+          - 0009 — Language choice: high-level-design/decisions/0009-language-choice.md
+          - 0010 — Implementation defaults: high-level-design/decisions/0010-implementation-defaults.md
+          - 0011 — Message channel determinism: high-level-design/decisions/0011-message-channel-determinism.md
+  - Low-Level Design:
+      - Overview: low-level-design/README.md
+      - Subscriptions API: low-level-design/subscriptions-api.md
+      - Subscriptions Engine: low-level-design/subscriptions-engine.md
+      - Topic Matcher: low-level-design/topic-matcher.md
+      - Topics: low-level-design/topics.md
+      - Channels: low-level-design/channels.md
+      - MLLP Listener: low-level-design/mllp-listener.md
+      - HL7 Message Processor: low-level-design/hl7-message-processor.md
+      - FHIR Scan Runner: low-level-design/fhir-scan-runner.md
+      - Vendor API and Hydration: low-level-design/vendor-api-and-hydration.md
+      - Adapter SPI Framework: low-level-design/adapter-spi-framework.md
+      - Storage: low-level-design/storage.md
+      - Lifecycle: low-level-design/lifecycle.md
+      - Configuration: low-level-design/configuration.md
+      - Observability: low-level-design/observability.md
+      - E2E Harness: low-level-design/e2e-harness.md
+  - Operations:
+      - Operating Procedure: operating-procedure.md
+      - Dead-letters Runbook: operations/dead-letters-runbook.md
+      - Horizontal Scale: operations/horizontal-scale.md
+      - OTel Exporter Recipes: operations/otel-exporter-recipes.md
+      - Production Readiness Audit: production-readiness-audit.md
+  - Project:
+      - Repository Layout: repository-layout.md
+      - Demo Walkthrough: subscription-sidecar-demo.md
+      - Presentation: presentation.md
+      - Future Work: future-work.md
