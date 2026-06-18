@@ -5,25 +5,25 @@ package hl7processor
 
 // Metric names emitted by the processor. Wire form per LLD §8.
 const (
-	MetricMessagesProcessed     = "fhir_subs_hl7processor_messages_processed"
-	MetricProcessingDuration    = "fhir_subs_hl7processor_processing_duration"
-	MetricDeadLetteredTotal     = "fhir_subs_hl7processor_dead_lettered_total"
-	MetricPairsHeld             = "fhir_subs_hl7processor_pairs_held"
-	MetricPairsResolved         = "fhir_subs_hl7processor_pairs_resolved"
-	MetricPairsExpired          = "fhir_subs_hl7processor_pairs_expired"
-	MetricResourceChangesTotal  = "fhir_subs_hl7processor_resource_changes_total"
-	MetricDeadLettersTotal      = "fhir_subs_hl7processor_dead_letters_total"
-	MetricCancelReplacePending  = "fhir_subs_hl7processor_cancel_replace_pending"
-	MetricStageDurationSeconds  = "fhir_subs_hl7processor_stage_duration_seconds"
+	MetricMessagesProcessed    = "fhir_subs_hl7processor_messages_processed"
+	MetricProcessingDuration   = "fhir_subs_hl7processor_processing_duration"
+	MetricDeadLetteredTotal    = "fhir_subs_hl7processor_dead_lettered_total"
+	MetricPairsHeld            = "fhir_subs_hl7processor_pairs_held"
+	MetricPairsResolved        = "fhir_subs_hl7processor_pairs_resolved"
+	MetricPairsExpired         = "fhir_subs_hl7processor_pairs_expired"
+	MetricResourceChangesTotal = "fhir_subs_hl7processor_resource_changes_total"
+	MetricDeadLettersTotal     = "fhir_subs_hl7processor_dead_letters_total"
+	MetricCancelReplacePending = "fhir_subs_hl7processor_cancel_replace_pending"
+	MetricStageDurationSeconds = "fhir_subs_hl7processor_stage_duration_seconds"
 )
 
 // Outcome label values for [MetricMessagesProcessed].
 const (
-	OutcomeEmitted     = "emitted"
-	OutcomeHeld        = "held"
-	OutcomeResolved    = "resolved"
-	OutcomeRolledBack  = "rolled_back"
-	OutcomeDeadLetter  = "dead_letter"
+	OutcomeEmitted    = "emitted"
+	OutcomeHeld       = "held"
+	OutcomeResolved   = "resolved"
+	OutcomeRolledBack = "rolled_back"
+	OutcomeDeadLetter = "dead_letter"
 )
 
 // MetricsEmitter is the metrics seam between the processor and the host's

@@ -194,7 +194,7 @@ func TestErrorClass_StringRoundTrip(t *testing.T) {
 	}
 }
 
-// TestHeldPair_RoundTrip: the heldPair struct carries everything needed
+// TestHeldPair_RoundTrip: the heldPair struct carries every field needed
 // to re-create the resource_changes row on partner arrival or expiry.
 func TestHeldPair_RoundTrip(t *testing.T) {
 	t.Parallel()
@@ -211,6 +211,21 @@ func TestHeldPair_RoundTrip(t *testing.T) {
 		CreatedAt:        now,
 		ResourceType:     "ServiceRequest",
 		CorrelationID:    corr,
+	}
+	if hp.CorrelationKey != "k" {
+		t.Fatal("CorrelationKey")
+	}
+	if hp.ListenerEndpoint != "adt" {
+		t.Fatal("ListenerEndpoint")
+	}
+	if hp.PendingKind != spi.ChangeDelete {
+		t.Fatal("PendingKind")
+	}
+	if !hp.ExpiresAt.After(hp.CreatedAt) {
+		t.Fatal("ExpiresAt should be after CreatedAt")
+	}
+	if hp.ResourceType != "ServiceRequest" {
+		t.Fatal("ResourceType")
 	}
 	if hp.SourceMessageID != src || hp.CorrelationID != corr {
 		t.Fatal("heldPair did not retain ids")

@@ -30,11 +30,11 @@ type ErrorClass string
 
 // ErrorClass values per LLD §3.
 const (
-	ErrorClassParse       ErrorClass = "parse"
-	ErrorClassClassify    ErrorClass = "classify"
-	ErrorClassMap         ErrorClass = "map"
-	ErrorClassValidation  ErrorClass = "validation"
-	ErrorClassUnexpected  ErrorClass = "unexpected"
+	ErrorClassParse      ErrorClass = "parse"
+	ErrorClassClassify   ErrorClass = "classify"
+	ErrorClassMap        ErrorClass = "map"
+	ErrorClassValidation ErrorClass = "validation"
+	ErrorClassUnexpected ErrorClass = "unexpected"
 )
 
 // String returns the wire form used in metric labels and structured logs.
@@ -69,10 +69,6 @@ type processingOutcome struct {
 	// already held in pending_pairs; both source rows mark processed, the
 	// pending row deletes, one merged update goes to resource_changes.
 	resolved resolvedPair
-
-	// DeadLetter: a terminal translation failure; dead_letters gets a row
-	// and the source row marks processed so the queue moves on.
-	dl deadLetterOutcome
 }
 
 // heldPair is the in-process shape of a pending_pairs row to be inserted.
@@ -96,12 +92,6 @@ type resolvedPair struct {
 	PartnerSourceID       uuid.UUID
 	ClearCorrelationKey   string
 	ClearListenerEndpoint string
-}
-
-// deadLetterOutcome bundles the reason and class for the dead-letter row.
-type deadLetterOutcome struct {
-	Reason     string
-	ErrorClass ErrorClass
 }
 
 // translateError tags an error with the [ErrorClass] that should drive

@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fhir-subscriptions-foss/fhir-subs/internal/adapter/spi"
 	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/codec"
 	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestConfigValidate_RequiresAdapterID: empty AdapterID is rejected.

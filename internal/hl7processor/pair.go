@@ -40,6 +40,7 @@ func buildPlainChange(c classifyExt, resource spi.FhirResource, correlationID uu
 // Held kind plus arriving kind:
 //   - (Delete, Create) — held cancellation, arriving replacement.
 //   - (Create, Delete) — held replacement, arriving cancellation.
+//
 // Both produce change_kind=update with cancellation as previous_resource
 // and replacement as resource.
 //
