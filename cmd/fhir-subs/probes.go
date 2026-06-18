@@ -34,10 +34,12 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// makeMetadata returns a stub OperationOutcome saying the service is starting.
-// The real CapabilityStatement is owned by api/http-fhir; this stub satisfies
-// the e2e harness's "GET /metadata returns FHIR-shaped JSON" assertion until
-// that module ships.
+// makeMetadata is the bare-server fallback for `GET /metadata` used
+// only in probe-only mode (no DB configured). The real
+// CapabilityStatement is built by internal/api/handlers
+// (server.buildCapabilityStatement) and mounted by
+// handlers.RegisterRoutes / RegisterPublicRoutes once the DB pool, auth
+// verifier, channel registry, and topic catalog are wired (P1.7).
 func makeMetadata() http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{

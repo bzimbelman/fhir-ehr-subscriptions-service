@@ -161,6 +161,24 @@ type Deps struct {
 	// permitted; activate calls then drop the error silently — that's
 	// the legacy behavior, kept for backwards-compat.
 	Logger *slog.Logger
+
+	// TokenEndpointURL, when non-empty, is rendered into the
+	// CapabilityStatement's SMART-on-FHIR security extension (P1.7).
+	// Empty means the SMART extension lists only the security service
+	// without absolute URLs.
+	TokenEndpointURL string
+
+	// JWKSURL is the absolute URL of the server's JWKS document. Wiring
+	// usually sets this to {BaseURL}/jwks.json. Rendered into the
+	// CapabilityStatement (P1.7).
+	JWKSURL string
+
+	// SupportedFHIRVersions lists every FHIR version the server can
+	// negotiate via the Accept header. Defaults to [DefaultFHIRVersion].
+	// Rendered into a versionshim extension on the CapabilityStatement
+	// so subscribers can discover the negotiable set without speaking
+	// the wire (P1.7).
+	SupportedFHIRVersions []string
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
