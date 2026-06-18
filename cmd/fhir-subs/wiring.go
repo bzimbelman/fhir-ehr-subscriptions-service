@@ -414,7 +414,18 @@ func (r *productionRuntime) shutdown(ctx context.Context) {
 		_ = r.mllpListen.Shutdown(ctx)
 	}
 	if r.pool != nil {
-		r.pool.Close()
+		// Close the pool in a bounded goroutine so a stuck dial inside
+		// pgxpool can't pin the failure path. The pool's own Close will
+		// continue in the background; the process is exiting anyway.
+		closed := make(chan struct{})
+		go func() {
+			r.pool.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-time.After(3 * time.Second):
+		}
 	}
 }
 
