@@ -146,22 +146,38 @@ func TestSemVerCompatible(t *testing.T) {
 
 func TestVersionSpecSatisfies(t *testing.T) {
 	t.Parallel()
-	// Minimal contract: a VersionSpec can be tested with a pin string and reports satisfaction.
-	// The reference implementation supports: ">=X.Y", "X.Y" exact, "*" any.
+	// Per LLD section 4 (adapter-spi-framework.md): VersionPinUnsatisfiable
+	// when the operator's version_pin asks for support the adapter does not
+	// declare. Receiver = manifest.supported_ehr_versions; argument = the
+	// operator's adapter.version_pin from config.
+	//
+	// Relation: spec ">=A.B" satisfies pin ">=X.Y" iff A.B <= X.Y. The
+	// adapter must cover at least every version the pin covers; an adapter
+	// with a stricter (higher) lower bound is too restrictive. Per the LLD
+	// example: operator pins ">=2024.1" but adapter declares ">=2025.1" =>
+	// unsatisfied.
 	spec := spi.VersionSpec(">=2024.1")
 	cases := []struct {
 		pin string
 		ok  bool
 	}{
-		{">=2024.1", true},
-		{">=2023.0", true},
-		{">=2024.2", false},
-		{"*", true},
+		{">=2024.1", true},  // pin equals spec
+		{">=2025.0", true},  // pin newer-only; spec covers it
+		{">=2023.0", false}, // pin reaches further back than spec covers
+		{"*", true},         // pin wildcard treated as no demand
 	}
 	for _, tc := range cases {
 		got := spec.Satisfies(tc.pin)
 		if got != tc.ok {
 			t.Errorf("VersionSpec(%q).Satisfies(%q) = %v, want %v", spec, tc.pin, got, tc.ok)
+		}
+	}
+
+	// "*" spec satisfies any pin.
+	any := spi.VersionSpec("*")
+	for _, pin := range []string{"*", ">=2024.1", "2024.1"} {
+		if !any.Satisfies(pin) {
+			t.Errorf("VersionSpec(\"*\").Satisfies(%q) = false, want true", pin)
 		}
 	}
 }
