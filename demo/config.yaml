@@ -1,0 +1,54 @@
+# demo/config.yaml
+#
+# Demo-only fhir-subs config consumed by demo/docker-compose.yml.
+#
+# This file is NOT a production template. It runs the bridge in plaintext
+# HTTP, with a pinned in-tree AES-GCM codec key, and with auth disabled
+# (no audience configured -> no verifier mounted -> no-op auth middleware
+# per cmd/fhir-subs/wiring.go:201-208). Demo gaps 1, 2, and 7 in
+# docs/subscription-sidecar-demo.md call out the auth/TLS shortcuts.
+
+deployment:
+  facility_id: demo-hospital
+  environment: demo
+  log_level: info
+  log_format: text
+
+adapter:
+  # Bundled passthrough adapter. A demo-flavoured HL7→FHIR adapter is
+  # tracked separately as Demo gap-8 (OpenProject #84).
+  id: default
+
+server:
+  http:
+    bind: "0.0.0.0:8443"
+    insecure: true   # plaintext HTTP — demo only
+
+lifecycle:
+  shutdown_grace_period: "10s"
+
+database:
+  # The hostname `postgres` resolves to the postgres compose service.
+  # sslmode=disable because the demo Postgres has no TLS configured.
+  url: "postgres://fhirsubs:fhirsubs@postgres:5432/fhirsubs?sslmode=disable"
+
+codec:
+  # AES-GCM at-rest encryption for sensitive columns. The key below is a
+  # demo-only 32-byte secret (base64). Rotating it for production is a
+  # day-one operator task — see docs/low-level-design/storage.md.
+  active_key_version: 1
+  keys:
+    - version: 1
+      material: "bocf8udvaKT84Mk5/fLU1NHoy4wf/OWbp2t7gpUm/as="
+
+mllp:
+  listeners:
+    - name: demo-feed
+      bind: "0.0.0.0:2575"
+      tls: false
+
+topics:
+  # The compose file mounts ./topics (the SubscriptionTopic JSON seeded
+  # by Demo gap-6, OpenProject #83) into this path. New files are picked
+  # up on startup and on SIGHUP (B-35).
+  catalog_dir: "/etc/fhir-subs/topics"
