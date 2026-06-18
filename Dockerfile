@@ -1,7 +1,14 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- Build stage ----------------------------------------------------------
-FROM golang:1.22-alpine AS build
+# BUILDPLATFORM is the platform of the build host; TARGETOS / TARGETARCH are
+# the platform we are building for. Combined with `docker buildx build
+# --platform linux/amd64,linux/arm64`, this produces a multi-arch image with
+# one native-host build per arch (cross-compiled by the Go toolchain).
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
+
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN apk add --no-cache git ca-certificates
 
@@ -9,14 +16,15 @@ WORKDIR /src
 
 # Module graph first so layer caching is friendly to non-dep changes.
 COPY go.mod go.sum* ./
-RUN go mod download || true
+RUN go mod download
 
 # Source.
 COPY . .
 
-# Static, stripped, reproducible-ish build.
-ENV CGO_ENABLED=0 GOOS=linux
-RUN go build \
+# Static, stripped, reproducible-ish build. CGO_ENABLED=0 keeps the binary
+# distroless-static-compatible. GOOS/GOARCH come from the buildx target.
+ENV CGO_ENABLED=0
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -trimpath \
         -ldflags="-s -w" \
         -o /out/fhir-subs \

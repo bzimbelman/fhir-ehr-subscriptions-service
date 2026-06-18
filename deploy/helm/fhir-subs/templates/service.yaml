@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fhir-subs.fullname" . }}
+  labels:
+    {{- include "fhir-subs.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: api
+      port: {{ .Values.service.apiPort }}
+      targetPort: api
+      protocol: TCP
+    - name: probes
+      port: {{ .Values.service.probePort }}
+      targetPort: probes
+      protocol: TCP
+    - name: mllp
+      port: {{ .Values.service.mllpPort }}
+      targetPort: mllp
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+  selector:
+    {{- include "fhir-subs.selectorLabels" . | nindent 4 }}
