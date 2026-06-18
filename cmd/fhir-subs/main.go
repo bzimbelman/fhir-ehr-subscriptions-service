@@ -146,6 +146,12 @@ func realMain(args []string, stdout, stderr io.Writer) (rc int) {
 		testPanicProbe()
 	}
 
+	// Subcommand dispatch (P2.5). The server takes flags only; subcommands
+	// are detected by a first positional arg. Today: "audit verify".
+	if len(args) > 0 && args[0] == "audit" {
+		return runAuditSubcommand(args[1:], stdout, stderr)
+	}
+
 	opts, err := parseFlags(args, stderr)
 	switch {
 	case errors.Is(err, errHelpRequested):

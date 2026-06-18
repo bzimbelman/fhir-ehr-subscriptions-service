@@ -234,7 +234,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.2 | Vendor API Client framework worker | (no status) | OPEN ✗ | — | SPI exists; no worker |
 | future | P2.3 | Email channel S/MIME + Direct SMTP | (no status) | OPEN ✗ | — | v1 ships SMTP-only |
 | future | P2.4 | R4B/R5 wire negotiation completeness | (no status) | OPEN ✗ | — | partial Negotiate; no full Subscription R4B↔R5 conversion |
-| future | P2.5 | Audit chain verifier CLI | (no status) | OPEN ✗ | — | no `fhir-subs audit verify` subcommand |
+| future | P2.5 | Audit chain verifier CLI | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | `audit.VerifyChainReport` + `cmd/fhir-subs audit verify --from --to` subcommand |
 | future | P2.6 | Heartbeats and handshakes | (no status) | OPEN ✗ | — | scheduler doesn't emit heartbeats |
 | future | P2.7 | Auth re-check at delivery prep | (no status) | OPEN ✗ | — | submatcher has FanoutAuthRevoked decision but no AuthValidator.Recheck SPI |
 | future | P2.8 | OpenTelemetry trace export configuration | RESOLVED | RESOLVED ✓ | 9e7fa45 (S-14.9) + P2 batch recipe docs | configuration surface at `internal/infra/observability/tracing/tracing.go:54-65`; recipe docs at `docs/operations/otel-exporter-recipes.md` |

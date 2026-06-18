@@ -363,6 +363,125 @@ func VerifyChainWithGenesis(ctx context.Context, store Store, literal string) er
 	})
 }
 
+// VerifyResult is the structured outcome of VerifyChainReport. It carries
+// the row count seen, the head chain_hash (so operators can checkpoint
+// it out-of-band for tamper-evident export), and a list of breaks within
+// the requested time window. Empty Breaks means the chain verified.
+type VerifyResult struct {
+	// RowsSeen is the total rows iterated during verification (full
+	// chain walk, regardless of From/To window — the chain MUST be
+	// walked end-to-end because each row's hash depends on every
+	// preceding row).
+	RowsSeen int
+	// HeadHash is the chain_hash of the most recent row, hex-encoded
+	// for export. Empty when RowsSeen == 0.
+	HeadHash string
+	// Breaks are the per-row mismatches whose OccurredAt falls within
+	// [From, To]. The full-chain walk surfaces every break; the slice
+	// is filtered to the operator's window so a long-lived chain can
+	// be audited a slice at a time.
+	Breaks []VerifyBreak
+}
+
+// VerifyBreak describes a single chain mismatch.
+type VerifyBreak struct {
+	// RowIndex is the zero-based ordinal of the bad row in the full chain.
+	RowIndex int
+	// OccurredAt is the audit row's stored OccurredAt timestamp.
+	OccurredAt time.Time
+	// Kind is "prior_hash" or "chain_hash" depending on which check failed.
+	Kind string
+	// Message is a short operator-readable description of the break.
+	Message string
+}
+
+// VerifyOptions configures VerifyChainReport.
+type VerifyOptions struct {
+	// GenesisLiteral overrides the chain seed; empty uses the package default.
+	GenesisLiteral string
+	// From bounds the OccurredAt of breaks reported in Breaks; zero means
+	// no lower bound.
+	From time.Time
+	// To bounds the OccurredAt of breaks reported in Breaks; zero means
+	// no upper bound.
+	To time.Time
+}
+
+// VerifyChainReport walks the entire chain and returns a structured
+// verification result. Unlike VerifyChain (which returns the first error),
+// this surfaces every mismatch — useful for the operator-facing audit
+// CLI which wants to report a count, not just the first row that failed.
+//
+// If opts.From or opts.To is non-zero, breaks outside that window are
+// elided from the returned slice (but the chain is still walked to
+// completion, which is structurally required: each row's chain_hash
+// depends on every preceding row's chain_hash).
+func VerifyChainReport(ctx context.Context, store Store, opts VerifyOptions) (VerifyResult, error) {
+	prior := GenesisHashFromLiteral(opts.GenesisLiteral)
+	res := VerifyResult{}
+	idx := 0
+	err := store.IterateRows(ctx, func(row Row) error {
+		var breakKind, breakMsg string
+		if !bytes.Equal(row.PriorHash, prior) {
+			breakKind = "prior_hash"
+			breakMsg = "prior_hash does not match preceding row's chain_hash"
+		} else {
+			evt := Event{
+				OccurredAt:    row.OccurredAt,
+				ActorKind:     row.ActorKind,
+				ActorID:       row.ActorID,
+				Action:        row.Action,
+				TargetKind:    row.TargetKind,
+				TargetID:      row.TargetID,
+				Outcome:       row.Outcome,
+				CorrelationID: row.CorrelationID,
+				Payload:       row.Payload,
+			}
+			expected, err := canonicalChainInput(evt, prior)
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(expected)
+			if !bytes.Equal(sum[:], row.ChainHash) {
+				breakKind = "chain_hash"
+				breakMsg = "recomputed chain_hash does not match stored chain_hash"
+			}
+		}
+		if breakKind != "" && rowInWindow(row.OccurredAt, opts.From, opts.To) {
+			res.Breaks = append(res.Breaks, VerifyBreak{
+				RowIndex:   idx,
+				OccurredAt: row.OccurredAt,
+				Kind:       breakKind,
+				Message:    breakMsg,
+			})
+		}
+		// Even on a break, we keep walking so the head hash and total
+		// count are still useful for the report. We advance prior using
+		// the stored chain_hash (not the recomputed one) — a divergence
+		// means downstream rows were also written with the bad prior,
+		// so prior_hash checks below should re-anchor naturally.
+		prior = row.ChainHash
+		res.HeadHash = fmt.Sprintf("%x", row.ChainHash)
+		res.RowsSeen = idx + 1
+		idx++
+		return nil
+	})
+	if err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+func rowInWindow(ts, from, to time.Time) bool {
+	if !from.IsZero() && ts.Before(from) {
+		return false
+	}
+	if !to.IsZero() && ts.After(to) {
+		return false
+	}
+	return true
+}
+
 // stdoutSink writes one JSON event per line to os.Stdout.
 type stdoutSink struct {
 	mu sync.Mutex

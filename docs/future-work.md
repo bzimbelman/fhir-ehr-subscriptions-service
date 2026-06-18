@@ -262,19 +262,23 @@ These items are not strictly required to deploy, but they materially limit the s
 
 **Why this is P2:** today the system only fully serves R5-native subscribers. R4B subscribers can negotiate to R4B but the response shape is the R5-native form — not the spec's R4B Backport IG form. This breaks conformance for R4B clients.
 
-### 2.5 Audit chain verifier CLI
+### 2.5 Audit chain verifier CLI — RESOLVED
 
-**Source:** [docs/low-level-design/observability.md](low-level-design/observability.md) §"Audit log"; e2e scenario `TestScenario_AuditChainIsValid` (skipped)
+**Source:** [docs/low-level-design/observability.md](low-level-design/observability.md) §"Audit log"
 
-**Status:** Audit log writes to Postgres `audit_log` with hash-chained JCS-canonicalized rows. No tool to verify the chain integrity post-hoc.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch). The `fhir-subs` binary now dispatches a top-level `audit` subcommand. `fhir-subs audit verify [--config PATH] [--from RFC3339] [--to RFC3339]` walks the audit_log chain end-to-end, recomputes each row's chain_hash from the JCS-canonicalized event bytes, and reports per-row mismatches. The audit package gains `VerifyChainReport(ctx, store, opts) (VerifyResult, error)` — a structured walker that returns `RowsSeen`, `HeadHash` (hex of the most recent chain_hash, suitable for out-of-band export as a chain checkpoint), and a `Breaks` slice filtered to the optional `--from`/`--to` window. The exit code is 0 on a clean chain, 1 on any reported break, 2 on flag-parsing problems.
 
-**What's missing:**
+**What landed:**
 
-- `fhir-subs audit verify [--from <ts>] [--to <ts>]` subcommand that walks the chain and reports any break
-- Per-row JCS re-canonicalization to confirm the stored hash matches
-- Optional: out-of-band signature on the chain head for tamper-evident export
+- `audit.VerifyChainReport` and `audit.VerifyResult` / `audit.VerifyBreak` / `audit.VerifyOptions` in `internal/infra/observability/audit/audit.go`
+- `cmd/fhir-subs/audit_cli.go` with the `audit verify` flag set
+- `cmd/fhir-subs/main.go::realMain` first-arg subcommand dispatch
+- Unit tests for the walker (clean chain, chain_hash mutation, time-window break filtering)
+- Unit tests for the CLI flag parser (RFC3339 parsing, inverted-window rejection, --help, unknown-verb routing)
 
-**Why this is P2:** a hash-chained audit log without a verifier is a bookkeeping exercise. Auditors need a way to prove the chain is intact.
+**Notes:**
+
+- An out-of-band signature on the chain head is not implemented in this MVP. The verifier exposes the chain head as a hex string in `VerifyResult.HeadHash`; a follow-up can wrap that into a signed tamper-evident export tooling.
 
 ### 2.6 Heartbeats and handshakes
 
