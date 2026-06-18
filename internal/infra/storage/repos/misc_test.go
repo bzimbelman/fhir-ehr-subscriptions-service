@@ -309,6 +309,137 @@ func TestWsBindingTokensInsertAndDelete(t *testing.T) {
 	}
 }
 
+// TestWsBindingTokensConsume drives the four documented Consume outcomes
+// against pgxmock. The TOCTOU fix in 0002_ws_binding_tokens_consumed.sql
+// rides on the SQL — a unit-level assertion that each branch maps to the
+// right ConsumeOutcome value (without requiring Docker) keeps the
+// invariant covered on every CI run.
+func TestWsBindingTokensConsume(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	repo := repos.NewWsBindingTokensRepo()
+
+	t.Run("ok", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+
+		subID := uuid.New()
+		pool.ExpectQuery("UPDATE ws_binding_tokens").
+			WithArgs("tok-ok", now).
+			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}).
+				AddRow(subID, "client-a"))
+
+		got, err := repo.Consume(context.Background(), pool, "tok-ok", now)
+		if err != nil {
+			t.Fatalf("consume: %v", err)
+		}
+		if got.Outcome != repos.ConsumeOK {
+			t.Errorf("outcome = %v, want ConsumeOK", got.Outcome)
+		}
+		if got.SubscriptionID != subID {
+			t.Errorf("subID = %v, want %v", got.SubscriptionID, subID)
+		}
+		if got.ClientID != "client-a" {
+			t.Errorf("clientID = %q", got.ClientID)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+
+		// UPDATE returns 0 rows -> pgx.ErrNoRows on Scan.
+		pool.ExpectQuery("UPDATE ws_binding_tokens").
+			WithArgs("tok-missing", now).
+			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}))
+		// Diagnostic SELECT also returns 0 rows.
+		pool.ExpectQuery("SELECT consumed_at IS NOT NULL").
+			WithArgs("tok-missing", now).
+			WillReturnRows(pgxmock.NewRows([]string{"consumed", "expired"}))
+
+		got, err := repo.Consume(context.Background(), pool, "tok-missing", now)
+		if err != nil {
+			t.Fatalf("consume: %v", err)
+		}
+		if got.Outcome != repos.ConsumeNotFound {
+			t.Errorf("outcome = %v, want ConsumeNotFound", got.Outcome)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	})
+
+	t.Run("already_used", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+
+		pool.ExpectQuery("UPDATE ws_binding_tokens").
+			WithArgs("tok-used", now).
+			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}))
+		// Diagnostic: consumed_at IS NOT NULL -> consumed=true.
+		pool.ExpectQuery("SELECT consumed_at IS NOT NULL").
+			WithArgs("tok-used", now).
+			WillReturnRows(pgxmock.NewRows([]string{"consumed", "expired"}).
+				AddRow(true, false))
+
+		got, err := repo.Consume(context.Background(), pool, "tok-used", now)
+		if err != nil {
+			t.Fatalf("consume: %v", err)
+		}
+		if got.Outcome != repos.ConsumeAlreadyUsed {
+			t.Errorf("outcome = %v, want ConsumeAlreadyUsed", got.Outcome)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+
+		pool.ExpectQuery("UPDATE ws_binding_tokens").
+			WithArgs("tok-stale", now).
+			WillReturnRows(pgxmock.NewRows([]string{"subscription_id", "client_id"}))
+		// Diagnostic: expires_at <= now -> expired=true.
+		pool.ExpectQuery("SELECT consumed_at IS NOT NULL").
+			WithArgs("tok-stale", now).
+			WillReturnRows(pgxmock.NewRows([]string{"consumed", "expired"}).
+				AddRow(false, true))
+
+		got, err := repo.Consume(context.Background(), pool, "tok-stale", now)
+		if err != nil {
+			t.Fatalf("consume: %v", err)
+		}
+		if got.Outcome != repos.ConsumeExpired {
+			t.Errorf("outcome = %v, want ConsumeExpired", got.Outcome)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	})
+}
+
 func TestAuditLogAppend(t *testing.T) {
 	t.Parallel()
 
