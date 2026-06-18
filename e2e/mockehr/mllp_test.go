@@ -82,14 +82,6 @@ func TestFrameBytes_RoundTrips(t *testing.T) {
 
 // --- Local helpers (test-only): an echo MLLP listener mock --------------
 
-type ackKind int
-
-const (
-	ackKindApplicationAccept ackKind = iota
-	ackKindApplicationError
-	ackKindApplicationReject
-)
-
 type echoListener struct {
 	l net.Listener
 }

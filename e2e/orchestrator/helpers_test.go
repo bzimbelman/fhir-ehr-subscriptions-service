@@ -24,10 +24,11 @@ import (
 // Scenario tests live in *_scenario_test.go.
 
 func TestHelpers_RegisterSubscriber_InsertsRows(t *testing.T) {
+	h := requireHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	subID, err := RegisterSubscriber(ctx, harness, RegisterSubscriberOptions{
+	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
 		ClientID: "test-client-1",
 		TopicURL: "http://example.org/topic/1",
 		Endpoint: "http://localhost/hook/test-client-1",
@@ -41,7 +42,7 @@ func TestHelpers_RegisterSubscriber_InsertsRows(t *testing.T) {
 
 	// Read it back.
 	var foundClient string
-	err = harness.DB.QueryRow(ctx,
+	err = h.DB.QueryRow(ctx,
 		`select client_id from subscriptions where id = $1`, subID).Scan(&foundClient)
 	if err != nil {
 		t.Fatalf("scan back: %v", err)
@@ -52,17 +53,18 @@ func TestHelpers_RegisterSubscriber_InsertsRows(t *testing.T) {
 }
 
 func TestHelpers_WaitForNotification_Polls(t *testing.T) {
+	h := requireHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Inject a notification asynchronously.
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		harness.MockSub.InjectNotification("sub-helpers-test",
+		h.MockSub.InjectNotification("sub-helpers-test",
 			[]byte(`{"resourceType":"Bundle","id":"helpers-test"}`))
 	}()
 
-	got, err := WaitForNotification(ctx, harness, "sub-helpers-test", 2*time.Second)
+	got, err := WaitForNotification(ctx, h, "sub-helpers-test", 2*time.Second)
 	if err != nil {
 		t.Fatalf("WaitForNotification: %v", err)
 	}
@@ -72,17 +74,18 @@ func TestHelpers_WaitForNotification_Polls(t *testing.T) {
 }
 
 func TestHelpers_AssertResourceChanges_FindsRow(t *testing.T) {
+	h := requireHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	// Insert a row by hand to confirm the helper finds it.
-	corrID, err := harness.InsertResourceChange(ctx, "test-adapter",
+	corrID, err := h.InsertResourceChange(ctx, "test-adapter",
 		"Patient", "create", []byte(`{"resourceType":"Patient","id":"helper-1"}`))
 	if err != nil {
 		t.Fatalf("InsertResourceChange: %v", err)
 	}
 
-	rows, err := AssertResourceChanges(ctx, harness, "test-adapter", corrID)
+	rows, err := AssertResourceChanges(ctx, h, "test-adapter", corrID)
 	if err != nil {
 		t.Fatalf("AssertResourceChanges: %v", err)
 	}

@@ -22,6 +22,20 @@ const (
 	mllpCR         byte = 0x0D
 )
 
+// ackKind selects between the three HL7 v2 acknowledgment outcomes.
+type ackKind int
+
+// HL7 acknowledgment outcomes per the v2 spec:
+//
+//	ackKindApplicationAccept (AA) — message accepted and processed.
+//	ackKindApplicationError  (AE) — message rejected for application error.
+//	ackKindApplicationReject (AR) — message structurally rejected.
+const (
+	ackKindApplicationAccept ackKind = iota
+	ackKindApplicationError
+	ackKindApplicationReject
+)
+
 // ErrMessageTooLarge is returned by MLLPClient.Send when the body exceeds
 // MaxMessageBytes (after framing overhead, which is 3 bytes).
 var ErrMessageTooLarge = errors.New("mockehr: MLLP message exceeds MaxMessageBytes")
