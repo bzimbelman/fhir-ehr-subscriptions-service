@@ -355,12 +355,13 @@ func TestEvaluateEmitsPerTopicMetrics(t *testing.T) {
 }
 
 type fakeMatcherMetrics struct {
-	evaluated map[string]int
-	matched   map[string]int
-	timeouts  map[string]int
-	claimed   map[string]int
-	emitted   int
-	durations int
+	evaluated   map[string]int
+	matched     map[string]int
+	timeouts    map[string]int
+	claimed     map[string]int
+	rowAttempts map[string]int
+	emitted     int
+	durations   int
 }
 
 func (f *fakeMatcherMetrics) ResourceChangeClaimed(outcome string) {
@@ -389,6 +390,12 @@ func (f *fakeMatcherMetrics) FHIRPathTimeout(t string) {
 }
 func (f *fakeMatcherMetrics) EvaluateDuration(string, float64) { f.durations++ }
 func (f *fakeMatcherMetrics) EhrEventEmitted()                 { f.emitted++ }
+func (f *fakeMatcherMetrics) RowAttempt(outcome string) {
+	if f.rowAttempts == nil {
+		f.rowAttempts = map[string]int{}
+	}
+	f.rowAttempts[outcome]++
+}
 
 // MatchResult is what the package returns per matched topic. The test
 // asserts on TopicURL above; the rest of the row is built by the

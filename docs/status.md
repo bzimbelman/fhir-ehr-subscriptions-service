@@ -121,7 +121,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-9.3 | isClosedConnErr substring-matches "closed" | RESOLVED | RESOLVED ✓ | acd798d | errors.Is(net.ErrClosed) |
 | audit | S-9.4 | Framer no pending-byte bound | RESOLVED | RESOLVED ✓ | acd798d | pendingExceeded |
 | audit | S-9.5 | ExtractMSH doesn't surface MSH-7/MSH-18 | RESOLVED | RESOLVED ✓ | acd798d | |
-| audit | S-9.6 | ReaperBatchSize/claim/idle knobs | PARTIAL | PARTIAL ✓ | acd798d | ReaperBatchSize added; others were already exposed |
+| audit | S-9.6 | ReaperBatchSize/claim/idle knobs | PARTIAL | RESOLVED ✓ | acd798d, story/61 | ReaperBatchSize + claim/idle knobs all exposed; story/61 verifies counter parity (MetricClaimCycleErrors, MetricSameKindCollision, MetricHL7TxBeginFailed all wired at call sites) |
 | audit | S-9.7 | No MetricClaimCycleErrors emission | RESOLVED | RESOLVED ✓ | acd798d | |
 | audit | S-9.8 | peekUnprocessed lost-race window | RESOLVED | RESOLVED ✓ (by-design) | — | FOR UPDATE SKIP LOCKED + processed=false |
 | audit | S-9.9 | BeginTx failure leaves row unprocessed | RESOLVED | RESOLVED ✓ | story/53 | Config.MaxRowAttempts (default 8) + attempt_count column + ErrorClassTxBeginFailed dead-letter |
@@ -133,14 +133,14 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-10.3 | :in path no metric on unsupported modifier | RESOLVED | RESOLVED ✓ | d3fad44 | SetUnsupportedModifierReporter |
 | audit | S-10.4 | Flexible-date silent UTC coercion | RESOLVED | RESOLVED ✓ | d3fad44 | parseFlexibleDateWithFlag |
 | audit | S-10.5 | FHIRPath fail-closed metric | RESOLVED | RESOLVED ✓ | (B-24 work) | unknownFHIRPathReporter |
-| audit | S-10.6 | MaxRowAttempts knob + counter | PARTIAL | PARTIAL ✓ | d3fad44 | knob added; counter wiring tracked under storage refactor |
+| audit | S-10.6 | MaxRowAttempts knob + counter | PARTIAL | RESOLVED ✓ | d3fad44, story/61 | matcher.Config.MaxRowAttempts (default 8) + story/61 adds fhir_subs_matcher_row_attempts_total{outcome} via MetricsEmitter.RowAttempt seam (pre-seeded processed/deferred/error); dead-letter-at-cap deferred to storage refactor |
 | audit | S-11.1 | compileTrigger missing supportedInteraction enum check | RESOLVED | RESOLVED ✓ | d3fad44 | |
 | audit | S-11.2 | Topic.EventCodings missing system+code | RESOLVED | RESOLVED ✓ | d3fad44 | EventCoding slice |
 | audit | S-11.3 | notificationShape collapses multi-entry | RESOLVED | RESOLVED ✓ | story/54 | catalog `Load` rejects multi-entry topics; reason text includes topic URL + "multi-entry notificationShape" |
-| audit | S-11.4 | Topic catalog Prometheus metrics | PARTIAL | PARTIAL ✓ | (B-25 work) | Rejected/Overridden exposed; metric wiring in callers |
+| audit | S-11.4 | Topic catalog Prometheus metrics | PARTIAL | RESOLVED ✓ | (B-25 work), story/61 | Rejected/Overridden exposed (B-25); story/61 adds fhir_subs_topics_rejected_total{origin,reason} + fhir_subs_topic_overridden_total{from,to} + ObservabilityModule.PublishTopicCatalogReport(report) translator |
 | audit | S-12.1 | ListActiveByTopic materializes full list | RESOLVED | RESOLVED ✓ | story/55 | submatcher fanoutOne now drives StreamActiveByTopic with a per-row callback (Evaluate + delivery write inside the iterator); streamFakeLister unit test asserts maxInFlight==1 even at 64 candidates; benchmark verifies the streaming contract at N=1k/10k |
 | audit | S-12.2 | submatcher PoolSize knob missing | RESOLVED | RESOLVED ✓ | d3fad44 | Config.PoolSize |
-| audit | S-12.3 | submatcher MaxRowAttempts | PARTIAL | PARTIAL ✓ | d3fad44 | knob added; counter wiring pending |
+| audit | S-12.3 | submatcher MaxRowAttempts | PARTIAL | RESOLVED ✓ | d3fad44, story/61 | submatcher.Config.MaxRowAttempts (default 8) + story/61 adds fhir_subs_submatcher_row_attempts_total{outcome} via Metrics.RowAttempt seam (pre-seeded outcomes); SubmatcherMetricsAdapter forwards to inventory; dead-letter-at-cap deferred to storage refactor |
 | audit | S-12.4 | Fanout tx inline events_since_subscription_start UPDATE | RESOLVED | RESOLVED ✓ | story/56 | submatcher fanoutOne accumulates (subscription_id, event_number) pairs while streaming and flushes via single `UPDATE subscriptions ... FROM unnest($1::uuid[], $2::bigint[])`; CursorAdvanceBatchSize default 1000; pgxmock unit tests pin one-batched-UPDATE for N=64 and 3 batches at N=250/cap=100; latency-aware benchmark shows ~990x throughput at 100µs/Exec on a 1000-subscriber topic |
 | audit | S-12.5 | resourceTypeOf materializes full body | RESOLVED | RESOLVED ✓ | d3fad44 | streaming json.Decoder |
 | audit | S-12.6 | Builder sort non-deterministic on tie | RESOLVED | RESOLVED ✓ | d3fad44 | sort.SliceStable + ID tiebreaker |
