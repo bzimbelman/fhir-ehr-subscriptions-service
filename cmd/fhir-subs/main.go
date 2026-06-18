@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 )
 
@@ -110,9 +111,38 @@ func main() {
 	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// testPanicProbe is a test seam: if non-nil, realMain calls it before
+// any other work. The deferred recover then catches the panic and writes
+// a structured "panic recovered" line to stderr (S-1.3).
+//
+// Production builds leave this nil. The seam is type-checked by the
+// linter so tests cannot accidentally leave it set across runs.
+var testPanicProbe func()
+
 // realMain is main split out so it can be unit-tested with controlled streams
 // and a controlled exit code. A non-zero return becomes the process exit code.
-func realMain(args []string, stdout, stderr io.Writer) int {
+//
+// A top-level deferred recover() catches any panic raised in startup or
+// in code paths reachable from realMain (S-1.3). The recovery emits a
+// structured stderr line and returns exit code 2 so an operator gets a
+// crash signal in the pod log instead of a Go runtime stack trace.
+func realMain(args []string, stdout, stderr io.Writer) (rc int) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			// Best-effort structured line. We deliberately do not run
+			// the configured logger here because a panic during logger
+			// construction could re-enter; stderr is the only sink we
+			// know is safe (S-1.3).
+			fmt.Fprintf(stderr, "panic recovered: %v\n", rec)
+			fmt.Fprintf(stderr, "stack:\n%s\n", debug.Stack())
+			rc = 2
+		}
+	}()
+
+	if testPanicProbe != nil {
+		testPanicProbe()
+	}
+
 	opts, err := parseFlags(args, stderr)
 	switch {
 	case errors.Is(err, errHelpRequested):
