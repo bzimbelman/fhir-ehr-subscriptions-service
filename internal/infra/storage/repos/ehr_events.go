@@ -111,6 +111,54 @@ func (r *EhrEventsRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, limit i
 	return out, nil
 }
 
+// GetByID returns one ehr_events row by id, decoding the payload
+// columns through the codec. Returns (nil, nil) when not found.
+//
+// Used by the delivery scheduler to load the event a deliveries row
+// references at dispatch time. The query touches every partition
+// because the scheduler does not carry a created_month hint with the
+// deliveries.ehr_event_id; for a single per-dispatch read this is
+// acceptable. A (id, created_month) overload can be added if profile
+// data demands partition pruning.
+func (r *EhrEventsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID) (*EhrEventRow, error) {
+	const sql = `
+		SELECT id, event_number, topic_url, focus, change_kind, resource,
+		       previous_resource, key_version, correlation_id, occurred_at,
+		       notification_shape_hint, resource_change_id, processed,
+		       processed_at, created_month, created_at
+		FROM ehr_events
+		WHERE id = $1`
+	var rec EhrEventRow
+	var enc, prev []byte
+	var kind string
+	row := q.QueryRow(ctx, sql, id)
+	if err := row.Scan(
+		&rec.ID, &rec.EventNumber, &rec.TopicURL, &rec.Focus, &kind, &enc,
+		&prev, &rec.KeyVersion, &rec.CorrelationID, &rec.OccurredAt,
+		&rec.NotificationShapeHint, &rec.ResourceChangeID, &rec.Processed,
+		&rec.ProcessedAt, &rec.CreatedMonth, &rec.CreatedAt,
+	); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("ehr_events: get: %w", err)
+	}
+	rec.ChangeKind = ChangeKind(kind)
+	body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+	if err != nil {
+		return nil, fmt.Errorf("ehr_events: decrypt resource: %w", err)
+	}
+	rec.Resource = body
+	if len(prev) > 0 {
+		pb, err := r.codec.Decrypt(prev, rec.KeyVersion)
+		if err != nil {
+			return nil, fmt.Errorf("ehr_events: decrypt previous: %w", err)
+		}
+		rec.PreviousResource = pb
+	}
+	return &rec, nil
+}
+
 // MarkProcessed flips processed=true on the row guarded by created_month.
 func (r *EhrEventsRepo) MarkProcessed(ctx context.Context, q Querier, id uuid.UUID, createdMonth any) (int64, error) {
 	const sql = `
