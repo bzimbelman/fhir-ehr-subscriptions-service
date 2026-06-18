@@ -267,22 +267,12 @@ func indexOf(b []byte, c byte) int {
 	return -1
 }
 
-// scanEndPair reports whether b contains the 0x1C 0x0D end-byte pair at
-// any position before startIdx (the first 0x0B). startIdx == -1 means
-// no 0x0B was found, so the entire buffer is "before" the start.
-//
-// Retained for callers and tests; production callers prefer
-// [scanEndPairRange] which scans only a windowed slice.
-func scanEndPair(b []byte, startIdx int) bool {
-	limit := startIdx
-	if limit < 0 {
-		limit = len(b)
-	}
-	return scanEndPairRange(b, 0, limit)
-}
-
 // scanEndPairRange reports whether b[from:to] contains the 0x1C 0x0D
 // end-byte pair anywhere. The window is half-open. (N-1)
+//
+// Replaced the prior `scanEndPair(b, startIdx)` whole-prefix scan; the
+// windowed form is what production callers use to honor the
+// `closedScanned` offset.
 func scanEndPairRange(b []byte, from, to int) bool {
 	if from < 0 {
 		from = 0

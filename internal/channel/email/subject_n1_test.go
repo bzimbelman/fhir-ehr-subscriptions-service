@@ -19,9 +19,9 @@ import (
 func TestN1_BuildMIMEStripsCRLFFromSubject(t *testing.T) {
 	t.Parallel()
 	c := &Channel{cfg: Config{
-		SubjectTemplate: "Hello\r\nBcc: attacker@example.com\r\n",
-		From:            "from@example.com",
-		UserAgent:       "test-mailer",
+		SubjectTemplate:          "Hello\r\nBcc: attacker@example.com\r\n",
+		From:                     "from@example.com",
+		UserAgent:                "test-mailer",
 		AttachmentThresholdBytes: 1 << 20,
 	}}
 	env := channel.NotificationEnvelope{

@@ -291,14 +291,14 @@ type Override struct {
 // without an audit trail (N-1).
 func (o Override) LogFields() map[string]any {
 	return map[string]any{
-		"event":       "topic_override_fallback",
-		"url":         o.URL,
-		"version":     o.Version,
-		"used_origin": o.FromOrigin,
-		"used_source": string(o.FromSource),
+		"event":           "topic_override_fallback",
+		"url":             o.URL,
+		"version":         o.Version,
+		"used_origin":     o.FromOrigin,
+		"used_source":     string(o.FromSource),
 		"shadowed_origin": o.ToOrigin,
 		"shadowed_source": string(o.ToSource),
-		"reason":      o.Reason,
+		"reason":          o.Reason,
 	}
 }
 

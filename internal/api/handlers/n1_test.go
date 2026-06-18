@@ -52,12 +52,12 @@ type fakeRandFailureRecorder struct {
 	rand atomic.Int64
 }
 
-func (f *fakeRandFailureRecorder) RecordSubscriptionCreated()          {}
-func (f *fakeRandFailureRecorder) RecordSubscriptionUpdated()          {}
-func (f *fakeRandFailureRecorder) RecordSubscriptionDeleted()          {}
-func (f *fakeRandFailureRecorder) RecordWSBindingTokenIssued()         {}
-func (f *fakeRandFailureRecorder) RecordValidationFailure(_ string)    {}
-func (f *fakeRandFailureRecorder) RecordRandFailure()                  { f.rand.Add(1) }
+func (f *fakeRandFailureRecorder) RecordSubscriptionCreated()       {}
+func (f *fakeRandFailureRecorder) RecordSubscriptionUpdated()       {}
+func (f *fakeRandFailureRecorder) RecordSubscriptionDeleted()       {}
+func (f *fakeRandFailureRecorder) RecordWSBindingTokenIssued()      {}
+func (f *fakeRandFailureRecorder) RecordValidationFailure(_ string) {}
+func (f *fakeRandFailureRecorder) RecordRandFailure()               { f.rand.Add(1) }
 
 var _ MetricsRecorder = (*fakeRandFailureRecorder)(nil)
 var _ RandFailureRecorder = (*fakeRandFailureRecorder)(nil)
