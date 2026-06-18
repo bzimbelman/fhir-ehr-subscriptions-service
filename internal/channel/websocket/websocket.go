@@ -1000,10 +1000,10 @@ func splitProtocolList(s string) []string {
 }
 
 func trimASCIIWhitespace(s string) string {
-	for len(s) > 0 && (s[0] == ' ' || s[0] == '\t') {
+	for s != "" && (s[0] == ' ' || s[0] == '\t') {
 		s = s[1:]
 	}
-	for len(s) > 0 && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
+	for s != "" && (s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
 		s = s[:len(s)-1]
 	}
 	return s
