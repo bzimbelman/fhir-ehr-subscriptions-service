@@ -14,7 +14,7 @@ flowchart TB
     api["internal/api/<br/>Subscriptions API"]
     engine["internal/engine/<br/>Subscriptions Engine"]
     topics["internal/topics/<br/>Topic catalog + filter"]
-    channels["internal/channels/<br/>Channel SPI + built-ins"]
+    channels["internal/channel/<br/>Channel SPI + built-ins"]
     mllp["internal/mllp/<br/>MLLP Listener"]
     adapterspi["internal/adapterspi/<br/>Adapter SPI base classes"]
     adapters["internal/adapters/<br/>concrete vendor adapters"]
@@ -58,11 +58,11 @@ Every package below has its LLD home. Code reviewers reject PRs that put logic o
 | `internal/engine/scheduler/` | Delivery scheduler, retries, heartbeats, handshakes. | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
 | `internal/topics/` | Topic catalog: load from built-in / adapter / operator sources. | [low-level-design/topics.md](low-level-design/topics.md) |
 | `internal/topics/filter/` | FHIR search-parameter expression evaluator + sandboxed FHIRPath. | [low-level-design/topic-matcher.md](low-level-design/topic-matcher.md) |
-| `internal/channels/` | Channel SPI — manifest, lifecycle, deliver, heartbeats. | [low-level-design/channels.md](low-level-design/channels.md) |
-| `internal/channels/resthook/` | rest-hook channel. | [low-level-design/channels.md](low-level-design/channels.md) |
-| `internal/channels/websocket/` | WebSocket channel. | [low-level-design/channels.md](low-level-design/channels.md) |
-| `internal/channels/email/` | Email channel (v1 ships SMTP-only). | [low-level-design/channels.md](low-level-design/channels.md), [decisions/0010 #5](high-level-design/decisions/0010-implementation-defaults.md) |
-| `internal/channels/message/` | FHIR messaging channel. | [low-level-design/channels.md](low-level-design/channels.md) |
+| `internal/channel/` | Channel SPI — manifest, lifecycle, deliver, heartbeats. | [low-level-design/channels.md](low-level-design/channels.md) |
+| `internal/channel/resthook/` | rest-hook channel. | [low-level-design/channels.md](low-level-design/channels.md) |
+| `internal/channel/websocket/` | WebSocket channel. | [low-level-design/channels.md](low-level-design/channels.md) |
+| `internal/channel/email/` | Email channel (v1 ships SMTP-only). | [low-level-design/channels.md](low-level-design/channels.md), [decisions/0010 #5](high-level-design/decisions/0010-implementation-defaults.md) |
+| `internal/channel/message/` | FHIR messaging channel. | [low-level-design/channels.md](low-level-design/channels.md) |
 | `internal/mllp/` | Host-provided vendor-neutral MLLP listener. | [low-level-design/mllp-listener.md](low-level-design/mllp-listener.md), [decisions/0003](high-level-design/decisions/0003-mllp-listener-vendor-neutral.md) |
 | `internal/adapterspi/` | Adapter SPI base classes (the framework). | [low-level-design/adapter-spi-framework.md](low-level-design/adapter-spi-framework.md) |
 | `internal/adapters/defaults/` | The no-vendor reference adapter. | [low-level-design/adapter-spi-framework.md](low-level-design/adapter-spi-framework.md) |
