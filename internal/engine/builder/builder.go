@@ -10,6 +10,11 @@
 // One Build call → one NotificationEnvelope. The envelope carries
 // already-serialized bytes; channels do not parse or re-serialize.
 //
+// Determinism. Bundle JSON is encoded through fixed-shape structs so
+// the byte sequence is reproducible across processes (audit B-28).
+// `map[string]any` Marshal randomizes key order in Go, which would
+// break the audit-log hash chain that fingerprints bundle bytes.
+//
 // What the builder does not do (yet):
 //   - hydrate referenced resources from the adapter Hydration Service.
 //     The full-resource path here emits the focus resource(s) only;
@@ -90,6 +95,49 @@ type Job struct {
 	CorrelationIDOverride string
 }
 
+// reference is a FHIR Reference shape; only `reference` is emitted in v1.
+type reference struct {
+	Reference string `json:"reference"`
+}
+
+// notificationEvent is one entry inside SubscriptionStatus.notificationEvent.
+// `omitempty` is used on the optional fields so the wire shape matches
+// the FHIR contract exactly.
+type notificationEvent struct {
+	EventNumber int64      `json:"eventNumber"`
+	Timestamp   string     `json:"timestamp"`
+	Focus       *reference `json:"focus,omitempty"`
+}
+
+// subscriptionStatus is the FHIR R5 SubscriptionStatus resource.
+type subscriptionStatus struct {
+	ResourceType                 string              `json:"resourceType"`
+	Status                       string              `json:"status"`
+	Type                         string              `json:"type"`
+	EventsSinceSubscriptionStart int64               `json:"eventsSinceSubscriptionStart"`
+	Subscription                 reference           `json:"subscription"`
+	Topic                        string              `json:"topic"`
+	NotificationEvent            []notificationEvent `json:"notificationEvent,omitempty"`
+	Error                        string              `json:"error,omitempty"`
+}
+
+// bundleEntry is a Bundle.entry. The Resource is encoded as a
+// json.RawMessage so the inner ordering decisions are made once at
+// emit time and never mutated by an intermediate map round-trip.
+type bundleEntry struct {
+	Resource json.RawMessage `json:"resource"`
+}
+
+// notificationBundle is the FHIR R5 Bundle envelope. Field order on
+// the wire follows the canonical Bundle ordering: resourceType, type,
+// timestamp, entry.
+type notificationBundle struct {
+	ResourceType string        `json:"resourceType"`
+	Type         string        `json:"type"`
+	Timestamp    string        `json:"timestamp"`
+	Entry        []bundleEntry `json:"entry"`
+}
+
 // Build assembles a Bundle and returns the envelope ready for
 // channel.Deliver.
 func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelope, error) {
@@ -117,31 +165,31 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 	}
 
 	// 3. Build SubscriptionStatus.
-	status := map[string]any{
-		"resourceType":                 "SubscriptionStatus",
-		"status":                       string(job.Subscription.Status),
-		"type":                         string(job.NotificationType),
-		"eventsSinceSubscriptionStart": highest,
-		"subscription":                 map[string]any{"reference": "Subscription/" + job.Subscription.ID.String()},
-		"topic":                        job.Subscription.TopicURL,
+	status := subscriptionStatus{
+		ResourceType:                 "SubscriptionStatus",
+		Status:                       string(job.Subscription.Status),
+		Type:                         string(job.NotificationType),
+		EventsSinceSubscriptionStart: highest,
+		Subscription:                 reference{Reference: "Subscription/" + job.Subscription.ID.String()},
+		Topic:                        job.Subscription.TopicURL,
 	}
 	if job.Subscription.Status == repos.SubError && job.Subscription.Error != "" {
-		status["error"] = job.Subscription.Error
+		status.Error = job.Subscription.Error
 	}
 
 	if hasNotificationEvents(job.NotificationType) && len(events) > 0 {
-		notifEvents := make([]map[string]any, 0, len(events))
+		notifEvents := make([]notificationEvent, 0, len(events))
+		payload := payloadType(job.Subscription)
 		for i := range events {
 			ev := &events[i]
 			n := perSubEv(job.PerSubEventNumbers, ev.ID)
-			entry := map[string]any{
-				"eventNumber": n,
-				"timestamp":   ev.OccurredAt.UTC().Format(time.RFC3339),
+			entry := notificationEvent{
+				EventNumber: n,
+				Timestamp:   ev.OccurredAt.UTC().Format(time.RFC3339),
 			}
-			payload := payloadType(job.Subscription)
 			// Per the contract: focus is absent for empty payloads.
 			if payload != channel.PayloadEmpty {
-				entry["focus"] = map[string]any{"reference": ev.Focus}
+				entry.Focus = &reference{Reference: ev.Focus}
 			}
 			// additionalContext is only present on full-resource and
 			// only when the topic shape calls for it. Without the
@@ -150,16 +198,23 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			// docstring.
 			notifEvents = append(notifEvents, entry)
 		}
-		status["notificationEvent"] = notifEvents
+		status.NotificationEvent = notifEvents
 	}
 
-	// 4. Build the Bundle skeleton. SubscriptionStatus is always
-	//    entry index 0.
-	entries := []map[string]any{
-		{"resource": status},
+	// 4. Encode the SubscriptionStatus into RawMessage so its byte
+	//    layout is final before it goes into the Bundle entry list.
+	statusBytes, err := json.Marshal(status)
+	if err != nil {
+		return channel.NotificationEnvelope{}, fmt.Errorf("builder: marshal status: %w", err)
+	}
+	entries := []bundleEntry{
+		{Resource: json.RawMessage(statusBytes)},
 	}
 
-	// 5. For full-resource payloads, append focus body entries.
+	// 5. For full-resource payloads, append focus body entries. The
+	//    body's internal key order is whatever the adapter produced —
+	//    we re-emit the bytes verbatim through json.RawMessage to keep
+	//    canonicalization upstream of us.
 	if hasNotificationEvents(job.NotificationType) && payloadType(job.Subscription) == channel.PayloadFullResource {
 		seen := make(map[string]struct{}, len(events))
 		for i := range events {
@@ -171,19 +226,22 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			if len(ev.Resource) == 0 {
 				continue
 			}
-			var body map[string]any
-			if err := json.Unmarshal(ev.Resource, &body); err != nil {
-				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode focus resource: %w", err)
+			// Validate the body parses as JSON before embedding so a
+			// corrupt resource is rejected at build time, not at
+			// channel time.
+			var probe json.RawMessage
+			if uerr := json.Unmarshal(ev.Resource, &probe); uerr != nil {
+				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode focus resource: %w", uerr)
 			}
-			entries = append(entries, map[string]any{"resource": body})
+			entries = append(entries, bundleEntry{Resource: probe})
 		}
 	}
 
-	bundle := map[string]any{
-		"resourceType": "Bundle",
-		"type":         "subscription-notification",
-		"timestamp":    b.clock().UTC().Format(time.RFC3339),
-		"entry":        entries,
+	bundle := notificationBundle{
+		ResourceType: "Bundle",
+		Type:         "subscription-notification",
+		Timestamp:    b.clock().UTC().Format(time.RFC3339),
+		Entry:        entries,
 	}
 
 	bytes, err := json.Marshal(bundle)
