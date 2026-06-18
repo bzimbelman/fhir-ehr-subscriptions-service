@@ -69,18 +69,18 @@ func TestResolveFilePlaceholder(t *testing.T) {
 // TestMissingEnvVarRefusesStartup: an unset env var referenced by a placeholder
 // is a startup error per LLD §13.
 func TestMissingEnvVarRefusesStartup(t *testing.T) {
-	t.Parallel()
-	// Just in case: clear any inherited value.
-	t.Setenv("DEFINITELY_NOT_SET_FHIR_TEST", "x")
-	_ = os.Unsetenv("DEFINITELY_NOT_SET_FHIR_TEST")
+	// Note: this test mutates process env via Unsetenv, so it must not run in
+	// parallel with other tests that read env.
+	const name = "DEFINITELY_NOT_SET_FHIR_TEST_XYZ"
+	_ = os.Unsetenv(name)
 	tree := map[string]interface{}{
-		"x": "${env:DEFINITELY_NOT_SET_FHIR_TEST}",
+		"x": "${env:" + name + "}",
 	}
 	_, _, err := secrets.Resolve(tree, redaction.NewMap())
 	if err == nil {
 		t.Fatalf("expected error for unset env var")
 	}
-	if !strings.Contains(err.Error(), "DEFINITELY_NOT_SET_FHIR_TEST") {
+	if !strings.Contains(err.Error(), name) {
 		t.Fatalf("error must mention the var name; got %v", err)
 	}
 	if !strings.Contains(err.Error(), "x") {
