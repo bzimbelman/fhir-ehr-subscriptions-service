@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,16 @@ import (
 // ParseForm. The endpoint is unauthenticated; without a body cap an
 // attacker can OOM the process with a single multi-MB POST.
 const MaxTokenRequestBodyBytes = 64 * 1024
+
+// MaxJWKSBodyBytes caps each JWKS HTTP response. Operators are
+// expected to host JWKS docs an order of magnitude smaller; 1 MiB is
+// a generous ceiling that prevents a hostile or misconfigured JWKS
+// host from exhausting auth memory (B-12).
+const MaxJWKSBodyBytes = 1024 * 1024
+
+// DefaultJWKSFetchTimeout is the per-fetch timeout applied when no
+// override is supplied via TokenEndpointConfig.JWKSFetchTimeout (B-12).
+const DefaultJWKSFetchTimeout = 5 * time.Second
 
 // TokenEndpointConfig configures the OAuth2 token endpoint.
 type TokenEndpointConfig struct {
@@ -125,8 +136,14 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	if cfg.AccessTokenIssuer == "" {
 		cfg.AccessTokenIssuer = cfg.Audience
 	}
+	if cfg.JWKSFetchTimeout <= 0 {
+		cfg.JWKSFetchTimeout = DefaultJWKSFetchTimeout
+	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = http.DefaultClient
+		// Dedicated client with timeout — http.DefaultClient has none,
+		// which lets a slow/hostile JWKS host hang every authentication
+		// call indefinitely (B-12).
+		cfg.HTTPClient = &http.Client{Timeout: cfg.JWKSFetchTimeout}
 	}
 	if cfg.JWKSCacheTTL == 0 {
 		cfg.JWKSCacheTTL = time.Hour
@@ -140,9 +157,13 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	if cfg.MaxRequestBodyBytes <= 0 {
 		cfg.MaxRequestBodyBytes = MaxTokenRequestBodyBytes
 	}
+	policy := jwksPolicy{
+		allowInsecure: cfg.AllowInsecureJWKS,
+		allowedHosts:  normalizeHosts(cfg.JWKSAllowedHosts),
+	}
 	return &TokenEndpoint{
 		cfg:       cfg,
-		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now),
+		jwksCache: newJwksCache(cfg.HTTPClient, cfg.JWKSCacheTTL, cfg.Now, policy),
 		jtiCache:  NewJTIReplayCache(0, cfg.Now),
 	}, nil
 }
@@ -433,11 +454,14 @@ func writeOAuthError(w http.ResponseWriter, status int, code, desc string) {
 //
 // All access to entries is gated by mu. Concurrent /token requests
 // otherwise race the map and Go's runtime fatal-errors the process
-// (B-5).
+// (B-5). The cache also enforces the JWKS-URL policy from
+// TokenEndpointConfig (B-12): default-https, optional host allowlist,
+// 1 MiB body cap.
 type jwksCache struct {
 	httpClient *http.Client
 	ttl        time.Duration
 	now        func() time.Time
+	policy     jwksPolicy
 
 	mu      sync.Mutex
 	entries map[string]jwksCacheEntry
@@ -448,24 +472,41 @@ type jwksCacheEntry struct {
 	expires time.Time
 }
 
-func newJwksCache(httpClient *http.Client, ttl time.Duration, now func() time.Time) *jwksCache {
+// jwksPolicy captures the validation rules applied to a candidate
+// JWKS URL before any network I/O. Empty allowedHosts means
+// "any host" (with the deployment expected to surface a startup
+// warning).
+type jwksPolicy struct {
+	allowInsecure bool
+	allowedHosts  map[string]struct{}
+}
+
+func newJwksCache(httpClient *http.Client, ttl time.Duration, now func() time.Time, policy jwksPolicy) *jwksCache {
 	return &jwksCache{
 		httpClient: httpClient,
 		ttl:        ttl,
 		now:        now,
+		policy:     policy,
 		entries:    map[string]jwksCacheEntry{},
 	}
 }
 
-func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, error) {
+// errInvalidJWKSURL is returned when the JWKS URL fails policy checks
+// (scheme, host allowlist). Callers map this to a generic 401.
+var errInvalidJWKSURL = errors.New("auth: invalid jwks_url")
+
+func (c *jwksCache) fetch(ctx context.Context, rawURL string) (keyfunc.Keyfunc, error) {
+	if err := c.policy.validate(rawURL); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
-	if e, ok := c.entries[url]; ok && c.now().Before(e.expires) {
+	if e, ok := c.entries[rawURL]; ok && c.now().Before(e.expires) {
 		c.mu.Unlock()
 		return e.kf, nil
 	}
 	c.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, http.NoBody)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +518,7 @@ func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, err
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("jwks: HTTP %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxJWKSBodyBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +527,53 @@ func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, err
 		return nil, err
 	}
 	c.mu.Lock()
-	c.entries[url] = jwksCacheEntry{kf: kf, expires: c.now().Add(c.ttl)}
+	c.entries[rawURL] = jwksCacheEntry{kf: kf, expires: c.now().Add(c.ttl)}
 	c.mu.Unlock()
 	return kf, nil
+}
+
+// validate enforces JWKS URL policy: reject anything that isn't
+// `https://` unless allowInsecure is set; reject hosts not on the
+// allowlist if one is configured.
+func (p jwksPolicy) validate(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return errInvalidJWKSURL
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		// always allowed
+	case "http":
+		if !p.allowInsecure {
+			return errInvalidJWKSURL
+		}
+	default:
+		return errInvalidJWKSURL
+	}
+	if u.Host == "" {
+		return errInvalidJWKSURL
+	}
+	if len(p.allowedHosts) == 0 {
+		return nil
+	}
+	host := strings.ToLower(u.Hostname())
+	if _, ok := p.allowedHosts[host]; !ok {
+		return errInvalidJWKSURL
+	}
+	return nil
+}
+
+func normalizeHosts(hosts []string) map[string]struct{} {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(hosts))
+	for _, h := range hosts {
+		h = strings.TrimSpace(strings.ToLower(h))
+		if h == "" {
+			continue
+		}
+		out[h] = struct{}{}
+	}
+	return out
 }
