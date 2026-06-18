@@ -102,6 +102,44 @@ func (nopMetrics) FanoutOutcome(string, FanoutDecision) {}
 func (nopMetrics) EventProcessed(string, int)           {}
 func (nopMetrics) FilterRuntimeError(uuid.UUID)         {}
 
+// AuthRechecker is the SPI the worker consumes at delivery prep
+// (P2.7). It is satisfied by internal/api/auth.Rechecker (and by its
+// CachedRechecker wrapper). Defined locally so the submatcher does
+// not pull in the api/auth package's HTTP-handler graph; the wiring
+// layer adapts auth.Rechecker into this interface.
+//
+// Recheck returns true when the subscription's owning client is still
+// authorized to receive deliveries. An error short-circuits to true
+// (fail-open) — a transient auth-store outage must not stop a healthy
+// pipeline. The wiring layer is expected to wrap the Rechecker in a
+// TTL cache so the auth store sees one call per subscription per
+// (configurable) window, not one per fanout.
+type AuthRechecker interface {
+	Recheck(ctx context.Context, clientID, subscriptionID string) (bool, error)
+}
+
+// alwaysActiveAuth is the default AuthRechecker: every call returns
+// true. Production wiring overrides via WithAuthRechecker.
+type alwaysActiveAuth struct{}
+
+func (alwaysActiveAuth) Recheck(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+// SubscriptionStateUpdater transitions a subscription to a terminal
+// state when the auth re-check returns Revoked (P2.7). The worker
+// invokes this in the same fanout transaction so the state change
+// commits atomically with the absence of the (would-be) deliveries
+// row. nil = no-op (test default; production wiring installs a
+// repos-backed implementation).
+type SubscriptionStateUpdater interface {
+	// MarkErrorRevoked transitions the subscription to status='error'
+	// with a reason that names the revocation. The submatcher passes
+	// the existing transaction so the state change is part of the
+	// same outbox commit as the (suppressed) fanout.
+	MarkErrorRevoked(ctx context.Context, tx pgx.Tx, subscriptionID uuid.UUID, reason string) error
+}
+
 // Worker is the Stage 3 claim/fanout/commit loop.
 //
 // Each iteration is one transaction:
@@ -121,14 +159,16 @@ func (nopMetrics) FilterRuntimeError(uuid.UUID)         {}
 // deliveries (combined with the deterministic max+1 assignment inside
 // one transaction) makes any single-row replay idempotent.
 type Worker struct {
-	pool    *pgxpool.Pool
-	subs    *repos.SubscriptionsRepo
-	ehr     *repos.EhrEventsRepo
-	dlv     *repos.DeliveriesRepo
-	metrics Metrics
-	logger  *slog.Logger
-	clock   func() time.Time
-	cfg     Config
+	pool         *pgxpool.Pool
+	subs         *repos.SubscriptionsRepo
+	ehr          *repos.EhrEventsRepo
+	dlv          *repos.DeliveriesRepo
+	metrics      Metrics
+	logger       *slog.Logger
+	clock        func() time.Time
+	cfg          Config
+	authRecheck  AuthRechecker
+	stateUpdater SubscriptionStateUpdater
 }
 
 // NewWorker constructs a Worker. The clock argument is optional; nil
@@ -144,14 +184,15 @@ func NewWorker(
 ) *Worker {
 	cfg.ApplyDefaults()
 	w := &Worker{
-		pool:    pool,
-		subs:    subs,
-		ehr:     ehr,
-		dlv:     dlv,
-		cfg:     cfg,
-		metrics: nopMetrics{},
-		clock:   time.Now,
-		logger:  slog.Default(),
+		pool:        pool,
+		subs:        subs,
+		ehr:         ehr,
+		dlv:         dlv,
+		cfg:         cfg,
+		metrics:     nopMetrics{},
+		clock:       time.Now,
+		logger:      slog.Default(),
+		authRecheck: alwaysActiveAuth{},
 	}
 	for _, o := range opts {
 		o(w)
@@ -187,6 +228,29 @@ func WithClock(now func() time.Time) Option {
 	return func(w *Worker) {
 		if now != nil {
 			w.clock = now
+		}
+	}
+}
+
+// WithAuthRechecker installs the delivery-time scope re-check (P2.7).
+// nil = keep the always-active default. Production wiring installs a
+// CachedRechecker wrapping the auth-store implementation.
+func WithAuthRechecker(r AuthRechecker) Option {
+	return func(w *Worker) {
+		if r != nil {
+			w.authRecheck = r
+		}
+	}
+}
+
+// WithStateUpdater installs the SubscriptionStateUpdater used on a
+// Revoked re-check (P2.7). nil = no-op (the worker still suppresses
+// the deliveries insert and emits the FanoutAuthRevoked metric, but
+// does not transition subscription state).
+func WithStateUpdater(u SubscriptionStateUpdater) Option {
+	return func(w *Worker) {
+		if u != nil {
+			w.stateUpdater = u
 		}
 	}
 }
@@ -293,8 +357,45 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 	matched := 0
 	for i := range decisions {
 		d := &decisions[i]
+		// P2.7: delivery-time scope re-check. We layer this on top of
+		// Evaluate so the pure evaluator stays free of I/O. Only Match
+		// decisions need a re-check; other decisions are already
+		// short-circuiting the deliveries insert.
+		if d.Decision == FanoutMatch && w.authRecheck != nil {
+			active, err := w.authRecheck.Recheck(cctx, d.Subscription.ClientID, d.Subscription.ID.String())
+			switch {
+			case err != nil:
+				// Fail-open: a transient auth-store outage must not
+				// stop a healthy pipeline. We log and proceed with
+				// the original Match.
+				w.logger.WarnContext(cctx, "submatcher: auth recheck error (fail-open)",
+					slog.String("subscription_id", d.Subscription.ID.String()),
+					slog.String("client_id", d.Subscription.ClientID),
+					slog.String("err", err.Error()),
+				)
+			case !active:
+				d.Decision = FanoutAuthRevoked
+				d.SkipReason = "auth_revoked"
+			}
+		}
 		w.metrics.FanoutOutcome(row.TopicURL, d.Decision)
 		switch d.Decision {
+		case FanoutAuthRevoked:
+			// Suppress the fanout; flip the subscription to
+			// status='error' atomically with the absence of the
+			// deliveries row. The state-updater is optional so unit
+			// tests that don't construct the repos still get the
+			// metric and the suppression.
+			if w.stateUpdater != nil {
+				if err := w.stateUpdater.MarkErrorRevoked(cctx, tx, d.Subscription.ID, "auth_revoked"); err != nil {
+					return fmt.Errorf("submatcher: mark error revoked: %w", err)
+				}
+			}
+			w.logger.InfoContext(cctx, "submatcher: subscription auth revoked at delivery prep",
+				slog.String("subscription_id", d.Subscription.ID.String()),
+				slog.String("client_id", d.Subscription.ClientID),
+				slog.String("topic_url", row.TopicURL),
+			)
 		case FanoutMatch:
 			eventNum, err := nextEventNumber(cctx, tx, d.Subscription.ID)
 			if err != nil {

@@ -296,20 +296,26 @@ These items are not strictly required to deploy, but they materially limit the s
 
 **Why this is P2:** subscribers can't tell if a quiet subscription is healthy or broken. Heartbeats are part of the spec's reliability story.
 
-### 2.7 Auth re-check at delivery prep
+### 2.7 Auth re-check at delivery prep — RESOLVED (MVP)
 
 **Source:** [docs/low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) §3 "submatcher"; engine merge LLD ambiguity #5
 
-**Status:** `internal/engine/submatcher/` has a `FanoutAuthRevoked` decision in the public API but the worker doesn't drive it because the project has no `AuthValidator.Recheck()` SPI yet. The hook is in place; the integration is deferred.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/api/auth/recheck.go` defines the `Rechecker` SPI: `Recheck(ctx, clientID, subscriptionID) (RecheckStatus, error)`. A `CachedRechecker` wraps any implementation with a subscription-level TTL cache; the cache stores both Active and Revoked outcomes (operators can call `Invalidate` on a revocation signal to force a re-fetch). `AlwaysActiveRechecker` is the default for deployments without a revocation surface. The submatcher worker exposes `WithAuthRechecker(r)` and `WithStateUpdater(u)` Options; on `Recheck → Revoked` the worker swaps the decision to `FanoutAuthRevoked`, suppresses the deliveries insert, and (if a state updater is wired) transitions the subscription to `status='error'` atomically with the absence of the row.
 
-**What's missing:**
+**What landed:**
 
-- Define the `AuthValidator.Recheck(ctx, subscriptionID) (Active, error)` SPI in `internal/api/auth/`
-- Wire submatcher to call it before fanout for each candidate subscription
-- Cache rechecks (subscription-level TTL) to avoid hammering the auth path
-- Tests: revoked subscription stops receiving deliveries within configured TTL
+- `internal/api/auth/recheck.go`: `Rechecker` SPI, `CachedRechecker` wrapper with `Invalidate`, `AlwaysActiveRechecker` default
+- `internal/engine/submatcher/worker.go`: `AuthRechecker` local interface, `SubscriptionStateUpdater` SPI, `WithAuthRechecker`/`WithStateUpdater` Options, fanout-time integration with fail-open on transient errors
+- Unit tests for the cached recheck SPI: cache hits within TTL, refresh after expiry, explicit `Invalidate`, fail-open on inner error, TTL=0 bypass
+- Integration tests for the worker: revoked subscription gets no delivery row + state updater is called; transient recheck error fails open and the delivery is written
 
-**Why this is P2:** subscriptions whose owning client is revoked continue to receive notifications until the next manual delete. That's a confidentiality risk.
+**What's still pending (post-MVP):**
+
+- Production wiring of a real `Rechecker` against the `auth_clients` table (today the production wiring still installs `AlwaysActiveRechecker`); a follow-up branch can add a Postgres-backed implementation that reads `auth_clients.active` (or equivalent) per subscription's owning `client_id`
+- A `SubscriptionsRepo`-backed `MarkErrorRevoked` for `WithStateUpdater` (the SPI is defined; the implementation is not wired yet — the worker handles a nil updater gracefully)
+- Per-recheck metrics (cached-hit-rate, recheck-call latency)
+
+**Why this is P2:** subscriptions whose owning client is revoked continue to receive notifications until the next manual delete. The MVP closes the structural gap (the SPI + the worker hook); a real auth-store integration is the operational follow-up.
 
 ### 2.8 OpenTelemetry trace export configuration — RESOLVED
 
