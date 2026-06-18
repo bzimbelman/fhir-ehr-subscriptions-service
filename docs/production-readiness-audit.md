@@ -189,7 +189,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | N-1.1 | `HasScope` is O(n); cache as `map[string]struct{}` | RESOLVED | `a2318e9` | already addressed under S-3.5 at audit time |
 | N-1.2 | `equalJSON` swallows unmarshal errors | RESOLVED | `6649d9b` | falls back to `bytes.Equal` on parse failure; test `TestN1_EqualJSONMalformedFallsBackToBytes` |
 | N-1.3 | `crypto/rand.Read` failure no `rand_failures_total` | RESOLVED | `6649d9b` | new `RandFailureRecorder` interface + `Metrics.RandFailuresTotal` |
-| N-1.4 | `NotFound`/`MethodNotAllowed` rely on upstream auth wiring | DEFERRED | — | Reclassified — chi.Middleware-typed Auth wiring touches every wiring caller |
+| N-1.4 | `NotFound`/`MethodNotAllowed` rely on upstream auth wiring | RESOLVED | story/58 | new `handlers.Middleware` typed alias + required `Deps.Auth` slot; `RegisterRoutes` panics when `Auth==nil` and installs the middleware on the chi Group that owns NotFound/MethodNotAllowed; tests in `auth_middleware_test.go` assert 401 on both catch-all paths without auth |
 | N-1.5 | email Subject CRLF strip | RESOLVED | `2c8e258` | flows through `stripCRLF` before write; test `TestN1_BuildMIMEStripsCRLFFromSubject` |
 | N-1.6 | `formatTraceparent` doesn't validate hex | RESOLVED | `2c8e258` | drops non-hex bytes pre-pad; test `TestN1_FormatTraceparentEmitsHexOnly` |
 | N-1.7 | WS ack handling no eventNumber-in-sent-set check | RESOLVED | `79921ca` | `deliverAck` returns sent-set hit; emits `MetricUnknownAckTotal` on rogue acks |

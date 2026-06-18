@@ -182,7 +182,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | N-1.1 | HasScope O(n) | RESOLVED | RESOLVED ✓ | a2318e9 | (under S-3.5) |
 | audit | N-1.2 | equalJSON swallows unmarshal errors | RESOLVED | RESOLVED ✓ | 6649d9b | bytes.Equal fallback |
 | audit | N-1.3 | crypto/rand.Read failure no metric | RESOLVED | RESOLVED ✓ | 6649d9b | RandFailureRecorder |
-| audit | N-1.4 | NotFound/MethodNotAllowed rely on auth wiring | DEFERRED | DEFERRED ✓ | — | chi.Middleware-typed wiring |
+| audit | N-1.4 | NotFound/MethodNotAllowed rely on auth wiring | RESOLVED | RESOLVED ✓ | story/58 | typed `handlers.Middleware`; required `Deps.Auth`; `RegisterRoutes` panics when nil and applies middleware on the Group owning NotFound/MethodNotAllowed |
 | audit | N-1.5 | email Subject CRLF strip | RESOLVED | RESOLVED ✓ | 2c8e258 | |
 | audit | N-1.6 | formatTraceparent doesn't validate hex | RESOLVED | RESOLVED ✓ | 2c8e258 | |
 | audit | N-1.7 | WS ack handling no eventNumber-in-sent-set check | RESOLVED | RESOLVED ✓ | 79921ca | MetricUnknownAckTotal |

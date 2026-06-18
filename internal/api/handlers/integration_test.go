@@ -197,6 +197,7 @@ func setupIntegration(t *testing.T) *integration {
 	}
 
 	deps := handlers.Deps{
+		Auth:          verifier.Middleware,
 		Subscriptions: handlers.NewPgSubscriptionsStore(pool),
 		Topics:        handlers.NewPgTopicsStore(pool),
 		Events:        handlers.NewPgEventsStore(pool),
@@ -215,7 +216,6 @@ func setupIntegration(t *testing.T) *integration {
 	}
 
 	r := chi.NewRouter()
-	r.Use(verifier.Middleware)
 	handlers.RegisterRoutes(r, deps)
 	httpSrv := httptest.NewServer(r)
 	t.Cleanup(httpSrv.Close)
