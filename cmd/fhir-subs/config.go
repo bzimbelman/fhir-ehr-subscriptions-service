@@ -30,6 +30,7 @@ type Config struct {
 	MLLP       MLLPConfig       `yaml:"mllp"`
 	Pipeline   PipelineConfig   `yaml:"pipeline"`
 	Channels   ChannelsConfig   `yaml:"channels"`
+	Topics     TopicsConfig     `yaml:"topics"`
 
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
@@ -198,6 +199,20 @@ type HTTPConfig struct {
 type TLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+}
+
+// TopicsConfig models topics.* fields. The CatalogDir points at a
+// directory of *.json SubscriptionTopic files the production wiring loads
+// at startup (and re-loads on SIGHUP) so the matcher's CatalogProvider has
+// non-empty content; without it the pipeline silently halts at matcher
+// step 1 (D-1).
+type TopicsConfig struct {
+	// CatalogDir is the operator-supplied directory containing one
+	// *.json SubscriptionTopic file per topic. Empty means "no operator
+	// topics"; in production this should point at a mounted ConfigMap
+	// or sidecar volume. Files are treated as `Operator` precedence
+	// (highest) under catalog.Sources.
+	CatalogDir string `yaml:"catalog_dir"`
 }
 
 // LifecycleConfig models lifecycle.* fields used by the entry point.
@@ -400,6 +415,8 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Auth.AllowInsecure = b
+		case "topics.catalog_dir":
+			cfg.Topics.CatalogDir = val
 		case "codec.active_key_version":
 			n, err := strconv.ParseInt(val, 10, 32)
 			if err != nil {
