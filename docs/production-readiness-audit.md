@@ -79,17 +79,19 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Use `hashicorp/golang-lru`, or sweep `order` correctly on expire and rebuild slice when growth exceeds 2× cap.
 - **Status:** Fixed in `708c2ad`; `Seen()` now sweeps `order` via `removeLocked`, `Put()` loops eviction so multiple ghosts can clear at once, and `maybeCompactLocked` rebuilds the underlying slice when its `cap` exceeds 2× configured cap. Tests under race detector: `jti_cache_test.go` (internal-package introspection) and `e2e/orchestrator/auth_jti_cache_eviction_test.go` (behavioural).
 
-#### B-10: Fire-and-forget activation goroutines have no shutdown / timeout / panic-recover
+#### B-10: Fire-and-forget activation goroutines have no shutdown / timeout / panic-recover — RESOLVED
 - **File:** `internal/api/handlers/subscription_handlers.go:189, 439`
 - **What:** `go s.activate(context.Background(), id)` runs the channel handshake on a fresh background ctx with no cancel, no timeout, no recover.
 - **Why it matters:** (a) shutdown drops in-flight handshakes, leaving rows stuck `requested`; (b) a channel-adapter panic crashes the process; (c) a slow vendor pins goroutine + DB conn forever.
 - **Fix:** Track in `sync.WaitGroup` keyed off server ctx; wrap `defer recover()`; `context.WithTimeout`.
+- **Resolved:** `8c7db78` (impl), `8cbd5c6` (RED tests), `2ec4de9` (e2e: api_activate_shutdown_test.go, api_activate_panic_test.go). New `Deps.LifecycleCtx` / `Deps.ActivationTimeout` (default 30s) / `Deps.ActivationWaitGroup`; new `spawnActivate` helper in `internal/api/handlers/activation.go` runs the goroutine under the WaitGroup with a derived `context.WithTimeout` and a `defer recover()` that logs, increments `fhir_subs_api_activate_panic_total`, and best-effort flips the row to `error`. `activate()` falls back to a fresh background ctx for the status / audit bookkeeping when the per-call ctx is dead.
 
-#### B-11: SSRF — subscriber-supplied endpoint URL is not validated
+#### B-11: SSRF — subscriber-supplied endpoint URL is not validated — RESOLVED
 - **File:** `internal/api/handlers/subscription_handlers.go:74-80, 100-102`
 - **What:** `internal.Endpoint` is taken verbatim from the JSON body; only `format: uri`. `http://169.254.169.254/...`, `http://localhost:5432`, `file:///etc/passwd`, `gopher://` reach the rest-hook channel intact.
 - **Why it matters:** Classic SSRF — on EKS/GKE this exfiltrates IAM credentials. Egress filtering bypassed.
 - **Fix:** Allowlist schemes (`https://` only in prod), block private/link-local/loopback CIDRs, optional configurable allow-host list.
+- **Resolved:** `16a1806` (impl), `209685d` (RED tests), `2ec4de9` (e2e: api_ssrf_metadata_test.go, api_ssrf_localhost_test.go, api_ssrf_https_required_test.go). New `URLValidator` interface (`internal/api/handlers/url_validator.go`) with config-driven scheme allowlist (https default, opt-in http), DNS-aware blocks for loopback / unspecified / link-local / RFC1918 / multicast / IPv6 ULA / cloud-metadata IPs, plus a sentinel `ErrSSRFBlocked` and an `AllowHosts` bypass for trusted internal hosts. Wired through `Deps.URLValidator`; create / update emit fhirerror 400 + `validation_failures{kind=ssrf}` before the row is persisted.
 
 #### B-12: JWKS fetch is unauthenticated, unrestricted, and uses `http.DefaultClient` (no timeout, no body cap) — **RESOLVED** (`9045845`)
 - **File:** `internal/api/auth/token_endpoint.go:97-99`, `internal/api/auth/verifier.go:106`
@@ -98,11 +100,12 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Dedicated client with 5s timeout; require `https://`; enforce host allowlist; `io.LimitReader(resp.Body, 1MiB)`.
 - **Status:** Fixed in `9045845`; shared `jwksPolicy` used by both token endpoint and verifier — `https`-only by default (opt-in `AllowInsecureJWKS` for local dev), optional `JWKSAllowedHosts` allowlist, dedicated `http.Client` with `DefaultJWKSFetchTimeout` (5 s, configurable via `JWKSFetchTimeout`), `io.LimitReader` capped at `MaxJWKSBodyBytes` (1 MiB). Tests: `jwks_fetch_test.go` and `e2e/orchestrator/auth_jwks_https_only_test.go`.
 
-#### B-13: Audit log persists full request body (PHI / secrets at rest in plaintext)
+#### B-13: Audit log persists full request body (PHI / secrets at rest in plaintext) — RESOLVED
 - **File:** `internal/api/handlers/subscription_handlers.go:184, 433`
 - **What:** Audit `Append(...)` is called with the full JSON request body (up to 1MB) on create and update.
 - **Why it matters:** FHIR Subscription resources can carry `header[]` (bearer tokens for outbound calls) and PII. Plaintext at rest violates HIPAA minimum-necessary, breaks secret-rotation, and inflates storage.
 - **Fix:** Strip secret-bearing fields (Authorization headers etc.) before persisting; cap canonical size; consider hashing.
+- **Resolved:** `759c3a8` (impl), `3587d52` (RED tests), `2ec4de9` (e2e: api_audit_redaction_test.go). New `RedactSubscriptionForAudit` (`internal/api/handlers/audit_redact.go`) replaces values of secret-named JSON keys (`header`, `headers`, `authorization`, `token`, `apikey`, `privatekey`, `secret`, `password`, ...) with `[REDACTED]`, scrubs JWT-shape / PEM-armored / long-base64 substrings, and caps canonical bytes at `Deps.AuditMaxBytes` (default 16 KiB) with a parseable truncation envelope. `createSubscription` and `updateSubscription` route the request body through the redactor before `Audit.Append`.
 
 #### B-14: Email STARTTLS default is `Preferred` (cleartext fallback) for a healthcare service
 - **File:** `internal/channel/email/email.go:79-80, 213-220`
