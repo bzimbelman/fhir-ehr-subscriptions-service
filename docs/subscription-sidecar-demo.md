@@ -112,18 +112,23 @@ messages:
 
 **Estimated work:** small — wraps existing `e2e/mocksub/resthook.go` + adds a `POST /Subscription` client.
 
-### Gap 5 — Docker-compose for one-command spin-up
+### Gap 5 — Docker-compose for one-command spin-up — RESOLVED
 
-**Source:** none — would be net new for the demo
+**Source:** none — net new for the demo (OpenProject #82)
 
-**What the demo needs:** a `docker-compose.yml` (probably under `demo/` or `examples/`) that brings up:
-- Postgres 16 (the bridge's only dependency)
-- The bridge itself (built from this repo)
-- Optional: a pre-seeded topic catalog volume
+**Status:** RESOLVED. `demo/docker-compose.yml` brings up `postgres:16-alpine`
+plus a `bridge` service built from the repo's existing `Dockerfile`. The
+bridge container mounts `demo/config.yaml` (insecure HTTP, MLLP listener
+on `:2575`, pinned demo AES-GCM codec key, no audience -> no-op auth
+middleware) and `demo/topics/` (the SubscriptionTopic JSON seeded by
+gap-6, OpenProject #83) read-only at the paths the production wiring
+expects. `cd demo && docker compose up -d` brings the bridge to
+`/readyz` 200 within ~60s. See `demo/README-compose.md` for a focused
+reference and `demo/README.md` (gap-10) for the operator walkthrough.
 
-**Why we need it:** zero-friction setup. `docker compose up` and the bridge is listening.
-
-**Estimated work:** small. Existing `Dockerfile` builds the binary; compose just wires it up.
+The compose stack is multi-arch (postgres:16-alpine + a
+source-built bridge image), so it works on Apple Silicon and amd64
+Linux/Mac without a `platform:` override.
 
 ### Gap 6 — Demo topic catalog
 

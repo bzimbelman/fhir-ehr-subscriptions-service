@@ -252,7 +252,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | demo | gap-2 | Production binary doesn't start pipeline workers | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | demo doc updated; `cmd/fhir-subs/wiring.go:311-315` launches all four pipeline workers |
 | demo | gap-3 | No CLI publisher tool | (open in doc) | OPEN ✗ | — | no `cmd/demo-publisher/` |
 | demo | gap-4 | No CLI subscriber tool | (open in doc) | OPEN ✗ | — | no `cmd/demo-subscriber/` |
-| demo | gap-5 | Docker-compose for one-command spin-up | (open in doc) | OPEN ✗ | — | Dockerfile exists; no compose under demo/ |
+| demo | gap-5 | Docker-compose for one-command spin-up | RESOLVED | RESOLVED ✓ | story/82-demo-docker-compose-v2 (#82) | `demo/docker-compose.yml` brings up postgres:16-alpine + bridge built from `Dockerfile`; `demo/config.yaml` + `demo/topics/` mounted as read-only volumes; `cd demo && docker compose up -d` brings the bridge to /readyz=200 within ~60s |
 | demo | gap-6 | Demo topic catalog | (open in doc) | OPEN ✗ | — | no demo/topics/ |
 | demo | gap-7 | Subscription filter shape demo-friendly | RESOLVED | RESOLVED ✓ | 3d80c7d / 04e2c36 (B-23, merged 8096936) | demo doc updated; topic catalog rejects unsupported filters at load, matcher fail-closes on shortlist |
 | demo | gap-8 | Default adapter HL7 → FHIR translation | (open in doc) | OPEN ✗ | — | adapters/default/ is still passthrough |
