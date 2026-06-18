@@ -13,6 +13,12 @@
 //     the supported subset documented in ADR 0006
 //   - The immutable Catalog handle the matcher reads
 //
+// The supported FHIR search-parameter set is closed: every parameter
+// referenced by a topic's queryCriteria or canFilterBy MUST be in
+// SupportedSearchParameters() or the topic is rejected at load time
+// (B-23). Keep that list in lockstep with the matcher's
+// extractFieldValues switch.
+//
 // Hot-reload, persistence to subscription_topics, and operator-mounted
 // directories are handled by callers (lifecycle / topics module).
 package catalog
@@ -21,6 +27,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -160,6 +167,8 @@ type Catalog struct {
 	byURL       map[string]*Topic
 	byResource  map[string][]*Topic
 	byEventCode map[string][]*Topic
+	rejected    []Rejection
+	overridden  []Override
 }
 
 // All returns every topic. Order is canonical-URL ascending.
@@ -198,6 +207,30 @@ func (c *Catalog) Get(canonicalURL string) *Topic {
 	return c.byURL[canonicalURL]
 }
 
+// Rejected returns the per-load rejection diagnostics surfaced through
+// the catalog so /readyz / healthcheck endpoints can read them without
+// keeping the original Report (B-25).
+func (c *Catalog) Rejected() []Rejection {
+	if c == nil {
+		return nil
+	}
+	out := make([]Rejection, len(c.rejected))
+	copy(out, c.rejected)
+	return out
+}
+
+// Overridden returns the (url, version) pairs where a higher-priority
+// override was rejected at load time and the catalog fell back to a
+// working lower-priority topic (B-25).
+func (c *Catalog) Overridden() []Override {
+	if c == nil {
+		return nil
+	}
+	out := make([]Override, len(c.overridden))
+	copy(out, c.overridden)
+	return out
+}
+
 // Rejection records why a single raw topic failed to enter the catalog.
 type Rejection struct {
 	Origin string
@@ -205,10 +238,25 @@ type Rejection struct {
 	Reason string
 }
 
+// Override records a (url, version) pair where a higher-priority
+// candidate failed to compile and the catalog fell back to a working
+// lower-priority topic. Surfaced so an operator typo cannot silently
+// shadow a working built-in (B-25).
+type Override struct {
+	URL        string
+	Version    string
+	FromOrigin string // origin of the topic actually used (lower priority)
+	FromSource Source
+	ToOrigin   string // origin of the rejected higher-priority candidate
+	ToSource   Source
+	Reason     string
+}
+
 // Report is what Load returns.
 type Report struct {
-	Catalog  *Catalog
-	Rejected []Rejection
+	Catalog    *Catalog
+	Rejected   []Rejection
+	Overridden []Override
 }
 
 // supportedTokenModifiers, supportedReferenceModifiers, etc., enforce
@@ -220,7 +268,43 @@ var (
 	// Unsupported modifiers we explicitly call out so the rejection
 	// message names them. Compile-time list per ADR 0006.
 	knownUnsupportedModifiers = stringSet("above", "below", "type", "text")
+
+	// supportedSearchParameters is the closed set of FHIR search
+	// parameters the matcher's extractFieldValues can resolve. A
+	// topic that references any other parameter is rejected at
+	// catalog load time (B-23) so it cannot silently fail to match
+	// at run time.
+	//
+	// Keep in lockstep with internal/matcher.matcher.go's
+	// extractFieldValues switch.
+	supportedSearchParameters = stringSet(
+		"status",
+		"subject",
+		"patient",
+		"code",
+		"category",
+		"name",
+		"_lastUpdated",
+	)
 )
+
+// SupportedSearchParameters returns the closed list of FHIR search
+// parameters the matcher can evaluate. Topics referencing any other
+// parameter are rejected at catalog load.
+func SupportedSearchParameters() []string {
+	out := make([]string, 0, len(supportedSearchParameters))
+	for k := range supportedSearchParameters {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// IsSupportedSearchParameter reports whether p is in the supported
+// FHIR search-parameter subset.
+func IsSupportedSearchParameter(p string) bool {
+	return supportedSearchParameters[p]
+}
 
 func stringSet(ss ...string) map[string]bool {
 	m := make(map[string]bool, len(ss))
@@ -229,6 +313,11 @@ func stringSet(ss ...string) map[string]bool {
 	}
 	return m
 }
+
+// ErrStrictTopicLoad is returned by LoadStrict when at least one topic
+// failed to compile during a strict-mode load. The error wraps every
+// rejection so operators see all failures at once.
+var ErrStrictTopicLoad = errors.New("catalog: strict load: one or more topics rejected")
 
 // Load gathers topics from every source, validates each against the
 // embedded JSON Schema, compiles to Topic, applies precedence, and
@@ -247,18 +336,20 @@ func Load(sources Sources) (Report, error) {
 		raw    RawTopic
 		source Source
 	}
-	// Order of concatenation matters only for stable iteration in
-	// tests; the priority comparison below is what actually decides
-	// who wins.
+	// Walk sources in priority order: highest priority first. The
+	// first successfully-compiled candidate per (url, version) wins;
+	// later (lower-priority) compile-OK candidates are ignored. A
+	// later success after a higher-priority *failure* is recorded as
+	// an Override fallback so operators see they shadowed a typo.
 	all := make([]entry, 0, len(sources.BuiltIn)+len(sources.Adapter)+len(sources.Operator))
-	for _, r := range sources.BuiltIn {
-		all = append(all, entry{r, SourceBuiltIn})
+	for _, r := range sources.Operator {
+		all = append(all, entry{r, SourceOperator})
 	}
 	for _, r := range sources.Adapter {
 		all = append(all, entry{r, SourceAdapter})
 	}
-	for _, r := range sources.Operator {
-		all = append(all, entry{r, SourceOperator})
+	for _, r := range sources.BuiltIn {
+		all = append(all, entry{r, SourceBuiltIn})
 	}
 
 	type winner struct {
@@ -267,17 +358,86 @@ func Load(sources Sources) (Report, error) {
 	}
 	winners := map[string]winner{} // key: url + "|" + version
 	rejected := []Rejection{}
+	overridden := []Override{}
+	// failedHigher tracks the first higher-priority failure per
+	// (url, version) so we can record the Override when a lower
+	// priority topic later succeeds.
+	type failure struct {
+		origin string
+		src    Source
+		reason string
+	}
+	failedHigher := map[string]failure{}
+
+	tryParseURLVersion := func(b []byte) (string, string) {
+		var p struct {
+			URL     string `json:"url"`
+			Version string `json:"version"`
+		}
+		_ = json.Unmarshal(b, &p)
+		return p.URL, p.Version
+	}
 
 	for _, e := range all {
 		topic, rejection := compileOne(sch, e.raw, e.source)
 		if rejection != nil {
 			rejected = append(rejected, *rejection)
+			// Record as a higher-priority failure keyed on
+			// (url, version) when those are knowable. URL/Version
+			// may be empty for a parse failure; those failures
+			// can never be overridden anyway.
+			if rejection.URL != "" {
+				url, version := tryParseURLVersion(e.raw.Bytes)
+				if url == "" {
+					url = rejection.URL
+				}
+				if version == "" {
+					// best-effort
+					version = "*"
+				}
+				key := url + "|" + version
+				if _, has := failedHigher[key]; !has {
+					failedHigher[key] = failure{
+						origin: e.raw.Origin,
+						src:    e.source,
+						reason: rejection.Reason,
+					}
+				}
+			} else {
+				url, version := tryParseURLVersion(e.raw.Bytes)
+				if url != "" && version != "" {
+					key := url + "|" + version
+					if _, has := failedHigher[key]; !has {
+						failedHigher[key] = failure{
+							origin: e.raw.Origin,
+							src:    e.source,
+							reason: rejection.Reason,
+						}
+					}
+				}
+			}
 			continue
 		}
 		key := topic.CanonicalURL + "|" + topic.Version
-		prev, ok := winners[key]
-		if !ok || sourcePriority(e.source) > sourcePriority(prev.src) {
-			winners[key] = winner{topic, e.source}
+		if _, ok := winners[key]; ok {
+			// A higher-priority winner is already in the map.
+			// Skip silently.
+			continue
+		}
+		winners[key] = winner{topic, e.source}
+
+		// If a higher-priority candidate had failed at this
+		// (url, version), record the override fallback.
+		if f, ok := failedHigher[key]; ok && sourcePriority(f.src) > sourcePriority(e.source) {
+			overridden = append(overridden, Override{
+				URL:        topic.CanonicalURL,
+				Version:    topic.Version,
+				FromOrigin: e.raw.Origin,
+				FromSource: e.source,
+				ToOrigin:   f.origin,
+				ToSource:   f.src,
+				Reason:     f.reason,
+			})
 		}
 	}
 
@@ -297,6 +457,8 @@ func Load(sources Sources) (Report, error) {
 		byURL:       make(map[string]*Topic, len(all2)),
 		byResource:  make(map[string][]*Topic),
 		byEventCode: make(map[string][]*Topic),
+		rejected:    append([]Rejection(nil), rejected...),
+		overridden:  append([]Override(nil), overridden...),
 	}
 	for _, t := range all2 {
 		cat.byURL[t.CanonicalURL] = t
@@ -315,7 +477,34 @@ func Load(sources Sources) (Report, error) {
 		}
 	}
 
-	return Report{Catalog: cat, Rejected: rejected}, nil
+	return Report{Catalog: cat, Rejected: rejected, Overridden: overridden}, nil
+}
+
+// LoadStrict is Load with one extra contract: any non-empty Rejected
+// list causes an error. Use this for `--strict-topics` startup mode
+// (B-25) where the operator wants the process to refuse to start with
+// a broken catalog rather than silently lose topics.
+func LoadStrict(sources Sources) (Report, error) {
+	rep, err := Load(sources)
+	if err != nil {
+		return rep, err
+	}
+	if len(rep.Rejected) > 0 {
+		var b strings.Builder
+		b.WriteString(ErrStrictTopicLoad.Error())
+		for _, r := range rep.Rejected {
+			b.WriteString("\n  - origin=")
+			b.WriteString(r.Origin)
+			if r.URL != "" {
+				b.WriteString(" url=")
+				b.WriteString(r.URL)
+			}
+			b.WriteString(" reason=")
+			b.WriteString(r.Reason)
+		}
+		return rep, fmt.Errorf("%s", b.String())
+	}
+	return rep, nil
 }
 
 func sourcePriority(s Source) int {
@@ -387,6 +576,13 @@ func compileOne(sch *jsonschema.Schema, raw RawTopic, src Source) (*Topic, *Reje
 		if cf.FilterParameter == "" {
 			continue
 		}
+		if !IsSupportedSearchParameter(cf.FilterParameter) {
+			return nil, &Rejection{
+				Origin: raw.Origin,
+				URL:    parsed.URL,
+				Reason: fmt.Sprintf("canFilterBy filterParameter %q is unsupported (matcher cannot evaluate it); supported parameters: %v", cf.FilterParameter, SupportedSearchParameters()),
+			}
+		}
 		filters = append(filters, FilterParameter{
 			Resource:  cf.Resource,
 			Parameter: cf.FilterParameter,
@@ -452,7 +648,7 @@ func compileTrigger(rt rawResourceTrigger) (Trigger, error) {
 }
 
 // parseSearchExpression splits "a=b&c:not=d" into clauses and rejects
-// modifiers / comparators outside the supported subset.
+// modifiers / comparators / parameters outside the supported subset.
 func parseSearchExpression(s string) (*SearchExpression, error) {
 	exp := &SearchExpression{Source: s}
 	for _, raw := range splitAmp(s) {
@@ -469,6 +665,14 @@ func parseSearchExpression(s string) (*SearchExpression, error) {
 			return nil, fmt.Errorf("clause %q: %w", raw, err)
 		}
 		clause.Value = value
+		// B-23: every parameter must be evaluable by the matcher.
+		// If it is not in the supported subset, fail at load time
+		// rather than at run time (where it would silently fail
+		// closed and the topic would never fire).
+		if !IsSupportedSearchParameter(clause.Parameter) {
+			return nil, fmt.Errorf("clause %q: unsupported search parameter %q (matcher cannot evaluate it); supported parameters: %v",
+				raw, clause.Parameter, SupportedSearchParameters())
+		}
 		exp.Clauses = append(exp.Clauses, clause)
 	}
 	return exp, nil
