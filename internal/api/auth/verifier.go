@@ -56,6 +56,16 @@ type VerifierConfig struct {
 	// http.DefaultClient.
 	HTTPClient *http.Client
 
+	// IssuedSecret is the HS256 key used to verify access tokens this
+	// server issued via the token endpoint. When set, tokens whose iss
+	// equals IssuedIssuer are validated against this key instead of the
+	// client's JWKS. Optional.
+	IssuedSecret []byte
+
+	// IssuedIssuer is the iss claim value the token endpoint stamps on
+	// access tokens it mints. Required if IssuedSecret is set.
+	IssuedIssuer string
+
 	// Now returns the current time. Tests substitute. Default time.Now.
 	Now func() time.Time
 }
@@ -147,23 +157,37 @@ func (v *Verifier) Authenticate(r *http.Request) (*Principal, int, string) {
 		return nil, http.StatusUnauthorized, "unknown client_id"
 	}
 
-	if client.JwksURL == "" {
-		return nil, http.StatusUnauthorized, "client has no jwks_url configured"
+	// Choose the validation path. Tokens issued by this server are
+	// HS256-signed with IssuedSecret; we detect them by iss claim.
+	iss, _ := claims["iss"].(string)
+	useServerKey := v.cfg.IssuedSecret != nil && v.cfg.IssuedIssuer != "" && iss == v.cfg.IssuedIssuer
+
+	var keyFn jwt.Keyfunc
+	var validMethods []string
+	if useServerKey {
+		secret := v.cfg.IssuedSecret
+		keyFn = func(token *jwt.Token) (any, error) { return secret, nil }
+		validMethods = []string{"HS256"}
+	} else {
+		if client.JwksURL == "" {
+			return nil, http.StatusUnauthorized, "client has no jwks_url configured"
+		}
+		kf, err := v.keyfuncFor(r.Context(), client.JwksURL)
+		if err != nil {
+			return nil, http.StatusUnauthorized, "jwks unavailable"
+		}
+		keyFn = kf.Keyfunc
+		validMethods = []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
 	}
 
-	kf, err := v.keyfuncFor(r.Context(), client.JwksURL)
-	if err != nil {
-		return nil, http.StatusUnauthorized, "jwks unavailable"
-	}
-
-	// Now verify the signature against the resolved JWKS, with strict
-	// claim validation (aud, exp, iat) using a fixed clock.
+	// Now verify the signature against the resolved key, with strict
+	// claim validation (aud, exp, iat) using the configured clock.
 	verified, err := jwt.NewParser(
-		jwt.WithValidMethods([]string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}),
+		jwt.WithValidMethods(validMethods),
 		jwt.WithIssuedAt(),
 		jwt.WithLeeway(v.cfg.ClockSkew),
 		jwt.WithTimeFunc(v.cfg.Now),
-	).Parse(tok, kf.Keyfunc)
+	).Parse(tok, keyFn)
 	if err != nil {
 		// Map common cases to specific reasons so OperationOutcome
 		// diagnostics are informative without leaking key detail.
