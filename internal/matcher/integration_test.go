@@ -13,6 +13,7 @@ package matcher_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,32 +27,53 @@ import (
 )
 
 // startPostgres spins up a Postgres 16 container or t.Skips when
-// Docker is unavailable. Same shape as the storage integration tests.
+// Docker is unavailable. Same shape as the storage integration tests,
+// with the additional belt-and-braces panic recover because some
+// testcontainers code paths (MustExtractDockerHost) panic instead of
+// returning a clean error when Docker is not running.
 func startPostgres(t *testing.T) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	container, err := tcpostgres.Run(ctx,
-		"postgres:16-alpine",
-		tcpostgres.WithDatabase("matcher_test"),
-		tcpostgres.WithUsername("test"),
-		tcpostgres.WithPassword("test"),
-		tcpostgres.BasicWaitStrategies(),
-		tcpostgres.WithSQLDriver("pgx/v5"),
-	)
-	if err != nil {
-		t.Skipf("postgres container unavailable; skipping integration test: %v", err)
+	type runResult struct {
+		url string
+		err error
 	}
-	t.Cleanup(func() {
-		_ = container.Terminate(context.Background())
-	})
-
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Skipf("connection string unavailable: %v", err)
+	res := make(chan runResult, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				res <- runResult{err: fmt.Errorf("docker not available: %v", r)}
+			}
+		}()
+		container, err := tcpostgres.Run(ctx,
+			"postgres:16-alpine",
+			tcpostgres.WithDatabase("matcher_test"),
+			tcpostgres.WithUsername("test"),
+			tcpostgres.WithPassword("test"),
+			tcpostgres.BasicWaitStrategies(),
+			tcpostgres.WithSQLDriver("pgx/v5"),
+		)
+		if err != nil {
+			res <- runResult{err: err}
+			return
+		}
+		t.Cleanup(func() {
+			_ = container.Terminate(context.Background())
+		})
+		url, err := container.ConnectionString(ctx, "sslmode=disable")
+		if err != nil {
+			res <- runResult{err: err}
+			return
+		}
+		res <- runResult{url: url}
+	}()
+	r := <-res
+	if r.err != nil {
+		t.Skipf("postgres container unavailable; skipping integration test: %v", r.err)
 	}
-	return url
+	return r.url
 }
 
 func newTestStorage(t *testing.T, url string) *storage.Storage {
