@@ -588,21 +588,22 @@ func foldICURoot(s string) string {
 }
 
 // runFHIRPath is a *minimal* gate, not a full evaluator. The LLD calls
-// for a sandboxed FHIRPath with timeout, traversal limit, and deny-list
-// (see docs/future-work.md P1.2).
+// for a sandboxed FHIRPath with wall-clock timeout, traversal limit,
+// and deny-list (docs/future-work.md P1.2). The deferred work is the
+// actual evaluator engine; the security gap (silent pass-through on
+// unknown expressions) is closed by the fail-CLOSED default below.
 //
-// Until that evaluator lands, runFHIRPath recognizes only a closed
-// set of expression shapes that the built-in topics need:
+// MVP recognized shapes (P1.2):
 //
 //   - "<Resource>.<field>.exists()" — true if the field has a value
-//   - "<Resource>.status = '<v>'" — equality
+//   - "<Resource>.<field>.empty()"  — opposite of .exists()
+//   - "<Resource>.<field> = '<v>'"  — equality, any field (was previously
+//     restricted to `.status` only; widened so common topic shapes like
+//     `Patient.gender = 'female'` evaluate correctly)
 //
-// B-24: Every other expression returns *false* (fail-CLOSED). Earlier
-// behavior fell through to `return true`, which silently fired every
-// topic carrying an unrecognized FHIRPath like
-// `Patient.deceased.empty()` on every change. Topics relying on
-// shapes the matcher cannot evaluate are surfaced at load time
-// (catalog.LoadStrictFHIRPath, when wired through) or via the
+// B-24 / P1.2: every other expression returns *false* (fail-CLOSED).
+// Topics relying on shapes the matcher cannot evaluate are surfaced at
+// load time (catalog.LoadStrictFHIRPath, when wired through) or via the
 // SetUnknownFHIRPathReporter callback.
 func runFHIRPath(expr string, resource, _ []byte) bool {
 	expr = strings.TrimSpace(expr)
@@ -618,28 +619,30 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 		prefix := strings.TrimSuffix(expr, ".exists()")
 		if i := strings.LastIndex(prefix, "."); i > 0 {
 			field := prefix[i+1:]
-			v, ok := body[field]
-			if !ok {
-				return false
-			}
-			switch x := v.(type) {
-			case string:
-				return x != ""
-			case []any:
-				return len(x) > 0
-			default:
-				_ = x
-				return v != nil
-			}
+			return fieldHasValue(body, field)
 		}
 	}
-	if i := strings.Index(expr, ".status = '"); i > 0 {
-		open := i + len(".status = '")
-		end := strings.Index(expr[open:], "'")
-		if end > 0 {
-			want := expr[open : open+end]
-			got, _ := body["status"].(string)
-			return got == want
+	if strings.HasSuffix(expr, ".empty()") {
+		prefix := strings.TrimSuffix(expr, ".empty()")
+		if i := strings.LastIndex(prefix, "."); i > 0 {
+			field := prefix[i+1:]
+			return !fieldHasValue(body, field)
+		}
+	}
+	if eq := strings.Index(expr, " = '"); eq > 0 {
+		// Find the field name (the segment between the LAST '.' before the
+		// equality marker and the marker itself). This recognizes
+		// `<Resource>.<field> = '<value>'` for any top-level field.
+		dot := strings.LastIndex(expr[:eq], ".")
+		if dot > 0 {
+			field := expr[dot+1 : eq]
+			open := eq + len(" = '")
+			end := strings.Index(expr[open:], "'")
+			if end >= 0 && field != "" {
+				want := expr[open : open+end]
+				got, _ := body[field].(string)
+				return got == want
+			}
 		}
 	}
 	// B-24: fail-CLOSED for unrecognized expressions. Notify the
@@ -650,9 +653,27 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 	return false
 }
 
+// fieldHasValue reports whether body[field] is present and non-empty.
+// Used by both .exists() and .empty() shapes.
+func fieldHasValue(body map[string]any, field string) bool {
+	v, ok := body[field]
+	if !ok {
+		return false
+	}
+	switch x := v.(type) {
+	case string:
+		return x != ""
+	case []any:
+		return len(x) > 0
+	default:
+		return v != nil
+	}
+}
+
 // IsRecognizedFHIRPath reports whether runFHIRPath knows how to
 // evaluate expr without falling through to the fail-closed default.
 // Catalog load uses it (in strict mode) to surface unsupported shapes.
+// Stays in lockstep with the recognized shapes in runFHIRPath (P1.2).
 func IsRecognizedFHIRPath(expr string) bool {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
@@ -661,13 +682,24 @@ func IsRecognizedFHIRPath(expr string) bool {
 	if strings.HasSuffix(expr, ".exists()") {
 		prefix := strings.TrimSuffix(expr, ".exists()")
 		if i := strings.LastIndex(prefix, "."); i > 0 {
+			_ = i
 			return true
 		}
 	}
-	if i := strings.Index(expr, ".status = '"); i > 0 {
-		open := i + len(".status = '")
-		if end := strings.Index(expr[open:], "'"); end > 0 {
+	if strings.HasSuffix(expr, ".empty()") {
+		prefix := strings.TrimSuffix(expr, ".empty()")
+		if i := strings.LastIndex(prefix, "."); i > 0 {
+			_ = i
 			return true
+		}
+	}
+	if eq := strings.Index(expr, " = '"); eq > 0 {
+		dot := strings.LastIndex(expr[:eq], ".")
+		if dot > 0 {
+			open := eq + len(" = '")
+			if end := strings.Index(expr[open:], "'"); end >= 0 {
+				return true
+			}
 		}
 	}
 	return false

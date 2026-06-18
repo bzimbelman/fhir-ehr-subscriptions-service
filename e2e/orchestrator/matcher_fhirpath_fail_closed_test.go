@@ -14,9 +14,13 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
 
-// TestMatcher_fhirpathFailClosed (B-24): a topic whose FHIRPath uses a
-// shape the matcher cannot evaluate must NOT match. Earlier behavior
-// fell through to `return true`, firing every event.
+// TestMatcher_fhirpathFailClosed (B-24 / P1.2): a topic whose FHIRPath
+// uses a shape the matcher cannot evaluate must NOT match. Earlier
+// behavior fell through to `return true`, firing every event.
+//
+// P1.2 widened recognized shapes to .exists()/.empty() and bare
+// equality on any field, so this test now uses a more complex
+// expression (`.where(...)`) that remains outside the MVP subset.
 func TestMatcher_fhirpathFailClosed(t *testing.T) {
 	const topic = `{
 		"resourceType": "SubscriptionTopic",
@@ -26,7 +30,7 @@ func TestMatcher_fhirpathFailClosed(t *testing.T) {
 		"resourceTrigger": [{
 			"resource": "Patient",
 			"supportedInteraction": ["create", "update"],
-			"fhirPathCriteria": "Patient.deceased.empty()"
+			"fhirPathCriteria": "Patient.name.where(use = 'official').exists()"
 		}]
 	}`
 
@@ -67,7 +71,7 @@ func TestMatcher_fhirpathFailClosed(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if lastExpr != "Patient.deceased.empty()" {
+	if lastExpr != "Patient.name.where(use = 'official').exists()" {
 		t.Errorf("reporter should receive verbatim expression; got %q", lastExpr)
 	}
 }
