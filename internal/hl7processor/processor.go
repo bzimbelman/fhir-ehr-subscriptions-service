@@ -29,6 +29,11 @@ const (
 	// DefaultReaperBatchSize bounds how many expired pending_pairs the
 	// reaper sweeps per tick. Was hardcoded inline; now a knob (S-9.6).
 	DefaultReaperBatchSize = 64
+	// DefaultMaxRowAttempts caps how many times a single hl7_message_queue
+	// row may have its processOne BeginTx fail before the framework
+	// dead-letters it (S-9.9). Mirrors the matcher (S-10.6) and submatcher
+	// (S-12) defaults.
+	DefaultMaxRowAttempts = 8
 )
 
 // Config tunes processor behavior. Zero values fall back to package
@@ -60,6 +65,18 @@ type Config struct {
 	// Per-resource-type tuning is the SPI's job; this is the framework
 	// fallback when the adapter does not specialize.
 	CorrelationHoldWindow time.Duration
+
+	// MaxRowAttempts caps how many times a single hl7_message_queue row
+	// may have its processOne transaction fail at BeginTx before the
+	// framework dead-letters it with reason=tx_begin_failed (S-9.9).
+	// Without this knob a poison row (or one that always trips the
+	// pool's BeginTx, e.g. statement_timeout on the tx-start GUC) pins
+	// the worker forever: the claim loop re-peeks it, BeginTx fails,
+	// the row stays processed=false, repeat.
+	//
+	// Default [DefaultMaxRowAttempts]. Mirrors the matcher / submatcher
+	// pattern (S-10.6 / S-12).
+	MaxRowAttempts int32
 }
 
 // withDefaults returns a copy of cfg with zero fields replaced by the
@@ -77,6 +94,9 @@ func (c Config) withDefaults() Config {
 	}
 	if out.ReaperBatchSize <= 0 {
 		out.ReaperBatchSize = DefaultReaperBatchSize
+	}
+	if out.MaxRowAttempts <= 0 {
+		out.MaxRowAttempts = DefaultMaxRowAttempts
 	}
 	return out
 }
@@ -115,6 +135,12 @@ type Deps struct {
 type Processor struct {
 	cfg  Config
 	deps Deps
+
+	// beginTx is the transactional entry point used by processOne and
+	// writeDeadLetter. Defaults to deps.Pool.BeginTx; tests inject a
+	// failure-injecting wrapper to drive the S-9.9 retry-budget path
+	// without rolling the whole pool.
+	beginTx func(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error)
 
 	wg       sync.WaitGroup
 	stopOnce sync.Once
@@ -159,11 +185,19 @@ func New(cfg Config, deps Deps) (*Processor, error) {
 		deps.Now = time.Now
 	}
 
-	return &Processor{
+	p := &Processor{
 		cfg:     cfg.withDefaults(),
 		deps:    deps,
 		stopped: make(chan struct{}),
-	}, nil
+	}
+	p.beginTx = p.defaultBeginTx
+	return p, nil
+}
+
+// defaultBeginTx is the production beginTx delegate. It calls the pool
+// directly; tests override [Processor.beginTx] to drive failure paths.
+func (p *Processor) defaultBeginTx(ctx context.Context, opts pgx.TxOptions) (pgx.Tx, error) {
+	return p.deps.Pool.BeginTx(ctx, opts)
 }
 
 // discardWriter is a no-op io.Writer used when the caller passes a nil
@@ -301,15 +335,9 @@ func (p *Processor) peekUnprocessed(ctx context.Context) ([]uuid.UUID, error) {
 // partner-row updates commit atomically. LLD §4.2.
 func (p *Processor) processOne(ctx context.Context, id uuid.UUID) {
 	start := p.deps.Now()
-	tx, err := p.deps.Pool.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := p.beginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		p.metrics().Inc(MetricMessagesProcessed, map[string]string{"outcome": OutcomeRolledBack})
-		p.deps.Logger.ErrorContext(ctx, "hl7processor: begin tx",
-			slog.String("component", "hl7_processor"),
-			slog.String("adapter_id", p.cfg.AdapterID),
-			slog.String("source_message_id", id.String()),
-			slog.String("error", err.Error()),
-		)
+		p.handleBeginTxFailure(ctx, id, err)
 		return
 	}
 	defer func() {
@@ -372,6 +400,74 @@ func (p *Processor) processOne(ctx context.Context, id uuid.UUID) {
 	dur := p.deps.Now().Sub(start).Seconds()
 	p.metrics().Observe(MetricStageDurationSeconds, dur, map[string]string{"stage": "translate"})
 	p.metrics().Observe(MetricProcessingDuration, dur, map[string]string{"outcome": outcomeLabel(outcome.kind)})
+}
+
+// handleBeginTxFailure is the per-row retry-budget enforcement for the
+// processOne BeginTx failure path (S-9.9). Without it, a row whose
+// tx-begin always fails (db blip, pool exhaustion, statement_timeout on
+// a session GUC) stays processed=false forever — the claim loop
+// re-peeks it on the next tick and the same failure repeats, pinning
+// the worker.
+//
+// We bump hl7_message_queue.attempt_count via a fresh, short-lived
+// statement on the pool — *not* the failed transaction — so a transient
+// pool error on BeginTx does not also block the increment. When the
+// new attempt_count exceeds the configured cap, the row is dead-lettered
+// with reason=tx_begin_failed; otherwise the loop falls through and the
+// next claim cycle retries.
+func (p *Processor) handleBeginTxFailure(ctx context.Context, id uuid.UUID, beginErr error) {
+	p.metrics().Inc(MetricMessagesProcessed, map[string]string{"outcome": OutcomeTxBeginFailed})
+	p.metrics().Inc(MetricHL7TxBeginFailed, map[string]string{"adapter_id": p.cfg.AdapterID})
+
+	p.deps.Logger.ErrorContext(ctx, "hl7processor: begin tx",
+		slog.String("component", "hl7_processor"),
+		slog.String("adapter_id", p.cfg.AdapterID),
+		slog.String("source_message_id", id.String()),
+		slog.String("error", beginErr.Error()),
+	)
+
+	attempts, err := p.deps.HL7Queue.IncrementAttemptCount(ctx, p.deps.Pool, id)
+	if err != nil {
+		// The DB is too sick to even bump the counter. The row stays
+		// processed=false; the next tick retries. We log so operators
+		// see compounded failure but do not dead-letter — a Postgres
+		// outage must not silently dead-letter the inbound queue.
+		p.deps.Logger.ErrorContext(ctx, "hl7processor: increment attempt_count after begin tx failure",
+			slog.String("component", "hl7_processor"),
+			slog.String("adapter_id", p.cfg.AdapterID),
+			slog.String("source_message_id", id.String()),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+
+	if attempts <= p.cfg.MaxRowAttempts {
+		// Budget remains; transient failure, let the next claim cycle
+		// retry the row.
+		return
+	}
+
+	// Budget exhausted — dead-letter so the row leaves the unprocessed
+	// queue and an operator artifact lands in dead_letters.
+	row, getErr := p.deps.HL7Queue.GetByID(ctx, p.deps.Pool, id)
+	if getErr != nil || row == nil {
+		// Same DB-too-sick logic as above; log and let the next tick try.
+		if getErr != nil {
+			p.deps.Logger.ErrorContext(ctx, "hl7processor: lookup row for tx_begin_failed dead-letter",
+				slog.String("component", "hl7_processor"),
+				slog.String("adapter_id", p.cfg.AdapterID),
+				slog.String("source_message_id", id.String()),
+				slog.String("error", getErr.Error()),
+			)
+		}
+		return
+	}
+
+	terr := &translateError{
+		Class: ErrorClassTxBeginFailed,
+		Err:   fmt.Errorf("tx_begin_failed after %d attempts: %w", attempts, beginErr),
+	}
+	p.writeDeadLetter(ctx, *row, terr)
 }
 
 // lockRow acquires SELECT FOR UPDATE on the queue row and returns its

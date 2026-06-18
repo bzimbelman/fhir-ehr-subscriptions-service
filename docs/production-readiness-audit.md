@@ -131,7 +131,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-9.6 | `ReaperBatchSize`, claim/idle knobs | PARTIAL | `acd798d` | `ReaperBatchSize` added; others were already exposed |
 | S-9.7 | No `MetricClaimCycleErrors` emission | RESOLVED | `acd798d` | emitted from claim and reaper loops |
 | S-9.8 | `peekUnprocessed` lost-race window | RESOLVED | — | addressed-by-design: `FOR UPDATE SKIP LOCKED` + `processed=false` predicate |
-| S-9.9 | `BeginTx` failure leaves row unprocessed | DEFERRED | — | per-row retry budget tracked under S-12 pattern |
+| S-9.9 | `BeginTx` failure leaves row unprocessed | RESOLVED | story/53 | `Config.MaxRowAttempts` (default 8) + `hl7_message_queue.attempt_count` column + `ErrorClassTxBeginFailed` dead-letter; tests in `retry_budget_test.go` + `retry_budget_integration_test.go` |
 | S-9.10 | MSH-7 not used for occurred timestamp | RESOLVED | `acd798d` | `messageDateTime(parsed)` |
 | S-9.11 | Same-kind paired-hold collision metric missing | RESOLVED | `acd798d` | `MetricSameKindCollision` |
 | S-9.12 | Translate panics misclassified as `ErrorClassParse` | RESOLVED | `acd798d` | `vendorPanicError` sentinel + `isPanicError` |
