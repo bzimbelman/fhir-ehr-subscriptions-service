@@ -1,5 +1,8 @@
 # fhir-ehr-subscriptions-service
 
+> Hosted documentation: <https://bzimbelman.github.io/fhir-ehr-subscriptions-service/>
+> (built from `docs/` via MkDocs Material — see `mkdocs.yml`).
+
 `fhir-ehr-subscriptions-service` is a free and open source server that bridges
 **FHIR Subscriptions** on one side and **Electronic Health Record (EHR) systems**
 on the other. It allows external applications, registries, and analytics
