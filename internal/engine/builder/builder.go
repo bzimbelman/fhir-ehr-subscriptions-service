@@ -26,7 +26,11 @@
 //     follow-up patch will plumb the HydrationClient.
 //   - serialize XML. The envelope's content type is honored only for
 //     application/fhir+json in v1; XML is deferred behind the
-//     version-shim LLD.
+//     version-shim LLD. The `application/fhir+xml` content type is
+//     rejected up front at the subscription-create / subscription-update
+//     API path (handlers.requestsFHIRXML; S-12.9), so a Build call
+//     should never see one. The contentType field is hardcoded to
+//     ContentTypeFHIRJSON below as a result.
 package builder
 
 import (
