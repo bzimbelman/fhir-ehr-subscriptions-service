@@ -7,13 +7,11 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,6 +23,9 @@ import (
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mockehr"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mocksub"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // Harness is the per-process e2e fixture. One TestMain wires it up; every
@@ -280,20 +281,15 @@ func setupHarness(ctx context.Context) (*Harness, func(), error) {
 	return h, cleanup, nil
 }
 
-// applyMigrations reads migrations/0001_init.sql from the repo root and
-// executes it against the pool. Retries pool connection up to 30s to
+// applyMigrations runs the embedded internal/infra/storage/migrate
+// migration set against the pool. Retries pool connection up to 30s to
 // tolerate slow port-forwarder establishment on macOS Docker hosts.
+//
+// We use migrate.Up rather than reading migrations/0001_init.sql by hand
+// so the orchestrator picks up every embedded migration (e.g., 0002 for
+// ws_binding_tokens.consumed_at). The earlier raw-Exec approach silently
+// skipped 0002 and broke the WSS scenarios.
 func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	root, err := repoRoot()
-	if err != nil {
-		return err
-	}
-	migrationPath := filepath.Join(root, "migrations", "0001_init.sql")
-	body, err := os.ReadFile(migrationPath)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", migrationPath, err)
-	}
-
 	deadline := time.Now().Add(30 * time.Second)
 	var pingErr error
 	for time.Now().Before(deadline) {
@@ -308,42 +304,37 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	if pingErr != nil {
 		return fmt.Errorf("waiting for postgres: %w", pingErr)
 	}
-
-	if _, err := pool.Exec(ctx, string(body)); err != nil {
-		return fmt.Errorf("apply %s: %w", migrationPath, err)
+	if err := migrate.Up(ctx, pool); err != nil {
+		return fmt.Errorf("migrate.Up: %w", err)
 	}
 	return nil
 }
 
-// repoRoot walks up from the orchestrator package until it finds go.mod.
-func repoRoot() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	for d := wd; d != "/" && d != ""; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
-			return d, nil
-		}
-	}
-	return "", errors.New("repo root (go.mod) not found from " + wd)
-}
-
 // InsertResourceChange writes a row directly to resource_changes for the
-// helper-level tests. Returns the correlation id (uuid string).
+// helper-level tests. The body is encrypted under the same harness
+// codec the matcher decrypts with — earlier versions wrote plaintext,
+// which broke the matcher's claim loop the moment it ran in the same
+// process as a scenario test.
+//
+// Returns the correlation id (uuid string).
 func (h *Harness) InsertResourceChange(ctx context.Context,
 	adapterID, resourceType, changeKind string, body []byte) (string, error) {
-	corrID := uuid.NewString()
-	_, err := h.DB.Exec(ctx, `
-		insert into resource_changes
-		  (id, adapter_id, correlation_id, resource_type, change_kind,
-		   resource, occurred_at, created_month)
-		values
-		  (gen_random_uuid(), $1, $2::uuid, $3, $4, $5,
-		   now(), date_trunc('month', now())::date)
-	`, adapterID, corrID, resourceType, changeKind, body)
+	cd, err := codec.New(codec.NewStaticKeyProvider(map[int32][]byte{1: harnessCodecKey()}, 1))
 	if err != nil {
 		return "", err
 	}
-	return corrID, nil
+	repo := repos.NewResourceChangesRepo(cd)
+	corrID := uuid.New()
+	_, _, err = repo.Insert(ctx, h.DB, repos.ResourceChangeRow{
+		AdapterID:     adapterID,
+		CorrelationID: corrID,
+		ResourceType:  resourceType,
+		ChangeKind:    repos.ChangeKind(changeKind),
+		Resource:      body,
+		OccurredAt:    time.Now(),
+	})
+	if err != nil {
+		return "", err
+	}
+	return corrID.String(), nil
 }

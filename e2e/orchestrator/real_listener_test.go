@@ -11,9 +11,10 @@ import (
 	"net"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/mllp"
 )
 
@@ -57,7 +58,14 @@ func startRealMLLPListener(ctx context.Context, pool *pgxpool.Pool) (*realMLLPLi
 		OnPersistFail:      mllp.OnPersistFailNack,
 	}
 
-	persister := &pgxPersister{pool: pool}
+	cd, err := codec.New(codec.NewStaticKeyProvider(map[int32][]byte{1: harnessCodecKey()}, 1))
+	if err != nil {
+		return nil, fmt.Errorf("real mllp listener: codec: %w", err)
+	}
+	persister := &pgxPersister{
+		pool: pool,
+		repo: repos.NewHl7MessageQueueRepo(cd),
+	}
 
 	l := mllp.New(cfg, persister, nil /* metrics */, nil /* logger */)
 	if err := l.Start(ctx); err != nil {
@@ -85,28 +93,40 @@ func (r *realMLLPListener) Close() error {
 	return r.listener.Shutdown(ctx)
 }
 
-// pgxPersister implements mllp.Persister against a pgxpool. It does the
-// minimal INSERT the test harness needs; the production path will go
-// through internal/infra/storage's repository in a later commit.
+// pgxPersister implements mllp.Persister against a pgxpool, going
+// through the production repos.Hl7MessageQueueRepo so raw_body lands in
+// the table encrypted under the same codec the hl7processor uses to
+// decrypt it. Earlier versions of this Persister did a hand-rolled
+// INSERT with a plaintext raw_body column, which broke the moment the
+// hl7processor came online and tried to decrypt.
 type pgxPersister struct {
 	pool *pgxpool.Pool
+	repo *repos.Hl7MessageQueueRepo
 }
 
 func (p *pgxPersister) Persist(ctx context.Context, row mllp.QueueRow) error {
-	id := row.ID
-	if id == uuid.Nil {
-		id = uuid.New()
-	}
-	_, err := p.pool.Exec(ctx, `
-		insert into hl7_message_queue
-		  (id, listener_endpoint, peer_addr, mllp_message_id,
-		   correlation_id, raw_body, received_at)
-		values
-		  ($1, $2, $3, NULLIF($4, ''), $5::uuid, $6, $7)
-	`, id, row.ListenerEndpoint, row.PeerAddr, row.MLLPMessageID,
-		row.CorrelationID, row.Body, row.ReceivedAt)
+	_, err := p.repo.Insert(ctx, p.pool, repos.Hl7MessageQueueRow{
+		ListenerEndpoint: row.ListenerEndpoint,
+		PeerAddr:         row.PeerAddr,
+		MllpMessageID:    row.MLLPMessageID,
+		CorrelationID:    row.CorrelationID,
+		RawBody:          row.Body,
+		ReceivedAt:       row.ReceivedAt,
+	})
 	if err != nil {
 		return fmt.Errorf("%w: %v", mllp.ErrPersistTransient, err)
 	}
 	return nil
+}
+
+// harnessCodecKey is the deterministic 32-byte key the harness uses
+// across the orchestrator's pgxPersister and harness.Pipeline. Both
+// sides MUST use the same bytes; the receiver decrypts what the sender
+// encrypted.
+func harnessCodecKey() []byte {
+	k := make([]byte, 32)
+	for i := range k {
+		k[i] = byte(i + 1)
+	}
+	return k
 }
