@@ -185,6 +185,49 @@ func TestRun_RejectsTLSWithoutCertWhenNotInsecure(t *testing.T) {
 	}
 }
 
+// TestRun_WarnsOnWildcardBindWithInsecure asserts that booting with the
+// default `0.0.0.0:<port>` bind AND insecure=true emits a warn-level
+// log line so an operator who wires the production binary to a
+// container is reminded that the listener is reachable from any host
+// (S-1.8). Bind defaults remain `0.0.0.0` for backwards-compatibility;
+// the warning is the documented opt-in signal.
+func TestRun_WarnsOnWildcardBindWithInsecure(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Adapter:    AdapterConfig{ID: "a1"},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:0", Insecure: true}},
+		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logs := &strings.Builder{}
+	started := make(chan struct{})
+	hooks := runHooks{onListening: func(_ string) { close(started) }}
+	done := make(chan error, 1)
+	go func() { done <- runWithHooks(ctx, cfg, logs, hooks) }()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never started")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return")
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, "wildcard bind") {
+		t.Fatalf("expected wildcard-bind warning log: %s", out)
+	}
+}
+
 // TestRun_UsesObservabilityLogger asserts that runWithHooks routes log
 // output through the observability/logging package, which installs the
 // PHI-redacting handler. The test gets the live logger via
