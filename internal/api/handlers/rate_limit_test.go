@@ -41,8 +41,8 @@ const validCreateBody = `{
 
 func newRateLimitTestServer(t *testing.T, principal *auth.Principal, deps handlers.Deps) *httptest.Server {
 	t.Helper()
+	deps.Auth = principalMiddleware(principal)
 	r := chi.NewRouter()
-	r.Use(principalMiddleware(principal))
 	handlers.RegisterRoutes(r, deps)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -119,8 +119,7 @@ func TestCreateSubscription_RateLimit_PerClientIsolation(t *testing.T) {
 		RefillPerSecond: 0,
 	}, func() time.Time { return time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC) })
 
-	r := chi.NewRouter()
-	r.Use(func(next http.Handler) http.Handler {
+	deps.Auth = func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			id := req.Header.Get("X-Test-Client")
 			if id == "" {
@@ -130,7 +129,8 @@ func TestCreateSubscription_RateLimit_PerClientIsolation(t *testing.T) {
 			p.ClientID = id
 			next.ServeHTTP(w, req.WithContext(auth.WithPrincipal(req.Context(), &p)))
 		})
-	})
+	}
+	r := chi.NewRouter()
 	handlers.RegisterRoutes(r, deps)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -279,8 +279,7 @@ func TestGetWsBindingToken_RateLimit_PerClientIsolation(t *testing.T) {
 	subA := seedWsSubscription(t, deps, "client-A")
 	subB := seedWsSubscription(t, deps, "client-B")
 
-	r := chi.NewRouter()
-	r.Use(func(next http.Handler) http.Handler {
+	deps.Auth = func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			id := req.Header.Get("X-Test-Client")
 			if id == "" {
@@ -290,7 +289,8 @@ func TestGetWsBindingToken_RateLimit_PerClientIsolation(t *testing.T) {
 			p.ClientID = id
 			next.ServeHTTP(w, req.WithContext(auth.WithPrincipal(req.Context(), &p)))
 		})
-	})
+	}
+	r := chi.NewRouter()
 	handlers.RegisterRoutes(r, deps)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
