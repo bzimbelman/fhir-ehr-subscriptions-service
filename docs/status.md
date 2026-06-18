@@ -69,14 +69,14 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-2.5 | Channel registry plain-map race | RESOLVED | RESOLVED ✓ (doc-only) | caa68a4 | doc-comment marks registry immutable post-RegisterRoutes; no compile-time enforcement |
 | audit | S-2.6 | ETag id, not version; If-Match unquoted | RESOLVED | RESOLVED ✓ | 4743ce7 | requires W/"<id>" |
 | audit | S-2.7 | Six `_ = err` swallows in activate | RESOLVED | RESOLVED ✓ | a9f96f7 | Deps.Logger |
-| audit | S-2.8 | searchSubscriptions no pagination | DEFERRED | DEFERRED ✓ | — | repo interface growth |
+| audit | S-2.8 | searchSubscriptions no pagination | RESOLVED | RESOLVED ✓ | story/47 | keyset cursor + `_count` (default 50, cap 200); Bundle.link self/next |
 | audit | S-2.9 | Magic timestamp format repeated 5× | RESOLVED | RESOLVED ✓ | 4743ce7 | instantFormat const |
 | audit | S-2.10 | since, _ := strconv.ParseInt discards err | RESOLVED | RESOLVED ✓ | 4743ce7 | parseEventNumberParam |
 | audit | S-2.11 | $status bulk no cap on id params | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.MaxStatusBulkIDs (256) |
 | audit | S-2.12 | buildSubscriptionStatus uses context.Background() | RESOLVED | RESOLVED ✓ | a9f96f7 | r.Context() threaded |
 | audit | S-2.13 | fhirVersion hardcoded "5.0.0" | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.FHIRVersion |
 | audit | S-2.14 | pg_stores no per-query deadline | DEFERRED | DEFERRED ✓ | — | needs B-4 fully landed |
-| audit | S-2.15 | $events replay hardcoded LIMIT 1000 | DEFERRED | DEFERRED ✓ | — | follows S-2.8 |
+| audit | S-2.15 | $events replay hardcoded LIMIT 1000 | RESOLVED | RESOLVED ✓ | story/47 | `EventReplayPageSize` knob; Bundle.link next on truncation |
 | audit | S-2.16 | Hash: []byte{0} placeholder | DEFERRED | DEFERRED ✓ | — | replaced by observability/audit hash-chained store under B-4 |
 | audit | S-2.17 | Unvalidated X-Correlation-ID reflected | RESOLVED | RESOLVED ✓ | a9f96f7 | drops non-UUID |
 | audit | S-2.18 | /metrics has no auth | RESOLVED | RESOLVED ✓ | a9f96f7 | metrics.AuthGuard at metrics.go:269 |

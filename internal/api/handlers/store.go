@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -15,16 +16,37 @@ import (
 // matches repos.Querier so the existing repos accept it directly.
 type Querier = repos.Querier
 
+// SubscriptionCursor is the opaque-by-design forward keyset cursor used
+// by ListByClientPage. It is sized so the encoded form is short enough
+// to fit comfortably in a URL.
+//
+// CreatedAt + ID together form a strict total order over `subscriptions`
+// (id is unique). The page query selects rows strictly older than the
+// (CreatedAt, ID) pair so consecutive pages never overlap and a row
+// inserted between pages is observed at most once on the cursor's
+// sort axis.
+type SubscriptionCursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
 // SubscriptionsStore is the narrow interface the handlers need from the
 // subscriptions table. It is satisfied by an adapter wrapping the pgx
 // pool plus repos.SubscriptionsRepo and a few extra queries
 // (status/cursor updates and listing by client) that are not part of
 // the existing repo's surface and are implemented directly against the
 // table here in the API package.
+//
+// ListByClientPage returns up to limit rows ordered by created_at DESC,
+// id DESC. A nil after means "from the start". The returned slice has
+// at most limit rows; callers detect end-of-results by getting a slice
+// shorter than limit (or by re-querying with the last row's cursor and
+// receiving zero rows).
 type SubscriptionsStore interface {
 	Insert(ctx context.Context, row repos.SubscriptionRow) (uuid.UUID, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*repos.SubscriptionRow, error)
 	ListByClient(ctx context.Context, clientID string) ([]repos.SubscriptionRow, error)
+	ListByClientPage(ctx context.Context, clientID string, after *SubscriptionCursor, limit int) ([]repos.SubscriptionRow, error)
 	UpdateResource(ctx context.Context, id uuid.UUID, row repos.SubscriptionRow) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status repos.SubscriptionStatus, errMsg string) error
 }
@@ -43,8 +65,17 @@ type SubscriptionTopicsStore interface {
 }
 
 // EhrEventsStore is the narrow read-only interface for $events replay.
+//
+// ListByTopicAndRangePage replaces the legacy hardcoded LIMIT 1000 path
+// with an explicit operator-controlled page size. The handler asks for
+// limit+1 rows so it can detect truncation: if the store returns more
+// than limit rows the handler trims the slice and emits a Bundle.link
+// `next` pointing the client at eventsSinceNumber=lastEventNumber+1.
+// limit <= 0 means "no cap"; production callers always pass a positive
+// value.
 type EhrEventsStore interface {
 	ListByTopicAndRange(ctx context.Context, topicURL string, since, until int64) ([]repos.EhrEventRow, error)
+	ListByTopicAndRangePage(ctx context.Context, topicURL string, since, until int64, limit int) ([]repos.EhrEventRow, error)
 }
 
 // DeliveriesStore is the narrow read-only interface for $status.

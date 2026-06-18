@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +67,50 @@ func (m *memSubs) ListByClient(_ context.Context, clientID string) ([]repos.Subs
 		}
 	}
 	return out, nil
+}
+
+// ListByClientPage mirrors the Pg adapter: rows ordered by created_at
+// DESC, id DESC, optionally cursored. The mem store is small enough to
+// sort-and-slice in memory.
+func (m *memSubs) ListByClientPage(_ context.Context, clientID string, after *handlers.SubscriptionCursor, limit int) ([]repos.SubscriptionRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit <= 0 {
+		return nil, nil
+	}
+	all := make([]repos.SubscriptionRow, 0)
+	for _, r := range m.rows {
+		if r.ClientID != clientID {
+			continue
+		}
+		all = append(all, r)
+	}
+	// Sort created_at DESC, then id DESC.
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		}
+		return all[i].ID.String() > all[j].ID.String()
+	})
+	if after != nil {
+		filtered := make([]repos.SubscriptionRow, 0, len(all))
+		for _, r := range all {
+			if r.CreatedAt.Equal(after.CreatedAt) {
+				if r.ID.String() < after.ID.String() {
+					filtered = append(filtered, r)
+				}
+				continue
+			}
+			if r.CreatedAt.Before(after.CreatedAt) {
+				filtered = append(filtered, r)
+			}
+		}
+		all = filtered
+	}
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	return all, nil
 }
 
 func (m *memSubs) UpdateResource(_ context.Context, id uuid.UUID, row repos.SubscriptionRow) error {
@@ -132,6 +177,29 @@ func (m *memEvents) ListByTopicAndRange(_ context.Context, topicURL string, sinc
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+// ListByTopicAndRangePage mirrors the Pg adapter: ordered by event_number
+// ASC and capped at limit. limit <= 0 means "no cap". (S-2.15)
+func (m *memEvents) ListByTopicAndRangePage(_ context.Context, topicURL string, since, until int64, limit int) ([]repos.EhrEventRow, error) {
+	matched := []repos.EhrEventRow{}
+	for _, r := range m.rows {
+		if r.TopicURL != topicURL {
+			continue
+		}
+		if since > 0 && r.EventNumber < since {
+			continue
+		}
+		if until > 0 && r.EventNumber > until {
+			continue
+		}
+		matched = append(matched, r)
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].EventNumber < matched[j].EventNumber })
+	if limit > 0 && len(matched) > limit {
+		matched = matched[:limit]
+	}
+	return matched, nil
 }
 
 // memDeliveries is an in-memory DeliveriesStore.
