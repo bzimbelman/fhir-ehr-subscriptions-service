@@ -8,7 +8,55 @@ Methodology: line-by-line read of every production file across four parallel scr
 
 ## Summary
 
-Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system has a working backbone but is not yet a "drop in and run" production service — there are correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcodes `key_version=1` and breaks key rotation, retention sweeper that physically deletes hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination). Two whole package trees are empty (`internal/channels/*`, `internal/queue`, `internal/wakeup`, `internal/adapters/{defaults,epic}`, `internal/adapterspi`) — phantom abstractions that will mislead future contributors. Top concerns for an initial-run deployment: liveness/readiness wiring; key-version persistence in `pending_pairs`; deterministic JCS for the audit chain; default-deny instead of default-allow on subscriber-supplied headers and channel transports; resource caps on every accept-loop and read path.
+**Original audit (2026-06-18, commit `b624b7d`):** roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The original summary observation was that the system had a working backbone but was not yet a "drop in and run" production service — correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcoded `key_version=1` and broke key rotation, retention sweeper that physically deleted hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination).
+
+**Current state:** **0 BLOCKERs remaining**, **~70 SHOULD-FIX still open** (mostly unchanged from the original audit), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 is the sole exception: its lifecycle scaffolding is in place (B-1 / B-2 / B-3 wiring) but the full production binary still does not mount `handlers.RegisterRoutes`; it is tracked as PARTIALLY RESOLVED pending a follow-up that adds DB / codec / auth / channel / MLLP wiring under its own RED/GREEN cycle. Two whole package trees are still empty (`internal/channels/*`, `internal/queue`, `internal/wakeup`, `internal/adapters/{defaults,epic}`, `internal/adapterspi`) — phantom abstractions covered under SHOULD-FIX S-16. The remaining SHOULD-FIX work centers on hardening API edges (rate limits, body size knobs, pagination), tightening channel defaults (resthook header allowlist, websocket idle-timeout enforcement, message channel deterministic bundle), and reconciling the audit-chain canonicaliser with a real RFC 8785 (JCS) implementation.
+
+---
+
+## Resolution Status
+
+The original audit catalogued 35 BLOCKERs (B-1 through B-35). The table below records the disposition of each one against `main` as of 2026-06-18. Use the per-finding sections below the table for the full **what / why / fix / Resolution** detail; this table is the navigation aid.
+
+| ID | Title (abbreviated) | Status | Resolving commit(s) |
+|----|---------------------|--------|---------------------|
+| B-1 | `/readyz` always 503 in production entry point | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
+| B-2 | HTTP server missing Write / Idle / MaxHeaderBytes | RESOLVED | `35b2cea` (merged in `8096936`) |
+| B-3 | `markStartupComplete` fires before system is ready | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
+| B-4 | Production `run.go` never calls `handlers.RegisterRoutes` | PARTIALLY RESOLVED (scaffolding) | `192ab8e` (merged in `8096936`) — full API wiring deferred to a follow-up |
+| B-5 | `jwksCache` map race | RESOLVED | `168cc80` (merged in `0a771cf`) |
+| B-6 | Token endpoint missing body-size limit | RESOLVED | `7200625` (merged in `0a771cf`) |
+| B-7 | Missing `jti` silently accepted (replay bypass) | RESOLVED | `e788c0e` (merged in `0a771cf`) |
+| B-8 | Raw JWT parser error leaked in HTTP body | RESOLVED | `3e7de5e` (merged in `0a771cf`) |
+| B-9 | JTI cache eviction broken | RESOLVED | `aa7567f` (merged in `0a771cf`) |
+| B-10 | Fire-and-forget activation goroutines | RESOLVED | `a6e042f` (merged in `790c6a8`) |
+| B-11 | SSRF on subscriber endpoint URL | RESOLVED | `9689730` (merged in `790c6a8`) |
+| B-12 | JWKS fetch unauthenticated / no body cap | RESOLVED | `34d2196` (merged in `0a771cf`) |
+| B-13 | Audit log persists full request body | RESOLVED | `25dffba` (merged in `790c6a8`) |
+| B-14 | Email STARTTLS default `Preferred` | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
+| B-15 | SMTP PLAIN/LOGIN allowed over plaintext | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
+| B-16 | Email header injection via `CorrelationID` | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
+| B-17 | WebSocket upgrade `InsecureSkipVerify=true` | RESOLVED | `a0360e4` (merged in `d3f2a4b`) |
+| B-18 | WebSocket ack-channel close-of-closed race | RESOLVED | `a0360e4` (merged in `d3f2a4b`) |
+| B-19 | MLLP listener missing connection caps | RESOLVED | `b8c1209` (merged in `d3f2a4b`) |
+| B-20 | MLLP listener missing TLS / mTLS | RESOLVED | `b8c1209` (merged in `d3f2a4b`) |
+| B-21 | HL7 processor decrypts with hardcoded key version | RESOLVED | `07d7be2` (cherry-pick of `6d0e5a2`) |
+| B-22 | `pending_pairs` migration omits `key_version` | RESOLVED | `07d7be2` (cherry-pick of `6d0e5a2`) |
+| B-23 | Matcher silently passes through unknown search params | RESOLVED | `3d80c7d` (cherry-pick of `04e2c36`, merged in `8096936`) |
+| B-24 | FHIRPath `runFHIRPath` defaults to fail-OPEN | RESOLVED | `51b8e53` (cherry-pick of `a1f4b12`, merged in `8096936`) |
+| B-25 | Topic catalog rejections do not fail startup | RESOLVED | `3d80c7d` (cherry-pick of `04e2c36`, merged in `8096936`) |
+| B-26 | `nextEventNumber` race | RESOLVED | `f600d42` (cherry-pick of `1ba1c45`) |
+| B-27 | Cursor monotonicity assumes deliveries never deleted | RESOLVED | `f600d42` (cherry-pick of `1ba1c45`) |
+| B-28 | Bundle JSON encoding nondeterministic | RESOLVED | `b76f1b0` (cherry-pick of `0b39e95`) |
+| B-29 | `CatalogProvider` swap not torn-read-safe | RESOLVED | `51b8e53` (cherry-pick of `a1f4b12`, merged in `8096936`) |
+| B-30 | High-cardinality MSH-9 label on MLLP nack metric | RESOLVED | `7e797f3` (merged in `f853619`) |
+| B-31 | Scheduler shutdown does not drain in-flight deliveries | RESOLVED | `5017364` |
+| B-32 | Retention sweeper SQL injection / audit-chain DELETE | RESOLVED | `e697162`, `52ed074` |
+| B-33 | Multi-pod migration race | RESOLVED | `52ed074` |
+| B-34 | Audit log file sink missing fsync; pgstore lock leak | RESOLVED | `ad6ddd2` (merged in `f853619`) |
+| B-35 | Secret rotation unreachable — SIGHUP not registered | RESOLVED | `3a81559` (merged in `f853619`) |
+
+Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 
 ---
 
@@ -79,14 +127,14 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Use `hashicorp/golang-lru`, or sweep `order` correctly on expire and rebuild slice when growth exceeds 2× cap.
 - **Status:** Fixed in `708c2ad`; `Seen()` now sweeps `order` via `removeLocked`, `Put()` loops eviction so multiple ghosts can clear at once, and `maybeCompactLocked` rebuilds the underlying slice when its `cap` exceeds 2× configured cap. Tests under race detector: `jti_cache_test.go` (internal-package introspection) and `e2e/orchestrator/auth_jti_cache_eviction_test.go` (behavioural).
 
-#### B-10: Fire-and-forget activation goroutines have no shutdown / timeout / panic-recover — RESOLVED
+#### B-10: Fire-and-forget activation goroutines have no shutdown / timeout / panic-recover — RESOLVED in commit `a6e042f` (merged in `790c6a8`)
 - **File:** `internal/api/handlers/subscription_handlers.go:189, 439`
 - **What:** `go s.activate(context.Background(), id)` runs the channel handshake on a fresh background ctx with no cancel, no timeout, no recover.
 - **Why it matters:** (a) shutdown drops in-flight handshakes, leaving rows stuck `requested`; (b) a channel-adapter panic crashes the process; (c) a slow vendor pins goroutine + DB conn forever.
 - **Fix:** Track in `sync.WaitGroup` keyed off server ctx; wrap `defer recover()`; `context.WithTimeout`.
 - **Resolved:** `8c7db78` (impl), `8cbd5c6` (RED tests), `2ec4de9` (e2e: api_activate_shutdown_test.go, api_activate_panic_test.go). New `Deps.LifecycleCtx` / `Deps.ActivationTimeout` (default 30s) / `Deps.ActivationWaitGroup`; new `spawnActivate` helper in `internal/api/handlers/activation.go` runs the goroutine under the WaitGroup with a derived `context.WithTimeout` and a `defer recover()` that logs, increments `fhir_subs_api_activate_panic_total`, and best-effort flips the row to `error`. `activate()` falls back to a fresh background ctx for the status / audit bookkeeping when the per-call ctx is dead.
 
-#### B-11: SSRF — subscriber-supplied endpoint URL is not validated — RESOLVED
+#### B-11: SSRF — subscriber-supplied endpoint URL is not validated — RESOLVED in commit `9689730` (merged in `790c6a8`)
 - **File:** `internal/api/handlers/subscription_handlers.go:74-80, 100-102`
 - **What:** `internal.Endpoint` is taken verbatim from the JSON body; only `format: uri`. `http://169.254.169.254/...`, `http://localhost:5432`, `file:///etc/passwd`, `gopher://` reach the rest-hook channel intact.
 - **Why it matters:** Classic SSRF — on EKS/GKE this exfiltrates IAM credentials. Egress filtering bypassed.
@@ -100,156 +148,175 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Dedicated client with 5s timeout; require `https://`; enforce host allowlist; `io.LimitReader(resp.Body, 1MiB)`.
 - **Status:** Fixed in `9045845`; shared `jwksPolicy` used by both token endpoint and verifier — `https`-only by default (opt-in `AllowInsecureJWKS` for local dev), optional `JWKSAllowedHosts` allowlist, dedicated `http.Client` with `DefaultJWKSFetchTimeout` (5 s, configurable via `JWKSFetchTimeout`), `io.LimitReader` capped at `MaxJWKSBodyBytes` (1 MiB). Tests: `jwks_fetch_test.go` and `e2e/orchestrator/auth_jwks_https_only_test.go`.
 
-#### B-13: Audit log persists full request body (PHI / secrets at rest in plaintext) — RESOLVED
+#### B-13: Audit log persists full request body (PHI / secrets at rest in plaintext) — RESOLVED in commit `25dffba` (merged in `790c6a8`)
 - **File:** `internal/api/handlers/subscription_handlers.go:184, 433`
 - **What:** Audit `Append(...)` is called with the full JSON request body (up to 1MB) on create and update.
 - **Why it matters:** FHIR Subscription resources can carry `header[]` (bearer tokens for outbound calls) and PII. Plaintext at rest violates HIPAA minimum-necessary, breaks secret-rotation, and inflates storage.
 - **Fix:** Strip secret-bearing fields (Authorization headers etc.) before persisting; cap canonical size; consider hashing.
 - **Resolved:** `759c3a8` (impl), `3587d52` (RED tests), `2ec4de9` (e2e: api_audit_redaction_test.go). New `RedactSubscriptionForAudit` (`internal/api/handlers/audit_redact.go`) replaces values of secret-named JSON keys (`header`, `headers`, `authorization`, `token`, `apikey`, `privatekey`, `secret`, `password`, ...) with `[REDACTED]`, scrubs JWT-shape / PEM-armored / long-base64 substrings, and caps canonical bytes at `Deps.AuditMaxBytes` (default 16 KiB) with a parseable truncation envelope. `createSubscription` and `updateSubscription` route the request body through the redactor before `Audit.Append`.
 
-#### B-14: Email STARTTLS default is `Preferred` (cleartext fallback) for a healthcare service
+#### B-14: Email STARTTLS default is `Preferred` (cleartext fallback) for a healthcare service — RESOLVED in commit `a6a36aa` (merged in `d3f2a4b`)
 - **File:** `internal/channel/email/email.go:79-80, 213-220`
 - **What:** Default STARTTLS policy is "Preferred" — falls back to plaintext when not advertised.
 - **Why it matters:** PHI in cleartext over public network is a HIPAA breach (MITM strip-STARTTLS attack).
 - **Fix:** Default to `STARTTLSRequired`; require operator opt-in to Preferred.
+- **Resolution:** Default STARTTLS policy is now `STARTTLSRequired`. Operators must opt into `Preferred` (or `Disabled`) explicitly, and `New` emits a startup WARN log noting the strip-STARTTLS / cleartext risk on any non-Required configuration. Test: `TestNewDefaultsToSTARTTLSRequired` (channel-level) and the e2e orchestrator coverage in `e2e/orchestrator/email_starttls_required_test.go`.
 
-#### B-15: SMTP PLAIN/LOGIN allowed over plaintext (credential leak)
+#### B-15: SMTP PLAIN/LOGIN allowed over plaintext (credential leak) — RESOLVED in commit `a6a36aa` (merged in `d3f2a4b`)
 - **File:** `internal/channel/email/email.go:600-622`
 - **What:** With `STARTTLSDisabled` or `Preferred`-with-no-advertise, PLAIN/LOGIN AUTH ships base64-encoded credentials in cleartext. The `host != "localhost"` guard in `loginAuth.Start` misses `127.0.0.1`, `::1`, link-local.
 - **Why it matters:** SMTP relay password lifted off the wire.
 - **Fix:** Refuse to construct the channel if `STARTTLS=Disabled && AuthMechanism!=AuthNone`; require explicit `AllowCleartextAuth` flag.
+- **Resolution:** `New` now refuses to construct a Channel that would ship AUTH credentials in plaintext (`STARTTLSDisabled` + non-empty `AuthMechanism`). Operators on a closed-network relay can opt back in via the explicit `AllowCleartextAuth=true` flag. Tests: `TestNewRefusesCleartextAuth` (5 subtests covering PLAIN, LOGIN, CRAM-MD5, etc.) and `TestNewAllowsCleartextAuthWhenExplicitlyOptedIn`.
 
-#### B-16: Email header injection via `CorrelationID`
+#### B-16: Email header injection via `CorrelationID` — RESOLVED in commit `a6a36aa` (merged in `d3f2a4b`)
 - **File:** `internal/channel/email/email.go:407-412, 489-499`
 - **What:** `env.CorrelationID` is written verbatim into `Message-ID` and `X-Correlation-ID` headers via `writeHeader`; no CRLF rejection. `newMessageID` also doesn't sanitize.
 - **Why it matters:** A CRLF in correlation ID forges arbitrary SMTP headers / smuggles message body. Combined with the unvalidated correlation ID accepted from `X-Correlation-ID` HTTP header (B-39), this is end-to-end attacker-controllable.
 - **Fix:** Reject any `corr` containing `\r` or `\n` (and ideally non-ASCII / non-RFC2822-token chars) at `writeHeader`.
+- **Resolution:** Envelope construction now rejects CRLF / NUL / C0 control chars in `CorrelationID` before any wire I/O; `writeHeader` strips CR/LF defensively as a redundant inner control. Refusal returns `PermanentFailure` so the scheduler does not retry. Tests: `TestDeliverRejectsCRLFInCorrelationID` (3 subtests for `\r`, `\n`, `\r\n`) and `TestDeliverRejectsCRLFInCorrelationIDViaMessageID`.
 
-#### B-17: WebSocket upgrade is `InsecureSkipVerify=true` — Origin not verified (CSWSH)
+#### B-17: WebSocket upgrade is `InsecureSkipVerify=true` — Origin not verified (CSWSH) — RESOLVED in commit `a0360e4` (merged in `d3f2a4b`)
 - **File:** `internal/channel/websocket/websocket.go:213-225`
 - **What:** `coder/websocket.Accept` is called with `InsecureSkipVerify: true`, skipping the Origin header check.
 - **Why it matters:** A reverse proxy does NOT check WS Origin — application must. Cross-Site WebSocket Hijacking lets a malicious origin in a victim's browser bind any token.
 - **Fix:** Take an `OriginPatterns []string` option; default-deny cross-origin.
+- **Resolution:** `InsecureSkipVerify=true` is gone. `Options.OriginPatterns` is the explicit allowlist; default-deny applies when the slice is empty (i.e., the upgrade rejects any cross-origin browser request unless an operator has named its origin). The upgrade log line records the rejected `Origin` header so operators see who is being denied. Tests: `TestUpgradeRejectsCrossOriginByDefault`, `TestUpgradeAllowsConfiguredOrigin`, `TestUpgradeRejectsUnlistedOriginWhenPatternsConfigured`.
 
-#### B-18: WebSocket ack-channel close-of-closed-channel race
+#### B-18: WebSocket ack-channel close-of-closed-channel race — RESOLVED in commit `a0360e4` (merged in `d3f2a4b`)
 - **File:** `internal/channel/websocket/websocket.go:471-553`
 - **What:** `defer sess.cancelAck(env.Sequence)` on Deliver path and `deliverAck` (line 553 `close(ch)`) can both fire under concurrent ack-arrival + delivery-timeout — closing an already-closed channel panics.
 - **Why it matters:** Server-wide panic from a single misbehaving subscriber's timing.
 - **Fix:** Single-owner close (use `sync.Once`, or guard with mutex; deliverAck marks delivered, waiter closes).
+- **Resolution:** The per-sequence ack channel is now wrapped in an `ackWaiter` struct that gates close through `sync.Once`. `registerAck` returns the same waiter when called twice for the same sequence (deduplicates duplicate `Deliver`); both `deliverAck` and the `Deliver` cleanup defer call `closeOnce`, so neither path can close an already-closed channel. Tests run under the race detector: `TestAckRaceDoesNotPanic` (200 iterations) and `TestConcurrentAckCancelDoesNotCloseClosedChannel` (200 iterations).
 
-#### B-19: MLLP listener has no max-connection cap, no per-IP rate limit, no admission semaphore
+#### B-19: MLLP listener has no max-connection cap, no per-IP rate limit, no admission semaphore — RESOLVED in commit `b8c1209` (merged in `d3f2a4b`)
 - **File:** `internal/mllp/endpoint.go:43-93`
 - **What:** Every accepted TCP conn spawns an unbounded goroutine with read buffer + framer state; `connsWG` only counts.
 - **Why it matters:** Trivial accept-flood DoS; goroutine + memory exhaustion.
 - **Fix:** `cfg.MaxConnections` (semaphore-gated accept); `cfg.MaxConnectionsPerIP` (token bucket).
+- **Resolution:** `ListenerConfig` gains `MaxConnections` (cross-endpoint admission semaphore) and `MaxConnectionsPerIP` (per-IP token bucket). Connections beyond the caps are accepted and immediately closed; a WARN log records the offending peer and the new `fhir_subs_mllp_connections_refused_total` counter ticks. Slots are released on disconnect via a release closure bound to the handler goroutine's defer. Tests: `TestListener_MaxConnections_RefusesExcess`, `TestListener_MaxConnectionsPerIP_RefusesExcess`.
 
-#### B-20: MLLP listener has no TLS / MTLS support — HL7 (PHI) over plaintext
+#### B-20: MLLP listener has no TLS / MTLS support — HL7 (PHI) over plaintext — RESOLVED in commit `b8c1209` (merged in `d3f2a4b`)
 - **File:** `internal/mllp/endpoint.go:43-51`
 - **What:** Plain `net.Listen("tcp", ...)`. No `tls.Config`, no client cert verification. Operators have no way to opt in.
 - **Why it matters:** HL7 messages carry PHI; running plaintext on a hospital network is an OCR / HIPAA finding.
 - **Fix:** Add `cfg.TLS` (min v1.2, AEAD ciphers); optional `RequireAndVerifyClientCert`; wrap with `tls.NewListener`.
+- **Resolution:** `ListenerConfig.TLS` is the new opt-in: cert/key paths plus optional mTLS via `RequireAndVerifyClientCert + ClientCAs`. `endpoint.bind` wraps the TCP listener with `tls.NewListener` when TLS is set; min TLS 1.2 floor enforced. `Validate()` rejects mTLS configurations that omit `ClientCAs`. Tests: `TestListener_TLS_RequiresTLSHandshake`, `TestListener_TLS_MTLS_RequiresClientCert`.
 
-#### B-21: HL7 processor decrypts pending pairs with hardcoded `key_version=1` (breaks key rotation) — RESOLVED
+#### B-21: HL7 processor decrypts pending pairs with hardcoded `key_version=1` (breaks key rotation) — RESOLVED in commit `07d7be2`
 - **File:** `internal/hl7processor/processor.go:545`, `internal/infra/storage/repos/pending_pairs.go:86`
 - **What:** Both call sites pass literal `1` to `Codec.Decrypt`.
 - **Why it matters:** ADR 0010 #7 commits to key rotation. After version bump, every pending row encrypted under the old version becomes undecryptable; held HL7 halves are silently dead-lettered or stuck. Same applies to any other repo that stores ciphertext.
 - **Fix:** Persist `key_version` per row, read it back, pass to `Decrypt`.
 - **Resolution:** Commit `6d0e5a2` (also `07d7be2` on main). `PendingPairsRepo.Insert` now persists `codec.Encrypt`'s returned key_version; `ClaimExpired` reads it back into `PendingPairRow.KeyVersion` and passes it to `Decrypt`. `processor.lockPending` and `reaper.lockPendingForReap` likewise SELECT `key_version` and decrypt with the row's version. E2E test `TestE2E_PendingPairs_DecryptsWithRowKeyVersion` writes a row under key v1, swaps to a codec where v2 is active, and asserts the row still decrypts correctly. Audit of other repos: `hl7_message_queue.go`, `ehr_events.go`, `resource_changes.go` all already use `rec.KeyVersion`; no other hardcoded-`1` callsites remain.
 
-#### B-22: `pending_pairs` migration omits `key_version` column entirely — RESOLVED
+#### B-22: `pending_pairs` migration omits `key_version` column entirely — RESOLVED in commit `07d7be2`
 - **File:** `migrations/0001_init.sql:99-108`, `internal/infra/storage/repos/pending_pairs.go:32-44`
 - **What:** Schema has no `key_version` column; `Insert` writes encrypted bytes with no version stamp.
 - **Why it matters:** Same root cause as B-21; the rotation contract is unfulfillable.
 - **Fix:** Add migration `ALTER TABLE pending_pairs ADD COLUMN key_version SMALLINT NOT NULL DEFAULT 1`; update `Insert`/`Decrypt`.
 - **Resolution:** Commit `6d0e5a2` (also `07d7be2` on main). New migration `0003_pending_pairs_key_version.sql` adds `key_version int NOT NULL DEFAULT 1` (idempotent via IF NOT EXISTS). Existing rows are stamped with v1 — the only version any deployed instance has used to date — so the migration is forward-compatible without a backfill UPDATE.
 
-#### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence) — RESOLVED
+#### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence) — RESOLVED in commit `3d80c7d` (merged in `8096936`)
 - **File:** `internal/matcher/matcher.go:286-355`
 - **What:** `extractFieldValues` hardcodes `status/subject/patient/code/category/name/_lastUpdated`; any other parameter returns nil → clause fails closed → topic silently never matches; no rejection at catalog load, no metric.
 - **Why it matters:** A topic referencing `performer`, `encounter`, `period`, `class`, etc. silently never fires; subscribers miss notifications and operators have no signal.
 - **Fix:** Reject topics at load if they reference unsupported parameters; emit `matcher_unknown_parameter_total{topic}`.
 - **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `internal/topics/catalog/catalog.go` now exports `SupportedSearchParameters()` / `IsSupportedSearchParameter()` and `parseSearchExpression` rejects any topic referencing an unsupported parameter at load time. `compileOne` likewise rejects unsupported `canFilterBy.filterParameter`. The catalog's `Rejected()` method (and `Report.Rejected`) surface the rejections so /readyz can read them. Tests: `TestLoadRejectsUnsupportedSearchParameter`, `TestLoadRejectsUnsupportedFilterByParameter`, `TestLoadAcceptsAllSupportedSearchParameters`, `TestLoadRejectedTopicAbsentFromCatalog` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_unknownParamRejected` (`e2e/orchestrator/matcher_unknown_param_rejected_test.go`).
 
-#### B-24: Matcher FHIRPath `runFHIRPath` defaults to fail-OPEN (returns true) for unrecognized expressions — RESOLVED
+#### B-24: Matcher FHIRPath `runFHIRPath` defaults to fail-OPEN (returns true) for unrecognized expressions — RESOLVED in commit `51b8e53` (merged in `8096936`)
 - **File:** `internal/matcher/matcher.go:510-547`
 - **What:** After `.exists()` and `.status = '...'` checks fall through, return `true` — every unknown FHIRPath expression treated as a match.
 - **Why it matters:** Future-work P1.2 covers building the sandboxed evaluator, but the *current default* is fail-OPEN which is more dangerous than fail-closed: a topic with `Patient.deceased.empty()` would fire on every change, leaking notifications. (Future-work doesn't call out the fail-direction — flagging as a separate concrete defect.)
 - **Fix:** Default to fail-CLOSED today; emit `fhirpath_unknown_expression_total`; reverse only when sandbox lands.
 - **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). `runFHIRPath` now returns `false` for any expression shape outside the recognized minimal set. Wiring layers can install a callback via `matcher.SetUnknownFHIRPathReporter` to bump `fhir_subs_matcher_fhirpath_unknown_expression_total` without coupling the matcher package to a metrics dependency. `IsRecognizedFHIRPath` is exported for catalog-level strict-mode validation. Tests: `TestEvaluateFHIRPathUnknownExpressionFailsClosed`, `TestEvaluateFHIRPathRecognizedExpressionStillMatches` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_fhirpathFailClosed` (`e2e/orchestrator/matcher_fhirpath_fail_closed_test.go`).
 
-#### B-25: Topic catalog rejections do not fail startup; operator override silently shadows working built-in — RESOLVED
+#### B-25: Topic catalog rejections do not fail startup; operator override silently shadows working built-in — RESOLVED in commit `3d80c7d` (merged in `8096936`)
 - **File:** `internal/topics/catalog/catalog.go:240-282`
 - **What:** Per-topic rejections accumulate in `Rejected`; only schema-load errors are fatal. Operator-supplied broken topic with the same `(url,version)` shadows the built-in working topic.
 - **Why it matters:** Operator typo silently drops a topic from runtime; no /readyz signal; no override audit trail.
 - **Fix:** Surface rejected topics to /readyz; add `--strict` startup mode; on operator-validation failure fall back to lower-priority topic; emit `topic_overridden_total`/`topic_rejected_total`.
 - **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `catalog.LoadStrict` is the strict-mode entry point — it returns a non-nil error wrapping every rejection so `--strict-topics` startup wiring can refuse to start. `Load` walks sources in priority order (Operator > Adapter > BuiltIn) and on a higher-priority compile failure falls back to the lower-priority working topic, recording an `Override{URL, Version, FromOrigin, FromSource, ToOrigin, ToSource, Reason}` entry. Both `Rejected` and `Overridden` are surfaced through the `Catalog` handle so /readyz can read them after the `Report` is dropped. Tests: `TestLoadStrictModeRejectsAtStartup`, `TestLoadStrictModeAcceptsValidCatalog`, `TestLoadFallsBackToBuiltInWhenOperatorOverrideRejected` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_strictMode`, `TestMatcher_topicOverride` (`e2e/orchestrator/`).
 
-#### B-26: `nextEventNumber` race — two workers can both insert event_number N+1 — RESOLVED
+#### B-26: `nextEventNumber` race — two workers can both insert event_number N+1 — RESOLVED in commit `f600d42`
 - **File:** `internal/engine/submatcher/worker.go:337-348`
 - **What:** `SELECT MAX(event_number)+1` inside the tx without a per-subscription advisory lock; `UNIQUE(subscription_id, event_number)` will reject one of the racers but the worker (line 281) doesn't catch SQLSTATE 23505 — it surfaces as a generic insert error and aborts the whole batch.
 - **Why it matters:** Under load the entire batch fails on harmless contention; throughput collapses; deliveries stuck.
 - **Fix:** Per-subscription `pg_advisory_xact_lock`, or sequence per subscription, or catch 23505 and retry.
 - **Resolution:** Commit `1ba1c45` (also `f600d42` on main). New migration `0004_subscriptions_next_event_number.sql` adds `next_event_number bigint NOT NULL DEFAULT 0` and backfills it from `MAX(deliveries.event_number)`. `submatcher.nextEventNumber` now does `UPDATE subscriptions SET next_event_number = next_event_number + 1 ... RETURNING next_event_number`, so Postgres's row-level lock under UPDATE serializes contention naturally — no MAX-from-deliveries lookup. E2E `TestE2E_EventNumber_NoDuplicatesUnderConcurrency` fires 50 concurrent transactions for a single subscription and asserts the resulting deliveries set is exactly 1..50 with no gaps and no duplicates.
 
-#### B-27: Cursor monotonicity assumes deliveries rows are never deleted; retention will reuse event numbers — RESOLVED
+#### B-27: Cursor monotonicity assumes deliveries rows are never deleted; retention will reuse event numbers — RESOLVED in commit `f600d42`
 - **File:** `internal/engine/submatcher/worker.go:337-348` (consumer) + `internal/infra/storage/retention/retention.go:78` (deleter)
 - **What:** `nextEventNumber = MAX(event_number)+1`; if retention deletes a high-numbered delivery, the next insert RE-USES that number.
 - **Why it matters:** Subscribers depend on monotonic event numbers for replay/ack semantics; reuse breaks every WebSocket replay scenario.
 - **Fix:** Either keep tombstones, or persist `next_event_number` on the subscription row independent of MAX.
 - **Resolution:** Commit `1ba1c45` (also `f600d42` on main). Same fix as B-26: the cursor lives on `subscriptions.next_event_number` and is advanced via `UPDATE ... RETURNING`. Retention deleting deliveries no longer affects the cursor. E2E `TestE2E_EventNumber_ContinuesAfterRetention` writes 5 deliveries, deletes 3, writes 5 more, and asserts the new event_numbers continue from 6 (rather than reusing low numbers) and that `subscriptions.next_event_number` ends at 10.
 
-#### B-28: Bundle JSON encoding is nondeterministic — breaks any audit-chain hashing of bundle bytes — RESOLVED
+#### B-28: Bundle JSON encoding is nondeterministic — breaks any audit-chain hashing of bundle bytes — RESOLVED in commit `b76f1b0`
 - **File:** `internal/engine/builder/builder.go:174-190`
 - **What:** Bundle assembly uses `map[string]any` → `json.Marshal`. Go map iteration is randomized; map JSON output is therefore non-deterministic.
 - **Why it matters:** Hash-chained audit log over bundle bytes produces different hashes on identical inputs. Any downstream signer (S/MIME plan, P2.3) is broken at the foundation.
 - **Fix:** Use a canonical JSON encoder (sorted keys), a struct, or `json.RawMessage` to preserve byte form.
 - **Resolution:** Commit `0b39e95` (also `b76f1b0` on main). Bundle assembly now uses fixed-shape Go structs (`notificationBundle`, `subscriptionStatus`, `notificationEvent`, `reference`, `bundleEntry`) with explicit JSON struct tags so field order is canonical FHIR order: `resourceType`, `type`, `timestamp`, `entry`. The SubscriptionStatus is encoded once into a `json.RawMessage` so its byte layout is locked before being embedded in the entry list. Unit test `TestBuildBundleDeterminism` and e2e `TestE2E_Builder_BundleBytesAreDeterministic` both build the same job 100 times and assert byte-identical output (sha256 stable across all 100).
 
-#### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe — RESOLVED
+#### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe — RESOLVED in commit `51b8e53` (merged in `8096936`)
 - **File:** `internal/matcher/matcher.go:554, 656`
 - **What:** Worker calls `cat := w.catalog()` per tick; interface values are 2 words. Without `atomic.Pointer`, a concurrent reload can return a torn interface value (data + type pointer mismatch).
 - **Why it matters:** Catalog hot-reload data race; sporadic crash with cryptic stack.
 - **Fix:** Use `atomic.Pointer[catalog.Catalog]` inside provider impl; document contract on `CatalogProvider`.
 - **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). New `matcher.AtomicCatalogProvider` wraps an `atomic.Pointer[catalog.Catalog]`; `Get`/`Store` are race-free and `AsProvider()` returns a `CatalogProvider` closure ready for `NewWorker`. The `CatalogProvider` doc now documents the atomic-swap contract that callers (e.g., the harness's `topic_seed.go` mutex-guarded swap) must satisfy. Tests: `TestAtomicCatalogProviderRaceFree` (1000 swaps × 8 readers under `-race`) and `TestAtomicCatalogProviderUsableAsCatalogProvider` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_catalogHotReloadRace` (`e2e/orchestrator/matcher_catalog_hot_reload_race_test.go`). Whole-repo `go test -race ./...` passes.
 
-#### B-30: High-cardinality MSH-9 label on MLLP nack metric — Prometheus cardinality bomb
+#### B-30: High-cardinality MSH-9 label on MLLP nack metric — Prometheus cardinality bomb — RESOLVED in commit `7e797f3` (merged in `f853619`)
 - **File:** `internal/mllp/connection.go:269-274`
 - **What:** `MetricNackTotal{type: mshFields.MessageType}` — when `allowed_message_types` mismatches, the rejected MSH-9 string becomes a label value.
 - **Why it matters:** A hostile peer blasting garbage MSH-9 values creates a new time-series per value; Prometheus OOM.
 - **Fix:** Whitelist label values to configured set; bucket "other" into a single value.
+- **Resolution:** Commits `a387293` (RED) + `7e797f3` (GREEN), merged via `f853619`. New helper `bucketMessageTypeLabel(t, allowed)` in `internal/mllp/connection.go` returns `t` verbatim only when it is in the configured `AllowedMessageTypes` set; everything else collapses to the single label value `"other"`. Cardinality of `nack_total{reason=message_type}` is now bounded by `len(allowed)+1`. E2E `TestB30_MLLPMetricCardinalityCap` (`e2e/orchestrator/mllp_metric_cardinality_cap_test.go`) drives 100 distinct hostile MSH-9 values through the real listener over real TCP and asserts exactly one `nack_total{type=other}` series carrying all 100 increments.
 
-#### B-31: Scheduler shutdown does not drain in-flight deliveries; recovery sweep missing — RESOLVED
+#### B-31: Scheduler shutdown does not drain in-flight deliveries; recovery sweep missing — RESOLVED in commit `5017364`
 - **File:** `internal/engine/scheduler/worker.go:166-234`
 - **What:** Two issues: (1) `Run` returns on `ctx.Done()` without waiting for in-flight `dispatchOne` calls; (2) rows flipped to `'delivering'` by `claimTx` before Commit have no recovery path on worker crash.
 - **Why it matters:** Graceful shutdown silently strands deliveries in `'delivering'`; over time the queue fills with dead rows that no worker will touch.
 - **Fix:** `sync.WaitGroup` for in-flight dispatches; periodic recovery sweep that resets stale `'delivering'` rows past a stuck-threshold to `'pending'`.
 - **Resolution:** Commit `945a160`. `tickOnce` now wraps each `dispatchOne` in `sync.WaitGroup`; `Run` waits up to `cfg.ShutdownGrace` (default 10s) for the WaitGroup before returning. A separate goroutine ticks `recoverStuck` every `cfg.RecoveryInterval` (default 30s); `recoverStuck` flips `'delivering'` rows whose `updated_at < now() - cfg.StuckThreshold` (default 5m) back to `'pending'` and bumps `attempts`. Exposed `RecoverStuckForTest` as a tiny seam. E2E tests cover stuck-row reset, fresh-row not touched, Run-drains-and-returns, and the periodic-sweep-during-Run path.
 
-#### B-32: Retention sweeper SQL construction allows future SQL injection; uses `failed_permanent` status that doesn't exist; physically deletes hash-chained audit rows; runs without ctx deadline or advisory lock — RESOLVED
+#### B-32: Retention sweeper SQL construction allows future SQL injection; uses `failed_permanent` status that doesn't exist; physically deletes hash-chained audit rows; runs without ctx deadline or advisory lock — RESOLVED in commits `e697162`, `52ed074`
 - **File:** `internal/infra/storage/retention/retention.go:78-134`
 - **What:** Multiple compounding defects: (a) `fmt.Sprintf` injects `predicate`/`idCol` into SQL with no whitelist; (b) sweeps `'failed_permanent'` which is not in the schema enum (`'failed'` is); (c) sweeps `audit_log` whose hash-chain breaks on any DELETE; (d) no `ORDER BY` so concurrent sweeps starve in lock contention; (e) no `context.WithTimeout` per Exec; (f) no `pg_advisory_lock` so multi-pod sweeps stomp on each other.
 - **Why it matters:** First retention run permanently breaks audit chain (chain-verifier tool from P2.5 will report "chain break at row 0" forever); deliveries marked `failed` linger; bad query plans hang the entire pool.
 - **Fix:** Whitelist `(table, idCol)` against an internal struct; replace `fmt.Sprintf` with bound params; use real schema enum; explicitly EXCLUDE `audit_log` from time-based DELETE (use partition rotation with chain-checkpoint); add `ORDER BY idCol`; per-Tick deadline; advisory lock around the whole sweep.
 - **Resolution:** Commits `e697162` and `52ed074`. (table, idCol, predicate) come from a whitelisted `allowedTargets` map; `sweep()` refuses non-whitelisted tables. Status enum corrected to `'failed'`/`'dead'` (the schema's actual values). `audit_log` removed from the allow-list entirely; `cfg.AuditLog` is silently ignored with a doc comment pointing at partition-rotation as the audit retention strategy. Each chunk DELETE adds `ORDER BY <idCol>` and runs under `context.WithTimeout(ctx, SweepExecTimeout)` (30s). `Tick` acquires a session-level `pg_advisory_lock(retentionAdvisoryLockID)` on a dedicated connection so multi-pod runs serialize. E2E `TestE2E_Retention_DoesNotDeleteAuditLog` seeds 100 audit rows with very-old timestamps, runs `Tick` with `cfg.AuditLog=1ns`, and asserts the row count is unchanged. Audit retention follow-up is tracked separately as future-work P2.5 (partition-rotation-based).
 
-#### B-33: Multi-pod migration race — no advisory lock around `applyAll`; `Concurrent` detection is a substring match — RESOLVED
+#### B-33: Multi-pod migration race — no advisory lock around `applyAll`; `Concurrent` detection is a substring match — RESOLVED in commit `52ed074`
 - **File:** `internal/infra/storage/migrate/migrate.go:191-208`
 - **What:** Multiple replicas at rollout time race the migration runner; `CREATE INDEX CONCURRENTLY` detection is `strings.Contains(... "CREATE INDEX CONCURRENTLY")` — a SQL comment with that text trips it.
 - **Why it matters:** "relation already exists" cascades, partial migrations, duplicate `schema_migrations` rows.
 - **Fix:** `pg_advisory_lock(<known constant>)` for the duration of `applyAll`; statement-level parser for concurrency detection.
 - **Resolution:** Commit `52ed074`. `applyAll` now holds `pg_advisory_lock(0xFEEDFACE)` on a dedicated connection for the whole apply pass; concurrent migrators serialize. `detectConcurrent` was rewritten to require an explicit `-- @CONCURRENT` directive on the leading content line of the migration body — comments and string literals containing `CREATE INDEX CONCURRENTLY` no longer trip the heuristic. Unit `TestDetectConcurrentRequiresExplicitDirective` pins the parser; e2e `TestE2E_Migrate_AdvisoryLockSerializesParallelRunners` fires 3 concurrent `migrate.Up` calls against a fresh container and asserts the final `schema_migrations` row count exactly matches the embedded migration set.
 
-#### B-34: Audit log file sink has no fsync; `pgstore` lock leaked on writer panic
+#### B-34: Audit log file sink has no fsync; `pgstore` lock leaked on writer panic — RESOLVED in commit `ad6ddd2` (merged in `f853619`)
 - **File:** `internal/infra/observability/observability.go:282`, `internal/infra/observability/audit/pgstore.go:74-93`
 - **What:** File sink uses `os.OpenFile(O_APPEND|O_CREATE|O_WRONLY)` with no fsync per write; `audit.Writer.Emit` acquires conn → `pg_advisory_lock` → INSERT → release in a manual sequence with no `defer recover()` over the lock holder.
 - **Why it matters:** (a) Power loss loses recent audit rows — strongest durability claim broken silently; (b) panic between acquire and release leaves the chain advisory lock held forever (next audit write blocks indefinitely).
 - **Fix:** Fsync on file sink (or document as best-effort); use `pg_advisory_xact_lock` (transaction-scoped, auto-released on commit/rollback).
+- **Resolution:** Commits `de73974` (RED) + `ad6ddd2` (GREEN), merged via `f853619`. Three changes:
+  - `audit.Writer.Emit` now wraps the durable path in `defer recover()`; on panic it releases the chain lock via the captured `release` closure and surfaces the panic as `audit: panic in durable write path: ...` to the caller. The `released` flag prevents double-release on the happy path.
+  - `audit.PgStore` switches from session-level `pg_advisory_lock` to xact-scoped `pg_advisory_xact_lock`. `AcquireChainLock` opens a tx and takes the lock inside it; `LastChainHash` and `InsertAuditRow` route through `currentTx()` so the read + insert run inside that tx. Release commits the tx, which auto-releases the lock — connection loss, rollback, or panic all release it without manual intervention.
+  - `observability.fileSink` is configurable: `every_write` (default, fsync per Emit) or `batched` (periodic fsync via background ticker; `Close()` drains and fsyncs once for clean shutdown). Lifecycle owns the sink and calls `Close()` before closing the underlying file handle.
+  - E2E tests: `TestB34_AuditWriterPanicReleasesChainLock` (`e2e/orchestrator/audit_pgstore_panic_release_test.go`) injects a panic mid-Insert via a fault-injection store and asserts the lock is released (next Emit completes promptly under a 2s timeout instead of blocking forever); `TestB34_AuditFileSinkFsyncs` (`e2e/orchestrator/audit_file_sink_fsync_test.go`) writes through the production observability module's file sink and asserts the rows are on disk after Emit returns.
 
-#### B-35: Secret rotation is unreachable — SIGHUP not registered
+#### B-35: Secret rotation is unreachable — SIGHUP not registered — RESOLVED in commit `3a81559` (merged in `f853619`)
 - **File:** `internal/infra/lifecycle/signals.go:61-77`, `internal/infra/config/secrets/secrets.go:80-110`
 - **What:** Signal handler registers only SIGTERM/SIGINT. `${file:...}` placeholders are read once at startup; rotation requires a SIGHUP that no one listens for.
 - **Why it matters:** Vault Agent / cert-manager rotates the on-disk file; our process keeps the old value indefinitely. Long-lived processes ship expired creds.
 - **Fix:** Register SIGHUP and route it to `config.Module.Reload`; also add periodic file-mtime polling so rotation works without explicit signal.
+- **Resolution:** Commits `57fafb1` (RED) + `3a81559` (GREEN) + `614bb4e` (test fixture), merged via `f853619`. Four changes:
+  - `lifecycle.LifecycleModule.SetReloadHandler(fn)` registers a SIGHUP-driven callback. `installSignalHandlers` now subscribes to `SIGHUP` in addition to `SIGTERM`/`SIGINT`; the dispatcher routes SIGHUP to `invokeReloadHandler` (no-op when nil) and never to `RequestShutdown`.
+  - `secrets.ResolveWithFilePaths` returns the deduplicated set of on-disk paths actually read for `${file:...}` placeholders, so the host can later mtime-poll them.
+  - `config.ReloadTrigger` gains `TriggerFileMtime` alongside `TriggerSIGHUP`. `Module.Reload` accepts both. Every reload (applied or rejected) fans out to `OnReload(fn func(trigger string))` hooks with the trigger label — hosts wire this to a `fhir_subs_config_reload_total{trigger}` counter.
+  - `Module.WatchSecretFiles(ctx, interval)` starts a goroutine that polls each tracked secret-file's mtime every `interval` (default 60s) and fires `Reload(TriggerFileMtime)` on any change. Tracks paths refresh on every Reload so the watcher follows config rotations that add/drop file placeholders.
+  - E2E tests: `TestB35_SIGHUPReloadsConfig` (`e2e/orchestrator/config_sighup_reload_test.go`) wires SIGHUP → `config.Reload`, raises a real SIGHUP at the test process, and asserts the OnReload trigger label is "sighup". `TestB35_FileMtimePollTriggersReload` (`e2e/orchestrator/config_file_mtime_poll_test.go`) starts the watcher with a 50ms interval, mutates a `${file:...}`-backed secret on disk, and asserts a "file_mtime" reload fires within 2s without any signal.
 
 ---
 
