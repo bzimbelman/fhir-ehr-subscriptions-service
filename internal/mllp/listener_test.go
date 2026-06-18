@@ -499,7 +499,7 @@ func TestListener_AllowedMessageTypes_Filter(t *testing.T) {
 // accepting new frames.
 func TestListener_ShutdownDrainsInFlight(t *testing.T) {
 	releasePersist := make(chan struct{})
-	persistEntered := make(chan struct{})
+	persistEntered := make(chan struct{}, 1)
 	persistedRows := int64(0)
 
 	p := &fakePersister{
