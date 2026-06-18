@@ -308,14 +308,38 @@ func classifyAssertionErr(err error) string {
 	}
 }
 
+// writeOAuthError emits the RFC 6749 OAuth error code wrapped in a FHIR
+// OperationOutcome. LLD §10 requires every error response from the API
+// — including the token endpoint — to be an OperationOutcome. The OAuth
+// error code is preserved on the issue's details.coding so spec-aware
+// clients can still pull it out, and the `error_description` text is
+// surfaced verbatim as `diagnostics`.
+//
+// HTTP status codes follow RFC 6749 unchanged.
 func writeOAuthError(w http.ResponseWriter, status int, code, desc string) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/fhir+json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error":             code,
-		"error_description": desc,
-	})
+	body := map[string]any{
+		"resourceType": "OperationOutcome",
+		"issue": []any{
+			map[string]any{
+				"severity":    "error",
+				"code":        "security",
+				"diagnostics": desc,
+				"details": map[string]any{
+					"coding": []any{
+						map[string]any{
+							"system":  "urn:ietf:rfc:6749",
+							"code":    code,
+							"display": desc,
+						},
+					},
+				},
+			},
+		},
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // jwksCache is a tiny TTL cache of compiled keyfuncs keyed by URL.
