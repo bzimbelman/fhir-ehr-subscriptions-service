@@ -72,6 +72,41 @@ func TestLoadValidatesEmbeddedSchema(t *testing.T) {
 	}
 }
 
+// P1.3: topics that use the :in modifier are rejected at load time
+// because v1 ships without a ValueSet expander. Without this rejection
+// the matcher fails closed at evaluation, silently dropping every
+// notification — operators get no warning.
+func TestLoadRejectsInModifier(t *testing.T) {
+	t.Parallel()
+
+	const inTopic = `{
+		"resourceType": "SubscriptionTopic",
+		"url": "http://example.org/topics/in-mod",
+		"version": "1.0.0",
+		"status": "active",
+		"resourceTrigger": [{
+			"resource": "ServiceRequest",
+			"supportedInteraction": ["create"],
+			"queryCriteria": {
+				"current": "code:in=http://example.org/ValueSet/labs"
+			}
+		}]
+	}`
+	report, err := catalog.Load(catalog.Sources{
+		BuiltIn: []catalog.RawTopic{{Origin: "builtin/in-mod", Bytes: []byte(inTopic)}},
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(report.Rejected) != 1 {
+		t.Fatalf("expected 1 rejection, got %d: %#v", len(report.Rejected), report.Rejected)
+	}
+	if !strings.Contains(report.Rejected[0].Reason, ":in") &&
+		!strings.Contains(report.Rejected[0].Reason, "in") {
+		t.Errorf("rejection reason should mention :in modifier; got %q", report.Rejected[0].Reason)
+	}
+}
+
 func TestLoadCompilesValidTopic(t *testing.T) {
 	t.Parallel()
 

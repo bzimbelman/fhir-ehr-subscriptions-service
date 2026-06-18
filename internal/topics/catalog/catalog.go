@@ -311,6 +311,14 @@ type Report struct {
 
 // supportedTokenModifiers, supportedReferenceModifiers, etc., enforce
 // ADR 0006 (no CQL, no regex; only the documented subset).
+//
+// P1.3: :in is *recognized* by the parser but the matcher fails closed
+// at evaluation because no ValueSet expander ships with v1. Per LLD
+// the right behavior is fail-loud at catalog load: operators must know
+// their topic cannot fire before deploying it. allowInModifier flips
+// the rejection at load time only when the host has wired a ValueSet
+// expander (not yet exposed). Until then, :in topics are rejected at
+// load with a clear error pointing at this future-work item.
 var (
 	supportedTokenModifiers     = stringSet("not", "missing", "in")
 	supportedReferenceModifiers = stringSet("identifier", "missing")
@@ -762,6 +770,13 @@ func parseLeft(left string) (SearchClause, error) {
 			!supportedReferenceModifiers[c.Modifier] &&
 			!supportedStringModifiers[c.Modifier] {
 			return c, fmt.Errorf("unsupported modifier %q", c.Modifier)
+		}
+		// P1.3: :in requires a ValueSet expander; v1 ships without one.
+		// Until the expander lands (future-work P1.3), reject the topic
+		// at load so operators see the failure during deploy rather than
+		// silently miss every notification at runtime.
+		if c.Modifier == "in" {
+			return c, fmt.Errorf("modifier :in requires a ValueSet expander not yet wired (future-work P1.3); topic must use a different filter shape until ValueSet expansion ships")
 		}
 	}
 	return c, nil
