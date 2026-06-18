@@ -270,7 +270,7 @@ func handleOneFrame(
 		if !messageTypeAllowed(mshFields.MessageType, ep.AllowedMessageTypes) {
 			metrics.Inc(MetricNackTotal, map[string]string{
 				"listener_endpoint": ep.Name, "reason": "message_type",
-				"type": mshFields.MessageType,
+				"type": bucketMessageTypeLabel(mshFields.MessageType, ep.AllowedMessageTypes),
 			})
 			metrics.Inc(MetricMessagesAckedTotal, map[string]string{
 				"listener_endpoint": ep.Name, "outcome": OutcomeAE,
@@ -441,6 +441,20 @@ func messageTypeAllowed(t string, allowed []string) bool {
 		}
 	}
 	return false
+}
+
+// bucketMessageTypeLabel returns t verbatim when it is in the allowed
+// set, and the literal "other" otherwise. The Prometheus nack_total
+// metric uses this for its "type" label so a hostile peer flooding
+// distinct MSH-9 values cannot create a new time-series per value
+// (B-30).
+func bucketMessageTypeLabel(t string, allowed []string) string {
+	for _, a := range allowed {
+		if a == t {
+			return t
+		}
+	}
+	return "other"
 }
 
 // persistFailureReason maps a persister error to a metric-label value
