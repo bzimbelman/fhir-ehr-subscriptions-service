@@ -92,18 +92,18 @@ func parseUUID(s string) (uuid.UUID, bool) {
 	return id, true
 }
 
-// readCappedBody reads up to cap+1 bytes; returns oversize=true when
-// the body exceeds the cap, so the caller can answer 413 (S-2.2). cap
-// of 0 falls back to DefaultMaxBodyBytes.
-func readCappedBody(r *http.Request, cap int64) (body []byte, err error, oversize bool) {
-	if cap <= 0 {
-		cap = DefaultMaxBodyBytes
+// readCappedBody reads up to limit+1 bytes; returns oversize=true when
+// the body exceeds the cap, so the caller can answer 413 (S-2.2).
+// limit of 0 falls back to DefaultMaxBodyBytes.
+func readCappedBody(r *http.Request, limit int64) (body []byte, err error, oversize bool) {
+	if limit <= 0 {
+		limit = DefaultMaxBodyBytes
 	}
-	body, err = io.ReadAll(io.LimitReader(r.Body, cap+1))
+	body, err = io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return nil, err, false
 	}
-	if int64(len(body)) > cap {
+	if int64(len(body)) > limit {
 		return nil, nil, true
 	}
 	return body, nil, false
@@ -137,19 +137,19 @@ func parseEventNumberParam(raw string) (int64, bool) {
 
 // capDiagnostic shortens diagnostics text so a pathological JSON body
 // can't push a multi-megabyte error message into the FHIR
-// OperationOutcome (S-2.3). cap of 0 means DefaultMaxSchemaErrorBytes.
-func capDiagnostic(s string, cap int) string {
-	if cap <= 0 {
-		cap = DefaultMaxSchemaErrorBytes
+// OperationOutcome (S-2.3). limit of 0 means DefaultMaxSchemaErrorBytes.
+func capDiagnostic(s string, limit int) string {
+	if limit <= 0 {
+		limit = DefaultMaxSchemaErrorBytes
 	}
-	if len(s) <= cap {
+	if len(s) <= limit {
 		return s
 	}
 	const suffix = "... (truncated)"
-	if cap <= len(suffix) {
-		return s[:cap]
+	if limit <= len(suffix) {
+		return s[:limit]
 	}
-	return s[:cap-len(suffix)] + suffix
+	return s[:limit-len(suffix)] + suffix
 }
 
 // createSubscription is POST /Subscription.
@@ -297,8 +297,8 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 	}
 	channel, ok := s.deps.Channels[sub.ChannelType]
 	if !ok {
-		if err := s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, "no channel registered"); err != nil {
-			s.logActivateError("activate.no_channel.update_status", id, err)
+		if uErr := s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, "no channel registered"); uErr != nil {
+			s.logActivateError("activate.no_channel.update_status", id, uErr)
 		}
 		return
 	}
