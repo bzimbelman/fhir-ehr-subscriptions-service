@@ -247,20 +247,27 @@ These items are not strictly required to deploy, but they materially limit the s
 
 **Why this is P2:** without these, the email channel is unusable for HIPAA-compliant clinical workflows in the US.
 
-### 2.4 R4B/R5 wire negotiation completeness
+### 2.4 R4B/R5 wire negotiation completeness — PARTIAL (MVP)
 
 **Source:** [docs/high-level-design/decisions/0004-fhir-version-strategy.md](high-level-design/decisions/0004-fhir-version-strategy.md), `internal/api/versionshim/`
 
-**Status:** `Negotiate(acceptHeader)` returns either R4B or R5 from `Accept` header parsing. The full conversion of `Subscription` and `SubscriptionTopic` resources between R4B Backport IG shape and R5 native shape is **not** implemented in the version shim.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). The version shim now provides `RenderSubscriptionR4B(r5Body)` that converts the R5-native Subscription into the R4B Backport IG shape: `topic → criteria`, `channelType.code → channel.type`, `endpoint → channel.endpoint`, `content → channel.payload`, `header` flattens from `[{name,value}]` objects to `"Name: Value"` strings, `heartbeatPeriod`/`timeout` move to `channel`, `filterBy` lifts to `_criteria.extension` as the Backport criteria-filter. `internal/api/handlers/subscription_model.go::renderSubscriptionForAccept` plumbs the converter to all read paths (read, search, create-response, update-response). When `Accept: application/fhir+json; fhirVersion=4.0` is negotiated, R4B subscribers now receive the Backport shape.
 
-**What's missing:**
+**What landed:**
 
-- R4B → R5 conversion for `Subscription` (criteria URL parsing, channel.endpoint location differences)
-- R5 → R4B serialization on read paths
-- `Bundle` of type `subscription-notification` shape differences between R4B and R5
-- Tests with golden inputs from the spec's official examples
+- `versionshim.RenderSubscriptionR4B` Subscription R5→R4B converter
+- `handlers.renderSubscriptionForAccept` negotiation+render helper
+- Read, search, create-response, and update-response all honor `Accept` header
+- Unit tests for the converter (top-level mapping, header flattening, filterBy lift, non-Subscription passthrough, malformed JSON)
 
-**Why this is P2:** today the system only fully serves R5-native subscribers. R4B subscribers can negotiate to R4B but the response shape is the R5-native form — not the spec's R4B Backport IG form. This breaks conformance for R4B clients.
+**What's still pending (post-MVP):**
+
+- `SubscriptionTopic` resource R5↔R4B conversion on the read path. Today the topic-catalog endpoint emits R5 native regardless of negotiation.
+- `Bundle` of type `subscription-notification` R4B serialization on the channel-delivery path. The notification builder emits R5 native; R4B subscribers receive R5-shaped bundles.
+- Inverse conversion (R4B→R5) on the write path. Today `parseInternalFromBody` accepts both wire shapes loosely; a stricter R4B-only path with a Backport schema would let writers be more idiomatic.
+- Conformance suite tests against the spec's official R4B golden examples.
+
+**Why this is P2:** the MVP closes the most-requested gap: R4B subscribers negotiating `fhirVersion=4.0` now see the spec-shaped Subscription resource on read paths. SubscriptionTopic and Bundle conversions remain — they are tracked here as the v1.0 follow-up.
 
 ### 2.5 Audit chain verifier CLI — RESOLVED
 

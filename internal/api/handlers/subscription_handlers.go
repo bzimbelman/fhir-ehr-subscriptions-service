@@ -285,7 +285,7 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		stored = &row
 	}
 
-	resp := renderSubscription(stored)
+	resp := renderSubscriptionForAccept(stored, r.Header.Get("Accept"))
 	w.Header().Set("Location", "/Subscription/"+id.String())
 	w.Header().Set("ETag", `W/"`+id.String()+`"`)
 	writeJSON(w, http.StatusCreated, resp)
@@ -423,7 +423,7 @@ func (s *server) readSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("ETag", `W/"`+row.ID.String()+`"`)
-	writeJSON(w, http.StatusOK, renderSubscription(row))
+	writeJSON(w, http.StatusOK, renderSubscriptionForAccept(row, r.Header.Get("Accept")))
 }
 
 // searchSubscriptions is GET /Subscription. Returns a searchset Bundle
@@ -442,10 +442,11 @@ func (s *server) searchSubscriptions(w http.ResponseWriter, r *http.Request) {
 			"search failed")
 		return
 	}
+	accept := r.Header.Get("Accept")
 	entries := make([]any, 0, len(rows))
 	for i := range rows {
 		var sub map[string]any
-		_ = json.Unmarshal(renderSubscription(&rows[i]), &sub)
+		_ = json.Unmarshal(renderSubscriptionForAccept(&rows[i], accept), &sub)
 		entries = append(entries, map[string]any{
 			"resource": sub,
 		})
@@ -585,7 +586,7 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		row.ID = id
 	}
 	w.Header().Set("ETag", `W/"`+id.String()+`"`)
-	writeJSON(w, http.StatusOK, renderSubscription(row))
+	writeJSON(w, http.StatusOK, renderSubscriptionForAccept(row, r.Header.Get("Accept")))
 }
 
 type updateRouting int

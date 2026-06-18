@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/versionshim"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
@@ -210,4 +211,26 @@ func renderSubscription(row *repos.SubscriptionRow) []byte {
 	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// renderSubscriptionForAccept renders the SubscriptionRow in the wire
+// form negotiated from the Accept header. The R5 native shape is the
+// internal renderer; if Negotiate returns R4B we layer the R4B
+// Backport conversion on top (P2.4 MVP).
+//
+// On any negotiation or conversion error we fall back to the R5
+// native shape so a malformed Accept header does not break a read.
+// Operators see the original via the X-FHIR-Version response header
+// the caller is expected to set.
+func renderSubscriptionForAccept(row *repos.SubscriptionRow, acceptHeader string) []byte {
+	r5 := renderSubscription(row)
+	v, err := versionshim.Negotiate(acceptHeader)
+	if err != nil || v != versionshim.R4B {
+		return r5
+	}
+	r4b, err := versionshim.RenderSubscriptionR4B(r5)
+	if err != nil || len(r4b) == 0 {
+		return r5
+	}
+	return r4b
 }

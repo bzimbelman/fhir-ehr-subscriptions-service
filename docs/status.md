@@ -233,7 +233,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P2.1 | FHIR Scan Runner adapter framework worker | (no status) | OPEN ✗ | — | no production worker invokes ScanPlan/RunScan |
 | future | P2.2 | Vendor API Client framework worker | (no status) | OPEN ✗ | — | SPI exists; no worker |
 | future | P2.3 | Email channel S/MIME + Direct SMTP | (no status) | OPEN ✗ | — | v1 ships SMTP-only |
-| future | P2.4 | R4B/R5 wire negotiation completeness | (no status) | OPEN ✗ | — | partial Negotiate; no full Subscription R4B↔R5 conversion |
+| future | P2.4 | R4B/R5 wire negotiation completeness | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | Subscription R5→R4B conversion on read; SubscriptionTopic + Bundle conversions deferred |
 | future | P2.5 | Audit chain verifier CLI | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | `audit.VerifyChainReport` + `cmd/fhir-subs audit verify --from --to` subcommand |
 | future | P2.6 | Heartbeats and handshakes | (no status) | OPEN ✗ | — | scheduler doesn't emit heartbeats |
 | future | P2.7 | Auth re-check at delivery prep | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | SPI + cached wrapper + submatcher hook landed; production auth-store integration deferred |
