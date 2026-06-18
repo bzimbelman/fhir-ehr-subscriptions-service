@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -181,6 +182,62 @@ func TestRun_RejectsTLSWithoutCertWhenNotInsecure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tls") {
 		t.Fatalf("error should mention tls: %v", err)
+	}
+}
+
+// TestRun_UsesObservabilityLogger asserts that runWithHooks routes log
+// output through the observability/logging package, which installs the
+// PHI-redacting handler. The test gets the live logger via
+// runHooks.onLoggerReady and emits a record with a `body` attribute
+// (a documented PHI field name in observability/logging.PHIFieldNames).
+// If the obs logger is wired the `body` value is rewritten to
+// "[redacted]" in the output. (S-1.4)
+func TestRun_UsesObservabilityLogger(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Deployment: DeploymentConfig{FacilityID: "f1", LogLevel: "info"},
+		Adapter:    AdapterConfig{ID: "a1"},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logs := &strings.Builder{}
+	started := make(chan struct{})
+	hooks := runHooks{
+		onListening: func(_ string) { close(started) },
+		onLoggerReady: func(lg *slog.Logger) {
+			// PHI-shaped attribute: redactor must scrub the value.
+			lg.Info("phi probe", "body", "patient-name-leaked")
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- runWithHooks(ctx, cfg, logs, hooks) }()
+
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never started")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return")
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "phi probe") {
+		t.Fatalf("phi probe line missing: %s", out)
+	}
+	if strings.Contains(out, "patient-name-leaked") {
+		t.Fatalf("redactor did not scrub PHI body value: %s", out)
+	}
+	if !strings.Contains(out, "[redacted]") {
+		t.Fatalf("expected [redacted] marker for PHI body field: %s", out)
 	}
 }
 
