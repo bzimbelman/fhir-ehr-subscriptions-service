@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +14,10 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
+
+// DefaultActivationTimeout bounds the per-subscription activation
+// handshake when Deps.ActivationTimeout is unset.
+const DefaultActivationTimeout = 30 * time.Second
 
 // HandshakeOutcome is the result of a channel module's per-subscription
 // activation handshake.
@@ -47,6 +52,14 @@ type MetricsRecorder interface {
 	RecordValidationFailure(kind string)
 }
 
+// ActivatePanicRecorder is an optional extension implemented by
+// MetricsRecorder to count recovered panics in fire-and-forget
+// activation goroutines (B-10). The handlers detect this via a type
+// assertion so existing recorders continue to compile without change.
+type ActivatePanicRecorder interface {
+	RecordActivatePanic()
+}
+
 // Deps is the bundle of dependencies the handlers need at request time.
 type Deps struct {
 	Subscriptions SubscriptionsStore
@@ -77,6 +90,38 @@ type Deps struct {
 
 	// ServerVersion is rendered into CapabilityStatement.software.
 	ServerVersion string
+
+	// LifecycleCtx is the long-lived server context. Activation
+	// goroutines derive their per-call ctx from it so that server
+	// shutdown propagates cancellation to in-flight handshakes (B-10).
+	// Nil is treated as context.Background.
+	LifecycleCtx context.Context
+
+	// ActivationTimeout bounds the per-subscription activation
+	// handshake. A slow vendor cannot pin a goroutine + DB conn forever
+	// (B-10). Zero means use DefaultActivationTimeout.
+	ActivationTimeout time.Duration
+
+	// ActivationWaitGroup, when non-nil, is incremented for every
+	// in-flight activation goroutine. The lifecycle module joins on it
+	// during graceful shutdown so handshakes either finish, time out,
+	// or are canceled before the process exits (B-10).
+	ActivationWaitGroup *sync.WaitGroup
+
+	// URLValidator, when non-nil, vets the subscriber-supplied
+	// channel.endpoint URL on every create and update before the row
+	// is persisted (B-11). A nil validator is treated as "no policy"
+	// for backward-compatibility with existing tests; production
+	// wiring MUST set this.
+	URLValidator URLValidator
+
+	// AuditMaxBytes caps the canonical request body persisted to
+	// audit_log on create / update (B-13). Zero means
+	// DefaultAuditMaxBytes (16 KiB). All requests are also passed
+	// through RedactSubscriptionForAudit before truncation so that
+	// channel.header[] and similar secret-bearing fields never reach
+	// disk in plaintext.
+	AuditMaxBytes int
 }
 
 // RegisterRoutes wires every handler onto r. Auth middleware MUST be
@@ -88,6 +133,12 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	}
 	if d.WSBindingTTL == 0 {
 		d.WSBindingTTL = 5 * time.Minute
+	}
+	if d.LifecycleCtx == nil {
+		d.LifecycleCtx = context.Background()
+	}
+	if d.ActivationTimeout == 0 {
+		d.ActivationTimeout = DefaultActivationTimeout
 	}
 
 	h := &server{deps: d}

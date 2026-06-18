@@ -19,12 +19,13 @@ import (
 
 // recordingHandlerMetrics captures handler-emitted metrics.
 type recordingHandlerMetrics struct {
-	mu          sync.Mutex
-	created     int
-	updated     int
-	deleted     int
-	wsTokens    int
-	validations map[string]int
+	mu                  sync.Mutex
+	created             int
+	updated             int
+	deleted             int
+	wsTokens            int
+	validations         map[string]int
+	activatePanicsTotal int
 }
 
 func newRecordingHandlerMetrics() *recordingHandlerMetrics {
@@ -55,6 +56,17 @@ func (m *recordingHandlerMetrics) RecordValidationFailure(kind string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.validations[kind]++
+}
+func (m *recordingHandlerMetrics) RecordActivatePanic() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activatePanicsTotal++
+}
+
+func (m *recordingHandlerMetrics) activatePanics() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.activatePanicsTotal
 }
 
 func depsWithMetrics(t *testing.T, m handlers.MetricsRecorder) handlers.Deps {

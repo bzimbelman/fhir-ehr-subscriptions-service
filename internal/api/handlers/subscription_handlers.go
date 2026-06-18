@@ -173,6 +173,19 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SSRF guard (B-11). The validator runs on every channel that
+	// carries an outbound URL. websocket has no caller-supplied URL so
+	// we skip the check there. The same validator is reused at delivery
+	// time by the rest-hook channel as a DNS-rebinding defense.
+	if s.deps.URLValidator != nil && internal.Endpoint != "" && internal.ChannelType != "websocket" {
+		if err := s.deps.URLValidator.Validate(internal.Endpoint); err != nil {
+			s.recordValidationFailure("ssrf")
+			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+				"endpoint rejected by SSRF policy")
+			return
+		}
+	}
+
 	row := internal.toRow(p.ClientID, repos.SubRequested)
 	id, insertErr := s.deps.Subscriptions.Insert(r.Context(), row)
 	if insertErr != nil {
@@ -181,12 +194,16 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	row.ID = id
-	_ = s.deps.Audit.Append(r.Context(), "subscription.create", id.String(), "success", nil, body)
+	auditBody, _ := RedactSubscriptionForAudit(body, AuditRedactConfig{MaxBytes: s.deps.AuditMaxBytes})
+	_ = s.deps.Audit.Append(r.Context(), "subscription.create", id.String(), "success", nil, auditBody)
 	s.recordCreated()
 
 	// Activation handshake — non-blocking. The 201 returns immediately
-	// with status=requested.
-	go s.activate(context.Background(), id)
+	// with status=requested. spawnActivate enrolls the goroutine in
+	// the lifecycle WaitGroup, bounds the per-call context with
+	// ActivationTimeout, and recovers any panic in the channel adapter
+	// (B-10).
+	s.spawnActivate(id)
 
 	stored, _ := s.deps.Subscriptions.GetByID(r.Context(), id)
 	if stored == nil {
@@ -218,8 +235,15 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 		if err != nil {
 			reason = err.Error()
 		}
-		_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubError, reason)
-		_ = s.deps.Audit.Append(ctx, "subscription.handshake.fail", id.String(), "failure", nil, nil)
+		// If the per-call ctx is dead (timeout / lifecycle cancel),
+		// fall back to a fresh background ctx so the row does not stay
+		// stuck at `requested` (B-10).
+		bookkeepingCtx := ctx
+		if bookkeepingCtx.Err() != nil {
+			bookkeepingCtx = context.Background()
+		}
+		_ = s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason)
+		_ = s.deps.Audit.Append(bookkeepingCtx, "subscription.handshake.fail", id.String(), "failure", nil, nil)
 		return
 	}
 	_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, "")
@@ -421,6 +445,15 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.deps.URLValidator != nil && newDoc.Endpoint != "" && newDoc.ChannelType != "websocket" {
+		if err := s.deps.URLValidator.Validate(newDoc.Endpoint); err != nil {
+			s.recordValidationFailure("ssrf")
+			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
+				"endpoint rejected by SSRF policy")
+			return
+		}
+	}
+
 	classification := classifyUpdate(existing, newDoc)
 	updatedRow := newDoc.toRow(p.ClientID, existing.Status)
 	updatedRow.EventsSinceSubscriptionStart = existing.EventsSinceSubscriptionStart
@@ -430,13 +463,14 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 			"update failed")
 		return
 	}
-	_ = s.deps.Audit.Append(r.Context(), "subscription.update", id.String(), "success", nil, body)
+	auditBody, _ := RedactSubscriptionForAudit(body, AuditRedactConfig{MaxBytes: s.deps.AuditMaxBytes})
+	_ = s.deps.Audit.Append(r.Context(), "subscription.update", id.String(), "success", nil, auditBody)
 	s.recordUpdated()
 
 	switch classification {
 	case routingReHandshake:
 		_ = s.deps.Subscriptions.UpdateStatus(r.Context(), id, repos.SubRequested, "")
-		go s.activate(context.Background(), id)
+		s.spawnActivate(id)
 	case routingDeactivate:
 		_ = s.deps.Subscriptions.UpdateStatus(r.Context(), id, repos.SubOff, "")
 	case routingDrainAndApply:
