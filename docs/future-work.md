@@ -278,14 +278,16 @@ These items are not strictly required to deploy, but they materially limit the s
 
 ### 2.6 Heartbeats and handshakes
 
-**Source:** [docs/low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) §6
+**Source:** [docs/low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) §6; D-2 (rest-hook handshake) RESOLVED in `3d0945f`.
 
-**Status:** Builder fully wires Bundle assembly for handshake / heartbeat / query-status / query-event Bundles. The scheduler's claim loop only handles `event-notification` deliveries — it does not emit heartbeats on idle subscriptions or send handshake notifications on subscription state transitions.
+**Status:** Builder fully wires Bundle assembly for handshake / heartbeat / query-status / query-event Bundles. rest-hook activation handshake now POSTs a synthetic FHIR R5 handshake Bundle (D-2 resolved). The scheduler's claim loop only handles `event-notification` deliveries — it does not emit heartbeats on idle subscriptions or send handshake notifications on subscription state transitions. **websocket and email channels still use the no-op `defaultActivator` placeholder** — the websocket handshake is asynchronous (subscriber binds with token after creation), and email handshake semantics depend on relay AUTH that is not modeled today.
 
 **What's missing:**
 
 - Heartbeat timer wheel (per LLD: configurable per-subscription `heartbeatPeriod`, default off)
 - State-machine for subscription transitions (`requested` → `active` → `error` → `off`) that emits handshake Notifications via the configured channel
+- Real `websocket` activator (token-issued path; client binds via `$get-ws-binding-token` and the activator resolves the bind on first connect)
+- Real `email` activator (relay-side AUTH semantics; potentially asynchronous via `outcome_sink`)
 - Tests covering the four notification types (event, handshake, heartbeat, query-status, query-event)
 
 **Why this is P2:** subscribers can't tell if a quiet subscription is healthy or broken. Heartbeats are part of the spec's reliability story.

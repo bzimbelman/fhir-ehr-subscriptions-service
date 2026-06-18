@@ -5,12 +5,12 @@ Single-source-of-truth status for every tracked work item across the audit, futu
 ## Headline
 
 - **Code state:** `go build ./...` clean, `go vet ./...` clean. Race tests, lint, and the full `go test ./... -race -count=1` suite were not re-run for this snapshot — the audit doc's prior verification of those is taken on faith here, but trustworthiness of THIS doc does not depend on them.
-- **Doc trustworthiness:** the audit doc (`production-readiness-audit.md`) is materially accurate for the BLOCKER cohort (35/35 verified RESOLVED) and ~95% accurate for the SHOULD-FIX cohort; pointers for S-1.8 and S-2.20 have been corrected. The **future-work doc** has been reconciled with shipped code: P1.7 and P1.12 reclassified PARTIAL (with explicit gap lists), P1.11 marked RESOLVED, P2.8 marked RESOLVED — recipe docs pending. Demo doc gaps 1, 2, and 7 have been marked RESOLVED. The audit's `## Discovered during B-4` section still correctly lists D-1..D-4 as OPEN (note: bd has since closed several of these — see Currently in flight).
+- **Doc trustworthiness:** the audit doc (`production-readiness-audit.md`) is materially accurate for the BLOCKER cohort (35/35 verified RESOLVED) and ~95% accurate for the SHOULD-FIX cohort; pointers for S-1.8 and S-2.20 have been corrected. The **future-work doc** has been reconciled with shipped code: P1.7 and P1.12 reclassified PARTIAL (with explicit gap lists), P1.11 marked RESOLVED, P2.8 marked RESOLVED — recipe docs pending. Demo doc gaps 1, 2, and 7 have been marked RESOLVED. The audit's `## Discovered during B-4` section now lists D-1..D-4 as RESOLVED (commit `3d0945f`).
 - **Top items to land next** (impact-ordered):
   1. Land `feat/future-work-p1-batch` (P1.4 ICU folding + P1.12 dead-letter metric) — already committed on a branch ahead of main. P1.4 also has a real correctness bug still latent in `equalsToken`/`equalsString` (see Discrepancies).
   2. P1.5 matcher metrics (in-flight per `bd` task #165, code not yet present).
   3. P1.7 CapabilityStatement — base implementation lives at `subscription_handlers.go:1014` (mounted via `RegisterPublicRoutes`); reclassified PARTIAL in future-work doc with explicit gaps (multi-version `fhirVersion`, OAuth/JWKS discovery, IG `instantiates` URI). The unmerged `feat/future-work-p1-batch` commit `033f942` fills these in.
-  4. D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator) — these silently break end-to-end notification correctness in production despite all B-1..B-35 being green.
+  4. ~~D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator)~~ — RESOLVED in `3d0945f`. Topic catalog now loads from `topics.catalog_dir` with SIGHUP-driven hot reload. rest-hook handshake POSTs a real synthetic FHIR R5 Bundle and only flips to active on 2xx. Audit logs reflect actual subscriber response rather than a synthetic "succeeded".
   5. P1.9 WSS Sec-WebSocket-Protocol bind transport — subscribers written against the spec cannot bind today.
 
 ## Master Status Table
@@ -214,10 +214,10 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | N-1.33 | subscription_topics.ListByStatus no LIMIT | RESOLVED | RESOLVED ✓ | 79921ca | DefaultListByStatusCap=1000 |
 | audit | N-1.34 | claim FOR UPDATE substring match fragile | RESOLVED | RESOLVED ✓ | 79921ca | stripSQLCommentsAndStrings |
 | audit | N-1.35 | partition Run ignores reload changes | RESOLVED | RESOLVED ✓ | ffe847b | re-reads cfg per iteration |
-| audit | D-1 | Production binary loads empty catalog | OPEN | OPEN ✗ | — | confirmed at `cmd/fhir-subs/wiring.go:258`: `catalog.Load(catalog.Sources{})` |
-| audit | D-2 | rest-hook channel handshake placeholder | OPEN | OPEN ✗ | — | confirmed at `cmd/fhir-subs/wiring.go:611`: `defaultActivator.ActivateSubscription` returns `HandshakeSucceeded` unconditionally |
-| audit | D-3 | pgxpool startup ping retries past pingCtx | OPEN | OPEN ✗ | — | diagnostic-latency only |
-| audit | D-4 | Adapter version pin error path uses generic Go error | OPEN | OPEN ✗ | — | confirmed at `cmd/fhir-subs/wiring.go:130`: uses `fmt.Errorf("adapter load: %w", err)` not typed `*registry.UnknownAdapterError` |
+| audit | D-1 | Production binary loads empty catalog | RESOLVED | RESOLVED ✓ | 3d0945f | `topics.catalog_dir` config + `loadTopicSources` walk + `lcMod.SetReloadHandler` SIGHUP reload (`cmd/fhir-subs/topics.go`, `cmd/fhir-subs/wiring.go`) |
+| audit | D-2 | rest-hook channel handshake placeholder | RESOLVED | RESOLVED ✓ | 3d0945f | `restHookActivator` (`cmd/fhir-subs/activators.go`) POSTs synthetic FHIR R5 handshake Bundle; only 2xx flips to active. websocket/email keep placeholder (tracked in future-work). |
+| audit | D-3 | pgxpool startup ping retries past pingCtx | RESOLVED | RESOLVED ✓ | 3d0945f | `buildPoolConfig` (`cmd/fhir-subs/pool.go`) sets `ConnConfig.ConnectTimeout` (5s default) via `pgxpool.NewWithConfig`. |
+| audit | D-4 | Adapter version pin error path uses generic Go error | RESOLVED | RESOLVED ✓ | 3d0945f | `formatRunError` (`cmd/fhir-subs/main.go`) `errors.As`-switches on `*registry.UnknownAdapterError`. |
 | future | P1.1 | Adapter framework supervisors | (no status) | OPEN ✗ | — | bd #172 pending; no Supervisor types in `internal/adapter/` |
 | future | P1.2 | FHIRPath sandboxed evaluator | (no status) | PARTIAL ⚠ | — | bd #171 pending; B-24 made it fail-closed today (matcher.go:561+); full sandbox (timeout, traversal limit, deny-list) not built |
 | future | P1.3 | :in modifier ValueSet expansion | (no status) | PARTIAL ⚠ | — | bd #170 pending; matcher.go:280 fails closed today; no ValueSet loader, no catalog rejection at load |
@@ -290,7 +290,7 @@ Source         Total | RESOLVED | OPEN | PARTIAL | DEFERRED
 audit B-*         35 |       35 |    0 |       0 |        0
 audit S-*.X      125 |      107 |    0 |       4 |       14
 audit N-*.X       35 |       32 |    0 |       0 |        3
-audit D-*          4 |        0 |    4 |       0 |        0
+audit D-*          4 |        4 |    0 |       0 |        0
 future P1         12 |        1 |    7 |       4 |        0
                      | (P1.11)   | (P1.1, | (P1.2, |
                      |           |  P1.4*,|  P1.3, |
@@ -332,7 +332,7 @@ Branches ahead of `origin/main` (`7df3187`):
 1. **Verify and merge `feat/future-work-p1-batch`** — but first confirm the P1.4 commit actually folds in the equality paths. If it does not (today's main does not), expand scope before merging or open a follow-up.
 2. **Reconcile P1.7 status.** Read the new `buildCapabilityStatement` body, decide if it satisfies P1.7 fully (R4B Backport shape, all endpoints listed, OAuth/SMART discovery), and either close the bd task and update future-work, or write a precise gap.
 3. **Update `docs/future-work.md` with status markers.** Today the doc has zero resolution status; readers can't tell what landed. At minimum add a status header per item: `RESOLVED`/`PARTIAL`/`OPEN`/`DEFERRED` with the commit/branch.
-4. **Land D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator).** Even though the audit's BLOCKER cohort is green, D-1 silently makes the production binary's pipeline a no-op (no topics → no events → no notifications). D-2 makes audit logs lie about handshake outcomes. Both are correctness defects discovered during B-4 wiring; neither blocks demo-on-laptop but both block real-world deployment.
+4. ~~Land D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator).~~ **DONE in `3d0945f`.** D-3 (pgxpool connect_timeout) and D-4 (typed adapter error) shipped in the same commit.
 5. **Land P1.5 matcher metrics.** In flight per `bd` #165. Without it, operators have zero visibility into matching throughput, slow topics, or fhirpath timeouts — production triage is impossible.
 
 ## How this doc stays current
