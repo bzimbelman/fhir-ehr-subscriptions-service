@@ -731,6 +731,11 @@ type relayConfig struct {
 	FailRcpt *smtpResp
 	// FailDataClose, when non-nil, returns this code on DATA close.
 	FailDataClose *smtpResp
+
+	// HangupOnQuit closes the underlying TCP connection abruptly on QUIT
+	// without writing the 221 response. Used by the S-6 close-error test
+	// to surface a non-nil error from the smtp client's Close.
+	HangupOnQuit bool
 }
 
 type relayMessage struct {
@@ -933,6 +938,11 @@ func (r *testRelay) handle(rawConn net.Conn) {
 		case "NOOP":
 			_ = conn.WriteLine("250 OK")
 		case "QUIT":
+			if r.cfg.HangupOnQuit {
+				// Drop the connection without writing 221 so the client's
+				// Close surfaces a non-nil error.
+				return
+			}
 			_ = conn.WriteLine("221 Bye")
 			return
 		default:
