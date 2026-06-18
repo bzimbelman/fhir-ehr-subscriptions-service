@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -413,40 +414,51 @@ func stringify(v any) string {
 	return string(b)
 }
 
+// foldEqual is the locale-folded string equality helper used by every
+// non-:contains equality path. ADR 0010 #4 requires ICU root-locale
+// folding on ALL string equality, not just :contains (P1.4). Folding
+// both sides preserves the original :contains semantics while making
+// `Müller` equal `mUller`, `MULLER`, etc.
+func foldEqual(a, b string) bool {
+	return foldICURoot(a) == foldICURoot(b)
+}
+
 func equalsToken(v any, value string) bool {
 	switch x := v.(type) {
 	case string:
-		return x == value
+		return foldEqual(x, value)
 	case map[string]any:
 		sys, _ := x["system"].(string)
 		code, _ := x["code"].(string)
 		if strings.Contains(value, "|") {
 			parts := strings.SplitN(value, "|", 2)
-			return parts[0] == sys && parts[1] == code
+			return foldEqual(parts[0], sys) && foldEqual(parts[1], code)
 		}
-		return value == code
+		return foldEqual(value, code)
 	}
 	return false
 }
 
 func equalsReference(v any, value string) bool {
 	if s, ok := v.(string); ok {
-		return s == value
+		return foldEqual(s, value)
 	}
 	if m, ok := v.(map[string]any); ok {
 		if ref, ok := m["reference"].(string); ok {
-			return ref == value
+			return foldEqual(ref, value)
 		}
 	}
 	return false
 }
 
-// equalsString is plain string equality. Mirrors submatcher.equalsString
-// so the bare-clause path here matches the bare-clause path there
-// (S-10.2). Falls through with false for non-string values.
+// equalsString is locale-folded string equality. Mirrors
+// submatcher.equalsString so the bare-clause path here matches the
+// bare-clause path there (S-10.2). ADR 0010 #4 requires ICU folding on
+// all string equality (P1.4). Falls through with false for non-string
+// values.
 func equalsString(v any, value string) bool {
 	if s, ok := v.(string); ok {
-		return s == value
+		return foldEqual(s, value)
 	}
 	return false
 }
@@ -464,9 +476,9 @@ func matchIdentifier(v any, value string) bool {
 	idSys, _ := id["system"].(string)
 	if strings.Contains(value, "|") {
 		parts := strings.SplitN(value, "|", 2)
-		return parts[0] == idSys && parts[1] == idVal
+		return foldEqual(parts[0], idSys) && foldEqual(parts[1], idVal)
 	}
-	return idVal == value
+	return foldEqual(idVal, value)
 }
 
 // parseDateComparator splits "gt2026-01-01" → (cmp="gt", val=...).
@@ -543,15 +555,32 @@ func parseFlexibleDateWithFlag(s string) (time.Time, bool, bool) {
 // golang.org/x/text root locale.
 //
 // Order: NFD → strip combining marks → fold (lower) → NFC.
-var icuFoldChain = transform.Chain(
-	norm.NFD,
-	runes.Remove(runes.In(unicode.Mn)),
-	cases.Fold(),
-	norm.NFC,
-)
+//
+// transform.Chain instances are stateful: a single chain is NOT
+// goroutine-safe AND retains state across consecutive transform.String
+// calls. The pre-P1.4 code shared one package-level chain across every
+// goroutine; once foldICURoot started being called from every equality
+// path (matcher + submatcher hot paths), the shared chain produced
+// torn output and panics under concurrent load. We pool fresh chains
+// and Reset() before each use.
+func newFoldChain() transform.Transformer {
+	return transform.Chain(
+		norm.NFD,
+		runes.Remove(runes.In(unicode.Mn)),
+		cases.Fold(),
+		norm.NFC,
+	)
+}
+
+var foldChainPool = sync.Pool{
+	New: func() any { return newFoldChain() },
+}
 
 func foldICURoot(s string) string {
-	out, _, err := transform.String(icuFoldChain, s)
+	t := foldChainPool.Get().(transform.Transformer)
+	t.Reset()
+	defer foldChainPool.Put(t)
+	out, _, err := transform.String(t, s)
 	if err != nil {
 		return strings.ToLower(s)
 	}
