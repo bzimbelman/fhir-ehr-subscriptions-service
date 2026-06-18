@@ -248,7 +248,8 @@ func setupHarness(ctx context.Context) (*Harness, func(), error) {
 }
 
 // applyMigrations reads migrations/0001_init.sql from the repo root and
-// executes it against the pool.
+// executes it against the pool. Retries pool connection up to 30s to
+// tolerate slow port-forwarder establishment on macOS Docker hosts.
 func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	root, err := repoRoot()
 	if err != nil {
@@ -259,6 +260,22 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 	if err != nil {
 		return fmt.Errorf("read %s: %w", migrationPath, err)
 	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	var pingErr error
+	for time.Now().Before(deadline) {
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		pingErr = pool.Ping(pingCtx)
+		cancel()
+		if pingErr == nil {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if pingErr != nil {
+		return fmt.Errorf("waiting for postgres: %w", pingErr)
+	}
+
 	if _, err := pool.Exec(ctx, string(body)); err != nil {
 		return fmt.Errorf("apply %s: %w", migrationPath, err)
 	}

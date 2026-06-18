@@ -22,19 +22,22 @@ type ReceivedNotification struct {
 	Body           []byte      `json:"body"`
 }
 
+// receivedAlias is the wire shape of ReceivedNotification: Body is a
+// UTF-8 string field (more readable in logs than a base64 []byte).
+type receivedAlias struct {
+	SubscriptionID string      `json:"subscription_id"`
+	ReceivedAt     time.Time   `json:"received_at"`
+	Method         string      `json:"method"`
+	Path           string      `json:"path"`
+	Header         http.Header `json:"header"`
+	Body           string      `json:"body"`
+}
+
 // MarshalJSON renders the body as a UTF-8 string field; the harness only
 // cares about JSON FHIR Bundles for v1, and a string is more readable in
 // orchestrator logs than a base64 byte array.
 func (r ReceivedNotification) MarshalJSON() ([]byte, error) {
-	type alias struct {
-		SubscriptionID string      `json:"subscription_id"`
-		ReceivedAt     time.Time   `json:"received_at"`
-		Method         string      `json:"method"`
-		Path           string      `json:"path"`
-		Header         http.Header `json:"header"`
-		Body           string      `json:"body"`
-	}
-	return json.Marshal(alias{
+	return json.Marshal(receivedAlias{
 		SubscriptionID: r.SubscriptionID,
 		ReceivedAt:     r.ReceivedAt,
 		Method:         r.Method,
@@ -42,6 +45,22 @@ func (r ReceivedNotification) MarshalJSON() ([]byte, error) {
 		Header:         r.Header,
 		Body:           string(r.Body),
 	})
+}
+
+// UnmarshalJSON decodes the wire shape (Body as string) back into a
+// ReceivedNotification.
+func (r *ReceivedNotification) UnmarshalJSON(data []byte) error {
+	var a receivedAlias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	r.SubscriptionID = a.SubscriptionID
+	r.ReceivedAt = a.ReceivedAt
+	r.Method = a.Method
+	r.Path = a.Path
+	r.Header = a.Header
+	r.Body = []byte(a.Body)
+	return nil
 }
 
 // RestHookReceiver journals POSTs to /hook/{subscription_id} and exposes
