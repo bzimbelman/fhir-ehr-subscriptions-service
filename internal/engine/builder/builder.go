@@ -148,11 +148,20 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 	// 1. Pre-sort events by per-sub event_number so the wire ordering
 	//    matches the contract (Ordering invariants: notificationEvent
 	//    sorted by eventNumber asc).
+	//
+	//    S-12: when PerSubEventNumbers is missing an entry the lookup
+	//    silently returns 0 — that collapses ordering for any rows
+	//    not in the map. Tie-break on the event ID so the sort is
+	//    deterministic even in that pathological case.
 	events := make([]repos.EhrEventRow, len(job.Events))
 	copy(events, job.Events)
 	sort.SliceStable(events, func(i, j int) bool {
-		return perSubEv(job.PerSubEventNumbers, events[i].ID) <
-			perSubEv(job.PerSubEventNumbers, events[j].ID)
+		ni := perSubEv(job.PerSubEventNumbers, events[i].ID)
+		nj := perSubEv(job.PerSubEventNumbers, events[j].ID)
+		if ni != nj {
+			return ni < nj
+		}
+		return events[i].ID.String() < events[j].ID.String()
 	})
 
 	// 2. Compute eventsSinceSubscriptionStart.
@@ -185,7 +194,11 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			n := perSubEv(job.PerSubEventNumbers, ev.ID)
 			entry := notificationEvent{
 				EventNumber: n,
-				Timestamp:   ev.OccurredAt.UTC().Format(time.RFC3339),
+				// S-12: FHIR `instant` allows sub-second precision;
+				// RFC3339 (without Nano) silently drops it. Use
+				// RFC3339Nano so a millisecond-resolution
+				// occurredAt survives the round trip.
+				Timestamp: ev.OccurredAt.UTC().Format(time.RFC3339Nano),
 			}
 			// Per the contract: focus is absent for empty payloads.
 			if payload != channel.PayloadEmpty {
@@ -240,8 +253,9 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 	bundle := notificationBundle{
 		ResourceType: "Bundle",
 		Type:         "subscription-notification",
-		Timestamp:    b.clock().UTC().Format(time.RFC3339),
-		Entry:        entries,
+		// S-12: keep sub-second precision on the Bundle timestamp.
+		Timestamp: b.clock().UTC().Format(time.RFC3339Nano),
+		Entry:     entries,
 	}
 
 	bytes, err := json.Marshal(bundle)
@@ -264,7 +278,12 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 		corr = events[0].CorrelationID.String()
 	}
 	if corr == "" {
-		corr = uuid.NewString()
+		// S-12: handshake / heartbeat must be deterministic so a
+		// replay produces the same correlation_id. Derive a
+		// stable v5 UUID from the subscription id + notification
+		// type so multiple Build calls for the same logical event
+		// converge.
+		corr = uuid.NewSHA1(uuid.NameSpaceURL, []byte("fhir-subs:"+string(job.NotificationType)+":"+job.Subscription.ID.String())).String()
 	}
 
 	seq := uint64(0)

@@ -15,6 +15,14 @@ const (
 	MetricDeadLettersTotal     = "fhir_subs_hl7processor_dead_letters_total"
 	MetricCancelReplacePending = "fhir_subs_hl7processor_cancel_replace_pending"
 	MetricStageDurationSeconds = "fhir_subs_hl7processor_stage_duration_seconds"
+	// MetricClaimCycleErrors is bumped once per claim/reaper iteration
+	// that returned a non-canceled error. Operators want to alert on
+	// repeated failures (S-9.7).
+	MetricClaimCycleErrors = "fhir_subs_hl7processor_claim_cycle_errors"
+	// MetricSameKindCollision is bumped when a same-kind pair shows up
+	// under the same correlation key — indicates a missed
+	// cancellation/replacement somewhere upstream (S-9.11).
+	MetricSameKindCollision = "fhir_subs_hl7processor_same_kind_collision"
 )
 
 // Outcome label values for [MetricMessagesProcessed].

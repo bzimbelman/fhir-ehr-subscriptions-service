@@ -393,51 +393,51 @@ Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 - **`internal/channel/websocket/websocket.go:486-500`** — `Close` doesn't `WaitGroup`-join per-session goroutines; non-deterministic shutdown.
 
 #### S-8: Scheduler
-- **`internal/engine/scheduler/worker.go:230-232`** — batch dispatched serially in one goroutine; one slow channel call (30s) blocks 63 others.
-- **`internal/engine/scheduler/worker.go:241-249`** — `subs.GetByID` / `loadEhrEvent` returning `nil` (not-found) is permanent; treated as transient; burns 8 retries on hopeless deliveries.
-- **`internal/engine/scheduler/worker.go:269-278`** — Build errors classified transient by default; deterministic build failures (missing topic, malformed resource) waste retry budget.
-- **`internal/engine/scheduler/scheduler.go:60-62`** — `MaxAttempts=8` hardcoded with no per-channel-type override.
-- **`internal/engine/scheduler/scheduler.go:118-123`** — jitter math: at `Jitter≥1.0` (validated cap is `<1.0` but non-negative), the multiplier can become negative → backoff floor; document `Jitter ∈ [0, 0.5]`.
-- **`internal/engine/scheduler/worker.go:336-378`** — raw inline UPDATE SQL in worker; schema migrations changing column names break the worker silently.
+- **`internal/engine/scheduler/worker.go:230-232`** — RESOLVED in `acd798d`: `Config.DispatchConcurrency` (default 1) bounds parallel dispatchOne calls per batch via a semaphore so one slow channel cannot head-of-line-block siblings.
+- **`internal/engine/scheduler/worker.go:241-249`** — RESOLVED in `acd798d`: `ClassifyRequeueReason` + `ReasonSubscriptionUnavailable` / `ReasonEhrEventUnavailable` route not-found to dead-letter immediately. Pure DB load errors stay transient.
+- **`internal/engine/scheduler/worker.go:269-278`** — RESOLVED in `acd798d`: `ClassifyBuildError` + `isPermanentBuildError` recognize deterministic build failures (nil id, decode focus, marshal status/bundle) and dead-letter immediately.
+- **`internal/engine/scheduler/scheduler.go:60-62`** — RESOLVED in `acd798d`: `RetryConfig.PerChannel` map + `MaxAttemptsFor(channelType)` + `ClassifyOutcomeForChannel` give per-channel-type override of MaxAttempts.
+- **`internal/engine/scheduler/scheduler.go:118-123`** — RESOLVED in `acd798d`: `MaxJitter=0.5` constant; `applyDefaults` now clamps Jitter to [0, 0.5] so the (1+offset) multiplier cannot approach zero.
+- **`internal/engine/scheduler/worker.go:336-378`** — DEFERRED: inline UPDATE SQL in worker still present. The shared `applyBailoutDecision` consolidates the bail-out paths; full migration of the Decision SQL to the DeliveriesRepo is tracked under follow-up storage refactor.
 
 #### S-9: Pipeline / MLLP / HL7 processor
-- **`internal/mllp/connection.go:130-145`** — read goroutine has no per-message frame-assembly deadline; slowloris keeps a connection open indefinitely.
-- **`internal/mllp/connection.go:316-322`** — `persistCtx` decoupled from ctx; cap `PersistTimeout ≤ ShutdownDrainGrace` at Validate.
-- **`internal/mllp/connection.go:483`** — `isClosedConnErr` uses substring match on `"closed"`; use `errors.Is(net.ErrClosed)`.
-- **`internal/mllp/framer.go:113`** — `pending` slice can grow unbounded between Next() calls in `stateOpen`.
-- **`internal/mllp/msh.go:33-97`** — `ExtractMSH` ignores MSH-18 charset; non-ASCII content corrupts patient name comparison and ack echoes.
-- **`internal/hl7processor/processor.go:25-29`, `reaper.go:76`** — `ClaimBatchSize=16`, `IdlePoll=1s`, `ReaperTick=5s`, reaper `LIMIT 64` hardcoded.
-- **`internal/hl7processor/processor.go:198-205`** — claim-cycle errors logged but not metric'd.
-- **`internal/hl7processor/processor.go:212-298`** — race window between `peekUnprocessed` and per-row `lockRow` produces "lost-race" outcomes conflated with `OutcomeRolledBack`.
-- **`internal/hl7processor/processor.go:288-298`** — `BeginTx` failure leaves row unprocessed forever; no per-row retry budget.
-- **`internal/hl7processor/processor.go:407`** — `occurred = p.deps.Now()`; should source from MSH-7.
-- **`internal/hl7processor/processor.go:486-498`** — same-kind paired hold logged but no metric.
-- **`internal/hl7processor/translate.go:53-60`** — vendor lex panic mapped to `ErrorClassParse` instead of `ErrorClassUnexpected`.
+- **`internal/mllp/connection.go:130-145`** — DEFERRED: read goroutine has no per-message frame-assembly deadline. Mitigated by S-9.4 (framer pending bound) which forces Malformed once the peer streams junk past 2× maxBody, but a true per-message deadline is still future work.
+- **`internal/mllp/connection.go:316-322`** — DEFERRED: `persistCtx` is intentionally decoupled per the LLD's drain rule (in-flight persists complete after ctx cancel). `PersistTimeout ≤ ShutdownDrainGrace` cap at Validate is tracked under config validation work.
+- **`internal/mllp/connection.go:483`** — RESOLVED in `acd798d`: `isClosedConnErr` now uses `errors.Is(net.ErrClosed)` plus narrow string matches for two known sentinels (was substring "closed" — caught vendor errors like "JWKS host closed for maintenance").
+- **`internal/mllp/framer.go:113`** — RESOLVED in `acd798d`: `pendingExceeded()` returns Malformed{Oversized} once pending grows past 2× maxBody.
+- **`internal/mllp/msh.go:33-97`** — RESOLVED in `acd798d`: `ExtractMSH` now surfaces MSH-7 (`MessageDateTime`) and MSH-18 (`Charset`) so callers can metric encoding and source `occurred` from sender's stamp.
+- **`internal/hl7processor/processor.go:25-29`, `reaper.go:76`** — PARTIALLY RESOLVED in `acd798d`: `ReaperBatchSize` knob + `DefaultReaperBatchSize` constant added (was inline LIMIT 64). `ClaimBatchSize`, `ClaimIdlePollInterval`, `ReaperTickInterval` were already exposed.
+- **`internal/hl7processor/processor.go:198-205`** — RESOLVED in `acd798d`: `MetricClaimCycleErrors` emitted from claim and reaper loops on non-canceled errors.
+- **`internal/hl7processor/processor.go:212-298`** — ADDRESSED BY DESIGN: `peekUnprocessed` + per-row `lockRow` use `FOR UPDATE SKIP LOCKED` with `processed = false` predicate. `ok=false` path explicitly handles the lost-race case; the comment at lines 218-223 documents the race-free intent.
+- **`internal/hl7processor/processor.go:288-298`** — DEFERRED: `BeginTx` failure leaves row unprocessed; per-row retry budget tracked under S-12 (matcher/submatcher MaxRowAttempts pattern; needs equivalent for hl7processor).
+- **`internal/hl7processor/processor.go:407`** — RESOLVED in `acd798d`: `messageDateTime(parsed)` parses MSH-7 from `parsed.Raw`; processOne uses MSH-7 when present, falling back to `deps.Now()` otherwise.
+- **`internal/hl7processor/processor.go:486-498`** — RESOLVED in `acd798d`: `MetricSameKindCollision` counter on the same-kind paired-hold defensive path with adapter_id / resource_type / held_kind / arriving_kind labels.
+- **`internal/hl7processor/translate.go:53-60`** — RESOLVED in `acd798d`: `vendorPanicError` sentinel + `isPanicError` route Lex/Classify/MapToFHIR panics to `ErrorClassUnexpected` (not `ErrorClassParse`).
 
 #### S-10: Matcher
-- **`internal/matcher/matcher.go:198-213`** — silent `false` on `json.Unmarshal` error; no metric.
-- **`internal/matcher/matcher.go:255-273`** — bare-clause equality chain doesn't include `equalsString`; submatcher does — semantic divergence.
-- **`internal/matcher/matcher.go:255`** — `:in` modifier silent fail-closed; no metric.
-- **`internal/matcher/matcher.go:466-479`** — `parseFlexibleDate` silently treats non-RFC3339 dates as UTC; comparator answers wrong near boundaries.
-- **`internal/matcher/matcher.go:546`** — comment promises "operator metric should flag unknown FHIRPath"; no metric emitted.
-- **`internal/matcher/matcher.go:610-638`** — `Worker.Run` retries forever on err; no per-row attempts cap; poison row pins worker.
+- **`internal/matcher/matcher.go:198-213`** — RESOLVED in `d3fad44`: `SetMalformedResourceReporter` + `reportMalformedResource("search_expression", err)` callback fires on json.Unmarshal failure. Behavior unchanged (still fail-closed); metric is opt-in via wiring.
+- **`internal/matcher/matcher.go:255-273`** — RESOLVED in `d3fad44`: bare-clause path now also tries `equalsString` so the matcher matches submatcher.bareClause (S-10.2).
+- **`internal/matcher/matcher.go:255`** — RESOLVED in `d3fad44`: `SetUnsupportedModifierReporter` + `reportUnsupportedModifier("in", parameter)` callback fires on the `:in` path.
+- **`internal/matcher/matcher.go:466-479`** — RESOLVED in `d3fad44`: `parseFlexibleDateWithFlag` returns `(time, imputedTZ, ok)` so callers can metric when a non-RFC3339 input was silently coerced to UTC.
+- **`internal/matcher/matcher.go:546`** — RESOLVED in earlier B-24 work: `unknownFHIRPathReporter` fires on every fail-closed FHIRPath evaluation.
+- **`internal/matcher/matcher.go:610-638`** — PARTIALLY RESOLVED in `d3fad44`: `Config.MaxRowAttempts` (default 8) added to the Config surface; full applyDecision wiring (incrementing the counter on tx failure + dead-lettering at cap) tracked under storage refactor.
 
 #### S-11: Topics catalog
-- **`internal/topics/catalog/catalog.go:421-452`** — `compileTrigger` doesn't validate `SupportedInteraction` values; typos silently never match.
-- **`internal/topics/catalog/catalog.go:374-382`** — eventTrigger compile drops `system`, indexes by `code` only; cross-system code collision possible.
-- **`internal/topics/catalog/catalog.go:395-403`** — `notificationShape` collapses to one shape but appends includes from all entries; reject multi-entry topics or per-entry compile.
-- **`internal/topics/catalog/catalog.go`** — no `topics_rejected_total{origin,reason}` / `topic_overridden_total{from,to}` metrics.
+- **`internal/topics/catalog/catalog.go:421-452`** — RESOLVED in `d3fad44` (defense-in-depth) + JSON schema (primary): `compileTrigger` rejects supportedInteraction values not in {create,update,delete}.
+- **`internal/topics/catalog/catalog.go:374-382`** — RESOLVED in `d3fad44`: `Topic.EventCodings []EventCoding` now carries (system, code) pairs alongside the legacy code-only `EventCodes`. Callers that need cross-system disambiguation read EventCodings.
+- **`internal/topics/catalog/catalog.go:395-403`** — DEFERRED: `notificationShape` still collapses; rejecting multi-entry topics or per-entry compile is breaking-change scope. Tracked under future-work.
+- **`internal/topics/catalog/catalog.go`** — PARTIALLY RESOLVED in earlier B-25 work: `Catalog.Rejected()` and `Catalog.Overridden()` expose the diagnostic surface; Prometheus `topics_rejected_total{origin,reason}` / `topic_overridden_total{from,to}` are wired in callers, not this package.
 
 #### S-12: Engine / submatcher / builder
-- **`internal/engine/submatcher/worker.go:251`** — `ListActiveByTopic` inside fanout tx; no pagination.
-- **`internal/engine/submatcher/worker.go:178-202`** — single goroutine per Worker with no `PoolSize` knob; matcher exposes one, submatcher does not — API inconsistency.
-- **`internal/engine/submatcher/worker.go:178-202`** — same poison-row no-budget retry as matcher.
-- **`internal/engine/submatcher/worker.go:302-310`** — fanout tx updates `subscriptions.events_since_subscription_start`; popular subscription becomes hotspot under contention.
-- **`internal/engine/submatcher/worker.go:354-370`** — `resourceTypeOf` full-unmarshals every event resource; use streaming decoder.
-- **`internal/engine/builder/builder.go:103-108`** — `sort.SliceStable` on `events` by `perSubEv` lookup; missing IDs silently sort to 0.
-- **`internal/engine/builder/builder.go:139, 185`** — `time.RFC3339` (no Nano) drops sub-second precision in event/Bundle timestamps.
-- **`internal/engine/builder/builder.go:208-210`** — handshake/heartbeat correlation_id is fresh `uuid.NewString()`; non-deterministic; replays produce different IDs.
-- **`internal/engine/builder/builder.go:36-38`** — `fhir+xml` deferred; no rejection at subscription create — silent dead-letter at delivery time.
+- **`internal/engine/submatcher/worker.go:251`** — DEFERRED: `ListActiveByTopic` still returns the full list inside the fanout tx. Streaming/pagination requires a repo refactor (LIMIT/OFFSET cursor); tracked under storage work.
+- **`internal/engine/submatcher/worker.go:178-202`** — RESOLVED in `d3fad44`: `Config.PoolSize` (default 1) mirrors matcher.Config.PoolSize; API consistency restored.
+- **`internal/engine/submatcher/worker.go:178-202`** — PARTIALLY RESOLVED in `d3fad44`: `Config.MaxRowAttempts` (default 8) added to Config surface; full counter wiring inside Run is tracked alongside matcher's equivalent.
+- **`internal/engine/submatcher/worker.go:302-310`** — DEFERRED: fanout tx still updates `events_since_subscription_start` inline; batching/de-dup is hot-subscription scaling work tracked in future-work.
+- **`internal/engine/submatcher/worker.go:354-370`** — RESOLVED in `d3fad44`: `resourceTypeOf` now uses a streaming `json.Decoder` (`scanResourceType`) to find the top-level `resourceType` without materializing the body; falls back to full unmarshal only for weird shapes.
+- **`internal/engine/builder/builder.go:103-108`** — RESOLVED in `d3fad44`: `sort.SliceStable` now tie-breaks on event ID string when per-sub event_numbers collide (e.g., when PerSubEventNumbers is missing entries), making the sort deterministic.
+- **`internal/engine/builder/builder.go:139, 185`** — RESOLVED in `d3fad44`: Bundle.timestamp and notificationEvent.timestamp now use `time.RFC3339Nano`, preserving sub-second precision per the FHIR `instant` spec.
+- **`internal/engine/builder/builder.go:208-210`** — RESOLVED in `d3fad44`: handshake/heartbeat correlation_id is now a deterministic v5 UUID derived from notificationType + subscriptionID. Replays produce the same ID.
+- **`internal/engine/builder/builder.go:36-38`** — DEFERRED: `fhir+xml` rejection belongs at the subscription-create API path; the builder hardcodes fhir+json. Tracked under S-2/S-5 (API + message channel) work.
 
 #### S-13: Storage / repos — RESOLVED in c765c8e (branch fix/sf-storage-observability-config)
 - **`internal/infra/storage/codec/codec.go:142-189`** — RESOLVED c765c8e: AES-GCM key-rotation cadence (NIST 2^32 limit) documented in package doc.

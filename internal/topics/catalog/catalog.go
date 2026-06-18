@@ -146,19 +146,30 @@ type NotificationShape struct {
 // Topic is the compiled, immutable in-memory form of a
 // SubscriptionTopic. Matcher reads only this — never the raw JSON.
 type Topic struct {
-	CanonicalURL      string
-	Version           string
-	Title             string
-	Status            string
-	Source            Source
-	Origin            string
-	Triggers          []Trigger
-	EventCodes        []string
+	CanonicalURL string
+	Version      string
+	Title        string
+	Status       string
+	Source       Source
+	Origin       string
+	Triggers     []Trigger
+	EventCodes   []string // legacy: code-only; preserved for callers
+	// EventCodings carries the (system, code) pairs from
+	// eventTrigger so consumers can disambiguate cross-system code
+	// collisions. EventCodes (above) keeps the code-only view for
+	// backwards compatibility (S-11.2).
+	EventCodings      []EventCoding
 	FilterBy          []FilterParameter
 	NotificationShape NotificationShape
 	// RawJSON is the original body — kept for serving GET
 	// /SubscriptionTopic exactly as authored.
 	RawJSON []byte
+}
+
+// EventCoding is one (system, code) pair from an eventTrigger entry.
+type EventCoding struct {
+	System string
+	Code   string
 }
 
 // Catalog is the immutable handle the matcher reads.
@@ -561,11 +572,16 @@ func compileOne(sch *jsonschema.Schema, raw RawTopic, src Source) (*Topic, *Reje
 	}
 
 	// 4. Event-trigger codes (no expression evaluation per ADR 0006).
+	// S-11.2: also retain the (system, code) pairs so callers that
+	// care about cross-system disambiguation are not forced to
+	// re-parse the raw JSON.
 	eventCodes := []string{}
+	eventCodings := []EventCoding{}
 	for _, ev := range parsed.EventTrigger {
 		for _, c := range ev.Event.Coding {
 			if c.Code != "" {
 				eventCodes = append(eventCodes, c.Code)
+				eventCodings = append(eventCodings, EventCoding{System: c.System, Code: c.Code})
 			}
 		}
 	}
@@ -607,6 +623,7 @@ func compileOne(sch *jsonschema.Schema, raw RawTopic, src Source) (*Topic, *Reje
 		Origin:            raw.Origin,
 		Triggers:          triggers,
 		EventCodes:        eventCodes,
+		EventCodings:      eventCodings,
 		FilterBy:          filters,
 		NotificationShape: shape,
 		RawJSON:           append([]byte(nil), raw.Bytes...),
@@ -624,6 +641,12 @@ func compileTrigger(rt rawResourceTrigger) (Trigger, error) {
 	}
 	tr.ResourceTypes[rt.Resource] = true
 	for _, ix := range rt.SupportedInteraction {
+		// S-11.1: defense-in-depth — schema already enforces the
+		// enum, but if the schema is ever loosened we still reject
+		// here so a typo cannot silently never-match.
+		if ix != "create" && ix != "update" && ix != "delete" {
+			return tr, fmt.Errorf("supportedInteraction %q is not one of create|update|delete", ix)
+		}
 		tr.Interactions[ix] = true
 	}
 	if rt.QueryCriteria != nil {

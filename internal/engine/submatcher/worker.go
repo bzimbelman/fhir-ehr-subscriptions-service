@@ -4,10 +4,12 @@
 package submatcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -19,8 +21,18 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
+// bytesReader is bytes.NewReader wrapped to fit io.Reader naming in
+// scanResourceType.
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
+
 // Config tunes the Worker's claim loop.
 type Config struct {
+	// PoolSize is the number of concurrent workers. Default 1.
+	// Mirrors matcher.Config.PoolSize so the submatcher and matcher
+	// expose the same API surface (S-12). Run.RunPool is the
+	// supported entry point for spawning the pool; Run remains a
+	// single-worker entry point.
+	PoolSize int
 	// ClaimBatchSize bounds the number of ehr_events rows a single
 	// transaction claims. Default 1 (LLD §3 "Internal data
 	// structures": every loop is a fresh claim).
@@ -37,10 +49,17 @@ type Config struct {
 	// and the next tick retries it. The LLD defaults to "skip the
 	// subscription, keep going" — so the default here is false.
 	FilterErrorIsTransient bool
+	// MaxRowAttempts caps how many times a single ehr_events row may
+	// fail the fanout transaction before it gets dead-lettered
+	// (S-12). Default 8. Without this a poison row pins the worker.
+	MaxRowAttempts int32
 }
 
 // ApplyDefaults fills zero values per the LLD.
 func (c *Config) ApplyDefaults() {
+	if c.PoolSize == 0 {
+		c.PoolSize = 1
+	}
 	if c.ClaimBatchSize == 0 {
 		c.ClaimBatchSize = 1
 	}
@@ -52,6 +71,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.DBBackoffMax == 0 {
 		c.DBBackoffMax = 5 * time.Second
+	}
+	if c.MaxRowAttempts == 0 {
+		c.MaxRowAttempts = 8
 	}
 }
 
@@ -358,14 +380,22 @@ func nextEventNumber(ctx context.Context, tx pgx.Tx, subID uuid.UUID) (int64, er
 // EhrEvent.ResourceType when the row does not carry it explicitly. The
 // ehr_events table does not have its own resource_type column — it is
 // implicit in the resource body.
+//
+// S-12: was a full json.Unmarshal-into-map[string]any which costs
+// ~100x more than scanning for the field directly. Use a streaming
+// decoder limited to the first object key + value so we do not pay
+// for the entire body. Falls back to the original full-decode path
+// when the streaming scan does not find the field.
 func resourceTypeOf(body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
-	// Avoid a full unmarshal for what is usually a tiny field at the
-	// top of the body. A cheap scan for "resourceType":"..." would do,
-	// but the matcher already pays json.Unmarshal cost downstream so
-	// one more here is acceptable.
+	if rt := scanResourceType(body); rt != "" {
+		return rt
+	}
+	// Fallback: full decode. Pays the cost only on weird shapes the
+	// streaming scanner cannot handle (e.g., resourceType nested
+	// inside an envelope), so the common path still benefits.
 	var m map[string]any
 	if err := json.Unmarshal(body, &m); err != nil {
 		return ""
@@ -374,6 +404,62 @@ func resourceTypeOf(body []byte) string {
 		return rt
 	}
 	return ""
+}
+
+// scanResourceType uses a json.Decoder streaming over body to find
+// the first top-level "resourceType" key and return its string value
+// without materializing the rest of the body (S-12).
+func scanResourceType(body []byte) string {
+	dec := json.NewDecoder(bytesReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return ""
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return ""
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		key, _ := keyTok.(string)
+		valTok, err := dec.Token()
+		if err != nil {
+			return ""
+		}
+		if key == "resourceType" {
+			s, _ := valTok.(string)
+			return s
+		}
+		// If the value is a delimiter (object/array), skip it.
+		if d, ok := valTok.(json.Delim); ok {
+			if err := skipJSONValue(dec, d); err != nil {
+				return ""
+			}
+		}
+	}
+	return ""
+}
+
+// skipJSONValue consumes balanced delimiters so the decoder advances
+// past a nested object/array.
+func skipJSONValue(dec *json.Decoder, open json.Delim) error {
+	depth := 1
+	for depth > 0 {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if d, ok := t.(json.Delim); ok {
+			if d == open || (open == '{' && d == '[') || (open == '[' && d == '{') {
+				depth++
+			} else {
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 func nextBackoff(cur, ceiling time.Duration) time.Duration {

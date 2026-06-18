@@ -42,9 +42,19 @@ type RetryConfig struct {
 	Initial     time.Duration
 	Max         time.Duration
 	Min         time.Duration
-	Jitter      float64 // [0,1] — symmetric ± fraction of base
+	Jitter      float64 // [0, 0.5] — symmetric ± fraction of base; clamped at apply time (S-8.5).
 	MaxAttempts int32
+	// PerChannel maps channelType → max attempts override (S-8.4). A
+	// value of 0 (or missing entry) falls back to MaxAttempts. The
+	// override only ever LOWERS the global cap — a per-channel value
+	// greater than the global cap is honored as a per-channel ceiling.
+	PerChannel map[string]int32
 }
+
+// MaxJitter is the upper bound for RetryConfig.Jitter. Beyond this the
+// 1+offset multiplier could approach zero and produce non-useful
+// backoffs (S-8.5).
+const MaxJitter = 0.5
 
 // applyDefaults zero-fills with the LLD defaults.
 func (c *RetryConfig) applyDefaults() {
@@ -63,9 +73,22 @@ func (c *RetryConfig) applyDefaults() {
 	if c.Jitter < 0 {
 		c.Jitter = 0
 	}
-	if c.Jitter > 1 {
-		c.Jitter = 1
+	if c.Jitter > MaxJitter {
+		c.Jitter = MaxJitter
 	}
+}
+
+// MaxAttemptsFor returns the effective MaxAttempts for the given
+// channel type. Per-channel overrides win when set; otherwise the
+// global MaxAttempts is used (S-8.4).
+func (c RetryConfig) MaxAttemptsFor(channelType string) int32 {
+	if v, ok := c.PerChannel[channelType]; ok && v > 0 {
+		return v
+	}
+	if c.MaxAttempts > 0 {
+		return c.MaxAttempts
+	}
+	return 8
 }
 
 // RNG is the random source the backoff curve consumes. *rand.Rand is
@@ -213,18 +236,85 @@ type Decision struct {
 // attempts column AFTER the current attempt has been counted, i.e.
 // row.attempts + 1 in the caller).
 func ClassifyOutcome(o OutcomeFromChannel, retry RetryConfig, attempts int32) Decision {
+	return ClassifyOutcomeForChannel(o, retry, "", attempts)
+}
+
+// ClassifyOutcomeForChannel is ClassifyOutcome with awareness of the
+// per-channel MaxAttempts override (S-8.4).
+func ClassifyOutcomeForChannel(o OutcomeFromChannel, retry RetryConfig, channelType string, attempts int32) Decision {
 	retry.applyDefaults()
+	maxAttempts := retry.MaxAttemptsFor(channelType)
 	switch o.Kind {
 	case OutcomeDelivered:
 		return Decision{Action: ActionMarkDelivered}
 	case OutcomePermanent:
 		return Decision{Action: ActionDeadLetter, Reason: "permanent: " + o.Reason}
 	case OutcomeTransient:
-		if attempts >= retry.MaxAttempts {
+		if attempts >= maxAttempts {
 			return Decision{Action: ActionDeadLetter, Reason: "max_attempts_exhausted: " + o.Reason}
 		}
 		return Decision{Action: ActionRescheduleTransient, Reason: o.Reason}
 	default:
 		return Decision{Action: ActionDeadLetter, Reason: "unknown outcome"}
 	}
+}
+
+// BuildErrorClass categorizes a builder error so the scheduler can
+// decide whether retrying makes sense. A "permanent" build error
+// (missing topic, malformed resource, schema mismatch) will never
+// succeed on retry; a "transient" build error (DB read failure during
+// hydration) might (S-8.3).
+type BuildErrorClass int
+
+// BuildErrorClass values.
+const (
+	// BuildErrorTransient is the safe default — anything we cannot
+	// confidently classify as deterministic stays transient so the
+	// retry curve has a chance.
+	BuildErrorTransient BuildErrorClass = iota
+	// BuildErrorPermanent is for builder failures that will never
+	// succeed on retry: missing topic/notificationShape, malformed
+	// resource body, schema mismatch.
+	BuildErrorPermanent
+)
+
+// ClassifyBuildError maps a typed build-error class onto a Decision.
+// Permanent errors dead-letter immediately so we don't burn the retry
+// budget on hopeless deliveries (S-8.3).
+func ClassifyBuildError(class BuildErrorClass, retry RetryConfig, attempts int32) Decision {
+	retry.applyDefaults()
+	switch class {
+	case BuildErrorPermanent:
+		return Decision{Action: ActionDeadLetter, Reason: "build_error_permanent"}
+	default:
+		if attempts >= retry.MaxAttempts {
+			return Decision{Action: ActionDeadLetter, Reason: "max_attempts_exhausted: build_error"}
+		}
+		return Decision{Action: ActionRescheduleTransient, Reason: "build_error_transient"}
+	}
+}
+
+// Requeue reasons emitted by Worker.requeueAsTransient. ClassifyRequeueReason
+// maps each onto an action so the worker can stop conflating "row will
+// never come back" (subscription deleted, ehr_event missing) with
+// "operator may register the channel later" — the former is permanent;
+// the latter is transient (S-8.2).
+const (
+	ReasonSubscriptionUnavailable = "subscription_unavailable"
+	ReasonEhrEventUnavailable     = "ehr_event_unavailable"
+)
+
+// ClassifyRequeueReason maps the bail-out reason onto a Decision.
+// Not-found classifications are permanent: the row is gone, retry
+// cannot help (S-8.2). Other reasons stay transient.
+func ClassifyRequeueReason(reason string, retry RetryConfig, attempts int32) Decision {
+	retry.applyDefaults()
+	switch reason {
+	case ReasonSubscriptionUnavailable, ReasonEhrEventUnavailable:
+		return Decision{Action: ActionDeadLetter, Reason: "permanent: " + reason}
+	}
+	if attempts >= retry.MaxAttempts {
+		return Decision{Action: ActionDeadLetter, Reason: "max_attempts_exhausted: " + reason}
+	}
+	return Decision{Action: ActionRescheduleTransient, Reason: reason}
 }
