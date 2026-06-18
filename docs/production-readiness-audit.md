@@ -152,23 +152,26 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** Same root cause as B-21; the rotation contract is unfulfillable.
 - **Fix:** Add migration `ALTER TABLE pending_pairs ADD COLUMN key_version SMALLINT NOT NULL DEFAULT 1`; update `Insert`/`Decrypt`.
 
-#### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence)
+#### B-23: Matcher silently passes through unknown FHIR search parameters (fail-open silence) — RESOLVED
 - **File:** `internal/matcher/matcher.go:286-355`
 - **What:** `extractFieldValues` hardcodes `status/subject/patient/code/category/name/_lastUpdated`; any other parameter returns nil → clause fails closed → topic silently never matches; no rejection at catalog load, no metric.
 - **Why it matters:** A topic referencing `performer`, `encounter`, `period`, `class`, etc. silently never fires; subscribers miss notifications and operators have no signal.
 - **Fix:** Reject topics at load if they reference unsupported parameters; emit `matcher_unknown_parameter_total{topic}`.
+- **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `internal/topics/catalog/catalog.go` now exports `SupportedSearchParameters()` / `IsSupportedSearchParameter()` and `parseSearchExpression` rejects any topic referencing an unsupported parameter at load time. `compileOne` likewise rejects unsupported `canFilterBy.filterParameter`. The catalog's `Rejected()` method (and `Report.Rejected`) surface the rejections so /readyz can read them. Tests: `TestLoadRejectsUnsupportedSearchParameter`, `TestLoadRejectsUnsupportedFilterByParameter`, `TestLoadAcceptsAllSupportedSearchParameters`, `TestLoadRejectedTopicAbsentFromCatalog` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_unknownParamRejected` (`e2e/orchestrator/matcher_unknown_param_rejected_test.go`).
 
-#### B-24: Matcher FHIRPath `runFHIRPath` defaults to fail-OPEN (returns true) for unrecognized expressions
+#### B-24: Matcher FHIRPath `runFHIRPath` defaults to fail-OPEN (returns true) for unrecognized expressions — RESOLVED
 - **File:** `internal/matcher/matcher.go:510-547`
 - **What:** After `.exists()` and `.status = '...'` checks fall through, return `true` — every unknown FHIRPath expression treated as a match.
 - **Why it matters:** Future-work P1.2 covers building the sandboxed evaluator, but the *current default* is fail-OPEN which is more dangerous than fail-closed: a topic with `Patient.deceased.empty()` would fire on every change, leaking notifications. (Future-work doesn't call out the fail-direction — flagging as a separate concrete defect.)
 - **Fix:** Default to fail-CLOSED today; emit `fhirpath_unknown_expression_total`; reverse only when sandbox lands.
+- **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). `runFHIRPath` now returns `false` for any expression shape outside the recognized minimal set. Wiring layers can install a callback via `matcher.SetUnknownFHIRPathReporter` to bump `fhir_subs_matcher_fhirpath_unknown_expression_total` without coupling the matcher package to a metrics dependency. `IsRecognizedFHIRPath` is exported for catalog-level strict-mode validation. Tests: `TestEvaluateFHIRPathUnknownExpressionFailsClosed`, `TestEvaluateFHIRPathRecognizedExpressionStillMatches` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_fhirpathFailClosed` (`e2e/orchestrator/matcher_fhirpath_fail_closed_test.go`).
 
-#### B-25: Topic catalog rejections do not fail startup; operator override silently shadows working built-in
+#### B-25: Topic catalog rejections do not fail startup; operator override silently shadows working built-in — RESOLVED
 - **File:** `internal/topics/catalog/catalog.go:240-282`
 - **What:** Per-topic rejections accumulate in `Rejected`; only schema-load errors are fatal. Operator-supplied broken topic with the same `(url,version)` shadows the built-in working topic.
 - **Why it matters:** Operator typo silently drops a topic from runtime; no /readyz signal; no override audit trail.
 - **Fix:** Surface rejected topics to /readyz; add `--strict` startup mode; on operator-validation failure fall back to lower-priority topic; emit `topic_overridden_total`/`topic_rejected_total`.
+- **Resolution:** Commit `3d80c7d` (cherry-pick `04e2c36`). `catalog.LoadStrict` is the strict-mode entry point — it returns a non-nil error wrapping every rejection so `--strict-topics` startup wiring can refuse to start. `Load` walks sources in priority order (Operator > Adapter > BuiltIn) and on a higher-priority compile failure falls back to the lower-priority working topic, recording an `Override{URL, Version, FromOrigin, FromSource, ToOrigin, ToSource, Reason}` entry. Both `Rejected` and `Overridden` are surfaced through the `Catalog` handle so /readyz can read them after the `Report` is dropped. Tests: `TestLoadStrictModeRejectsAtStartup`, `TestLoadStrictModeAcceptsValidCatalog`, `TestLoadFallsBackToBuiltInWhenOperatorOverrideRejected` (`internal/topics/catalog/correctness_test.go`); e2e `TestMatcher_strictMode`, `TestMatcher_topicOverride` (`e2e/orchestrator/`).
 
 #### B-26: `nextEventNumber` race — two workers can both insert event_number N+1
 - **File:** `internal/engine/submatcher/worker.go:337-348`
@@ -188,11 +191,12 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Why it matters:** Hash-chained audit log over bundle bytes produces different hashes on identical inputs. Any downstream signer (S/MIME plan, P2.3) is broken at the foundation.
 - **Fix:** Use a canonical JSON encoder (sorted keys), a struct, or `json.RawMessage` to preserve byte form.
 
-#### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe
+#### B-29: Catalog `CatalogProvider` swap is interface-typed; returns are not torn-read-safe — RESOLVED
 - **File:** `internal/matcher/matcher.go:554, 656`
 - **What:** Worker calls `cat := w.catalog()` per tick; interface values are 2 words. Without `atomic.Pointer`, a concurrent reload can return a torn interface value (data + type pointer mismatch).
 - **Why it matters:** Catalog hot-reload data race; sporadic crash with cryptic stack.
 - **Fix:** Use `atomic.Pointer[catalog.Catalog]` inside provider impl; document contract on `CatalogProvider`.
+- **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). New `matcher.AtomicCatalogProvider` wraps an `atomic.Pointer[catalog.Catalog]`; `Get`/`Store` are race-free and `AsProvider()` returns a `CatalogProvider` closure ready for `NewWorker`. The `CatalogProvider` doc now documents the atomic-swap contract that callers (e.g., the harness's `topic_seed.go` mutex-guarded swap) must satisfy. Tests: `TestAtomicCatalogProviderRaceFree` (1000 swaps × 8 readers under `-race`) and `TestAtomicCatalogProviderUsableAsCatalogProvider` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_catalogHotReloadRace` (`e2e/orchestrator/matcher_catalog_hot_reload_race_test.go`). Whole-repo `go test -race ./...` passes.
 
 #### B-30: High-cardinality MSH-9 label on MLLP nack metric — Prometheus cardinality bomb
 - **File:** `internal/mllp/connection.go:269-274`
