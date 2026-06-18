@@ -1,0 +1,34 @@
+name: nightly
+
+# Nightly run of the full e2e + integration harness against main. This is the
+# conformance cadence called out in docs/future-work.md §3.6: the spec's
+# reference subscriber lives behind the e2e harness, and we want a daily
+# regression signal independent of PR traffic.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.22'
+
+jobs:
+  conformance:
+    name: nightly e2e + integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go mod download
+      - name: integration tests
+        run: go test -race -tags integration -count=1 ./...
+      - name: e2e harness
+        run: go test -race -tags e2e -count=1 ./e2e/...

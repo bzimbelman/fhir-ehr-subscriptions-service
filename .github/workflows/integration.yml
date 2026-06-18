@@ -1,0 +1,59 @@
+name: integration
+
+# Integration + e2e suites. These spin up Postgres via testcontainers (which
+# requires Docker) and exercise mocks end-to-end. Heavier than the unit-test
+# gate, so PRs opt in via the `run-integration` label; pushes to main always
+# run them.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, opened, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.22'
+
+jobs:
+  integration:
+    name: integration tests
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-integration')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go mod download
+      - name: go test -race -tags integration
+        run: go test -race -tags integration -count=1 ./...
+
+  e2e:
+    name: e2e harness
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-e2e') ||
+      contains(github.event.pull_request.labels.*.name, 'run-integration')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go mod download
+      - name: go test -race -tags e2e
+        run: go test -race -tags e2e -count=1 ./e2e/...
