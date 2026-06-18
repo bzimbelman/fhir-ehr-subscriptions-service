@@ -150,6 +150,17 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	}
 
 	deps := handlers.Deps{
+		Auth: principalMiddleware(&auth.Principal{
+			ClientID: cfg.ClientID,
+			Scopes: []string{
+				"system/Subscription.c",
+				"system/Subscription.r",
+				"system/Subscription.u",
+				"system/Subscription.d",
+				"system/Subscription.cruds",
+			},
+			Exp: time.Now().Add(1 * time.Hour),
+		}),
 		Subscriptions:       handlers.NewPgSubscriptionsStore(cfg.Pool),
 		Topics:              handlers.NewPgTopicsStore(cfg.Pool),
 		Events:              handlers.NewPgEventsStore(cfg.Pool),
@@ -171,17 +182,6 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	}
 
 	r := chi.NewRouter()
-	r.Use(principalMiddleware(&auth.Principal{
-		ClientID: cfg.ClientID,
-		Scopes: []string{
-			"system/Subscription.c",
-			"system/Subscription.r",
-			"system/Subscription.u",
-			"system/Subscription.d",
-			"system/Subscription.cruds",
-		},
-		Exp: time.Now().Add(1 * time.Hour),
-	}))
 	handlers.RegisterRoutes(r, deps)
 
 	if cfg.WSHandler != nil {

@@ -20,6 +20,13 @@ import (
 // handshake when Deps.ActivationTimeout is unset.
 const DefaultActivationTimeout = 30 * time.Second
 
+// Middleware is the chi-compatible per-handler middleware shape
+// (chi.Middlewares' element type). Naming the slot in Deps as a typed
+// value — instead of a bare func(http.Handler) http.Handler — gives the
+// auth wiring a single, greppable touchpoint and prevents a future
+// caller from mounting RegisterRoutes without an auth gate (N-1.4).
+type Middleware = func(http.Handler) http.Handler
+
 // HandshakeOutcome is the result of a channel module's per-subscription
 // activation handshake.
 type HandshakeOutcome string
@@ -77,6 +84,15 @@ type RandFailureRecorder interface {
 
 // Deps is the bundle of dependencies the handlers need at request time.
 type Deps struct {
+	// Auth is the per-handler middleware that authenticates every
+	// authenticated route — including the catch-all NotFound and
+	// MethodNotAllowed responders. RegisterRoutes installs it on the
+	// route group itself so a future caller cannot accidentally mount
+	// the routes without an auth gate (N-1.4). Must be non-nil;
+	// RegisterRoutes panics otherwise so misconfiguration is caught at
+	// startup, not at the first unauthenticated request.
+	Auth Middleware
+
 	Subscriptions SubscriptionsStore
 	Topics        SubscriptionTopicsStore
 	Events        EhrEventsStore
@@ -212,10 +228,16 @@ const DefaultMaxSchemaErrorBytes = 1024
 // millisecond precision and a `Z` suffix (not `+00:00`). (S-2.9)
 const instantFormat = "2006-01-02T15:04:05.000Z"
 
-// RegisterRoutes wires every handler onto r. Auth middleware MUST be
-// installed upstream of these routes; the handlers depend on the
-// principal being present in the context.
+// RegisterRoutes wires every handler onto r. The auth middleware is
+// installed on the route group itself (via Deps.Auth, a chi-compatible
+// Middleware) so unauthenticated callers hit 401 — including on the
+// catch-all NotFound and MethodNotAllowed paths. RegisterRoutes panics
+// when Deps.Auth is nil so wiring mistakes fail loud at startup
+// (N-1.4).
 func RegisterRoutes(r chi.Router, d Deps) {
+	if d.Auth == nil {
+		panic("handlers.RegisterRoutes: Deps.Auth is nil — auth middleware is required (N-1.4)")
+	}
 	if d.Now == nil {
 		d.Now = time.Now
 	}
@@ -243,28 +265,35 @@ func RegisterRoutes(r chi.Router, d Deps) {
 
 	h := &server{deps: d}
 
-	r.Route("/Subscription", func(r chi.Router) {
-		r.Post("/", h.createSubscription)
-		r.Get("/", h.searchSubscriptions)
-		r.Get("/{id}", h.readSubscription)
-		r.Put("/{id}", h.updateSubscription)
-		r.Delete("/{id}", h.deleteSubscription)
-		r.Get("/{id}/$status", h.opStatusSingle)
-		r.Get("/$status", h.opStatusBulk)
-		r.Get("/{id}/$events", h.opEvents)
-		r.Post("/{id}/$get-ws-binding-token", h.opGetWsBindingToken)
-	})
+	// Group binds Auth to the same sub-mux that owns NotFound and
+	// MethodNotAllowed, so a request that misses every route still runs
+	// through the auth middleware before reaching the catch-all (N-1.4).
+	r.Group(func(r chi.Router) {
+		r.Use(d.Auth)
 
-	r.Get("/SubscriptionTopic", h.searchTopics)
-	r.Get("/SubscriptionTopic/{id}", h.readTopic)
-	r.Get("/metadata", h.getCapabilityStatement)
+		r.Route("/Subscription", func(r chi.Router) {
+			r.Post("/", h.createSubscription)
+			r.Get("/", h.searchSubscriptions)
+			r.Get("/{id}", h.readSubscription)
+			r.Put("/{id}", h.updateSubscription)
+			r.Delete("/{id}", h.deleteSubscription)
+			r.Get("/{id}/$status", h.opStatusSingle)
+			r.Get("/$status", h.opStatusBulk)
+			r.Get("/{id}/$events", h.opEvents)
+			r.Post("/{id}/$get-ws-binding-token", h.opGetWsBindingToken)
+		})
 
-	// Catch-all: every unknown route returns an OperationOutcome 404.
-	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
-		fhirerror.WriteError(w, http.StatusNotFound, fhirerror.CodeNotFound, "no such endpoint")
-	})
-	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
-		fhirerror.WriteError(w, http.StatusMethodNotAllowed, fhirerror.CodeNotSupported, "method not allowed")
+		r.Get("/SubscriptionTopic", h.searchTopics)
+		r.Get("/SubscriptionTopic/{id}", h.readTopic)
+		r.Get("/metadata", h.getCapabilityStatement)
+
+		// Catch-all: every unknown route returns an OperationOutcome 404.
+		r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+			fhirerror.WriteError(w, http.StatusNotFound, fhirerror.CodeNotFound, "no such endpoint")
+		})
+		r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+			fhirerror.WriteError(w, http.StatusMethodNotAllowed, fhirerror.CodeNotSupported, "method not allowed")
+		})
 	})
 }
 

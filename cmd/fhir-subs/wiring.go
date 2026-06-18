@@ -198,7 +198,17 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		"websocket": defaultActivator{},
 		"email":     defaultActivator{},
 	}
+	// Auth middleware: in production cfg.Auth.Audience is required, so
+	// verif is non-nil. Probe-only / dev-loopback fallback may have
+	// verif == nil; in that case install a no-op middleware so the
+	// chi.Middleware-typed Deps.Auth invariant still holds (N-1.4).
+	authMiddleware := handlers.Middleware(func(next http.Handler) http.Handler { return next })
+	if verif != nil {
+		authMiddleware = verif.Middleware
+	}
+
 	deps := handlers.Deps{
+		Auth:                authMiddleware,
 		Subscriptions:       handlers.NewPgSubscriptionsStore(pool),
 		Topics:              handlers.NewPgTopicsStore(pool),
 		Events:              handlers.NewPgEventsStore(pool),
@@ -218,9 +228,6 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 
 	r := chi.NewRouter()
-	if verif != nil {
-		r.Use(verif.Middleware)
-	}
 	handlers.RegisterRoutes(r, deps)
 	if tokenSrv != nil {
 		r.Method(http.MethodPost, "/token", tokenSrv)
