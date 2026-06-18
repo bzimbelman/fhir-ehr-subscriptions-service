@@ -763,6 +763,61 @@ func (s *snoopingMetrics) Set(name string, v float64, labels map[string]string) 
 	}
 }
 
+// Threshold-then-drop: with OnPersistFailNack and NackThenDropAfter=N,
+// N consecutive persist failures produce N NACKs and then close the
+// connection. Per LLD §5.6 + §8.
+func TestListener_NackThenDrop_Threshold(t *testing.T) {
+	p := &fakePersister{err: fmt.Errorf("simulated transient persist failure")}
+	m := newFakeMetrics()
+	ep := EndpointConfig{Name: "adt-feed"}
+	cfg := defaultConfig(ep)
+	cfg.OnPersistFail = OnPersistFailNack
+	cfg.NackThenDropAfter = 3
+
+	server, client := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleConnection(context.Background(), server, ep, cfg, p, m, "127.0.0.1:9001")
+	}()
+
+	// Send three frames; expect three AE NACKs then the connection drops.
+	gotAEs := 0
+	for i := 0; i < 3; i++ {
+		body := fmt.Sprintf("MSH|^~\\&|S|F|||20240101||ADT^A01|FAIL-%d|P|2.5\r", i)
+		if _, err := client.Write(frameBytes(body)); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		ack := readFrame(t, client)
+		if !strings.Contains(string(ack), fmt.Sprintf("MSA|AE|FAIL-%d", i)) {
+			t.Fatalf("frame %d expected NACK FAIL-%d; got %q", i, i, ack)
+		}
+		gotAEs++
+	}
+
+	// On the 3rd NACK we hit threshold; the handler must close the
+	// connection without expecting a 4th frame from us.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("handler did not exit after threshold; got %d NACKs", gotAEs)
+	}
+
+	// Counters
+	if v := m.counter(MetricNackTotal, map[string]string{
+		"listener_endpoint": "adt-feed", "reason": "persist_transient",
+	}); v != 3 {
+		t.Fatalf("nack_total{reason=persist_transient} = %v, want 3", v)
+	}
+	if v := m.counter(MetricDropForPersistFails, map[string]string{
+		"listener_endpoint": "adt-feed",
+	}); v < 1 {
+		t.Fatalf("drop_for_persist_failures must increment on threshold; got %v", v)
+	}
+}
+
 // LLD §5.7: during graceful shutdown drain, do NOT NACK on persist
 // failure. Drop silently and exit. The EHR will reconnect.
 //
