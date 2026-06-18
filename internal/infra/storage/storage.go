@@ -239,7 +239,10 @@ func (s *Storage) Probe(ctx context.Context, timeout time.Duration) error {
 	return s.pool.Probe(ctx, timeout)
 }
 
-// Shutdown stops the background workers and closes the pool.
+// Shutdown stops the background workers and closes the pool. Bounded by
+// ctx — if the context expires before the workers drain, the pool is
+// still closed, but in a goroutine so a stuck connection cannot pin
+// the caller.
 func (s *Storage) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	if s.closed {
@@ -262,7 +265,21 @@ func (s *Storage) Shutdown(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	if s.pool != nil {
-		s.pool.Close()
+		// Close in a goroutine bounded by ctx so a stuck connection cannot
+		// pin Shutdown indefinitely. Any remaining queries will be
+		// canceled when the pool eventually finishes its own Close path.
+		closed := make(chan struct{})
+		go func() {
+			s.pool.Close()
+			close(closed)
+		}()
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			// Caller's context is done — return; pool finishes on its own.
+		case <-time.After(5 * time.Second):
+			// Last-ditch budget for a non-context-bound shutdown.
+		}
 	}
 	return nil
 }
