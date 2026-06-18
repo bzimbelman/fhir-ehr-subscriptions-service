@@ -84,7 +84,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | RESOLVED ✓ | caa68a4 | enforced at `internal/infra/observability/metrics/metrics.go:309-338`; audit doc pointer corrected (was incorrectly pointing at `internal/api/metrics/metrics.go`) |
 | audit | S-3.1 | 60s ClockSkew default too generous | RESOLVED | RESOLVED ✓ | a2318e9 | 30s default |
 | audit | S-3.2 | No rate limit on token endpoint | RESOLVED | RESOLVED ✓ | a2318e9 | RateLimitPerSource |
-| audit | S-3.3 | No per-client rate limit on subscription create / WS bind-token | DEFERRED | DEFERRED ✓ | — | RateLimit primitive exposed |
+| audit | S-3.3 | No per-client rate limit on subscription create / WS bind-token | RESOLVED | RESOLVED ✓ | story/50 (`4766bbd`) | `auth.ClientRateLimiter` middleware on POST /Subscription + $get-ws-binding-token; principal-ID-keyed bucket; 429 + Retry-After |
 | audit | S-3.4 | exp, _ := claimToTime discards err | RESOLVED | RESOLVED ✓ | a2318e9 | fail-closed |
 | audit | S-3.5 | HasScope is O(n) | RESOLVED | RESOLVED ✓ | a2318e9 | sync.Once set |
 | audit | S-4.1 | rest-hook default *http.Client no Timeout | RESOLVED | RESOLVED ✓ | a2318e9 | |
