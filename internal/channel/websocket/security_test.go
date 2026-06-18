@@ -104,9 +104,9 @@ func TestUpgradeAllowsConfiguredOrigin(t *testing.T) {
 	}
 	defer conn.Close(codingws.StatusNormalClosure, "")
 
-	if err := conn.Write(ctx, codingws.MessageText,
-		[]byte(`{"type":"bind","subscriptionId":"`+subID.String()+`","token":"ok-token"}`)); err != nil {
-		t.Fatalf("write bind: %v", err)
+	if werr := conn.Write(ctx, codingws.MessageText,
+		[]byte(`{"type":"bind","subscriptionId":"`+subID.String()+`","token":"ok-token"}`)); werr != nil {
+		t.Fatalf("write bind: %v", werr)
 	}
 	_, data, err := conn.Read(ctx)
 	if err != nil {

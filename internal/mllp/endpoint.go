@@ -119,10 +119,10 @@ func (e *endpoint) run(ctx context.Context) {
 		if !decision.allow {
 			e.metrics.Inc(MetricConnectionsRefusedTotal, endpointLabels)
 			e.logger.Warn("mllp_connection_refused", map[string]any{
-				"listener_endpoint": e.cfg.Name,
-				"peer_addr":         remoteAddr,
-				"reason":            decision.reason,
-				"max_connections":   e.listenCfg.MaxConnections,
+				"listener_endpoint":      e.cfg.Name,
+				"peer_addr":              remoteAddr,
+				"reason":                 decision.reason,
+				"max_connections":        e.listenCfg.MaxConnections,
 				"max_connections_per_ip": e.listenCfg.MaxConnectionsPerIP,
 			})
 			_ = conn.Close()
