@@ -218,7 +218,7 @@ func applySets(cfg *Config, sets []string) error {
 		case "server.http.insecure":
 			b, err := parseBool(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.Insecure = b
 		case "server.http.tls.cert_file":
@@ -228,37 +228,37 @@ func applySets(cfg *Config, sets []string) error {
 		case "lifecycle.shutdown_grace_period":
 			d, err := time.ParseDuration(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Lifecycle.ShutdownGracePeriod = d
 		case "server.http.read_header_timeout":
 			d, err := time.ParseDuration(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.ReadHeaderTimeout = d
 		case "server.http.read_timeout":
 			d, err := time.ParseDuration(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.ReadTimeout = d
 		case "server.http.write_timeout":
 			d, err := time.ParseDuration(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.WriteTimeout = d
 		case "server.http.idle_timeout":
 			d, err := time.ParseDuration(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.IdleTimeout = d
 		case "server.http.max_header_bytes":
 			n, err := strconv.Atoi(val)
 			if err != nil {
-				return fmt.Errorf("--set %s=%q: %w", key, val, err)
+				return setParseErr(key, err)
 			}
 			cfg.Server.HTTP.MaxHeaderBytes = n
 		default:
@@ -275,6 +275,22 @@ func parseBool(v string) (bool, error) {
 	case "false", "0", "no", "off":
 		return false, nil
 	default:
-		return false, fmt.Errorf("invalid bool %q", v)
+		// Caller wraps with setParseErr so the bad value never reaches
+		// stderr (S-1.1). Returning a fixed-string sentinel keeps
+		// errors.Is checks intact while making the error self-redacted.
+		return false, errInvalidBool
 	}
+}
+
+// errInvalidBool is the sentinel returned by parseBool on a bad value;
+// it intentionally carries no caller-supplied text (S-1.1).
+var errInvalidBool = errors.New("invalid bool")
+
+// setParseErr builds the operator-facing error for a malformed --set RHS
+// without echoing the value, which may be a secret (S-1.1). The
+// underlying error from strconv / time / parseBool is dropped because
+// strconv.Atoi and time.ParseDuration both quote the offending input
+// inside their error string.
+func setParseErr(key string, _ error) error {
+	return fmt.Errorf("--set %s=<redacted>: invalid value", key)
 }
