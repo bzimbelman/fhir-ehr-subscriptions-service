@@ -365,6 +365,15 @@ type Inventory struct {
 	// package owns the call site; wiring registers this counter and
 	// installs a reporter via repos.SetDeadLetterReporter.
 	DeadLettersTotal *Counter
+	// P1.5 — Topic Matcher metric set (LLD §9, ADR 0008 #10). The
+	// matcher package owns the call sites; wiring registers these
+	// counters and installs a matcher.MetricsEmitter that forwards.
+	MatcherResourceChangesClaimedTotal *Counter
+	MatcherTopicsEvaluatedTotal        *Counter
+	MatcherTopicMatchTotal             *Counter
+	MatcherFHIRPathTimeoutsTotal       *Counter
+	MatcherEvaluateDurationSeconds     *Histogram
+	MatcherEhrEventsEmittedTotal       *Counter
 }
 
 // RegisterStartupInventory creates and registers the canonical metric set.
@@ -415,7 +424,56 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	if err != nil {
 		return nil, err
 	}
-	mr.Set(6, nil)
+	// P1.5 — Topic Matcher metric set.
+	mrcc, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_matcher_resource_changes_claimed_total",
+		Help:   "resource_changes rows claimed by the matcher loop, by outcome (processed|deferred|error).",
+		Labels: []string{"outcome"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mte, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_matcher_topics_evaluated_total",
+		Help:   "Topics evaluated against a resource_changes row, per topic.",
+		Labels: []string{"topic_id"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mtm, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_matcher_topic_match_total",
+		Help:   "Topic matches produced, per topic.",
+		Labels: []string{"topic_id"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mft, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_matcher_fhirpath_timeouts_total",
+		Help:   "FHIRPath evaluations that failed-closed due to sandbox timeout / unsupported expression, per topic.",
+		Labels: []string{"topic_id"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	med, err := em.NewHistogram(HistogramOpts{
+		Name:    "fhir_subs_matcher_evaluate_duration_seconds",
+		Help:    "Matcher Evaluate wall-clock duration per topic.",
+		Labels:  []string{"topic_id"},
+		Buckets: []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mee, err := em.NewCounter(CounterOpts{
+		Name: "fhir_subs_matcher_ehr_events_emitted_total",
+		Help: "ehr_events rows successfully written by the matcher.",
+	})
+	if err != nil {
+		return nil, err
+	}
+	mr.Set(12, nil)
 	// Pre-register a zero-valued time series for each label-set we know
 	// about so the /metrics endpoint exposes them at scrape time even
 	// before the first event lands. This makes alert rules targeting
@@ -437,13 +495,23 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	} {
 		dl.Add(0, prometheus.Labels{"reason": r})
 	}
+	for _, o := range []string{"processed", "deferred", "error"} {
+		mrcc.Add(0, prometheus.Labels{"outcome": o})
+	}
+	mee.Add(0, nil)
 
 	return &Inventory{
-		MetricsRegistered:      mr,
-		AuditWritesTotal:       aw,
-		AuditChainInvalidTotal: aci,
-		AuditSinkFailuresTotal: asf,
-		LoggingPHIDroppedTotal: lpd,
-		DeadLettersTotal:       dl,
+		MetricsRegistered:                  mr,
+		AuditWritesTotal:                   aw,
+		AuditChainInvalidTotal:             aci,
+		AuditSinkFailuresTotal:             asf,
+		LoggingPHIDroppedTotal:             lpd,
+		DeadLettersTotal:                   dl,
+		MatcherResourceChangesClaimedTotal: mrcc,
+		MatcherTopicsEvaluatedTotal:        mte,
+		MatcherTopicMatchTotal:             mtm,
+		MatcherFHIRPathTimeoutsTotal:       mft,
+		MatcherEvaluateDurationSeconds:     med,
+		MatcherEhrEventsEmittedTotal:       mee,
 	}, nil
 }

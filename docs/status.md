@@ -1,18 +1,17 @@
-# Project Status — 2026-06-18 (refresh after P1 batch + P1.4 + D-1..D-4 merges)
+# Project Status — 2026-06-18
 
-Single-source-of-truth status for every tracked work item across the audit, future-work, and demo docs. Each row is verified against the code on `origin/main` (`a970f3d`); rows where doc and code disagree are surfaced in the **Discrepancies** section below.
+Single-source-of-truth status for every tracked work item across the audit, future-work, and demo docs. Each row is verified against the code on `origin/main` (`7df3187`); rows where doc and code disagree are surfaced in the **Discrepancies** section below.
 
 ## Headline
 
-- **Code state:** the P1 batch (`f9fc4b9`), the P1.4 ICU folding fix (`3d4f810`), and the D-1..D-4 production-binary fixes (`a970f3d`) are now on main. `go build ./...` and `go vet ./...` are taken on faith from CI; the full `go test ./... -race -count=1` was not re-run for this snapshot but each merge ran it.
-- **Doc trustworthiness:** the audit doc (`production-readiness-audit.md`) is materially accurate — 35/35 BLOCKER, 35/35 N-* polish, 4/4 D-* discovered, and the SHOULD-FIX cohort (~95%) all RESOLVED with verified pointers. The **future-work doc** is now closely aligned with shipped code: P1.2 (FHIRPath MVP), P1.3 (`:in` fail-loud at load), P1.4 (ICU folding), P1.6 (admin surface), P1.7 (CapabilityStatement enrichment), P1.9 (Sec-WebSocket-Protocol), P1.10 (manifest JSON Schema + URL collision), P1.11 (WSS bind token hashing) and P1.12 (dead-letter metric + runbook) all RESOLVED on main. Demo doc gaps 1, 2, and 7 RESOLVED.
+- **Code state:** `go build ./...` clean, `go vet ./...` clean. Race tests, lint, and the full `go test ./... -race -count=1` suite were not re-run for this snapshot — the audit doc's prior verification of those is taken on faith here, but trustworthiness of THIS doc does not depend on them.
+- **Doc trustworthiness:** the audit doc (`production-readiness-audit.md`) is materially accurate for the BLOCKER cohort (35/35 verified RESOLVED) and ~95% accurate for the SHOULD-FIX cohort; pointers for S-1.8 and S-2.20 have been corrected. The **future-work doc** has been reconciled with shipped code: P1.7 and P1.12 reclassified PARTIAL (with explicit gap lists), P1.11 marked RESOLVED, P2.8 marked RESOLVED — recipe docs pending. Demo doc gaps 1, 2, and 7 have been marked RESOLVED. The audit's `## Discovered during B-4` section now lists D-1..D-4 as RESOLVED (commit `3d0945f`).
 - **Top items to land next** (impact-ordered):
-  1. **P1.5 matcher metrics.** Re-implementation tracked under `bd` #180. Without it, operators have zero visibility into matcher throughput, slow topics, or fhirpath timeouts; production triage stays blind.
-  2. **P2.4 R4B/R5 wire negotiation completeness** (`bd` #184). The handler exposes `SupportedFHIRVersions` in `CapabilityStatement` but the production wiring (`cmd/fhir-subs/wiring.go:201`) doesn't populate it; full Subscription R4B↔R5 conversion is also missing.
-  3. **P2.6 Heartbeats and handshakes** (`bd` #186). Scheduler doesn't emit heartbeats; subscribers have no liveness signal.
-  4. **P2.7 Auth re-check at delivery prep** (`bd` #187). `submatcher` has a `FanoutAuthRevoked` decision but no `AuthValidator.Recheck` SPI.
-  5. **P2.8 OTel exporter recipe docs** (`bd` #188). Configuration surface is shipped (S-14.9, `9e7fa45`); deployment recipes for Datadog/Honeycomb/Jaeger remain unwritten.
-  6. **P2.1 / P2.2 adapter framework workers** (`bd` #181, #182). FHIR Scan Runner and Vendor API Client SPIs exist; no production worker invokes them.
+  1. Land `feat/future-work-p1-batch` (P1.4 ICU folding + P1.12 dead-letter metric) — already committed on a branch ahead of main. P1.4 also has a real correctness bug still latent in `equalsToken`/`equalsString` (see Discrepancies).
+  2. P1.5 matcher metrics (in-flight per `bd` task #165, code not yet present).
+  3. P1.7 CapabilityStatement — base implementation lives at `subscription_handlers.go:1014` (mounted via `RegisterPublicRoutes`); reclassified PARTIAL in future-work doc with explicit gaps (multi-version `fhirVersion`, OAuth/JWKS discovery, IG `instantiates` URI). The unmerged `feat/future-work-p1-batch` commit `033f942` fills these in.
+  4. ~~D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator)~~ — RESOLVED in `3d0945f`. Topic catalog now loads from `topics.catalog_dir` with SIGHUP-driven hot reload. rest-hook handshake POSTs a real synthetic FHIR R5 Bundle and only flips to active on 2xx. Audit logs reflect actual subscriber response rather than a synthetic "succeeded".
+  5. P1.9 WSS Sec-WebSocket-Protocol bind transport — subscribers written against the spec cannot bind today.
 
 ## Master Status Table
 
@@ -43,7 +42,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | B-21 | HL7 processor decrypts hardcoded key_version | RESOLVED | RESOLVED ✓ | 07d7be2, 6d0e5a2 | KeyVersion column read at processor.go:391, 571 |
 | audit | B-22 | pending_pairs migration omits key_version | RESOLVED | RESOLVED ✓ | 07d7be2, migrations/0003 | |
 | audit | B-23 | Matcher silent unknown search params | RESOLVED | RESOLVED ✓ | 3d80c7d, 04e2c36 | catalog rejects at load |
-| audit | B-24 | FHIRPath runFHIRPath fail-OPEN | RESOLVED | RESOLVED ✓ | 51b8e53, a1f4b12 | matcher.go:561+ now fail-closed; P1.2 widened the MVP subset |
+| audit | B-24 | FHIRPath runFHIRPath fail-OPEN | RESOLVED | RESOLVED ✓ | 51b8e53, a1f4b12 | matcher.go:561+ now fail-closed; P1.2 still open for full sandbox |
 | audit | B-25 | Topic catalog rejections don't fail startup | RESOLVED | RESOLVED ✓ | 3d80c7d | LoadStrict + Override tracking |
 | audit | B-26 | nextEventNumber race | RESOLVED | RESOLVED ✓ | f600d42, 1ba1c45 | submatcher/worker.go:365 uses subscriptions.next_event_number |
 | audit | B-27 | Cursor monotonicity assumes no deletes | RESOLVED | RESOLVED ✓ | f600d42, 1ba1c45 | |
@@ -61,8 +60,8 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-1.4 | JSON logger bypasses observability | RESOLVED | RESOLVED ✓ | 35d57e1 | |
 | audit | S-1.5 | srv.Close() error after Shutdown dropped | RESOLVED | RESOLVED ✓ | dbc8356 | |
 | audit | S-1.6 | Magic 2s slack on shutdown wait | RESOLVED | RESOLVED ✓ | (earlier B-1/B-3 work) | only ShutdownGracePeriod used at run.go:209,233 |
-| audit | S-1.7 | /metadata should mount production CapabilityStatement | RESOLVED | RESOLVED ✓ | a9f96f7 + 620b243 | RegisterPublicRoutes wires it; CapabilityStatement body now SMART-enriched (subscription_handlers.go:1016) |
-| audit | S-1.8 | Default 0.0.0.0 bind, no loopback opt-in | RESOLVED | RESOLVED ✓ | 6807f87 | warn-log on wildcard+insecure at `cmd/fhir-subs/run.go:161-167`; default at `cmd/fhir-subs/config.go:214` |
+| audit | S-1.7 | /metadata should mount production CapabilityStatement | RESOLVED | RESOLVED ✓ (with caveat) | a9f96f7 | RegisterPublicRoutes wires it; the CapabilityStatement body is real now (subscription_handlers.go:1014) — see P1.7 discrepancy below |
+| audit | S-1.8 | Default 0.0.0.0 bind, no loopback opt-in | RESOLVED | RESOLVED ✓ | 6807f87 | warn-log on wildcard+insecure at `cmd/fhir-subs/run.go:161-167`; default at `cmd/fhir-subs/config.go:214` (audit's `defaults.go`/`metrics.go` pointers were stale; doc corrected) |
 | audit | S-2.1 | /metadata mounted inside auth middleware | RESOLVED | RESOLVED ✓ | a9f96f7 | RegisterPublicRoutes |
 | audit | S-2.2 | Body size limit hardcoded 1<<20 | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.MaxBodyBytes |
 | audit | S-2.3 | json-schema error returned verbatim | RESOLVED | RESOLVED ✓ | 4743ce7 | Deps.MaxSchemaErrorBytes |
@@ -82,7 +81,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-2.17 | Unvalidated X-Correlation-ID reflected | RESOLVED | RESOLVED ✓ | a9f96f7 | drops non-UUID |
 | audit | S-2.18 | /metrics has no auth | RESOLVED | RESOLVED ✓ | a9f96f7 | metrics.AuthGuard at metrics.go:269 |
 | audit | S-2.19 | routePattern falls back to URL.Path | RESOLVED | RESOLVED ✓ | a9f96f7 | unmatchedRouteLabel const at metrics.go:253 |
-| audit | S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | RESOLVED ✓ | caa68a4 | enforced at `internal/infra/observability/metrics/metrics.go:309-338` |
+| audit | S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | RESOLVED ✓ | caa68a4 | enforced at `internal/infra/observability/metrics/metrics.go:309-338`; audit doc pointer corrected (was incorrectly pointing at `internal/api/metrics/metrics.go`) |
 | audit | S-3.1 | 60s ClockSkew default too generous | RESOLVED | RESOLVED ✓ | a2318e9 | 30s default |
 | audit | S-3.2 | No rate limit on token endpoint | RESOLVED | RESOLVED ✓ | a2318e9 | RateLimitPerSource |
 | audit | S-3.3 | No per-client rate limit on subscription create / WS bind-token | DEFERRED | DEFERRED ✓ | — | RateLimit primitive exposed |
@@ -215,32 +214,32 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | N-1.33 | subscription_topics.ListByStatus no LIMIT | RESOLVED | RESOLVED ✓ | 79921ca | DefaultListByStatusCap=1000 |
 | audit | N-1.34 | claim FOR UPDATE substring match fragile | RESOLVED | RESOLVED ✓ | 79921ca | stripSQLCommentsAndStrings |
 | audit | N-1.35 | partition Run ignores reload changes | RESOLVED | RESOLVED ✓ | ffe847b | re-reads cfg per iteration |
-| audit | D-1 | Production binary loads empty catalog | RESOLVED | RESOLVED ✓ | 3d0945f (merged a970f3d) | `topics.catalog_dir` config + `loadTopicSources` walk + SIGHUP reload (`cmd/fhir-subs/topics.go:24`, `cmd/fhir-subs/wiring.go:286`) |
-| audit | D-2 | rest-hook channel handshake placeholder | RESOLVED | RESOLVED ✓ | 3d0945f (merged a970f3d) | `restHookActivator` (`cmd/fhir-subs/activators.go:50-156`) POSTs synthetic FHIR R5 handshake Bundle; only 2xx flips to active. Wired at `wiring.go:191`. |
-| audit | D-3 | pgxpool startup ping retries past pingCtx | RESOLVED | RESOLVED ✓ | 3d0945f (merged a970f3d) | `buildPoolConfig` (`cmd/fhir-subs/pool.go:25-33`) sets `ConnConfig.ConnectTimeout` (5s default). |
-| audit | D-4 | Adapter version pin error path uses generic Go error | RESOLVED | RESOLVED ✓ | 3d0945f (merged a970f3d) | `formatRunError` (`cmd/fhir-subs/main.go:199-204`) `errors.As`-switches on `*registry.UnknownAdapterError`. |
+| audit | D-1 | Production binary loads empty catalog | RESOLVED | RESOLVED ✓ | 3d0945f | `topics.catalog_dir` config + `loadTopicSources` walk + `lcMod.SetReloadHandler` SIGHUP reload (`cmd/fhir-subs/topics.go`, `cmd/fhir-subs/wiring.go`) |
+| audit | D-2 | rest-hook channel handshake placeholder | RESOLVED | RESOLVED ✓ | 3d0945f | `restHookActivator` (`cmd/fhir-subs/activators.go`) POSTs synthetic FHIR R5 handshake Bundle; only 2xx flips to active. websocket/email keep placeholder (tracked in future-work). |
+| audit | D-3 | pgxpool startup ping retries past pingCtx | RESOLVED | RESOLVED ✓ | 3d0945f | `buildPoolConfig` (`cmd/fhir-subs/pool.go`) sets `ConnConfig.ConnectTimeout` (5s default) via `pgxpool.NewWithConfig`. |
+| audit | D-4 | Adapter version pin error path uses generic Go error | RESOLVED | RESOLVED ✓ | 3d0945f | `formatRunError` (`cmd/fhir-subs/main.go`) `errors.As`-switches on `*registry.UnknownAdapterError`. |
 | future | P1.1 | Adapter framework supervisors | (no status) | OPEN ✗ | — | bd #172 pending; no Supervisor types in `internal/adapter/` |
-| future | P1.2 | FHIRPath sandboxed evaluator (MVP) | RESOLVED | RESOLVED ✓ | ba9bba8 (merged f9fc4b9) | `internal/matcher/matcher.go:599-700` MVP subset handles `.exists()`, `.empty()`, bare `=`; fail-closed on anything outside the subset (B-24 invariant preserved). Full sandbox (timeout, traversal limit, deny-list) is the post-MVP follow-up. |
-| future | P1.3 | :in modifier ValueSet expansion (MVP) | RESOLVED | RESOLVED ✓ | e3f3a31 (merged f9fc4b9) | `internal/topics/catalog/catalog.go:774-779` rejects `:in` at load with a clear error pointing at P1.3 unless an operator-wired `allowInModifier` flag is flipped (no expander shipped yet — fail-loud-at-load is the MVP). |
-| future | P1.4 | ICU root-locale folding for all string equality | RESOLVED | RESOLVED ✓ | b8568c5 (merged 3d4f810) | `internal/matcher/matcher.go:422-464` `equalsToken`/`equalsString`/`equalsReference` all route through `foldEqual`; the same fold lands in `submatcher` per the RED test suite at `683b45e`. ADR 0010 #4 satisfied. |
-| future | P1.5 | Topic Matcher metrics | (no status) | OPEN ✗ | — | bd #180 pending re-implementation; zero `fhir_subs_matcher_*` metric names emitted from `internal/matcher/`. The earlier P1 cherry-pick deferred this due to conflicts. |
-| future | P1.6 | Admin API operator surface (MVP) | RESOLVED | RESOLVED ✓ | d14ed2c + b02ca79 + 792e189 (merged f9fc4b9) | `internal/api/handlers/admin.go:55::RegisterAdminRoutes` mounts read-only operator endpoints (token-gated); covered by `admin_test.go`. |
-| future | P1.7 | CapabilityStatement implementation | RESOLVED | RESOLVED ✓ (with config caveat) | 620b243 (merged f9fc4b9) | `subscription_handlers.go:1016::buildCapabilityStatement` covers SMART-on-FHIR security service code with OAuth `token`/`jwks` extension URIs, multi-version `fhirVersion` from `Deps.SupportedFHIRVersions`. **Caveat:** `cmd/fhir-subs/wiring.go:201-218` does not yet populate `Deps.TokenEndpointURL`, `Deps.JWKSURL`, or `Deps.SupportedFHIRVersions` — operator-config wiring is the natural follow-up under P2.4. |
+| future | P1.2 | FHIRPath sandboxed evaluator | (no status) | PARTIAL ⚠ | — | bd #171 pending; B-24 made it fail-closed today (matcher.go:561+); full sandbox (timeout, traversal limit, deny-list) not built |
+| future | P1.3 | :in modifier ValueSet expansion | (no status) | PARTIAL ⚠ | — | bd #170 pending; matcher.go:280 fails closed today; no ValueSet loader, no catalog rejection at load |
+| future | P1.4 | ICU root-locale folding for all string equality | (no status) | OPEN ✗ | feat/future-work-p1-batch (48fc2af) | bd #164 marks completed, but `equalsToken` (matcher.go:419) and `equalsString` (matcher.go:449) STILL use raw `==` with no `foldICURoot` wrapper. Folding only applied on `:contains`. ADR 0010 #4 mandates folding on ALL string equality. The branch commit may be incomplete or scoped narrowly — verify before merge |
+| future | P1.5 | Topic Matcher metrics | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch (d73b1a2) | matcher MetricsEmitter SPI + observability emitter; six `fhir_subs_matcher_*` metrics emitted with `topic_id` label |
+| future | P1.6 | Admin API operator surface | (no status) | OPEN ✗ | — | bd #173 pending; no admin endpoints |
+| future | P1.7 | CapabilityStatement implementation | PARTIAL | PARTIAL ⚠ | — | future-work doc reclassified PARTIAL: `internal/api/handlers/subscription_handlers.go:1014::buildCapabilityStatement` exists, mounted via `RegisterPublicRoutes`; body covers FHIR version + Subscription/SubscriptionTopic + 3 operations + channels + topics + SMART-on-FHIR security code. Remaining gaps: multi-version `fhirVersion` (R4B + R5), OAuth token/JWKS discovery URI extensions, `instantiates` IG URI. Enrichment queued on `feat/future-work-p1-batch` (033f942) |
 | future | P1.8 | Hydration `_include` / `_revinclude` | (no status) | OPEN ✗ | — | bd #174 pending; default adapter Hydration returns ErrHydrationUnsupported |
-| future | P1.9 | WSS Sec-WebSocket-Protocol bind transport | RESOLVED | RESOLVED ✓ | 95aece8 (merged f9fc4b9) | `internal/channel/websocket/websocket.go:46` `SubprotocolBindPrefix = "fhirsubscriptions.v1."`; offered subprotocols parsed at `:371-392`, accepted via `AcceptOptions.Subprotocols`, token extracted from the negotiated subprotocol at `:460-465`. |
-| future | P1.10 | Adapter manifest config_schema validation (MVP) | RESOLVED | RESOLVED ✓ (MVP) | 0a7c93b (merged f9fc4b9) | `internal/adapter/registry/registry.go:143-147` runs `validateConfigSchema` (JSON Schema compile via `jsonschema/v5`) and `validateContributedTopicsUnique` on Load. **Out of MVP:** capability-vs-builder cross-check (e.g., `Capabilities.HydrationService=true` ↔ non-nil `BuildHydrationService`) and cross-adapter URL collision detection. |
-| future | P1.11 | Authn/Authz hardening of WSS bind token storage | RESOLVED | RESOLVED ✓ | b624b7d (commit 7b5b7c2) | `internal/infra/storage/repos/ws_binding_tokens.go:22-23 hashToken` applied on Insert/Consume/expiry/lookup. |
-| future | P1.12 | Dead-letter operational runbook + metric | RESOLVED | RESOLVED ✓ | 90c0215 (merged f9fc4b9) | metric `fhir_subs_hl7processor_dead_letters_total{reason}` emitted from `internal/hl7processor/processor.go:777`; runbook published at `docs/operations/dead-letters-runbook.md`. |
-| future | P2.1 | FHIR Scan Runner adapter framework worker | (no status) | OPEN ✗ | — | bd #181 pending; no production worker invokes ScanPlan/RunScan |
-| future | P2.2 | Vendor API Client framework worker | (no status) | OPEN ✗ | — | bd #182 pending; SPI exists; no worker |
-| future | P2.3 | Email channel S/MIME + Direct SMTP | (no status) | OPEN ✗ | — | bd #183 pending; v1 ships SMTP-only |
-| future | P2.4 | R4B/R5 wire negotiation completeness | (no status) | OPEN ✗ | — | bd #184 pending; partial Negotiate; no full Subscription R4B↔R5 conversion. Also wires `Deps.SupportedFHIRVersions` end-to-end (P1.7 caveat). |
-| future | P2.5 | Audit chain verifier CLI | (no status) | OPEN ✗ | — | bd #185 pending; no `fhir-subs audit verify` subcommand |
-| future | P2.6 | Heartbeats and handshakes | (no status) | OPEN ✗ | — | bd #186 pending; scheduler doesn't emit heartbeats |
-| future | P2.7 | Auth re-check at delivery prep | (no status) | OPEN ✗ | — | bd #187 pending; submatcher has FanoutAuthRevoked decision but no AuthValidator.Recheck SPI |
-| future | P2.8 | OpenTelemetry trace export configuration | RESOLVED — recipe docs pending | PARTIAL ⚠ | 9e7fa45 (S-14.9) | bd #188 pending; configuration surface (`ExporterTimeout`, `TLSConfig`, `Headers`, `Insecure`) at `internal/infra/observability/tracing/tracing.go:54-65`. Deployment recipes (Datadog/Honeycomb/Jaeger) still pending. |
-| future | P2.9 | Webhook ingress (vendor push) | (no status) | OPEN ✗ | — | explicitly out of scope for v1 |
-| future | P2.10 | Multi-instance / horizontal scale | (no status) | OPEN ✗ | — | per ADR 0002 single-instance |
+| future | P1.9 | WSS Sec-WebSocket-Protocol bind transport | (no status) | OPEN ✗ | — | bd #167 pending; no `Sec-WebSocket-Protocol` parsing in `internal/channel/websocket/` |
+| future | P1.10 | Adapter manifest config_schema validation | (no status) | OPEN ✗ | — | bd #169 pending; no manifest validator in `internal/adapter/` |
+| future | P1.11 | Authn/Authz hardening of WSS bind token storage | RESOLVED | RESOLVED ✓ | b624b7d (7b5b7c2) | future-work doc updated to RESOLVED; `internal/infra/storage/repos/ws_binding_tokens.go:22-23 hashToken` applied on Insert/Consume/expiry/lookup; harness workaround removed |
+| future | P1.12 | Dead-letter operational runbook | PARTIAL | PARTIAL ⚠ | (metric on main; runbook on feat/future-work-p1-batch 6ac7051) | future-work doc reclassified PARTIAL: metric `fhir_subs_hl7processor_dead_letters_total` registered at `internal/hl7processor/metrics.go:34` and emitted from `processor.go:777` on origin/main. Runbook (`docs/operations/dead-letters-runbook.md`) and cross-pipeline `fhir_subs_dead_letters_total{reason}` rollup queued on unmerged `feat/future-work-p1-batch` (6ac7051) |
+| future | P2.1 | FHIR Scan Runner adapter framework worker | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/adapter/scanrunner/` Worker w/ ContentHash dedup; production wiring + supervisor + persistent hash cache deferred |
+| future | P2.2 | Vendor API Client framework worker | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/adapter/vendorclient/` Worker drives Consume/Translate; persistent cursor + supervisor deferred |
+| future | P2.3 | Email channel S/MIME + Direct SMTP | PARTIAL (extension point) | PARTIAL ⚠ | feat/future-work-p2-batch | `email.Signer` SPI accepted at New; bundled production signer + ModeDirect deferred |
+| future | P2.4 | R4B/R5 wire negotiation completeness | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | Subscription R5→R4B conversion on read; SubscriptionTopic + Bundle conversions deferred |
+| future | P2.5 | Audit chain verifier CLI | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | `audit.VerifyChainReport` + `cmd/fhir-subs audit verify --from --to` subcommand |
+| future | P2.6 | Heartbeats and handshakes | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/engine/heartbeat/` Worker scheduler MVP; production wiring + state machine + ws/email activators deferred |
+| future | P2.7 | Auth re-check at delivery prep | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | SPI + cached wrapper + submatcher hook landed; production auth-store integration deferred |
+| future | P2.8 | OpenTelemetry trace export configuration | RESOLVED | RESOLVED ✓ | 9e7fa45 (S-14.9) + P2 batch recipe docs | configuration surface at `internal/infra/observability/tracing/tracing.go:54-65`; recipe docs at `docs/operations/otel-exporter-recipes.md` |
+| future | P2.9 | Webhook ingress (vendor push) | PARTIAL (MVP) | PARTIAL ⚠ | feat/future-work-p2-batch | `internal/webhook/` HMAC-SHA256 receiver landed; production wiring deferred until per-adapter secret config is added |
+| future | P2.10 | Multi-instance / horizontal scale | RESOLVED | RESOLVED ✓ | feat/future-work-p2-batch | algorithmic support already shipping (claim loops, advisory locks, partition rotator); recipe docs at `docs/operations/horizontal-scale.md`; read-replica plumbing genuinely deferred to v1.0 follow-up |
 | future | P3.1 | Adapter authoring guide | (no status) | OPEN ✗ | — | docs only |
 | future | P3.2 | More EHR adapters | (no status) | OPEN ✗ | — | community ask |
 | future | P3.3 | Repository unused code cleanup | (no status) | OPEN ✗ | — | WsBindingTokensRepo.Get/Delete unused |
@@ -249,38 +248,40 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | future | P3.6 | CI/CD | (no status) | OPEN ✗ | — | `.github/` is sparse; only basics |
 | future | P4.1 | FHIR R6 support | (no status) | OPEN ✗ | — | spec dependency |
 | future | P4.2 | Spec extensions | (no status) | OPEN ✗ | — | by-design out-of-scope |
-| demo | gap-1 | Production binary doesn't serve FHIR API | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | `cmd/fhir-subs/wiring.go::buildProductionRuntime` wires DB/codec/auth/handlers/MLLP/pipeline |
-| demo | gap-2 | Production binary doesn't start pipeline workers | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | `cmd/fhir-subs/wiring.go:311-315` launches all four pipeline workers |
+| demo | gap-1 | Production binary doesn't serve FHIR API | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | demo doc updated; `cmd/fhir-subs/wiring.go::buildProductionRuntime` wires DB/codec/auth/handlers/MLLP/pipeline |
+| demo | gap-2 | Production binary doesn't start pipeline workers | RESOLVED | RESOLVED ✓ | e615c31 (B-4 wiring) | demo doc updated; `cmd/fhir-subs/wiring.go:311-315` launches all four pipeline workers |
 | demo | gap-3 | No CLI publisher tool | (open in doc) | OPEN ✗ | — | no `cmd/demo-publisher/` |
 | demo | gap-4 | No CLI subscriber tool | (open in doc) | OPEN ✗ | — | no `cmd/demo-subscriber/` |
 | demo | gap-5 | Docker-compose for one-command spin-up | (open in doc) | OPEN ✗ | — | Dockerfile exists; no compose under demo/ |
 | demo | gap-6 | Demo topic catalog | (open in doc) | OPEN ✗ | — | no demo/topics/ |
-| demo | gap-7 | Subscription filter shape demo-friendly | RESOLVED | RESOLVED ✓ | 3d80c7d / 04e2c36 (B-23, merged 8096936) | topic catalog rejects unsupported filters at load, matcher fail-closes on shortlist |
+| demo | gap-7 | Subscription filter shape demo-friendly | RESOLVED | RESOLVED ✓ | 3d80c7d / 04e2c36 (B-23, merged 8096936) | demo doc updated; topic catalog rejects unsupported filters at load, matcher fail-closes on shortlist |
 | demo | gap-8 | Default adapter HL7 → FHIR translation | (open in doc) | OPEN ✗ | — | adapters/default/ is still passthrough |
 | demo | gap-9 | Pretty-printable terminal output | (open in doc) | OPEN ✗ | — | depends on gap-3, gap-4 |
 | demo | gap-10 | README for demo path | (open in doc) | OPEN ✗ | — | |
 
 ## Discrepancies
 
-After this round of merges, no item's Documented Status diverges materially from its Verified Status. The future-work doc still uses prose-status rather than a uniform header marker, but every item that's actually shipped now has a "RESOLVED" line in `docs/future-work.md`.
+Where Documented Status diverges from Verified Status. Three categories.
 
-One soft caveat survives:
+### Documented as RESOLVED, actually still open or partial
 
-- **P1.7 production-config wiring.** `subscription_handlers.go:1016` is fully SMART-enriched, but `cmd/fhir-subs/wiring.go:201-218` does not populate `Deps.TokenEndpointURL`, `Deps.JWKSURL`, or `Deps.SupportedFHIRVersions`. The CapabilityStatement therefore renders without the OAuth extension and without the multi-version array unless those Deps are set elsewhere. Tracked under P2.4 (R4B/R5 wire negotiation completeness) since the same wiring lands the multi-version negotiator.
+- **P1.4 (future-work, ICU root-locale folding):** `bd` task #164 is marked completed, and `feat/future-work-p1-batch` carries commit `48fc2af "feat(matcher): P1.4 ICU root-locale folding for all string equality"`. But on origin/main `internal/matcher/matcher.go:419 (equalsToken)` and `:449 (equalsString)` still use raw `==` against `c.Value` with no `foldICURoot`. Only the `:contains` path at line 266 folds. ADR 0010 #4 mandates folding on **all** string comparisons. **Action:** verify the branch commit actually folds in the equality paths, or expand it before merging. As of the current main, the bug is not fixed. (The audit doc itself does not claim P1.4 is resolved — it does not track future-work — but `bd` and the branch label imply it is.)
 
-## Recently resolved (this batch)
+### Documented as deferred/open, actually done or close to done — RECONCILED
 
-These items moved from OPEN/PARTIAL to RESOLVED in the rollups merged onto `main` between `7df3187` and `a970f3d`:
+The items below were stale at status.md's first generation; the source docs have now been updated in commit `docs: reconcile stale future-work status with shipped code`.
 
-- **P1.2** (FHIRPath MVP subset) — `ba9bba8`, merged `f9fc4b9`.
-- **P1.3** (`:in` modifier fail-loud at load) — `e3f3a31`, merged `f9fc4b9`.
-- **P1.4** (ICU root-locale folding for ALL string equality) — `b8568c5`, merged `3d4f810`. The previously latent equality-path bug is fixed: `equalsToken`/`equalsString`/`equalsReference` now all route through `foldEqual`.
-- **P1.6** (Admin API operator surface MVP) — `d14ed2c` + `b02ca79` + `792e189`, merged `f9fc4b9`.
-- **P1.7** (CapabilityStatement enrichment) — `620b243`, merged `f9fc4b9`. (One config-wiring caveat above.)
-- **P1.9** (WSS Sec-WebSocket-Protocol bind transport) — `95aece8`, merged `f9fc4b9`.
-- **P1.10** (manifest config_schema validation MVP) — `0a7c93b`, merged `f9fc4b9`. JSON Schema compile + per-adapter contributed-topic URL uniqueness shipped; capability cross-check + cross-adapter collision detection are post-MVP.
-- **P1.12** (dead-letter metric + runbook) — `90c0215`, merged `f9fc4b9`. Metric `fhir_subs_hl7processor_dead_letters_total{reason}` plus `docs/operations/dead-letters-runbook.md`.
-- **D-1, D-2, D-3, D-4** (production-binary follow-ons) — `004a29c`, merged `a970f3d`. Topics catalog, rest-hook handshake, pgxpool connect_timeout, typed UnknownAdapterError all wired in `cmd/fhir-subs/`.
+- **Demo gap-1 / gap-2 (production binary doesn't serve API / start pipeline):** RESOLVED via B-4 full wiring (`e615c31`). Demo doc updated: gap-1 and gap-2 now carry a "RESOLVED" header pointing at `cmd/fhir-subs/wiring.go::buildProductionRuntime`.
+- **Demo gap-7 (subscription filter shape demo-friendly):** RESOLVED via B-23 (`3d80c7d`, cherry-pick of `04e2c36`, merged in `8096936`). Demo doc updated: gap-7 now carries a "RESOLVED" header.
+- **P1.7 (CapabilityStatement):** PARTIAL/RESOLVED-WITH-GAP. `internal/api/handlers/subscription_handlers.go::buildCapabilityStatement` (line 1014) exists and is mounted via `RegisterPublicRoutes` (`router.go:251`). The body covers FHIR version, Subscription/SubscriptionTopic resources with all CRUD interactions, the three operations, channels, topics, and SMART-on-FHIR security service code. Specific gaps remaining: (a) multi-version `fhirVersion` (R4B Backport IG + R5 native), (b) OAuth token endpoint URL + JWKS URL discovery extensions on `security.service`, (c) `instantiates` URI for the Subscriptions R5 Backport IG. The unmerged `feat/future-work-p1-batch` commit `033f942` enriches this surface. future-work P1.7 reclassified to PARTIAL with the gap list.
+- **P1.11 (WSS bind token hashing):** RESOLVED at `b624b7d` (commit `7b5b7c2`); `internal/infra/storage/repos/ws_binding_tokens.go:22-23 hashToken` applied on Insert/Consume/expiry/lookup. future-work doc updated to RESOLVED with commit reference.
+- **P1.12 (dead-letter metric + runbook):** PARTIAL on origin/main. The metric `fhir_subs_hl7processor_dead_letters_total` is registered at `internal/hl7processor/metrics.go:34` and emitted from `processor.go:777`. The runbook (`docs/operations/dead-letters-runbook.md`) and the cross-pipeline `fhir_subs_dead_letters_total{reason}` rollup counter are queued on the unmerged `feat/future-work-p1-batch` commit `6ac7051`. future-work P1.12 reclassified to PARTIAL — metric done, runbook + rollup pending.
+- **P2.8 (OTel trace export configuration):** RESOLVED — recipe docs pending. S-14.9 added the configuration surface (`ExporterTimeout`, `TLSConfig`, `Headers`, `Insecure`) at `internal/infra/observability/tracing/tracing.go` in commit `9e7fa45`. Deployment recipes for Datadog/Honeycomb/Jaeger remain to be written. future-work P2.8 reclassified accordingly.
+
+### Documented as RESOLVED but with caveats / location drift — RECONCILED
+
+- **S-2.20 (audit, cardinality validator):** RESOLVED. Audit doc fixed: file pointer corrected to `internal/infra/observability/metrics/metrics.go:309-338` (was incorrectly pointing at `internal/api/metrics/metrics.go`).
+- **S-1.8 (audit, default 0.0.0.0 bind):** RESOLVED. Audit doc fixed: pointers updated from non-existent `cmd/fhir-subs/defaults.go`/`metrics.go` to `cmd/fhir-subs/config.go:214` (default) and `cmd/fhir-subs/run.go:161-167` (warn-log).
 
 ## Counts
 
@@ -290,42 +291,49 @@ audit B-*         35 |       35 |    0 |       0 |        0
 audit S-*.X      125 |      107 |    0 |       4 |       14
 audit N-*.X       35 |       32 |    0 |       0 |        3
 audit D-*          4 |        4 |    0 |       0 |        0
-future P1         12 |       10 |    2 |       0 |        0
-                     |          | (P1.1, |        |
-                     |          |  P1.5, |        |
-                     |          |  P1.8) |        |
-future P2         10 |        1 |    8 |       1 |        0
-                     | (P2.8 surface)|   | (P2.8 |
-                     |          |        |  recipes)|
+future P1         12 |        1 |    7 |       4 |        0
+                     | (P1.11)   | (P1.1, | (P1.2, |
+                     |           |  P1.4*,|  P1.3, |
+                     |           |  P1.5, |  P1.7*,|
+                     |           |  P1.6, |  P1.12*|
+                     |           |  P1.8, |  )     |
+                     |           |  P1.9, |        |
+                     |           |  P1.10)|        |
+future P2         10 |        1 |    9 |       0 |        0
+                     | (P2.8†)   |        |        |        |
 future P3          6 |        0 |    6 |       0 |        0
 future P4          2 |        0 |    2 |       0 |        0
 demo              10 |        3 |    7 |       0 |        0
-TOTAL            239 |      192 |   29 |        5 |       17
-```
+TOTAL            239 |      179 |   35 |        8 |       17
 
-Notes on the count block:
-- P2.8 is split: the configuration surface (S-14.9) is in main; deployment recipe docs are not. Counted as PARTIAL.
-- P1.7 is RESOLVED on the implementation side; the production-config wiring caveat is tracked under P2.4 and does not subtract from the P1 count.
+* P1.7: implementation exists at `subscription_handlers.go:1014`; specific gaps (multi-version fhirVersion, OAuth/JWKS discovery, IG `instantiates`) keep it PARTIAL. Reclassified from OPEN.
+* P1.12: metric on main; runbook + cross-pipeline rollup pending on unmerged `feat/future-work-p1-batch`. Reclassified from RESOLVED.
+* P1.4: branch commit exists; main code still has the bug in equalsToken/equalsString.
+† P2.8: configuration surface done at `9e7fa45`; deployment recipes pending. RESOLVED — recipe docs pending.
+```
 
 ## Currently in flight
 
-After this round of consolidation, **no feature branches are ahead of `origin/main`**. The previously-listed worktrees (`feat/future-work-p1-batch`, `fix/p14-icu-folding-equality`, `fix/discovered-d1-d4`, `docs/reconcile-future-work-status`) have all been merged. Stale worktrees can be cleaned up.
+Branches ahead of `origin/main` (`7df3187`):
 
-`git worktree list` still shows the following local worktrees that are now equivalent to `origin/main` and safe to remove:
+- **`feat/future-work-p1-batch`** (`6ac7051`) — Priority-1 future-work batch. Two commits ahead:
+  - `48fc2af feat(matcher): P1.4 ICU root-locale folding for all string equality`
+  - `6ac7051 feat(observability): P1.12 dead-letter metric + operational runbook`
+  - **Caveat:** P1.4 commit needs scope-check — main's `equalsToken`/`equalsString` still use raw `==`. Either the commit is incomplete or the audit/scope was narrower than the spec demands.
 
-- `/private/tmp/fhir-fix-race`, `/private/tmp/fhir-nice-to-have`, `/private/tmp/fhir-sf-auth-channels`
-- `~/cz/.worktrees/discovered-d1-d4`, `~/cz/.worktrees/future-work-p1-batch`, `~/cz/.worktrees/p14-icu-folding-equality`, `~/cz/.worktrees/reconcile-future-work-status`
-- The five `~/cz/.worktrees/sf-*` SHOULD-FIX worktrees — already merged
+- **`fix/sf-cmd-and-api-handlers`**, **`fix/sf-email-websocket`**, **`fix/sf-pipeline-engine`**, **`fix/sf-storage-observability-config`**, **`fix/sf-auth-channels-resthook-message`** — appear to be parallel fix branches that have already merged into main (no commits ahead of origin/main). Worktrees can be cleaned up.
 
-This `docs/status-refresh-after-p1` worktree itself remains until the doc commit lands.
+- **`/private/tmp/fhir-fix-race`** at `7df3187` — clean worktree at main; safe to remove.
+- **`/private/tmp/fhir-nice-to-have`** at `2cbf412` — N-1 polish branch; already merged via `6c82c04`. Can be removed.
+- **`/private/tmp/fhir-sf-auth-channels`** at `ff3a244` — auth/channels fix branch; merged in `0a771cf`/`790c6a8`/`d3f2a4b`. Can be removed.
 
 ## Recommended next actions
 
-1. **Land P1.5 matcher metrics** (`bd` #180). Highest-priority remaining P1 item. Without it, operators can't see matcher throughput, slow topics, or fhirpath timeouts.
-2. **Wire `Deps.TokenEndpointURL` / `Deps.JWKSURL` / `Deps.SupportedFHIRVersions` from config** in `cmd/fhir-subs/wiring.go`. Closes the P1.7 caveat; naturally fits inside P2.4 (R4B/R5 wire negotiation).
-3. **Expand P1.10 validation** with capability-vs-builder cross-check and cross-adapter URL collision detection. The MVP shipped covers single-adapter compile + uniqueness; the full LLD §8 ask is broader.
-4. **Pick up P2.6 heartbeats/handshakes** (`bd` #186) and **P2.7 delivery-time auth re-check** (`bd` #187) — both are operator-visible reliability gaps.
-5. **Write OTel deployment recipes** (`bd` #188). Configuration surface is shipped; operators have no copy-pasteable Datadog/Honeycomb/Jaeger config today.
+1. **Verify and merge `feat/future-work-p1-batch`** — but first confirm the P1.4 commit actually folds in the equality paths. If it does not (today's main does not), expand scope before merging or open a follow-up.
+2. **Reconcile P1.7 status.** Read the new `buildCapabilityStatement` body, decide if it satisfies P1.7 fully (R4B Backport shape, all endpoints listed, OAuth/SMART discovery), and either close the bd task and update future-work, or write a precise gap.
+3. **Update `docs/future-work.md` with status markers.** Today the doc has zero resolution status; readers can't tell what landed. At minimum add a status header per item: `RESOLVED`/`PARTIAL`/`OPEN`/`DEFERRED` with the commit/branch.
+4. ~~Land D-1 (empty topic catalog) and D-2 (placeholder rest-hook activator).~~ **DONE in `3d0945f`.** D-3 (pgxpool connect_timeout) and D-4 (typed adapter error) shipped in the same commit.
+5. **Land P1.5 matcher metrics.** In flight per `bd` #165. Without it, operators have zero visibility into matching throughput, slow topics, or fhirpath timeouts — production triage is impossible.
 
 ## How this doc stays current
 

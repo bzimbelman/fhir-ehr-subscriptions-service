@@ -99,21 +99,32 @@ type Match struct {
 // Evaluate is pure: no I/O, no allocations except the result slice and
 // the ICU folding buffers. Idempotent — calling twice on the same
 // (cat, row) returns the same set.
+//
+// Per-topic timing + match counters are reported through the package
+// MetricsEmitter (P1.5). The emitter is nil-safe.
 func Evaluate(cat *catalog.Catalog, row ResourceChange) []Match {
 	if cat == nil {
 		return nil
 	}
 	out := []Match{}
+	em := emitter()
 
 	candidates := cat.ByResourceType(row.ResourceType)
 	for _, t := range candidates {
-		if matchOneTopic(t, row) {
+		started := time.Now()
+		matched := matchOneTopic(t, row)
+		em.TopicEvaluated(t.CanonicalURL)
+		em.EvaluateDuration(t.CanonicalURL, time.Since(started).Seconds())
+		if matched {
+			em.TopicMatch(t.CanonicalURL)
 			out = append(out, buildMatch(t, row, "resource"))
 		}
 	}
 
 	if row.EventCode != "" {
 		for _, t := range cat.ByEventCode(row.EventCode) {
+			em.TopicEvaluated(t.CanonicalURL)
+			em.TopicMatch(t.CanonicalURL)
 			out = append(out, buildMatch(t, row, "event"))
 		}
 	}
@@ -898,6 +909,65 @@ func NewWorker(pool *pgxpool.Pool, rcs *repos.ResourceChangesRepo, ehr *repos.Eh
 	return &Worker{pool: pool, rcsRepo: rcs, ehrRepo: ehr, catalog: cp, cfg: cfg}
 }
 
+// MetricsEmitter is the host-supplied seam for the matcher metric set
+// specified by docs/low-level-design/topic-matcher.md §9 and ADR 0008
+// #10 (P1.5). Every method is nil-safe — production wiring registers a
+// concrete emitter at startup; tests can leave it nil and rely on the
+// default no-op. The matcher worker calls these on the hot path; the
+// host wires them to fhir_subs_matcher_* Prometheus metrics.
+type MetricsEmitter interface {
+	// ResourceChangeClaimed bumps {outcome} ∈ {processed, deferred, error}.
+	ResourceChangeClaimed(outcome string)
+	// TopicEvaluated is a per-topic counter for the number of
+	// resource_changes evaluated against this topic. The label cap on
+	// topic_id is bounded by the catalog (closed set per deployment).
+	TopicEvaluated(topicID string)
+	// TopicMatch is bumped when a topic produced a match. Same label
+	// cardinality as TopicEvaluated.
+	TopicMatch(topicID string)
+	// FHIRPathTimeout is bumped when a FHIRPath expression fails closed
+	// because of timeout (or any sandbox limit). Per-topic so operators
+	// can locate the offending topic.
+	FHIRPathTimeout(topicID string)
+	// EvaluateDuration observes the wall-clock duration of one full
+	// Evaluate call (all triggers + fhirpath) for one row, per topic.
+	EvaluateDuration(topicID string, seconds float64)
+	// EhrEventEmitted is bumped once per ehr_events insert. No labels —
+	// throughput-aggregate.
+	EhrEventEmitted()
+}
+
+// nopMetrics is the default zero-allocation no-op emitter.
+type nopMetrics struct{}
+
+func (nopMetrics) ResourceChangeClaimed(string)     {}
+func (nopMetrics) TopicEvaluated(string)            {}
+func (nopMetrics) TopicMatch(string)                {}
+func (nopMetrics) FHIRPathTimeout(string)           {}
+func (nopMetrics) EvaluateDuration(string, float64) {}
+func (nopMetrics) EhrEventEmitted()                 {}
+
+// metricsEmitter is the process-global emitter. Wiring installs once at
+// startup; the matcher reads via load on the hot path.
+var metricsEmitter atomic.Pointer[MetricsEmitter]
+
+// SetMetricsEmitter installs the matcher metrics emitter (P1.5). Pass
+// nil to clear (tests).
+func SetMetricsEmitter(em MetricsEmitter) {
+	if em == nil {
+		metricsEmitter.Store(nil)
+		return
+	}
+	metricsEmitter.Store(&em)
+}
+
+func emitter() MetricsEmitter {
+	if p := metricsEmitter.Load(); p != nil {
+		return *p
+	}
+	return nopMetrics{}
+}
+
 // backoffReporter is the optional sampler the wiring layer can install
 // so it can publish `matcher_backoff_seconds` to the metrics layer
 // (N-1). Kept as a function pointer to avoid a metrics-package
@@ -974,9 +1044,11 @@ func (w *Worker) TickOnce(ctx context.Context) (bool, error) {
 
 func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	cat := w.catalog()
+	em := emitter()
 
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		em.ResourceChangeClaimed("error")
 		return false, fmt.Errorf("matcher: begin tx: %w", err)
 	}
 	// txDone is set when the deferred rollback would be redundant —
@@ -992,11 +1064,13 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 
 	rows, err := w.rcsRepo.ClaimUnprocessed(ctx, tx, w.cfg.ClaimBatchSize)
 	if err != nil {
+		em.ResourceChangeClaimed("error")
 		return false, fmt.Errorf("matcher: claim: %w", err)
 	}
 	if len(rows) == 0 {
 		_ = tx.Rollback(ctx)
 		txDone = true
+		em.ResourceChangeClaimed("deferred")
 		return false, nil
 	}
 
@@ -1029,17 +1103,22 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 			ResourceChangeID:      m.ResourceChangeID,
 		})
 		if err != nil {
+			em.ResourceChangeClaimed("error")
 			return false, fmt.Errorf("matcher: insert ehr_events: %w", err)
 		}
+		em.EhrEventEmitted()
 	}
 
 	if _, err := w.rcsRepo.MarkProcessed(ctx, tx, row.ID, row.CreatedMonth); err != nil {
+		em.ResourceChangeClaimed("error")
 		return false, fmt.Errorf("matcher: mark processed: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		em.ResourceChangeClaimed("error")
 		return false, fmt.Errorf("matcher: commit: %w", err)
 	}
 	txDone = true
+	em.ResourceChangeClaimed("processed")
 	return true, nil
 }

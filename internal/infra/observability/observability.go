@@ -38,6 +38,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/metrics"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
 )
 
 // MetricsConfig is the metrics-layer config block.
@@ -150,6 +151,31 @@ type ObservabilityModule struct {
 	auditSink *fileSink // non-nil only when Sink == "file"; lifecycle owns Close
 }
 
+// matcherEmitterAdapter forwards matcher.MetricsEmitter calls into the
+// observability inventory (P1.5).
+type matcherEmitterAdapter struct {
+	inv *metrics.Inventory
+}
+
+func (a *matcherEmitterAdapter) ResourceChangeClaimed(outcome string) {
+	a.inv.MatcherResourceChangesClaimedTotal.Inc(prometheus.Labels{"outcome": outcome})
+}
+func (a *matcherEmitterAdapter) TopicEvaluated(t string) {
+	a.inv.MatcherTopicsEvaluatedTotal.Inc(prometheus.Labels{"topic_id": t})
+}
+func (a *matcherEmitterAdapter) TopicMatch(t string) {
+	a.inv.MatcherTopicMatchTotal.Inc(prometheus.Labels{"topic_id": t})
+}
+func (a *matcherEmitterAdapter) FHIRPathTimeout(t string) {
+	a.inv.MatcherFHIRPathTimeoutsTotal.Inc(prometheus.Labels{"topic_id": t})
+}
+func (a *matcherEmitterAdapter) EvaluateDuration(t string, seconds float64) {
+	a.inv.MatcherEvaluateDurationSeconds.Observe(seconds, prometheus.Labels{"topic_id": t})
+}
+func (a *matcherEmitterAdapter) EhrEventEmitted() {
+	a.inv.MatcherEhrEventsEmittedTotal.Inc(nil)
+}
+
 // auditAdapter adapts the audit.Writer to the AuditWriter shape exposed
 // to other modules.
 type auditAdapter struct {
@@ -190,6 +216,18 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 	// the correct counter handle.
 	repos.SetDeadLetterReporter(func(reason string) {
 		inv.DeadLettersTotal.Inc(prometheus.Labels{"reason": reason})
+	})
+	// Matcher metrics (P1.5).
+	matcher.SetMetricsEmitter(&matcherEmitterAdapter{inv: inv})
+	// FHIRPath fail-closed → fhir_subs_matcher_fhirpath_timeouts_total.
+	// The matcher classifies any unrecognized expression as a sandbox
+	// failure pending the real evaluator (P1.2); the metric tracks all
+	// fail-closed evaluations so operators can spot misconfigured topics.
+	matcher.SetUnknownFHIRPathReporter(func(_ string) {
+		// We don't have the topic ID at the call site; emit with a
+		// constant "unknown" label until P1.2 lands the proper sandbox
+		// (which will know which topic owns the expression).
+		inv.MatcherFHIRPathTimeoutsTotal.Inc(prometheus.Labels{"topic_id": "_unknown"})
 	})
 
 	// 2. Tracing.
@@ -278,6 +316,9 @@ func (m *ObservabilityModule) Shutdown(ctx context.Context) error {
 	// installs its own handle without pointing at the prior process's
 	// inventory (P1.12).
 	repos.SetDeadLetterReporter(nil)
+	// Clear the matcher emitter and FHIRPath reporter (P1.5).
+	matcher.SetMetricsEmitter(nil)
+	matcher.SetUnknownFHIRPathReporter(nil)
 	var firstErr error
 	if m.tracer != nil {
 		if err := m.tracer.Shutdown(ctx); err != nil {

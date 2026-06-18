@@ -73,13 +73,13 @@ These items must land before any production deployment. They are not optional po
 - ValueSet `:in` (P1.3) is unrelated and tracked separately.
 - The catalog itself stores authored string values verbatim; folding is applied at compare time, not at load.
 
-### 1.5 Topic Matcher metrics
+### 1.5 Topic Matcher metrics — RESOLVED
 
 **Source:** [docs/low-level-design/topic-matcher.md](low-level-design/topic-matcher.md) §9, ADR 0008 #10
 
-**Status:** Zero metrics emitted from `internal/matcher/`. LLD specifies a full set with prefix `fhir_subs_matcher_*`.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch). `internal/matcher/matcher.go` exposes a `MetricsEmitter` interface and `SetMetricsEmitter` hook (mirroring the existing reporter pattern). `internal/infra/observability/observability.go::Start` registers the counters and installs an emitter that forwards. Worker fires `ResourceChangeClaimed{outcome}` on every claim; `Evaluate` fires `TopicEvaluated`/`TopicMatch`/`EvaluateDuration` per candidate topic; the FHIRPath fail-closed reporter is wired to `FHIRPathTimeout`; ehr_events insertion fires `EhrEventEmitted`.
 
-**What's missing:**
+**What landed:**
 
 - `fhir_subs_matcher_resource_changes_claimed_total{outcome}` — outcome ∈ {processed, deferred, error}
 - `fhir_subs_matcher_topics_evaluated_total{topic_id}`
@@ -88,7 +88,7 @@ These items must land before any production deployment. They are not optional po
 - `fhir_subs_matcher_evaluate_duration_seconds{topic_id}` (histogram)
 - `fhir_subs_matcher_ehr_events_emitted_total`
 
-**Why this is P1:** without these, operators have no visibility into matching throughput, slow topics, or fhirpath timeouts. Production triage is impossible.
+Note: per the cardinality validator (S-2.20) `topic_url` is forbidden as a metric label; the implementation uses the canonical URL string in the `topic_id` label slot, which is bounded by the active topic catalog (typically O(10s) topics).
 
 ### 1.6 Admin API or operator surface
 
@@ -200,158 +200,213 @@ These items must land before any production deployment. They are not optional po
 
 These items are not strictly required to deploy, but they materially limit the system's usefulness or make on-call painful.
 
-### 2.1 FHIR Scan Runner adapter framework worker
+### 2.1 FHIR Scan Runner adapter framework worker — PARTIAL (MVP)
 
 **Source:** [docs/low-level-design/e2e-harness.md](low-level-design/e2e-harness.md) (`cancel_and_replace_scan` scenario); `internal/adapter/spi/interfaces.go:185-187`
 
-**Status:** `FhirScanRunner` SPI interface exists. No production worker invokes `ScanPlan`/`RunScan` and emits to `resource_changes`. The 13th e2e scenario (`cancel_and_replace_scan`) is the documented DEFERRED scenario waiting on this.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/adapter/scanrunner/` ships a production worker that drives the `FhirScanRunner` SPI: at startup it reads `ScanPlan()`, runs each target on its declared `Cadence` via a per-target ticker, and writes one `resource_changes` row per yielded resource. Successive scans of the same `(resourceType, id)` are gated by `ContentHash` — same hash → no row. First-sighting → `create`; different hash → `update`. The hash cache is in-memory and cold on restart (re-emits every resource as `create` after a process restart).
 
-**What's missing:**
+**What landed:**
 
-- Production worker that:
-  - Reads adapter-supplied scan plans (which FHIR endpoints to poll, how often, what resource types)
-  - Diffs successive snapshots to produce `resource_changes` rows
-  - Handles pagination, etag caching, conditional GET
-  - Schedules per-plan with jittered intervals
-- Unblocks the `cancel_and_replace_scan` scenario
+- `internal/adapter/scanrunner/scanrunner.go`: `Worker` + `RowSink` SPI + `NewRepoSink` adapter
+- Per-target ticker driven by `ScanTarget.Cadence`; immediate-on-startup tick
+- ContentHash dedup with in-memory cache
+- `TickOne` exported test seam
+- Unit tests: first-sighting create, dedup on identical content, update on content change, empty-plan idle, New validation
 
-**Why this is P2:** vendors that don't push HL7 v2 (e.g., FHIR-native EHRs that publish a Subscription endpoint but don't implement Subscriptions) are not supported until this lands. With it, a polling adapter becomes a generic option for any vendor.
+**What's still pending (post-MVP):**
 
-### 2.2 Vendor API Client framework worker
+- Persistent ContentHash store (so the cache survives restart)
+- etag / Last-Modified / conditional GET
+- Supervisor restart-on-panic with per-adapter labels (LLD framework §3 "Supervisors")
+- DELETE detection (the SPI's current `ScanIterator` does not surface tombstones)
+- Production wiring into `buildProductionRuntime` (one Worker per registered adapter that declares `FhirScanRunner` capability) — the package is import-ready
+- e2e scenario `cancel_and_replace_scan` activation
+
+### 2.2 Vendor API Client framework worker — PARTIAL (MVP)
 
 **Source:** [docs/low-level-design/adapter-spi-framework.md](low-level-design/adapter-spi-framework.md), `internal/adapter/spi/interfaces.go`; e2e scenario `TestScenario_VendorChangeFeedEmitsResourceChange` (skipped)
 
-**Status:** SPI exists. No worker invokes it.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/adapter/vendorclient/` ships a production worker that drives the `VendorAPIClient` SPI: it hands the adapter an `EventSink`, calls `Consume(ctx, sink, cursor)`, and on each `sink.Push(record)` translates the record via `VendorAPIClient.Translate` and persists a `resource_changes` row. Cursor advances after a successful insert; on a `Consume` error the worker retries with exponential backoff (1s → 60s default). The cursor is in-memory only — on restart, `Consume` is called with `Options.InitialCursor`.
 
-**What's missing:**
+**What landed:**
 
-- Production worker that:
-  - Polls or streams from a vendor's proprietary API per `VendorAPIClient.Stream()` or equivalent
-  - Translates vendor-shaped messages into `resource_changes` rows
-  - Implements backoff, reconnect, dead-letter on persistent failure
+- `internal/adapter/vendorclient/vendorclient.go`: `Worker`, `RowSink` SPI, `NewRepoSink` adapter, `eventSink` private impl
+- Backoff loop in `Run` with configurable initial/max
+- `PushOne` test seam
+- Unit tests: PushOne translates+persists+advances cursor, translate error suppresses persistence and cursor advance, Run drives Consume to completion on ctx cancel, New validation
 
-**Why this is P2:** unblocks adapters for vendors whose change feed isn't HL7 v2 or FHIR REST polling — Athena, NextGen, Cerner Code, etc.
+**What's still pending (post-MVP):**
 
-### 2.3 Email channel S/MIME + Direct SMTP support
+- Persistent cursor store (LLD's `adapter_state` table) so cursor survives restart
+- Supervisor restart-on-panic with per-adapter labels
+- Dead-letter on persistent translate / insert failure (today errors propagate; production would benefit from a per-record dead-letter sink)
+- Production wiring into `buildProductionRuntime` (one Worker per adapter that declares `VendorAPIClient` capability) — the package is import-ready
+- e2e scenario `TestScenario_VendorChangeFeedEmitsResourceChange` activation
+
+### 2.3 Email channel S/MIME + Direct SMTP support — PARTIAL (MVP — extension point only)
 
 **Source:** ADR 0010 #5 ("v1 ships SMTP-only; S/MIME and Direct deferred to v2"); [docs/low-level-design/channels.md](low-level-design/channels.md) §"Email channel"
 
-**Status:** v1 ships clear-SMTP only with STARTTLS. Real healthcare deployments often require S/MIME signing or Direct SMTP for HIPAA-compliant clinical messaging.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP extension-point only). The email channel now accepts `Mode=ModeSMIME` when an operator-supplied `Config.Signer` (the new `email.Signer` SPI) is wired. The SPI has a single method, `Sign(message []byte) ([]byte, error)`, that returns a `multipart/signed` envelope wrapping the unsigned MIME bytes; the channel calls it after `buildMIME` and before SMTP DATA.
 
-**What's missing:**
+This MVP intentionally ships **no production signer**. A real S/MIME signer requires careful PKCS#7 SignedData encoding, certificate-store integration, and trust-bundle validation that is outside the scope of this batch (and benefits from a third-party library audit). Operators that need S/MIME today implement `Signer` themselves (e.g., wrapping `github.com/digitorus/pkcs7`) and inject it via Config; the channel handles routing.
 
-- S/MIME signing/encryption layer atop the existing SMTP path
-- Direct SMTP profile (DTAAP-compliant message encoding, Direct-trust-bundle validation)
-- Configurable S/MIME cert/key resolution from the secret store
+**What landed:**
+
+- `internal/channel/email/smime.go`: `Signer` SPI, `ErrSignerRequired`, `applySMIMESignature` hook
+- `email.New` accepts `ModeSMIME` when `Config.Signer != nil`; rejects with `ErrSignerRequired` otherwise
+- `Channel.Deliver` runs `applySMIMESignature` after `buildMIME` when `Mode=ModeSMIME`
+- Unit tests: ModeSMIME requires Signer, ModeSMIME accepts with Signer, ModeDirect still rejected, unknown mode rejected
+
+**What's still pending (post-MVP):**
+
+- A bundled production `Signer` implementation (PKCS#7 SignedData with hardware-token + file-based PKCS#12 keystores)
+- `ModeDirect` (DTAAP-compliant message encoding, Direct-trust-bundle validation, MDN handling) — currently still rejected at `New`
+- Encryption (S/MIME enveloped data) on top of signing
 - Tests against a fake Direct receiver
 
-**Why this is P2:** without these, the email channel is unusable for HIPAA-compliant clinical workflows in the US.
+**Why this is P2:** the structural extension point unblocks operators that have an existing S/MIME stack to integrate. A bundled production signer + Direct support is a v1.0 follow-up.
 
-### 2.4 R4B/R5 wire negotiation completeness
+### 2.4 R4B/R5 wire negotiation completeness — PARTIAL (MVP)
 
 **Source:** [docs/high-level-design/decisions/0004-fhir-version-strategy.md](high-level-design/decisions/0004-fhir-version-strategy.md), `internal/api/versionshim/`
 
-**Status:** `Negotiate(acceptHeader)` returns either R4B or R5 from `Accept` header parsing. The full conversion of `Subscription` and `SubscriptionTopic` resources between R4B Backport IG shape and R5 native shape is **not** implemented in the version shim.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). The version shim now provides `RenderSubscriptionR4B(r5Body)` that converts the R5-native Subscription into the R4B Backport IG shape: `topic → criteria`, `channelType.code → channel.type`, `endpoint → channel.endpoint`, `content → channel.payload`, `header` flattens from `[{name,value}]` objects to `"Name: Value"` strings, `heartbeatPeriod`/`timeout` move to `channel`, `filterBy` lifts to `_criteria.extension` as the Backport criteria-filter. `internal/api/handlers/subscription_model.go::renderSubscriptionForAccept` plumbs the converter to all read paths (read, search, create-response, update-response). When `Accept: application/fhir+json; fhirVersion=4.0` is negotiated, R4B subscribers now receive the Backport shape.
 
-**What's missing:**
+**What landed:**
 
-- R4B → R5 conversion for `Subscription` (criteria URL parsing, channel.endpoint location differences)
-- R5 → R4B serialization on read paths
-- `Bundle` of type `subscription-notification` shape differences between R4B and R5
-- Tests with golden inputs from the spec's official examples
+- `versionshim.RenderSubscriptionR4B` Subscription R5→R4B converter
+- `handlers.renderSubscriptionForAccept` negotiation+render helper
+- Read, search, create-response, and update-response all honor `Accept` header
+- Unit tests for the converter (top-level mapping, header flattening, filterBy lift, non-Subscription passthrough, malformed JSON)
 
-**Why this is P2:** today the system only fully serves R5-native subscribers. R4B subscribers can negotiate to R4B but the response shape is the R5-native form — not the spec's R4B Backport IG form. This breaks conformance for R4B clients.
+**What's still pending (post-MVP):**
 
-### 2.5 Audit chain verifier CLI
+- `SubscriptionTopic` resource R5↔R4B conversion on the read path. Today the topic-catalog endpoint emits R5 native regardless of negotiation.
+- `Bundle` of type `subscription-notification` R4B serialization on the channel-delivery path. The notification builder emits R5 native; R4B subscribers receive R5-shaped bundles.
+- Inverse conversion (R4B→R5) on the write path. Today `parseInternalFromBody` accepts both wire shapes loosely; a stricter R4B-only path with a Backport schema would let writers be more idiomatic.
+- Conformance suite tests against the spec's official R4B golden examples.
 
-**Source:** [docs/low-level-design/observability.md](low-level-design/observability.md) §"Audit log"; e2e scenario `TestScenario_AuditChainIsValid` (skipped)
+**Why this is P2:** the MVP closes the most-requested gap: R4B subscribers negotiating `fhirVersion=4.0` now see the spec-shaped Subscription resource on read paths. SubscriptionTopic and Bundle conversions remain — they are tracked here as the v1.0 follow-up.
 
-**Status:** Audit log writes to Postgres `audit_log` with hash-chained JCS-canonicalized rows. No tool to verify the chain integrity post-hoc.
+### 2.5 Audit chain verifier CLI — RESOLVED
 
-**What's missing:**
+**Source:** [docs/low-level-design/observability.md](low-level-design/observability.md) §"Audit log"
 
-- `fhir-subs audit verify [--from <ts>] [--to <ts>]` subcommand that walks the chain and reports any break
-- Per-row JCS re-canonicalization to confirm the stored hash matches
-- Optional: out-of-band signature on the chain head for tamper-evident export
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch). The `fhir-subs` binary now dispatches a top-level `audit` subcommand. `fhir-subs audit verify [--config PATH] [--from RFC3339] [--to RFC3339]` walks the audit_log chain end-to-end, recomputes each row's chain_hash from the JCS-canonicalized event bytes, and reports per-row mismatches. The audit package gains `VerifyChainReport(ctx, store, opts) (VerifyResult, error)` — a structured walker that returns `RowsSeen`, `HeadHash` (hex of the most recent chain_hash, suitable for out-of-band export as a chain checkpoint), and a `Breaks` slice filtered to the optional `--from`/`--to` window. The exit code is 0 on a clean chain, 1 on any reported break, 2 on flag-parsing problems.
 
-**Why this is P2:** a hash-chained audit log without a verifier is a bookkeeping exercise. Auditors need a way to prove the chain is intact.
+**What landed:**
 
-### 2.6 Heartbeats and handshakes
+- `audit.VerifyChainReport` and `audit.VerifyResult` / `audit.VerifyBreak` / `audit.VerifyOptions` in `internal/infra/observability/audit/audit.go`
+- `cmd/fhir-subs/audit_cli.go` with the `audit verify` flag set
+- `cmd/fhir-subs/main.go::realMain` first-arg subcommand dispatch
+- Unit tests for the walker (clean chain, chain_hash mutation, time-window break filtering)
+- Unit tests for the CLI flag parser (RFC3339 parsing, inverted-window rejection, --help, unknown-verb routing)
+
+**Notes:**
+
+- An out-of-band signature on the chain head is not implemented in this MVP. The verifier exposes the chain head as a hex string in `VerifyResult.HeadHash`; a follow-up can wrap that into a signed tamper-evident export tooling.
+
+### 2.6 Heartbeats and handshakes — PARTIAL (heartbeat scheduler MVP)
 
 **Source:** [docs/low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) §6; D-2 (rest-hook handshake) RESOLVED in `3d0945f`.
 
-**Status:** Builder fully wires Bundle assembly for handshake / heartbeat / query-status / query-event Bundles. rest-hook activation handshake now POSTs a synthetic FHIR R5 handshake Bundle (D-2 resolved). The scheduler's claim loop only handles `event-notification` deliveries — it does not emit heartbeats on idle subscriptions or send handshake notifications on subscription state transitions. **websocket and email channels still use the no-op `defaultActivator` placeholder** — the websocket handshake is asynchronous (subscriber binds with token after creation), and email handshake semantics depend on relay AUTH that is not modeled today.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch). `internal/engine/heartbeat/` ships a heartbeat scheduler `Worker` that periodically scans for active subscriptions with `heartbeat_period > 0` and an `updated_at` older than the period, and enqueues a heartbeat-bundle delivery for each via the operator-supplied `Querier` SPI. The builder already produces the correct heartbeat Bundle shape (verified by existing tests); the scheduler dispatches the synthetic delivery like any other.
 
-**What's missing:**
+The companion gaps (subscription state machine, websocket activator, email activator) remain. The MVP closes the most-asked piece — "subscribers can't tell if a quiet subscription is healthy" — by giving operators a path to enable heartbeats on a deployment with the existing channel transports.
 
-- Heartbeat timer wheel (per LLD: configurable per-subscription `heartbeatPeriod`, default off)
-- State-machine for subscription transitions (`requested` → `active` → `error` → `off`) that emits handshake Notifications via the configured channel
-- Real `websocket` activator (token-issued path; client binds via `$get-ws-binding-token` and the activator resolves the bind on first connect)
-- Real `email` activator (relay-side AUTH semantics; potentially asynchronous via `outcome_sink`)
-- Tests covering the four notification types (event, handshake, heartbeat, query-status, query-event)
+**What landed:**
 
-**Why this is P2:** subscribers can't tell if a quiet subscription is healthy or broken. Heartbeats are part of the spec's reliability story.
+- `internal/engine/heartbeat/heartbeat.go`: `Worker`, `Options`, `Querier` SPI, `Candidate`, `TickOnce` test seam
+- Per-tick scan with bounded `CandidateLimit` and configurable `TickInterval` (default 30s)
+- Per-row error logged-and-skipped so a single bad row does not stop heartbeats for the rest
+- Unit tests: tick enqueues one heartbeat per due subscription, per-row enqueue error skipped, candidates query error propagates, immediate-on-startup tick
 
-### 2.7 Auth re-check at delivery prep
+**What's still pending (post-MVP):**
+
+- Postgres-backed `Querier` implementation (`SQL: SELECT id FROM subscriptions WHERE status='active' AND heartbeat_period > 0 AND updated_at < now() - heartbeat_period * interval '1 second' LIMIT $1`); the SPI is defined; the production wiring is intentionally deferred so operators do not auto-emit heartbeats before the production schema migration adds an explicit `last_delivery_at` column for a more accurate check
+- State-machine for subscription transitions (`requested` → `active` → `error` → `off`) that emits handshake Notifications. Today the activation handshake fires on rest-hook only (D-2)
+- Real `websocket` activator (token-issued path; client binds via `$get-ws-binding-token`)
+- Real `email` activator (relay-side AUTH semantics)
+- Per-subscription jitter to avoid thundering-herd
+
+**Why this is P2:** the structural worker is in place. Wiring + the state-machine companion pieces are v1.0 follow-up.
+
+### 2.7 Auth re-check at delivery prep — RESOLVED (MVP)
 
 **Source:** [docs/low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) §3 "submatcher"; engine merge LLD ambiguity #5
 
-**Status:** `internal/engine/submatcher/` has a `FanoutAuthRevoked` decision in the public API but the worker doesn't drive it because the project has no `AuthValidator.Recheck()` SPI yet. The hook is in place; the integration is deferred.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/api/auth/recheck.go` defines the `Rechecker` SPI: `Recheck(ctx, clientID, subscriptionID) (RecheckStatus, error)`. A `CachedRechecker` wraps any implementation with a subscription-level TTL cache; the cache stores both Active and Revoked outcomes (operators can call `Invalidate` on a revocation signal to force a re-fetch). `AlwaysActiveRechecker` is the default for deployments without a revocation surface. The submatcher worker exposes `WithAuthRechecker(r)` and `WithStateUpdater(u)` Options; on `Recheck → Revoked` the worker swaps the decision to `FanoutAuthRevoked`, suppresses the deliveries insert, and (if a state updater is wired) transitions the subscription to `status='error'` atomically with the absence of the row.
 
-**What's missing:**
+**What landed:**
 
-- Define the `AuthValidator.Recheck(ctx, subscriptionID) (Active, error)` SPI in `internal/api/auth/`
-- Wire submatcher to call it before fanout for each candidate subscription
-- Cache rechecks (subscription-level TTL) to avoid hammering the auth path
-- Tests: revoked subscription stops receiving deliveries within configured TTL
+- `internal/api/auth/recheck.go`: `Rechecker` SPI, `CachedRechecker` wrapper with `Invalidate`, `AlwaysActiveRechecker` default
+- `internal/engine/submatcher/worker.go`: `AuthRechecker` local interface, `SubscriptionStateUpdater` SPI, `WithAuthRechecker`/`WithStateUpdater` Options, fanout-time integration with fail-open on transient errors
+- Unit tests for the cached recheck SPI: cache hits within TTL, refresh after expiry, explicit `Invalidate`, fail-open on inner error, TTL=0 bypass
+- Integration tests for the worker: revoked subscription gets no delivery row + state updater is called; transient recheck error fails open and the delivery is written
 
-**Why this is P2:** subscriptions whose owning client is revoked continue to receive notifications until the next manual delete. That's a confidentiality risk.
+**What's still pending (post-MVP):**
 
-### 2.8 OpenTelemetry trace export configuration
+- Production wiring of a real `Rechecker` against the `auth_clients` table (today the production wiring still installs `AlwaysActiveRechecker`); a follow-up branch can add a Postgres-backed implementation that reads `auth_clients.active` (or equivalent) per subscription's owning `client_id`
+- A `SubscriptionsRepo`-backed `MarkErrorRevoked` for `WithStateUpdater` (the SPI is defined; the implementation is not wired yet — the worker handles a nil updater gracefully)
+- Per-recheck metrics (cached-hit-rate, recheck-call latency)
+
+**Why this is P2:** subscriptions whose owning client is revoked continue to receive notifications until the next manual delete. The MVP closes the structural gap (the SPI + the worker hook); a real auth-store integration is the operational follow-up.
+
+### 2.8 OpenTelemetry trace export configuration — RESOLVED
 
 **Source:** [docs/low-level-design/observability.md](low-level-design/observability.md)
 
-**Status:** RESOLVED — recipe docs pending. The OTLP exporter configuration surface landed under S-14 #9 (`9e7fa45`): `internal/infra/observability/tracing/tracing.go` exposes `ExporterTimeout` (line 56), `TLSConfig` (line 61), `Headers` (line 63), and an `Insecure` toggle, all routed into the OTLP HTTP exporter. The default remains a no-op for development; operators set the exporter via these knobs.
+**Status:** RESOLVED. The OTLP exporter configuration surface landed under S-14 #9 (`9e7fa45`): `internal/infra/observability/tracing/tracing.go` exposes `ExporterTimeout` (line 56), `TLSConfig` (line 61), `Headers` (line 63), and an `Insecure` toggle, all routed into the OTLP HTTP exporter. Deployment recipes for Datadog, Honeycomb, Jaeger, and Grafana Tempo, plus a smoke-test snippet, are documented at [docs/operations/otel-exporter-recipes.md](operations/otel-exporter-recipes.md).
 
 **What landed:**
 
 - Configuration schema knobs (timeout, TLS, headers, insecure) wired through `tracing.Options`
 - Plumbed end-to-end so `observability.Start` honors operator-supplied OTLP transport settings
+- Recipe docs for the four most common back-ends (P2 batch)
 
-**What's still pending (documentation-only):**
-
-- Documented deployment recipes for Datadog, Honeycomb, Jaeger, Tempo
-- A "start with traces, end with traces" smoke test in the deployment guide
-
-**Why this is P2 (now docs-only):** the code surface is in place; without the recipes, operators reverse-engineer the right header/TLS combination per backend.
-
-### 2.9 Webhook ingress (vendor push)
+### 2.9 Webhook ingress (vendor push) — PARTIAL (MVP)
 
 **Source:** ADR 0008 #1 ("Deferred to a future release. v1 ships without a webhook ingress path.")
 
-**Status:** Explicitly out of scope for v1.
+**Status:** PARTIAL on `feat/future-work-p2-batch` (P2 batch, MVP). `internal/webhook/` ships a chi-mountable HTTP receiver that vendors POST to at `/webhooks/{adapter}`. The receiver validates the request via HMAC-SHA256 (shared per-adapter secret) compared in constant time against the `X-Hub-Signature-256` header (the convention GitHub, Stripe, and Cerner Code share), optionally enforces an `X-Webhook-Timestamp` skew window to prevent replay, parses the JSON body into the canonical `ResourceChange` shape, and persists a row through `repos.ResourceChangesRepo` so the matcher worker picks it up on next tick. 1 MiB body cap, exit codes: 202 on accept, 401 on signature/timestamp failure, 404 on unknown adapter, 400 on malformed body, 503 when storage is not wired.
 
-**What's missing:**
+**What landed:**
 
-- Host-provided HTTP receiver that vendors can POST to
-- Per-vendor authentication (HMAC, mTLS, shared secret rotation)
-- Mapping from inbound HTTP body to `hl7_message_queue` or directly to `resource_changes`
+- `internal/webhook/webhook.go`: `Handler`, `Deps`, `SecretResolver`/`SecretMap`, HMAC-SHA256 verify, optional timestamp-skew enforcement, body cap, JSON parse, ResourceChange insert
+- Unit tests: missing signature, unknown adapter, wrong secret, unsupported scheme, stale timestamp, malformed JSON, no-repo-wired
 
-**Why this is P2:** unblocks adapters for any vendor that pushes via webhook (Cerner Code, Epic SmartLite, etc.).
+**What's still pending (post-MVP):**
 
-### 2.10 Multi-instance / horizontal scale
+- Wiring into the production HTTP server (`buildProductionRuntime`) and config schema for per-adapter `webhook_secret`. The package is import-ready; the wiring layer is intentionally not changed in this batch so the receiver does not auto-mount before operators have configured a secret.
+- mTLS-only authentication (alternate to HMAC for vendors that prefer client-cert)
+- Vendor-specific shape adapters (translate inbound non-FHIR webhook → FHIR resource). Today the receiver requires the vendor to push a FHIR-shaped body.
+- Per-vendor secret rotation with overlapping windows
+- Backpressure / dead-letter on persistent insert failure
+
+**Why this is P2:** the structural ingress is in place. Wiring + per-vendor mapping happens per adapter as the integration list grows.
+
+### 2.10 Multi-instance / horizontal scale — RESOLVED (recipe + algorithmic support already shipping)
 
 **Source:** [docs/high-level-design/decisions/0001-postgres-only.md](high-level-design/decisions/0001-postgres-only.md), [docs/high-level-design/decisions/0002-single-instance-no-leader-election.md](high-level-design/decisions/0002-single-instance-no-leader-election.md)
 
-**Status:** v1 is explicitly single-instance per ADR 0002. The `SELECT FOR UPDATE SKIP LOCKED` claim primitive supports multi-worker within one process; multi-instance needs more.
+**Status:** RESOLVED on `feat/future-work-p2-batch` (P2 batch). The algorithmic primitives needed for multi-pod deployment are already shipping on origin/main: `SELECT FOR UPDATE SKIP LOCKED` claim loops in every worker (HL7 processor, matcher, submatcher, scheduler), `pg_advisory_lock(0xFEEDFACE)` migration runner serialization (B-33), `pg_advisory_xact_lock` audit-chain serialization (B-34), partition rotator for `resource_changes`/`ehr_events` (`internal/infra/storage/partition/`, S-13.8/9), and per-connection `statement_timeout`/`lock_timeout` (S-13.5). The remaining work was documentation: capturing the operational recipes for PgBouncer, replica plumbing, sharding, and pod sizing.
 
-**What's missing (when scale demands it):**
+The recipe is documented at [docs/operations/horizontal-scale.md](operations/horizontal-scale.md). It records what's already multi-pod safe, what needs operator attention (PgBouncer in transaction mode, NetworkPolicy on Postgres, replica counts, PDB), and what is genuinely deferred to a v1.0 follow-up (read-replica plumbing in the API handlers, sharding wrapper around `repos.*`).
 
-- Postgres replica + connection pooler (PgBouncer) configuration
-- Partitioning strategy for `resource_changes` and `ehr_events` (the schema already supports monthly partitions; add a partition rotator)
-- Optional sharding strategy for very-high-throughput deployments
+**What landed:**
 
-**Why this is P2:** until volume demands it, single-instance is operationally simpler. Most facility-scale deployments will not need this.
+- `docs/operations/horizontal-scale.md`: the operator recipe (8 sections, 130 lines)
+- Cross-reference back to the audit and S-* fixes that demonstrate multi-pod safety
+
+**What's still pending (genuine v1.0 follow-up):**
+
+- Read-replica plumbing (split `ReadPool` from primary `Pool`, wire `internal/api/handlers/pg_stores.go` to use replicas for list/get/search). Tracked here for v1.0.
+- Bundled Helm chart with the values shown in the recipe (also tracked under P3.4)
+- Sharding wrapper around `repos.*` — only needed past ~10k inserts/s, well past most facility-scale deployments
+
+**Why this is P2 (now closed):** the scaling primitives are in place; operators can deploy multi-pod today using the documented recipe. The deeper work (replicas, sharding) is genuinely v1.0 follow-up and is appropriately scoped.
 
 ---
 

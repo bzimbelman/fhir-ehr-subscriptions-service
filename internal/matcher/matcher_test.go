@@ -323,6 +323,73 @@ func TestEvaluateNotModifierIsICUFolded(t *testing.T) {
 	}
 }
 
+// P1.5: Evaluate emits per-topic metrics through the host emitter.
+// TopicEvaluated fires for every candidate topic; TopicMatch only when
+// it fires; EvaluateDuration always observes a non-negative duration.
+func TestEvaluateEmitsPerTopicMetrics(t *testing.T) {
+	cat := loadCatalog(t, orderChangedTopic)
+
+	em := &fakeMatcherMetrics{}
+	matcher.SetMetricsEmitter(em)
+	t.Cleanup(func() { matcher.SetMetricsEmitter(nil) })
+
+	row := matcher.ResourceChange{
+		ResourceType:     "ServiceRequest",
+		ChangeKind:       "update",
+		Resource:         []byte(`{"resourceType":"ServiceRequest","id":"a","status":"active"}`),
+		PreviousResource: []byte(`{"resourceType":"ServiceRequest","id":"a","status":"draft"}`),
+	}
+	matches := matcher.Evaluate(cat, row)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 match")
+	}
+	if em.evaluated["http://example.org/topics/order-changed"] != 1 {
+		t.Errorf("topic_evaluated not fired: %#v", em.evaluated)
+	}
+	if em.matched["http://example.org/topics/order-changed"] != 1 {
+		t.Errorf("topic_match not fired: %#v", em.matched)
+	}
+	if em.durations < 1 {
+		t.Errorf("evaluate_duration not observed: %d", em.durations)
+	}
+}
+
+type fakeMatcherMetrics struct {
+	evaluated map[string]int
+	matched   map[string]int
+	timeouts  map[string]int
+	claimed   map[string]int
+	emitted   int
+	durations int
+}
+
+func (f *fakeMatcherMetrics) ResourceChangeClaimed(outcome string) {
+	if f.claimed == nil {
+		f.claimed = map[string]int{}
+	}
+	f.claimed[outcome]++
+}
+func (f *fakeMatcherMetrics) TopicEvaluated(t string) {
+	if f.evaluated == nil {
+		f.evaluated = map[string]int{}
+	}
+	f.evaluated[t]++
+}
+func (f *fakeMatcherMetrics) TopicMatch(t string) {
+	if f.matched == nil {
+		f.matched = map[string]int{}
+	}
+	f.matched[t]++
+}
+func (f *fakeMatcherMetrics) FHIRPathTimeout(t string) {
+	if f.timeouts == nil {
+		f.timeouts = map[string]int{}
+	}
+	f.timeouts[t]++
+}
+func (f *fakeMatcherMetrics) EvaluateDuration(string, float64) { f.durations++ }
+func (f *fakeMatcherMetrics) EhrEventEmitted()                 { f.emitted++ }
+
 // MatchResult is what the package returns per matched topic. The test
 // asserts on TopicURL above; the rest of the row is built by the
 // caller from the source ResourceChange.

@@ -186,6 +186,17 @@ type Config struct {
 	Metrics channel.MetricsEmitter
 	// Logger is the structured logger. nil falls back to slog.Default().
 	Logger *slog.Logger
+
+	// Signer wraps the unsigned MIME message in an S/MIME envelope
+	// (multipart/signed with a detached PKCS#7 signature) when
+	// Mode=ModeSMIME (P2.3 MVP). A non-nil Signer is REQUIRED for
+	// Mode=ModeSMIME; New rejects ModeSMIME with a nil Signer at
+	// startup so operators discover the misconfiguration immediately.
+	//
+	// The concrete implementation is operator-supplied; this package
+	// ships no production signer in the v1.0 MVP. See
+	// docs/future-work.md P2.3 for the deferral rationale.
+	Signer Signer
 }
 
 // Channel implements the email delivery channel. Construct with New;
@@ -206,8 +217,15 @@ func New(cfg Config) (*Channel, error) {
 	switch cfg.Mode {
 	case ModeSMTP:
 		// ok
-	case ModeSMIME, ModeDirect:
-		return nil, fmt.Errorf("email: mode %q is not supported in v1; only %q is shipped (see ADR 0010 #5)", cfg.Mode, ModeSMTP)
+	case ModeSMIME:
+		// P2.3 MVP: ModeSMIME is allowed when an operator-supplied
+		// Signer is wired. The Signer SPI is defined; this package
+		// ships no production signer (see docs/future-work.md P2.3).
+		if cfg.Signer == nil {
+			return nil, ErrSignerRequired
+		}
+	case ModeDirect:
+		return nil, fmt.Errorf("email: mode %q is not supported in v1; only %q and %q are shipped (see ADR 0010 #5)", cfg.Mode, ModeSMTP, ModeSMIME)
 	default:
 		return nil, fmt.Errorf("email: unknown mode %q", cfg.Mode)
 	}
@@ -330,6 +348,17 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 	mimeBytes, err := c.buildMIME(env, rcpt)
 	if err != nil {
 		return channel.PermanentFailure(fmt.Sprintf("build mime: %v", err))
+	}
+
+	// P2.3: when S/MIME mode is configured, wrap the unsigned MIME
+	// in the multipart/signed envelope. ModeSMTP returns mimeBytes
+	// unchanged; ModeSMIME requires Config.Signer (validated at New).
+	if c.cfg.Mode == ModeSMIME {
+		signed, signErr := c.applySMIMESignature(mimeBytes)
+		if signErr != nil {
+			return channel.PermanentFailure(fmt.Sprintf("smime sign: %v", signErr))
+		}
+		mimeBytes = signed
 	}
 
 	attemptCtx, cancel := c.applyDeadline(ctx, env.Deadline)
