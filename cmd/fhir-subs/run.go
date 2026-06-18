@@ -16,21 +16,13 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 )
 
-// testForceCloseHook is a test seam: when non-nil, the shutdown path
-// calls it instead of srv.Close after the grace period is exhausted, so
-// tests can assert that a Close failure is logged (S-1.5). Production
-// builds leave this nil.
-var testForceCloseHook func() error
-
-// testShutdownErrHook is a test seam: when non-nil, runWithHooks treats
-// it as the result of srv.Shutdown so the grace-exhaustion / Close
-// branch can be exercised deterministically without timing tricks
-// (S-1.5).
-var testShutdownErrHook func() error
-
 // runHooks lets tests observe internal state transitions deterministically. In
 // production the hooks are nil. The hooks are intentionally minimal: enough to
 // drive the shutdown-window readiness assertion without freezing test time.
+//
+// The forceClose / shutdownErr hooks live on the struct rather than as
+// package-level globals so parallel tests in the same package don't race
+// each other reading and writing them.
 type runHooks struct {
 	// onListening fires after the HTTP server is bound and accepting traffic.
 	// addr is the actual bound address (matters when bind uses :0).
@@ -50,6 +42,13 @@ type runHooks struct {
 	// constructed. Tests use this to emit a probe record and assert the
 	// PHI-redacting handler is in the chain (S-1.4).
 	onLoggerReady func(lg *slog.Logger)
+	// forceClose, when non-nil, replaces srv.Close in the grace-exhaustion
+	// path so tests can assert the close error is logged (S-1.5).
+	forceClose func() error
+	// shutdownErr, when non-nil, replaces srv.Shutdown's return value so
+	// the grace-exhaustion / Close branch is exercised deterministically
+	// without timing tricks (S-1.5).
+	shutdownErr func() error
 }
 
 // run is the production entry point used by main(). It is a thin wrapper
@@ -192,8 +191,8 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	defer cancel()
 
 	shutdownErr := srv.Shutdown(shutdownCtx)
-	if testShutdownErrHook != nil {
-		shutdownErr = testShutdownErrHook()
+	if hooks.shutdownErr != nil {
+		shutdownErr = hooks.shutdownErr()
 	}
 	if shutdownErr != nil {
 		// On grace-period exhaustion srv.Shutdown returns context.DeadlineExceeded.
@@ -202,8 +201,8 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		// descriptor leaks during shutdown (S-1.5).
 		logger.Warn("graceful shutdown exceeded budget; forcing close", "err", shutdownErr.Error())
 		closeFn := srv.Close
-		if testForceCloseHook != nil {
-			closeFn = testForceCloseHook
+		if hooks.forceClose != nil {
+			closeFn = hooks.forceClose
 		}
 		if cErr := closeFn(); cErr != nil {
 			logger.Warn("force close failed", "err", cErr.Error())
