@@ -146,7 +146,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-12.6 | Builder sort non-deterministic on tie | RESOLVED | RESOLVED ✓ | d3fad44 | sort.SliceStable + ID tiebreaker |
 | audit | S-12.7 | Bundle/notificationEvent timestamps RFC3339 | RESOLVED | RESOLVED ✓ | d3fad44 | RFC3339Nano |
 | audit | S-12.8 | Handshake/heartbeat correlation_id non-deterministic | RESOLVED | RESOLVED ✓ | d3fad44 | deterministic v5 UUID |
-| audit | S-12.9 | fhir+xml rejection at builder, not API | DEFERRED | DEFERRED ✓ | — | belongs at subscription-create API path |
+| audit | S-12.9 | fhir+xml rejection at builder, not API | RESOLVED | RESOLVED ✓ | 8642b71 (story/57) | rejected at POST/PUT /Subscription with 400 OperationOutcome citing `fhir+xml`; builder hardcode kept as defense-in-depth |
 | audit | S-13.1 | AES-GCM rotation cadence undocumented | RESOLVED | RESOLVED ✓ | c765c8e | NIST 2^32 limit doc'd |
 | audit | S-13.2 | Audit log no chained-append + prev-hash verify | RESOLVED | RESOLVED ✓ | c765c8e | AppendChained |
 | audit | S-13.3 | ListActiveByTopic no streaming/page variant | RESOLVED | RESOLVED ✓ | c765c8e | StreamActiveByTopic, ListActiveByTopicPage |

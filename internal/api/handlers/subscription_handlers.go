@@ -146,6 +146,60 @@ func parseEventNumberParam(raw string) (int64, bool) {
 	return n, true
 }
 
+// fhirXMLRejectionMessage is the diagnostics text returned when a
+// client requests `application/fhir+xml` on a Subscription. The string
+// is asserted by tests; keep `fhir+xml` substring intact and the
+// future-work pointer so a client knows where to track support.
+const fhirXMLRejectionMessage = "application/fhir+xml content type not supported in v1; see future-work P2 / docs/future-work.md"
+
+// requestsFHIRXML inspects the JSON body for content-type fields that
+// would route this subscription to an XML payload. It checks two
+// places (S-12.9):
+//
+//   - R5 native: top-level `contentType` field.
+//   - R4B Backport: `channel.payload` field. The R4B `payload` field
+//     traditionally carries the MIME type; the parser elsewhere maps
+//     known content codes (empty/id-only/full-resource) onto the
+//     content code, so a value of `application/fhir+xml` falls through
+//     parsing — we still need to reject it here.
+//
+// Returns true when any of those fields is `application/fhir+xml`
+// (case-insensitive, optional parameters tolerated). Body must be
+// schema-valid JSON; callers are expected to invoke this AFTER
+// schemas.ValidateSubscription so a malformed body has already been
+// rejected with a structure error.
+func requestsFHIRXML(body []byte) bool {
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return false
+	}
+	if isFHIRXMLContentType(stringField(doc, "contentType")) {
+		return true
+	}
+	if ch, ok := doc["channel"].(map[string]any); ok {
+		if isFHIRXMLContentType(stringField(ch, "payload")) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringField(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+// isFHIRXMLContentType reports whether s is a `application/fhir+xml`
+// MIME type, ignoring case, surrounding whitespace, and any
+// `;parameter=value` suffix.
+func isFHIRXMLContentType(s string) bool {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, ";"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return strings.EqualFold(s, "application/fhir+xml")
+}
+
 // capDiagnostic shortens diagnostics text so a pathological JSON body
 // can't push a multi-megabyte error message into the FHIR
 // OperationOutcome (S-2.3). limit of 0 means DefaultMaxSchemaErrorBytes.
@@ -187,6 +241,15 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
 			capDiagnostic(vErr.Error(), s.deps.MaxSchemaErrorBytes))
+		return
+	}
+	// S-12.9: reject `application/fhir+xml` here so the client gets
+	// immediate feedback. The builder still has a defense-in-depth
+	// guard for the same condition.
+	if requestsFHIRXML(body) {
+		s.recordValidationFailure("unsupported_content_type")
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeNotSupported,
+			fhirXMLRejectionMessage)
 		return
 	}
 	internal, parseErr := parseInternalFromBody(body)
@@ -586,6 +649,15 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	if vErr := schemas.ValidateSubscription(body); vErr != nil {
 		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, capDiagnostic(vErr.Error(), s.deps.MaxSchemaErrorBytes))
+		return
+	}
+	// S-12.9: reject `application/fhir+xml` on update too, so a client
+	// cannot sneak the bad content type in via PUT after creating with
+	// fhir+json.
+	if requestsFHIRXML(body) {
+		s.recordValidationFailure("unsupported_content_type")
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeNotSupported,
+			fhirXMLRejectionMessage)
 		return
 	}
 	newDoc, err := parseInternalFromBody(body)
