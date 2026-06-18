@@ -8,7 +8,55 @@ Methodology: line-by-line read of every production file across four parallel scr
 
 ## Summary
 
-Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system has a working backbone but is not yet a "drop in and run" production service — there are correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcodes `key_version=1` and breaks key rotation, retention sweeper that physically deletes hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination). Two whole package trees are empty (`internal/channels/*`, `internal/queue`, `internal/wakeup`, `internal/adapters/{defaults,epic}`, `internal/adapterspi`) — phantom abstractions that will mislead future contributors. Top concerns for an initial-run deployment: liveness/readiness wiring; key-version persistence in `pending_pairs`; deterministic JCS for the audit chain; default-deny instead of default-allow on subscriber-supplied headers and channel transports; resource caps on every accept-loop and read path.
+**Original audit (2026-06-18, commit `b624b7d`):** roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The original summary observation was that the system had a working backbone but was not yet a "drop in and run" production service — correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcoded `key_version=1` and broke key rotation, retention sweeper that physically deleted hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination).
+
+**Current state:** **0 BLOCKERs remaining**, **~70 SHOULD-FIX still open** (mostly unchanged from the original audit), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 is the sole exception: its lifecycle scaffolding is in place (B-1 / B-2 / B-3 wiring) but the full production binary still does not mount `handlers.RegisterRoutes`; it is tracked as PARTIALLY RESOLVED pending a follow-up that adds DB / codec / auth / channel / MLLP wiring under its own RED/GREEN cycle. Two whole package trees are still empty (`internal/channels/*`, `internal/queue`, `internal/wakeup`, `internal/adapters/{defaults,epic}`, `internal/adapterspi`) — phantom abstractions covered under SHOULD-FIX S-16. The remaining SHOULD-FIX work centers on hardening API edges (rate limits, body size knobs, pagination), tightening channel defaults (resthook header allowlist, websocket idle-timeout enforcement, message channel deterministic bundle), and reconciling the audit-chain canonicaliser with a real RFC 8785 (JCS) implementation.
+
+---
+
+## Resolution Status
+
+The original audit catalogued 35 BLOCKERs (B-1 through B-35). The table below records the disposition of each one against `main` as of 2026-06-18. Use the per-finding sections below the table for the full **what / why / fix / Resolution** detail; this table is the navigation aid.
+
+| ID | Title (abbreviated) | Status | Resolving commit(s) |
+|----|---------------------|--------|---------------------|
+| B-1 | `/readyz` always 503 in production entry point | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
+| B-2 | HTTP server missing Write / Idle / MaxHeaderBytes | RESOLVED | `35b2cea` (merged in `8096936`) |
+| B-3 | `markStartupComplete` fires before system is ready | RESOLVED | `35b2cea`, `192ab8e` (merged in `8096936`) |
+| B-4 | Production `run.go` never calls `handlers.RegisterRoutes` | PARTIALLY RESOLVED (scaffolding) | `192ab8e` (merged in `8096936`) — full API wiring deferred to a follow-up |
+| B-5 | `jwksCache` map race | RESOLVED | `168cc80` (merged in `0a771cf`) |
+| B-6 | Token endpoint missing body-size limit | RESOLVED | `7200625` (merged in `0a771cf`) |
+| B-7 | Missing `jti` silently accepted (replay bypass) | RESOLVED | `e788c0e` (merged in `0a771cf`) |
+| B-8 | Raw JWT parser error leaked in HTTP body | RESOLVED | `3e7de5e` (merged in `0a771cf`) |
+| B-9 | JTI cache eviction broken | RESOLVED | `aa7567f` (merged in `0a771cf`) |
+| B-10 | Fire-and-forget activation goroutines | RESOLVED | `a6e042f` (merged in `790c6a8`) |
+| B-11 | SSRF on subscriber endpoint URL | RESOLVED | `9689730` (merged in `790c6a8`) |
+| B-12 | JWKS fetch unauthenticated / no body cap | RESOLVED | `34d2196` (merged in `0a771cf`) |
+| B-13 | Audit log persists full request body | RESOLVED | `25dffba` (merged in `790c6a8`) |
+| B-14 | Email STARTTLS default `Preferred` | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
+| B-15 | SMTP PLAIN/LOGIN allowed over plaintext | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
+| B-16 | Email header injection via `CorrelationID` | RESOLVED | `a6a36aa` (merged in `d3f2a4b`) |
+| B-17 | WebSocket upgrade `InsecureSkipVerify=true` | RESOLVED | `a0360e4` (merged in `d3f2a4b`) |
+| B-18 | WebSocket ack-channel close-of-closed race | RESOLVED | `a0360e4` (merged in `d3f2a4b`) |
+| B-19 | MLLP listener missing connection caps | RESOLVED | `b8c1209` (merged in `d3f2a4b`) |
+| B-20 | MLLP listener missing TLS / mTLS | RESOLVED | `b8c1209` (merged in `d3f2a4b`) |
+| B-21 | HL7 processor decrypts with hardcoded key version | RESOLVED | `07d7be2` (cherry-pick of `6d0e5a2`) |
+| B-22 | `pending_pairs` migration omits `key_version` | RESOLVED | `07d7be2` (cherry-pick of `6d0e5a2`) |
+| B-23 | Matcher silently passes through unknown search params | RESOLVED | `3d80c7d` (cherry-pick of `04e2c36`, merged in `8096936`) |
+| B-24 | FHIRPath `runFHIRPath` defaults to fail-OPEN | RESOLVED | `51b8e53` (cherry-pick of `a1f4b12`, merged in `8096936`) |
+| B-25 | Topic catalog rejections do not fail startup | RESOLVED | `3d80c7d` (cherry-pick of `04e2c36`, merged in `8096936`) |
+| B-26 | `nextEventNumber` race | RESOLVED | `f600d42` (cherry-pick of `1ba1c45`) |
+| B-27 | Cursor monotonicity assumes deliveries never deleted | RESOLVED | `f600d42` (cherry-pick of `1ba1c45`) |
+| B-28 | Bundle JSON encoding nondeterministic | RESOLVED | `b76f1b0` (cherry-pick of `0b39e95`) |
+| B-29 | `CatalogProvider` swap not torn-read-safe | RESOLVED | `51b8e53` (cherry-pick of `a1f4b12`, merged in `8096936`) |
+| B-30 | High-cardinality MSH-9 label on MLLP nack metric | RESOLVED | `7e797f3` (merged in `f853619`) |
+| B-31 | Scheduler shutdown does not drain in-flight deliveries | RESOLVED | `5017364` |
+| B-32 | Retention sweeper SQL injection / audit-chain DELETE | RESOLVED | `e697162`, `52ed074` |
+| B-33 | Multi-pod migration race | RESOLVED | `52ed074` |
+| B-34 | Audit log file sink missing fsync; pgstore lock leak | RESOLVED | `ad6ddd2` (merged in `f853619`) |
+| B-35 | Secret rotation unreachable — SIGHUP not registered | RESOLVED | `3a81559` (merged in `f853619`) |
+
+Counts: 34 RESOLVED, 1 PARTIALLY RESOLVED (B-4), 0 open.
 
 ---
 
@@ -212,11 +260,12 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** Use `atomic.Pointer[catalog.Catalog]` inside provider impl; document contract on `CatalogProvider`.
 - **Resolution:** Commit `51b8e53` (cherry-pick `a1f4b12`). New `matcher.AtomicCatalogProvider` wraps an `atomic.Pointer[catalog.Catalog]`; `Get`/`Store` are race-free and `AsProvider()` returns a `CatalogProvider` closure ready for `NewWorker`. The `CatalogProvider` doc now documents the atomic-swap contract that callers (e.g., the harness's `topic_seed.go` mutex-guarded swap) must satisfy. Tests: `TestAtomicCatalogProviderRaceFree` (1000 swaps × 8 readers under `-race`) and `TestAtomicCatalogProviderUsableAsCatalogProvider` (`internal/matcher/correctness_test.go`); e2e `TestMatcher_catalogHotReloadRace` (`e2e/orchestrator/matcher_catalog_hot_reload_race_test.go`). Whole-repo `go test -race ./...` passes.
 
-#### B-30: High-cardinality MSH-9 label on MLLP nack metric — Prometheus cardinality bomb
+#### B-30: High-cardinality MSH-9 label on MLLP nack metric — Prometheus cardinality bomb — RESOLVED
 - **File:** `internal/mllp/connection.go:269-274`
 - **What:** `MetricNackTotal{type: mshFields.MessageType}` — when `allowed_message_types` mismatches, the rejected MSH-9 string becomes a label value.
 - **Why it matters:** A hostile peer blasting garbage MSH-9 values creates a new time-series per value; Prometheus OOM.
 - **Fix:** Whitelist label values to configured set; bucket "other" into a single value.
+- **Resolution:** Commits `a387293` (RED) + `7e797f3` (GREEN), merged via `f853619`. New helper `bucketMessageTypeLabel(t, allowed)` in `internal/mllp/connection.go` returns `t` verbatim only when it is in the configured `AllowedMessageTypes` set; everything else collapses to the single label value `"other"`. Cardinality of `nack_total{reason=message_type}` is now bounded by `len(allowed)+1`. E2E `TestB30_MLLPMetricCardinalityCap` (`e2e/orchestrator/mllp_metric_cardinality_cap_test.go`) drives 100 distinct hostile MSH-9 values through the real listener over real TCP and asserts exactly one `nack_total{type=other}` series carrying all 100 increments.
 
 #### B-31: Scheduler shutdown does not drain in-flight deliveries; recovery sweep missing — RESOLVED
 - **File:** `internal/engine/scheduler/worker.go:166-234`
@@ -239,17 +288,28 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 - **Fix:** `pg_advisory_lock(<known constant>)` for the duration of `applyAll`; statement-level parser for concurrency detection.
 - **Resolution:** Commit `52ed074`. `applyAll` now holds `pg_advisory_lock(0xFEEDFACE)` on a dedicated connection for the whole apply pass; concurrent migrators serialize. `detectConcurrent` was rewritten to require an explicit `-- @CONCURRENT` directive on the leading content line of the migration body — comments and string literals containing `CREATE INDEX CONCURRENTLY` no longer trip the heuristic. Unit `TestDetectConcurrentRequiresExplicitDirective` pins the parser; e2e `TestE2E_Migrate_AdvisoryLockSerializesParallelRunners` fires 3 concurrent `migrate.Up` calls against a fresh container and asserts the final `schema_migrations` row count exactly matches the embedded migration set.
 
-#### B-34: Audit log file sink has no fsync; `pgstore` lock leaked on writer panic
+#### B-34: Audit log file sink has no fsync; `pgstore` lock leaked on writer panic — RESOLVED
 - **File:** `internal/infra/observability/observability.go:282`, `internal/infra/observability/audit/pgstore.go:74-93`
 - **What:** File sink uses `os.OpenFile(O_APPEND|O_CREATE|O_WRONLY)` with no fsync per write; `audit.Writer.Emit` acquires conn → `pg_advisory_lock` → INSERT → release in a manual sequence with no `defer recover()` over the lock holder.
 - **Why it matters:** (a) Power loss loses recent audit rows — strongest durability claim broken silently; (b) panic between acquire and release leaves the chain advisory lock held forever (next audit write blocks indefinitely).
 - **Fix:** Fsync on file sink (or document as best-effort); use `pg_advisory_xact_lock` (transaction-scoped, auto-released on commit/rollback).
+- **Resolution:** Commits `de73974` (RED) + `ad6ddd2` (GREEN), merged via `f853619`. Three changes:
+  - `audit.Writer.Emit` now wraps the durable path in `defer recover()`; on panic it releases the chain lock via the captured `release` closure and surfaces the panic as `audit: panic in durable write path: ...` to the caller. The `released` flag prevents double-release on the happy path.
+  - `audit.PgStore` switches from session-level `pg_advisory_lock` to xact-scoped `pg_advisory_xact_lock`. `AcquireChainLock` opens a tx and takes the lock inside it; `LastChainHash` and `InsertAuditRow` route through `currentTx()` so the read + insert run inside that tx. Release commits the tx, which auto-releases the lock — connection loss, rollback, or panic all release it without manual intervention.
+  - `observability.fileSink` is configurable: `every_write` (default, fsync per Emit) or `batched` (periodic fsync via background ticker; `Close()` drains and fsyncs once for clean shutdown). Lifecycle owns the sink and calls `Close()` before closing the underlying file handle.
+  - E2E tests: `TestB34_AuditWriterPanicReleasesChainLock` (`e2e/orchestrator/audit_pgstore_panic_release_test.go`) injects a panic mid-Insert via a fault-injection store and asserts the lock is released (next Emit completes promptly under a 2s timeout instead of blocking forever); `TestB34_AuditFileSinkFsyncs` (`e2e/orchestrator/audit_file_sink_fsync_test.go`) writes through the production observability module's file sink and asserts the rows are on disk after Emit returns.
 
-#### B-35: Secret rotation is unreachable — SIGHUP not registered
+#### B-35: Secret rotation is unreachable — SIGHUP not registered — RESOLVED
 - **File:** `internal/infra/lifecycle/signals.go:61-77`, `internal/infra/config/secrets/secrets.go:80-110`
 - **What:** Signal handler registers only SIGTERM/SIGINT. `${file:...}` placeholders are read once at startup; rotation requires a SIGHUP that no one listens for.
 - **Why it matters:** Vault Agent / cert-manager rotates the on-disk file; our process keeps the old value indefinitely. Long-lived processes ship expired creds.
 - **Fix:** Register SIGHUP and route it to `config.Module.Reload`; also add periodic file-mtime polling so rotation works without explicit signal.
+- **Resolution:** Commits `57fafb1` (RED) + `3a81559` (GREEN) + `614bb4e` (test fixture), merged via `f853619`. Four changes:
+  - `lifecycle.LifecycleModule.SetReloadHandler(fn)` registers a SIGHUP-driven callback. `installSignalHandlers` now subscribes to `SIGHUP` in addition to `SIGTERM`/`SIGINT`; the dispatcher routes SIGHUP to `invokeReloadHandler` (no-op when nil) and never to `RequestShutdown`.
+  - `secrets.ResolveWithFilePaths` returns the deduplicated set of on-disk paths actually read for `${file:...}` placeholders, so the host can later mtime-poll them.
+  - `config.ReloadTrigger` gains `TriggerFileMtime` alongside `TriggerSIGHUP`. `Module.Reload` accepts both. Every reload (applied or rejected) fans out to `OnReload(fn func(trigger string))` hooks with the trigger label — hosts wire this to a `fhir_subs_config_reload_total{trigger}` counter.
+  - `Module.WatchSecretFiles(ctx, interval)` starts a goroutine that polls each tracked secret-file's mtime every `interval` (default 60s) and fires `Reload(TriggerFileMtime)` on any change. Tracks paths refresh on every Reload so the watcher follows config rotations that add/drop file placeholders.
+  - E2E tests: `TestB35_SIGHUPReloadsConfig` (`e2e/orchestrator/config_sighup_reload_test.go`) wires SIGHUP → `config.Reload`, raises a real SIGHUP at the test process, and asserts the OnReload trigger label is "sighup". `TestB35_FileMtimePollTriggersReload` (`e2e/orchestrator/config_file_mtime_poll_test.go`) starts the watcher with a 50ms interval, mutates a `${file:...}`-backed secret on disk, and asserts a "file_mtime" reload fires within 2s without any signal.
 
 ---
 
