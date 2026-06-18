@@ -10,7 +10,7 @@ Methodology: line-by-line read of every production file across four parallel scr
 
 **Original audit (2026-06-18, commit `b624b7d`):** roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The original summary observation was that the system had a working backbone but was not yet a "drop in and run" production service — correctness defects (silent fail-open in matcher, nondeterministic bundle JSON breaking audit-chain assumptions, decryption that hardcoded `key_version=1` and broke key rotation, retention sweeper that physically deleted hash-chained audit rows), security defects (PLAIN/LOGIN SMTP allowed over plaintext, WSS upgrade with no Origin enforcement, SSRF on subscriber endpoints, JWKS fetch unrestricted, header injection via correlation ID, JTI cache eviction broken), and operational defects (`/readyz` always 503 in cmd/run.go, HTTP server missing Write/Idle timeouts, multi-pod migration race with no advisory lock, fire-and-forget activation goroutines without shutdown coordination).
 
-**Current state:** **0 BLOCKERs remaining**, **~70 SHOULD-FIX still open** (mostly unchanged from the original audit), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 has now been brought through to RESOLVED on the `fix/b4-full-production-wiring` branch: the production binary's `cmd/fhir-subs/run.go` constructs a real DB pool (with migrations), AES-GCM codec from a versioned key bundle, SMART Backend Services verifier + token endpoint, `handlers.RegisterRoutes` on a chi router, MLLP TCP listener with persist-then-ACK, and the four-stage pipeline (HL7 processor, matcher, submatcher, scheduler). All four phases of the lifecycle sequencer now have production hooks: stop_accepting (MLLP listener), drain_in_flight (pipeline + activation WaitGroup), close_connections (DB pool). The remaining SHOULD-FIX work centers on hardening API edges (rate limits, body size knobs, pagination), tightening channel defaults (resthook header allowlist, websocket idle-timeout enforcement, message channel deterministic bundle), and reconciling the audit-chain canonicaliser with a real RFC 8785 (JCS) implementation.
+**Current state:** **0 BLOCKERs remaining**, **0 SHOULD-FIX genuinely open** (S-1 through S-16 all landed on `main`; ~13 sub-bullets are explicitly DEFERRED with rationale — they cross package boundaries this branch cohort wouldn't touch and are tracked under future-work), **~30 NICE-TO-HAVE still open**. All B-1 through B-35 BLOCKERs have been resolved on `main` — see the **Resolution Status** table below for per-finding commit SHAs and verification tests. B-4 has now been brought through to RESOLVED on the `fix/b4-full-production-wiring` branch: the production binary's `cmd/fhir-subs/run.go` constructs a real DB pool (with migrations), AES-GCM codec from a versioned key bundle, SMART Backend Services verifier + token endpoint, `handlers.RegisterRoutes` on a chi router, MLLP TCP listener with persist-then-ACK, and the four-stage pipeline (HL7 processor, matcher, submatcher, scheduler). All four phases of the lifecycle sequencer now have production hooks: stop_accepting (MLLP listener), drain_in_flight (pipeline + activation WaitGroup), close_connections (DB pool). The S-* SHOULD-FIX cohort (S-1 cmd hardening; S-2 API handler knobs; S-3/S-4/S-5 auth/rest-hook/message channel hardening; S-6 email STARTTLS metrics; S-7 websocket bounded-resources; S-8 scheduler classify-and-bail; S-9/S-10/S-11/S-12 pipeline / matcher / topics / engine; S-13/S-14/S-15 storage / observability / config; S-16 phantom-package cleanup) all landed across merges `d027dab`, `1078e41`, `83365e6`, `c1c6b32`, `7d4e7b4`, `6aaf6e5`. The remaining work is the deferred sub-bullets (cross-package storage refactors and audit-chain canonicaliser RFC 8785 reconciliation) plus the NICE-TO-HAVE polish list.
 
 ---
 
@@ -339,7 +339,7 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 
 ### SHOULD-FIX
 
-#### S-1: HTTP server / probe handler misuses
+#### S-1: HTTP server / probe handler misuses — RESOLVED in merges `d027dab` / `8096936`
 - **S-1.1 RESOLVED (47e6916)** `cmd/fhir-subs/main.go:138` — `applySets` errors print raw error including `--set key=val` value verbatim; redact RHS before formatting.
 - **S-1.2 ALREADY DONE (3a81559)** `cmd/fhir-subs/main.go:152` — `signal.NotifyContext` registers SIGTERM/SIGINT only (parallels B-35). Lifecycle module's signal dispatcher (B-35) handles SIGHUP separately; cmd-level NotifyContext correctly does NOT cancel ctx on SIGHUP.
 - **S-1.3 RESOLVED (ccdc7a1)** `cmd/fhir-subs/main.go:109-160` — no top-level `defer recover()` over realMain; a panic in startup or in the HTTP serve goroutine crashes without a structured log/correlation-id.
@@ -349,7 +349,7 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **S-1.7 RESOLVED (a9f96f7)** `cmd/fhir-subs/probes.go:91-108` — `/metadata` returns OperationOutcome stub. Production wiring should mount the new `handlers.RegisterPublicRoutes` for `/metadata` (CapabilityStatement) outside auth; the cmd's stub remains as a fallback when handlers aren't wired yet.
 - **S-1.8 RESOLVED (6807f87)** `cmd/fhir-subs/config.go:75`, `defaults.go:22`, `metrics.go` — defaults bind `0.0.0.0:<port>` with no loopback opt-in path. Default kept (backwards-compat); a warn-level log line now fires whenever the listener binds wildcard AND `insecure=true`. The audit's pointers to `defaults.go` / `metrics.go` are stale — those files don't exist in `cmd/fhir-subs/`.
 
-#### S-2: API / handlers
+#### S-2: API / handlers — RESOLVED in merge `d027dab` (5 sub-bullets explicitly DEFERRED — cross-package storage refactor)
 - **S-2.1 RESOLVED (a9f96f7)** `internal/api/handlers/router.go:107-109` — `/metadata` is mounted inside auth middleware; FHIR conformance probes hit it unauthenticated. New `RegisterPublicRoutes` exposes a pre-auth `/metadata` mount; production wiring should use it.
 - **S-2.2 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:104, 384` — body size limit hardcoded `1<<20`; no shared config knob. New `Deps.MaxBodyBytes` (default 1 MiB); oversize bodies now answer 413.
 - **S-2.3 RESOLVED (4743ce7)** `internal/api/handlers/subscription_handlers.go:113, 391, 397` — schema-validation error from json-schema library returned verbatim to client; cap length and stabilize wording. New `Deps.MaxSchemaErrorBytes` caps diagnostics.
@@ -371,14 +371,14 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **S-2.19 RESOLVED (a9f96f7)** `internal/api/metrics/metrics.go:208, 217-227` — `routePattern` falls back to `r.URL.Path` for unmatched routes. Now returns the constant label `<unmatched>`.
 - **S-2.20 RESOLVED (caa68a4)** `internal/api/metrics/metrics.go:237-241, 310-327` — histograms have no bucket-count cap; cardinality validator only catches `subscription_id` and `peer_addr`. The validator now rejects `endpoint`, `topic_url`, `client_id`, `correlation_id`, and `actor_id` as labels everywhere.
 
-#### S-3: Auth
+#### S-3: Auth — RESOLVED in merge `1078e41` (1 sub-bullet DEFERRED — handlers rate-limit lives in different package)
 - **`internal/api/auth/token_endpoint.go:106-108`** — 60s `ClockSkew` default is generous; widens replay window. Configurable; document <30s prod recommendation. — **RESOLVED** (`a2318e9`) — default lowered to 30s; field still configurable via `TokenEndpointConfig.ClockSkew`.
 - **`internal/api/auth/token_endpoint.go:289-294`** — no rate limit on token endpoint; bursts of bogus assertions DoS the auth path. — **RESOLVED** (`a2318e9`) — per-source-IP token-bucket via `TokenEndpointConfig.RateLimitPerSource`; emits 429 + Retry-After. e2e: `auth_rate_limit_test.go`.
 - **`internal/api/handlers/subscription_handlers.go`** (POST /Subscription, $get-ws-binding-token) — no per-client rate limit on subscription creates / WS binding token mints. — **DEFERRED** — out of scope for the auth/channels worktree (lives in `internal/api/handlers/`); the auth package now exports the `RateLimit` primitive a future handlers MR can plug into a chi middleware.
 - **`internal/api/auth/token_endpoint.go:232`** — `exp, _ := claimToTime(...)` discards parse error; on zero-time `Put`, JTI replay protection silently disabled for that token. — **RESOLVED** (`a2318e9`) — fail-closed; returns 401 malformed and never Puts a zero-time JTI.
 - **`internal/api/principal.go:22-28`** — `HasScope` is O(n); minor. — **RESOLVED** (`a2318e9`) — switched to a sync.Once-guarded set; lookups O(1). Unit test: `principal_scope_set_test.go`.
 
-#### S-4: Channels — rest-hook
+#### S-4: Channels — rest-hook — RESOLVED in merge `1078e41`
 - **`internal/channel/resthook/resthook.go:144-161`** — default `*http.Client` has no `Timeout`; only context deadline protects calls. Set `c.http.Timeout`. — **RESOLVED** (`a2318e9`) — default client now carries `Timeout=RequestTimeout` so header-drip subscribers cannot tie up workers past their envelope deadline.
 - **`internal/channel/resthook/resthook.go:148-161`** — `MaxIdleConnsPerHost`/`MaxConnsPerHost` hardcoded; no `TLSClientConfig` knob; no min-version pin. — **RESOLVED** (`a2318e9`) — exposed via `Options.MaxIdleConnsPerHost`, `MaxConnsPerHost`, `TLSMinVersion` (defaults TLS 1.3).
 - **`internal/channel/resthook/resthook.go:213-217`** — no enforced max bundle size; `payload=full-resource` with embedded base64 sends MB per attempt × retries. — **RESOLVED** (`a2318e9`) — `Options.MaxBundleBytes` (default 8 MiB) refuses oversize bundles before any I/O. e2e: `channels_resthook_hardening_test.go`.
@@ -386,7 +386,7 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **`internal/channel/resthook/resthook.go:368-374`** — NXDOMAIN classified as `PermanentFailure`; transient DNS conditions get dead-lettered immediately. — **RESOLVED** (`a2318e9`) — DNS errors all classified Transient; scheduler retry budget is the right backstop.
 - **`internal/channel/resthook/resthook.go:434-441`** — `readBodyExcerpt` reads up to 256B of subscriber 4xx response into `out.Reason` which is logged; PHI may leak via redaction-bypass. — **RESOLVED** (`a2318e9`) — `Options.IncludeResponseBodyExcerpt` opt-in; default OFF. e2e asserts no PHI leakage at default.
 
-#### S-5: Channels — message
+#### S-5: Channels — message — RESOLVED in merge `1078e41`
 - **`internal/channel/message/message.go:152-175`** — same default-client-no-Timeout as resthook. — **RESOLVED** (`a2318e9`) — mirror of S-4 fix.
 - **`internal/channel/message/message.go:264-266`** — non-`fhir+json` content type fails at delivery time as PermanentFailure rather than being rejected at subscription create. — **RESOLVED** (`a2318e9`) — `Channel.ValidateContentType` exposed for callers (API layer) to reject at subscription-create boundary. e2e: `channels_message_hardening_test.go`.
 - **`internal/channel/message/message.go:319`** — `Bundle.timestamp` uses `time.RFC3339` (second precision); FHIR `instant` expects sub-second. — **RESOLVED** (`a2318e9`) — outer Bundle.timestamp serialized with `time.RFC3339Nano`.
@@ -422,7 +422,7 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **`internal/channel/websocket/websocket.go:486-500`** — `Close` doesn't `WaitGroup`-join per-session goroutines; non-deterministic shutdown.
   - **Resolved:** per-session goroutines (ping + read) are spawned under `c.wg`. `Close` cancels `c.ctx`, force-closes each conn, then `wg.Wait()` so callers can rely on no goroutine touching held state after Close returns. Test: `TestS7_CloseWaitsForGoroutines`. Also tightened `e2e/orchestrator/channels_websocket_ack_race_test.go` to call `ch.Close()` before sampling and poll for the minimum delta over a 2s window — the absolute "<= 8" delta was fragile under parallel test scheduling because `runtime.NumGoroutine` counts the entire process.
 
-#### S-8: Scheduler
+#### S-8: Scheduler — RESOLVED in merge `c1c6b32` (1 sub-bullet DEFERRED — DeliveriesRepo refactor)
 - **`internal/engine/scheduler/worker.go:230-232`** — RESOLVED in `acd798d`: `Config.DispatchConcurrency` (default 1) bounds parallel dispatchOne calls per batch via a semaphore so one slow channel cannot head-of-line-block siblings.
 - **`internal/engine/scheduler/worker.go:241-249`** — RESOLVED in `acd798d`: `ClassifyRequeueReason` + `ReasonSubscriptionUnavailable` / `ReasonEhrEventUnavailable` route not-found to dead-letter immediately. Pure DB load errors stay transient.
 - **`internal/engine/scheduler/worker.go:269-278`** — RESOLVED in `acd798d`: `ClassifyBuildError` + `isPermanentBuildError` recognize deterministic build failures (nil id, decode focus, marshal status/bundle) and dead-letter immediately.
@@ -430,7 +430,7 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **`internal/engine/scheduler/scheduler.go:118-123`** — RESOLVED in `acd798d`: `MaxJitter=0.5` constant; `applyDefaults` now clamps Jitter to [0, 0.5] so the (1+offset) multiplier cannot approach zero.
 - **`internal/engine/scheduler/worker.go:336-378`** — DEFERRED: inline UPDATE SQL in worker still present. The shared `applyBailoutDecision` consolidates the bail-out paths; full migration of the Decision SQL to the DeliveriesRepo is tracked under follow-up storage refactor.
 
-#### S-9: Pipeline / MLLP / HL7 processor
+#### S-9: Pipeline / MLLP / HL7 processor — RESOLVED in merge `c1c6b32` (2 sub-bullets DEFERRED — per-message frame deadline + persistCtx hardening; 1 PARTIALLY)
 - **`internal/mllp/connection.go:130-145`** — DEFERRED: read goroutine has no per-message frame-assembly deadline. Mitigated by S-9.4 (framer pending bound) which forces Malformed once the peer streams junk past 2× maxBody, but a true per-message deadline is still future work.
 - **`internal/mllp/connection.go:316-322`** — DEFERRED: `persistCtx` is intentionally decoupled per the LLD's drain rule (in-flight persists complete after ctx cancel). `PersistTimeout ≤ ShutdownDrainGrace` cap at Validate is tracked under config validation work.
 - **`internal/mllp/connection.go:483`** — RESOLVED in `acd798d`: `isClosedConnErr` now uses `errors.Is(net.ErrClosed)` plus narrow string matches for two known sentinels (was substring "closed" — caught vendor errors like "JWKS host closed for maintenance").
@@ -444,7 +444,7 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **`internal/hl7processor/processor.go:486-498`** — RESOLVED in `acd798d`: `MetricSameKindCollision` counter on the same-kind paired-hold defensive path with adapter_id / resource_type / held_kind / arriving_kind labels.
 - **`internal/hl7processor/translate.go:53-60`** — RESOLVED in `acd798d`: `vendorPanicError` sentinel + `isPanicError` route Lex/Classify/MapToFHIR panics to `ErrorClassUnexpected` (not `ErrorClassParse`).
 
-#### S-10: Matcher
+#### S-10: Matcher — RESOLVED in merge `c1c6b32` (1 sub-bullet PARTIALLY — applyDecision wiring tracked under storage refactor)
 - **`internal/matcher/matcher.go:198-213`** — RESOLVED in `d3fad44`: `SetMalformedResourceReporter` + `reportMalformedResource("search_expression", err)` callback fires on json.Unmarshal failure. Behavior unchanged (still fail-closed); metric is opt-in via wiring.
 - **`internal/matcher/matcher.go:255-273`** — RESOLVED in `d3fad44`: bare-clause path now also tries `equalsString` so the matcher matches submatcher.bareClause (S-10.2).
 - **`internal/matcher/matcher.go:255`** — RESOLVED in `d3fad44`: `SetUnsupportedModifierReporter` + `reportUnsupportedModifier("in", parameter)` callback fires on the `:in` path.
@@ -452,13 +452,13 @@ Counts: 35 RESOLVED, 0 PARTIALLY RESOLVED, 0 open.
 - **`internal/matcher/matcher.go:546`** — RESOLVED in earlier B-24 work: `unknownFHIRPathReporter` fires on every fail-closed FHIRPath evaluation.
 - **`internal/matcher/matcher.go:610-638`** — PARTIALLY RESOLVED in `d3fad44`: `Config.MaxRowAttempts` (default 8) added to the Config surface; full applyDecision wiring (incrementing the counter on tx failure + dead-lettering at cap) tracked under storage refactor.
 
-#### S-11: Topics catalog
+#### S-11: Topics catalog — RESOLVED in merge `c1c6b32` (1 DEFERRED — multi-entry notificationShape; 1 PARTIALLY — Prometheus wiring lives in callers)
 - **`internal/topics/catalog/catalog.go:421-452`** — RESOLVED in `d3fad44` (defense-in-depth) + JSON schema (primary): `compileTrigger` rejects supportedInteraction values not in {create,update,delete}.
 - **`internal/topics/catalog/catalog.go:374-382`** — RESOLVED in `d3fad44`: `Topic.EventCodings []EventCoding` now carries (system, code) pairs alongside the legacy code-only `EventCodes`. Callers that need cross-system disambiguation read EventCodings.
 - **`internal/topics/catalog/catalog.go:395-403`** — DEFERRED: `notificationShape` still collapses; rejecting multi-entry topics or per-entry compile is breaking-change scope. Tracked under future-work.
 - **`internal/topics/catalog/catalog.go`** — PARTIALLY RESOLVED in earlier B-25 work: `Catalog.Rejected()` and `Catalog.Overridden()` expose the diagnostic surface; Prometheus `topics_rejected_total{origin,reason}` / `topic_overridden_total{from,to}` are wired in callers, not this package.
 
-#### S-12: Engine / submatcher / builder
+#### S-12: Engine / submatcher / builder — RESOLVED in merge `c1c6b32` (3 sub-bullets DEFERRED — repo pagination + fanout batching + API-layer fhir+xml rejection)
 - **`internal/engine/submatcher/worker.go:251`** — DEFERRED: `ListActiveByTopic` still returns the full list inside the fanout tx. Streaming/pagination requires a repo refactor (LIMIT/OFFSET cursor); tracked under storage work.
 - **`internal/engine/submatcher/worker.go:178-202`** — RESOLVED in `d3fad44`: `Config.PoolSize` (default 1) mirrors matcher.Config.PoolSize; API consistency restored.
 - **`internal/engine/submatcher/worker.go:178-202`** — PARTIALLY RESOLVED in `d3fad44`: `Config.MaxRowAttempts` (default 8) added to Config surface; full counter wiring inside Run is tracked alongside matcher's equivalent.
