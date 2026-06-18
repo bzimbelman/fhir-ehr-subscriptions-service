@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +24,35 @@ import (
 	"github.com/fhir-subscriptions-foss/fhir-subs/internal/api/schemas"
 	"github.com/fhir-subscriptions-foss/fhir-subs/internal/infra/storage/repos"
 )
+
+// recordCreated, recordUpdated, recordDeleted, recordWsTokenIssued, and
+// recordValidationFailure are nil-safe metric helpers used by every
+// handler.
+func (s *server) recordCreated() {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.RecordSubscriptionCreated()
+	}
+}
+func (s *server) recordUpdated() {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.RecordSubscriptionUpdated()
+	}
+}
+func (s *server) recordDeleted() {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.RecordSubscriptionDeleted()
+	}
+}
+func (s *server) recordWsTokenIssued() {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.RecordWSBindingTokenIssued()
+	}
+}
+func (s *server) recordValidationFailure(kind string) {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.RecordValidationFailure(kind)
+	}
+}
 
 // requireScopes returns true if the principal carries every needed
 // scope; otherwise it writes a 403 OperationOutcome and returns false.
@@ -80,25 +110,47 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if vErr := schemas.ValidateSubscription(body); vErr != nil {
+		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
 			vErr.Error())
 		return
 	}
 	internal, parseErr := parseInternalFromBody(body)
 	if parseErr != nil {
+		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
 			parseErr.Error())
 		return
 	}
 	if internal.TopicURL == "" {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"topic is required")
 		return
 	}
 	if internal.ChannelType == "" {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"channelType is required")
 		return
+	}
+
+	// If-None-Exist (LLD §4.1): client-supplied search criteria. If any
+	// existing subscription owned by this client matches the search,
+	// return 412 Precondition Failed with an OperationOutcome that
+	// surfaces the duplicate.
+	if cond := r.Header.Get("If-None-Exist"); cond != "" {
+		matches, mErr := s.matchingSubscriptions(r.Context(), p.ClientID, cond)
+		if mErr != nil {
+			fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
+				"if-none-exist evaluation failed")
+			return
+		}
+		if len(matches) > 0 {
+			fhirerror.WriteError(w, http.StatusPreconditionFailed, fhirerror.CodeConflict,
+				"a matching Subscription already exists")
+			return
+		}
 	}
 
 	// Topic must be active in the catalog.
@@ -109,6 +161,7 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if topic == nil {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"topic not in catalog")
 		return
@@ -116,6 +169,7 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 
 	// Channel must be registered in this deployment.
 	if _, ok := s.deps.Channels[internal.ChannelType]; !ok {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"unsupported channelType")
 		return
@@ -130,6 +184,7 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 	row.ID = id
 	_ = s.deps.Audit.Append(r.Context(), "subscription.create", id.String(), "success", nil, body)
+	s.recordCreated()
 
 	// Activation handshake — non-blocking. The 201 returns immediately
 	// with status=requested.
@@ -171,6 +226,41 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 	}
 	_ = s.deps.Subscriptions.UpdateStatus(ctx, id, repos.SubActive, "")
 	_ = s.deps.Audit.Append(ctx, "subscription.handshake.ok", id.String(), "success", nil, nil)
+}
+
+// matchingSubscriptions returns this client's subscriptions whose
+// topic / channelType / endpoint matches the search criteria in the
+// `If-None-Exist` header. The criteria are FHIR-search query string
+// fragments like `topic=http://... &channelType=rest-hook`. This is
+// intentionally narrow — only the LLD §4.1 fields participate.
+func (s *server) matchingSubscriptions(ctx context.Context, clientID, criteria string) ([]repos.SubscriptionRow, error) {
+	rows, err := s.deps.Subscriptions.ListByClient(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	q, parseErr := url.ParseQuery(criteria)
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	var out []repos.SubscriptionRow
+	for i := range rows {
+		row := &rows[i]
+		if v := q.Get("topic"); v != "" && row.TopicURL != v {
+			continue
+		}
+		if v := q.Get("channelType"); v != "" && row.ChannelType != v {
+			continue
+		}
+		if v := q.Get("endpoint"); v != "" && row.Endpoint != v {
+			continue
+		}
+		// off subscriptions are tombstones — they don't block creates.
+		if row.Status == repos.SubOff {
+			continue
+		}
+		out = append(out, *row)
+	}
+	return out, nil
 }
 
 // findActiveTopicByURL returns the active topic with the highest
@@ -299,15 +389,18 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if vErr := schemas.ValidateSubscription(body); vErr != nil {
+		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, vErr.Error())
 		return
 	}
 	newDoc, err := parseInternalFromBody(body)
 	if err != nil {
+		s.recordValidationFailure("schema")
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, err.Error())
 		return
 	}
 	if newDoc.TopicURL == "" {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"topic required")
 		return
@@ -318,11 +411,13 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if topic == nil {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"topic not in catalog")
 		return
 	}
 	if _, ok := s.deps.Channels[newDoc.ChannelType]; !ok {
+		s.recordValidationFailure("semantic")
 		fhirerror.WriteError(w, http.StatusUnprocessableEntity, fhirerror.CodeBusinessRule,
 			"unsupported channelType")
 		return
@@ -338,6 +433,7 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.deps.Audit.Append(r.Context(), "subscription.update", id.String(), "success", nil, body)
+	s.recordUpdated()
 
 	switch classification {
 	case routingReHandshake:
@@ -425,6 +521,7 @@ func (s *server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.deps.Audit.Append(r.Context(), "subscription.delete", id.String(), "success", nil, nil)
+	s.recordDeleted()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -604,6 +701,7 @@ func (s *server) opGetWsBindingToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.deps.Audit.Append(r.Context(), "subscription.ws-binding-token.issue", id.String(), "success", nil, nil)
+	s.recordWsTokenIssued()
 
 	wsURL := s.deps.WSBaseURL
 	resp := map[string]any{

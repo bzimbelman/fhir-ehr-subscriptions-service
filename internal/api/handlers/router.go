@@ -35,6 +35,18 @@ type ChannelActivator interface {
 // "websocket") to its activator.
 type ChannelRegistry map[string]ChannelActivator
 
+// MetricsRecorder is the narrow surface handlers use to record
+// subscription, ws-binding-token, and validation metrics. The API
+// metrics package provides the canonical implementation; tests can
+// inject an in-memory recorder. Nil is permitted everywhere.
+type MetricsRecorder interface {
+	RecordSubscriptionCreated()
+	RecordSubscriptionUpdated()
+	RecordSubscriptionDeleted()
+	RecordWSBindingTokenIssued()
+	RecordValidationFailure(kind string)
+}
+
 // Deps is the bundle of dependencies the handlers need at request time.
 type Deps struct {
 	Subscriptions SubscriptionsStore
@@ -44,6 +56,10 @@ type Deps struct {
 	WsTokens      WsBindingTokensStore
 	Audit         AuditStore
 	Channels      ChannelRegistry
+
+	// Metrics is the optional recorder used to emit per-action
+	// subscription / ws / validation metrics. Nil is fine.
+	Metrics MetricsRecorder
 
 	// Now returns the current time. Tests substitute a fixed value.
 	Now func() time.Time
