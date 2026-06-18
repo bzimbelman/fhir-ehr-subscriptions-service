@@ -358,6 +358,13 @@ type Inventory struct {
 	AuditChainInvalidTotal *Counter
 	AuditSinkFailuresTotal *Counter
 	LoggingPHIDroppedTotal *Counter
+	// DeadLettersTotal is the spec-required dead-letter counter (P1.12).
+	// Bumped once per successful insert into dead_letters; the {reason}
+	// label takes a small bounded set: "hl7_unparseable", "hl7_unsupported",
+	// "rolled_back", "delivery_exhausted", and a few others. The repos
+	// package owns the call site; wiring registers this counter and
+	// installs a reporter via repos.SetDeadLetterReporter.
+	DeadLettersTotal *Counter
 }
 
 // RegisterStartupInventory creates and registers the canonical metric set.
@@ -400,7 +407,15 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	if err != nil {
 		return nil, err
 	}
-	mr.Set(5, nil)
+	dl, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_dead_letters_total",
+		Help:   "Dead-letter rows inserted into the dead_letters table, by reason (Kind).",
+		Labels: []string{"reason"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mr.Set(6, nil)
 	// Pre-register a zero-valued time series for each label-set we know
 	// about so the /metrics endpoint exposes them at scrape time even
 	// before the first event lands. This makes alert rules targeting
@@ -410,6 +425,18 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	aci.Add(0, nil)
 	asf.Add(0, prometheus.Labels{"sink": "stdout"})
 	lpd.Add(0, prometheus.Labels{"field": "body"})
+	// Pre-register the bounded reason set so dashboards observe a
+	// zero-valued series for each before the first dead-letter lands.
+	for _, r := range []string{
+		"hl7_unparseable",
+		"hl7_unsupported",
+		"hl7_invalid",
+		"rolled_back",
+		"delivery_exhausted",
+		"poison_row",
+	} {
+		dl.Add(0, prometheus.Labels{"reason": r})
+	}
 
 	return &Inventory{
 		MetricsRegistered:      mr,
@@ -417,5 +444,6 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 		AuditChainInvalidTotal: aci,
 		AuditSinkFailuresTotal: asf,
 		LoggingPHIDroppedTotal: lpd,
+		DeadLettersTotal:       dl,
 	}, nil
 }

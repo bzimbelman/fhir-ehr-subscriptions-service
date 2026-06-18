@@ -6,11 +6,37 @@ package repos
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 )
+
+// deadLetterReporter is the optional callback the wiring layer
+// installs so it can bump fhir_subs_dead_letters_total{reason} once per
+// successful Insert. The reporter is fire-and-forget; the repo never
+// fails an Insert because the reporter panicked or returned slowly.
+// Kept as a function pointer so this package stays free of a metrics
+// dependency (P1.12).
+var deadLetterReporter atomic.Pointer[func(reason string)]
+
+// SetDeadLetterReporter installs (or unsets, with nil) the reporter
+// invoked once per successful dead_letters insert with the row's Kind
+// as the reason label.
+func SetDeadLetterReporter(fn func(reason string)) {
+	if fn == nil {
+		deadLetterReporter.Store(nil)
+		return
+	}
+	deadLetterReporter.Store(&fn)
+}
+
+func reportDeadLetter(reason string) {
+	if r := deadLetterReporter.Load(); r != nil {
+		(*r)(reason)
+	}
+}
 
 // DeadLettersRepo wraps the dead_letters table.
 type DeadLettersRepo struct {
@@ -46,5 +72,6 @@ func (r *DeadLettersRepo) Insert(ctx context.Context, q Querier, row DeadLetterR
 	).Scan(&id); err != nil {
 		return uuid.Nil, fmt.Errorf("dead_letters: insert: %w", err)
 	}
+	reportDeadLetter(row.Kind)
 	return id, nil
 }
