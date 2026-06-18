@@ -6,6 +6,7 @@
 package orchestrator
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,6 +90,11 @@ func TestMatcher_catalogHotReloadRace(t *testing.T) {
 			} else {
 				prov.Store(cat2)
 			}
+			runtime.Gosched()
+		}
+		// Wait for readers to make progress before signaling stop.
+		for readCount.Load() == 0 {
+			runtime.Gosched()
 		}
 		close(stop)
 	}()
