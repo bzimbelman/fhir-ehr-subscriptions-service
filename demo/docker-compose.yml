@@ -1,0 +1,84 @@
+# demo/docker-compose.yml
+#
+# One-command demo spin-up for the fhir-ehr-subscriptions-service bridge.
+# Closes Demo gap-5 from docs/subscription-sidecar-demo.md.
+#
+# Brings up:
+#   - postgres   — Postgres 16 (the bridge's only hard dependency)
+#   - bridge     — the fhir-subs binary, built from this repo's Dockerfile
+#                  (../Dockerfile), running with demo/config.yaml.
+#
+# The topics catalog volume is mounted from ./topics so the demo
+# SubscriptionTopic JSON files seeded by Demo gap-6 are picked up at
+# startup. The bridge re-loads on SIGHUP (B-35).
+#
+# Run from this directory:
+#   docker compose up -d
+#   curl -fsS http://localhost:8443/readyz   # 200 within ~60s
+#
+# Tear down:
+#   docker compose down -v
+#
+# Apple Silicon + amd64: the upstream postgres:16-alpine image is multi-arch
+# and the bridge image is built from source via ../Dockerfile, so it picks
+# up the host platform without a `platform:` override.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fhir-subs-demo-postgres
+    environment:
+      POSTGRES_USER: fhirsubs
+      POSTGRES_PASSWORD: fhirsubs
+      POSTGRES_DB: fhirsubs
+    ports:
+      - "5433:5432"   # host:container — 5433 to avoid colliding with a host Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fhirsubs -d fhirsubs"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  bridge:
+    # Reuse the existing production Dockerfile at the repo root — no second
+    # image is built. Compose only adds runtime context (config + topics).
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: fhir-subs:demo
+    container_name: fhir-subs-demo-bridge
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - "--config"
+      - "/etc/fhir-subs/config.yaml"
+    environment:
+      # The config file references neither env vars nor secrets; everything
+      # the demo needs is baked into config.yaml. This block exists so an
+      # operator can pass GOMAXPROCS / GODEBUG without editing the file.
+      GOMAXPROCS: "2"
+    volumes:
+      # Demo config — points the bridge at the postgres service hostname,
+      # binds plaintext on :8443, opens an MLLP listener on :2575, and
+      # supplies a pinned demo AES-GCM codec key.
+      - ./config.yaml:/etc/fhir-subs/config.yaml:ro
+      # Topic catalog volume. Mirrors the SubscriptionTopic JSON seeded
+      # by Demo gap-6 (#83). The bridge hot-reloads on SIGHUP (B-35).
+      - ./topics:/etc/fhir-subs/topics:ro
+    ports:
+      # Subscriptions API + probes (insecure HTTP for demo only).
+      - "8443:8443"
+      # MLLP listener — demo-publisher (Demo gap-3) targets this port.
+      - "2575:2575"
+    # No in-container healthcheck: the bridge runs on
+    # gcr.io/distroless/static-debian12:nonroot, which has no shell, no
+    # curl, and no wget. Operators verify readiness from the host with
+    # `curl http://localhost:8443/readyz` — see README-compose.md.
+    restart: unless-stopped
+
+volumes:
+  pgdata:
