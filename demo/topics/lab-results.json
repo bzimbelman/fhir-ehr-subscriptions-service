@@ -1,0 +1,23 @@
+{
+  "resourceType": "SubscriptionTopic",
+  "url": "http://demo.org/topics/lab-results",
+  "version": "1.0.0",
+  "title": "Lab results (demo)",
+  "description": "Final laboratory observations. Demo topic referenced by demo-publisher (gap-3) and demo-subscriber (gap-4).",
+  "status": "active",
+  "resourceTrigger": [{
+    "resource": "Observation",
+    "supportedInteraction": ["create", "update"],
+    "queryCriteria": {
+      "current": "category=laboratory&status=final"
+    }
+  }],
+  "canFilterBy": [{
+    "resource": "Observation",
+    "filterParameter": "patient"
+  }],
+  "notificationShape": [{
+    "resource": "Observation",
+    "include": ["Observation:patient"]
+  }]
+}
