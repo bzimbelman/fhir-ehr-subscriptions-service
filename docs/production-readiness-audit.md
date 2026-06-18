@@ -68,7 +68,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-1.5 | `srv.Close()` error after `srv.Shutdown` failure dropped | RESOLVED | `dbc8356` | |
 | S-1.6 | Magic 2s slack on shutdown wait | RESOLVED | — | already-done; magic 2s removed by earlier B-1/B-3 wiring |
 | S-1.7 | `/metadata` should mount production CapabilityStatement | RESOLVED | `a9f96f7` | new `RegisterPublicRoutes`; cmd stub remains as fallback |
-| S-1.8 | Default `0.0.0.0` bind, no loopback opt-in | RESOLVED | `6807f87` | warn-log on wildcard+insecure; audit's `defaults.go`/`metrics.go` pointers were stale |
+| S-1.8 | Default `0.0.0.0` bind, no loopback opt-in | RESOLVED | `6807f87` | warn-log on wildcard+insecure; fix is in `cmd/fhir-subs/config.go` (default) and `cmd/fhir-subs/run.go:161-167` (warn) — original `defaults.go`/`metrics.go` pointers were stale |
 | S-2.1 | `/metadata` mounted inside auth middleware | RESOLVED | `a9f96f7` | |
 | S-2.2 | Body size limit hardcoded `1<<20` | RESOLVED | `4743ce7` | new `Deps.MaxBodyBytes` |
 | S-2.3 | json-schema error returned verbatim | RESOLVED | `4743ce7` | new `Deps.MaxSchemaErrorBytes` |
@@ -88,7 +88,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-2.17 | Unvalidated `X-Correlation-ID` reflected | RESOLVED | `a9f96f7` | drops non-UUID values |
 | S-2.18 | `/metrics` has no auth | RESOLVED | `a9f96f7` | new `metrics.AuthGuard(bearer)` |
 | S-2.19 | `routePattern` falls back to `r.URL.Path` | RESOLVED | `a9f96f7` | constant `<unmatched>` |
-| S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | `caa68a4` | rejects endpoint, topic_url, client_id, correlation_id, actor_id |
+| S-2.20 | Histogram bucket-count cap; cardinality validator narrow | RESOLVED | `caa68a4` | validator at `internal/infra/observability/metrics/metrics.go:309-338` rejects endpoint, topic_url, client_id, correlation_id, actor_id (audit's `internal/api/metrics/metrics.go` pointer was stale) |
 | S-3.1 | 60s `ClockSkew` default too generous | RESOLVED | `a2318e9` | lowered to 30s |
 | S-3.2 | No rate limit on token endpoint | RESOLVED | `a2318e9` | per-source-IP token bucket |
 | S-3.3 | No per-client rate limit on subscription create / WS bind-token | DEFERRED | — | exported `RateLimit` primitive for handler MR |
@@ -515,7 +515,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 - **S-1.5 RESOLVED (dbc8356)** `cmd/fhir-subs/run.go:117-122` — `srv.Close()` error after `srv.Shutdown` failure is dropped.
 - **S-1.6 ALREADY DONE** `cmd/fhir-subs/run.go:131-133` — shutdown wait is `ShutdownGracePeriod + 2s`; magic 2s slack. Removed by an earlier B-1 / B-3 wiring commit; current code uses just `ShutdownGracePeriod`.
 - **S-1.7 RESOLVED (a9f96f7)** `cmd/fhir-subs/probes.go:91-108` — `/metadata` returns OperationOutcome stub. Production wiring should mount the new `handlers.RegisterPublicRoutes` for `/metadata` (CapabilityStatement) outside auth; the cmd's stub remains as a fallback when handlers aren't wired yet.
-- **S-1.8 RESOLVED (6807f87)** `cmd/fhir-subs/config.go:75`, `defaults.go:22`, `metrics.go` — defaults bind `0.0.0.0:<port>` with no loopback opt-in path. Default kept (backwards-compat); a warn-level log line now fires whenever the listener binds wildcard AND `insecure=true`. The audit's pointers to `defaults.go` / `metrics.go` are stale — those files don't exist in `cmd/fhir-subs/`.
+- **S-1.8 RESOLVED (6807f87)** `cmd/fhir-subs/config.go:214` (default `Bind: 0.0.0.0:8443`), `cmd/fhir-subs/run.go:161-167` (warn-log on wildcard+insecure), `cmd/fhir-subs/run.go:286-288` (`isWildcardBind` predicate) — defaults bind `0.0.0.0:<port>` with no loopback opt-in path. Default kept (backwards-compat); a warn-level log line now fires whenever the listener binds wildcard AND `insecure=true`. The audit's original pointers to `defaults.go` / `metrics.go` under `cmd/fhir-subs/` are stale — those files don't exist; the actual fix lives in `config.go` (default value) and `run.go` (warn-log wiring).
 
 #### S-2: API / handlers — RESOLVED in merge `d027dab` (5 sub-bullets explicitly DEFERRED — cross-package storage refactor)
 - **S-2.1 RESOLVED (a9f96f7)** `internal/api/handlers/router.go:107-109` — `/metadata` is mounted inside auth middleware; FHIR conformance probes hit it unauthenticated. New `RegisterPublicRoutes` exposes a pre-auth `/metadata` mount; production wiring should use it.
@@ -537,7 +537,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 - **S-2.17 RESOLVED (a9f96f7)** `internal/api/handlers/tracing.go:32, 44` — unvalidated `X-Correlation-ID` reflected into spans / outbound headers. `correlation.ExtractFromHeaders` now drops non-UUID values and generates a fresh one.
 - **S-2.18 RESOLVED (a9f96f7)** `internal/api/metrics/metrics.go:181-183` — `/metrics` has no auth. New `metrics.AuthGuard(bearer)` middleware factory; production deployment wraps `/metrics` with this.
 - **S-2.19 RESOLVED (a9f96f7)** `internal/api/metrics/metrics.go:208, 217-227` — `routePattern` falls back to `r.URL.Path` for unmatched routes. Now returns the constant label `<unmatched>`.
-- **S-2.20 RESOLVED (caa68a4)** `internal/api/metrics/metrics.go:237-241, 310-327` — histograms have no bucket-count cap; cardinality validator only catches `subscription_id` and `peer_addr`. The validator now rejects `endpoint`, `topic_url`, `client_id`, `correlation_id`, and `actor_id` as labels everywhere.
+- **S-2.20 RESOLVED (caa68a4)** validator lives in `internal/infra/observability/metrics/metrics.go:309-338` (`validateLabels`), not in `internal/api/metrics/metrics.go` as the original audit pointer suggested. Histograms previously had no bucket-count cap and the validator only caught `subscription_id` and `peer_addr`; the validator now rejects `endpoint`, `topic_url`, `client_id`, `correlation_id`, and `actor_id` as labels everywhere with the rationale doc'd inline.
 
 #### S-3: Auth — RESOLVED in merge `1078e41` (1 sub-bullet DEFERRED — handlers rate-limit lives in different package)
 - **`internal/api/auth/token_endpoint.go:106-108`** — 60s `ClockSkew` default is generous; widens replay window. Configurable; document <30s prod recommendation. — **RESOLVED** (`a2318e9`) — default lowered to 30s; field still configurable via `TokenEndpointConfig.ClockSkew`.

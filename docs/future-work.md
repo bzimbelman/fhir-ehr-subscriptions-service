@@ -109,20 +109,18 @@ These items must land before any production deployment. They are not optional po
 
 ### 1.7 CapabilityStatement implementation
 
-**Source:** `cmd/fhir-subs/probes.go:91-103` ("makeMetadata returns a stub OperationOutcome saying the service is starting"); subscriptions-api.md §3
+**Source:** `cmd/fhir-subs/probes.go:91-103` (legacy stub, retained as fallback); subscriptions-api.md §3
 
-**Status:** `/metadata` returns a stub OperationOutcome saying "service is starting; CapabilityStatement not yet available." This is a placeholder.
+**Status:** PARTIAL. The real `CapabilityStatement` is implemented at `internal/api/handlers/subscription_handlers.go::buildCapabilityStatement` (around line 1014) and mounted via `RegisterPublicRoutes` at `internal/api/handlers/router.go:251`. The body advertises the FHIR version, software/implementation metadata, the `Subscription` and `SubscriptionTopic` resources with all CRUD interactions, the `$status` / `$events` / `$get-ws-binding-token` operations, the supported channel codes, the active topic URLs, and a SMART-on-FHIR security service coding. The legacy stub in `cmd/fhir-subs/probes.go` remains only as a fallback if handlers aren't wired.
 
-**What's missing:**
+**What's still missing:**
 
-- A real `CapabilityStatement` reflecting:
-  - All endpoints in the router
-  - The supported FHIR version(s) — R4B Backport IG and R5 native
-  - The supported channel types
-  - The `$status`, `$events`, `$get-ws-binding-token` operations
-  - The OAuth/SMART Backend Services token endpoint and JWKS
+- Multi-version `fhirVersion`: today the body emits a single `Deps.FHIRVersion` value; the LLD requires the response to reflect both R4B Backport IG and R5 native when both are negotiable. (The unmerged `feat/future-work-p1-batch` commit `033f942` enriches this surface.)
+- OAuth / SMART Backend Services discovery: `security.service` declares `SMART-on-FHIR` as the code, but the response carries no extension advertising the token endpoint URL or the JWKS URL. Subscribers that rely on `CapabilityStatement.rest.security.extension[oauth-uris]` cannot discover the endpoints today.
+- R4B Backport profile/`instantiates` reference: the body does not declare the `instantiates` URI for the Subscriptions R5 Backport IG.
+- Conformance-suite checks against the spec's reference profile have not been run.
 
-**Why this is P1:** spec conformance requires `/metadata` to return a real CapabilityStatement. Subscribers use it for capability discovery; without it, third-party tools and conformance suites fail.
+**Why this is P1:** spec conformance requires `/metadata` to return a CapabilityStatement that advertises the OAuth discovery URIs and the supported FHIR versions. Without these, conformance suites and third-party SMART clients fail capability discovery.
 
 ### 1.8 Hydration (`_include` / `_revinclude`)
 
@@ -168,32 +166,35 @@ These items must land before any production deployment. They are not optional po
 
 ### 1.11 Authn/Authz hardening of the WSS bind token storage
 
-**Source:** Discovered post-merge; pending fix on `fix/wss-bind-token-hashing` (in flight)
+**Source:** Discovered post-merge; landed on `fix/wss-bind-token-hashing` (merged via `b624b7d`)
 
-**Status:** Storage stores `sha256(token)` but the channel sends cleartext to `Consume`, so production binds never match. The e2e harness papers over it with a sha256 wrapper. Fix in progress.
+**Status:** RESOLVED (`b624b7d`, commit `7b5b7c2`). `internal/infra/storage/repos/ws_binding_tokens.go` carries an internal `hashToken(s) = sha256(s)` helper (line 22) that is applied on every `Insert` (line 63) and every `Consume` (line 74), so callers pass cleartext and the on-disk column stores `sha256(cleartext)`. The inline sha256 wrappers in the API handler and the e2e harness have been removed; e2e WSS scenarios pass against the production code path.
 
-**What's missing:**
+**What landed:**
 
-- Move sha256 hashing into `WsBindingTokensRepo` (Insert and Consume both hash internally with cleartext input)
-- Remove inline sha256 from API handler
-- Remove the harness workaround
-- Verify e2e wss scenario still passes once the workaround is gone
+- `hashToken` applied at the storage boundary on Insert, Consume, expiry check, and lookup
+- Inline sha256 removed from the API handler and the e2e harness
+- e2e wss scenario passes end-to-end with cleartext passed through the channel
 
-**Why this is P1:** WSS subscriptions are completely non-functional in production today.
+**Why this is P1:** WSS subscriptions were completely non-functional in production before this; binds now match because both the writer and the reader hash with the same boundary.
 
 ### 1.12 Dead-letter operational runbook
 
 **Source:** [docs/low-level-design/storage.md](low-level-design/storage.md) (`dead_letters` table); ADR 0001
 
-**Status:** Schema and write path exist. No documented process for what to do with rows in the table.
+**Status:** PARTIAL. The metric is registered and emitted on origin/main: `MetricDeadLettersTotal = "fhir_subs_hl7processor_dead_letters_total"` is declared at `internal/hl7processor/metrics.go:34` and incremented at `internal/hl7processor/processor.go:777` per dead-letter insert. The operational runbook (inspect / requeue / forget by `reason`) and the optional CLI subcommand are still pending — both are queued on the unmerged `feat/future-work-p1-batch` branch (commit `6ac7051`).
 
-**What's missing:**
+**What landed:**
 
-- Operator runbook: how to inspect dead_letters, how to requeue, how to mark resolved
-- Optional: a CLI subcommand on `fhir-subs` (e.g., `fhir-subs dead-letters list|replay|forget`) — though admin operations are scope-bounded per ADR 0008
-- Metric: `fhir_subs_dead_letters_total{reason}` for alerting
+- `fhir_subs_hl7processor_dead_letters_total` counter registered and emitted from the HL7 processor
 
-**Why this is P1:** dead_letters silently accumulate without process. Subscribers don't know they're missing notifications.
+**What's still missing:**
+
+- Operator runbook (`docs/operations/dead-letters-runbook.md`): how to inspect dead_letters, how to requeue, how to mark resolved, by `reason` value
+- Optional CLI subcommand on `fhir-subs` (e.g., `fhir-subs dead-letters list|replay|forget`) — admin operations are scope-bounded per ADR 0008 and are tracked under P1.6
+- Top-level `fhir_subs_dead_letters_total{reason}` rollup counter wired through `repos.SetDeadLetterReporter` and `metrics.Inventory` (the hl7processor-scoped metric exists; the cross-pipeline rollup with bounded `reason` labels is not yet registered)
+
+**Why this is P1:** the metric alone lets operators alert on dead_letter rate, but without a runbook on-call has no procedure to drain or triage rows when the alert fires.
 
 ---
 
@@ -310,15 +311,19 @@ These items are not strictly required to deploy, but they materially limit the s
 
 **Source:** [docs/low-level-design/observability.md](low-level-design/observability.md)
 
-**Status:** OTel tracing is wired throughout (correlation IDs, spans on all major operations). The exporter is configurable but defaults to no-op (`stdout` for development). Production deployments need OTLP/HTTP, OTLP/gRPC, Jaeger, etc.
+**Status:** RESOLVED — recipe docs pending. The OTLP exporter configuration surface landed under S-14 #9 (`9e7fa45`): `internal/infra/observability/tracing/tracing.go` exposes `ExporterTimeout` (line 56), `TLSConfig` (line 61), `Headers` (line 63), and an `Insecure` toggle, all routed into the OTLP HTTP exporter. The default remains a no-op for development; operators set the exporter via these knobs.
 
-**What's missing:**
+**What landed:**
 
-- Configuration schema for the OTel exporter (endpoint, headers, sampling rate, TLS)
-- Documented deployment recipes for Datadog, Honeycomb, Jaeger
-- A "start with traces, end with traces" smoke test in deployments
+- Configuration schema knobs (timeout, TLS, headers, insecure) wired through `tracing.Options`
+- Plumbed end-to-end so `observability.Start` honors operator-supplied OTLP transport settings
 
-**Why this is P2:** without trace export, distributed tracing is local-only. Cross-service debugging across the EHR adapter → bridge → subscriber path is invisible.
+**What's still pending (documentation-only):**
+
+- Documented deployment recipes for Datadog, Honeycomb, Jaeger, Tempo
+- A "start with traces, end with traces" smoke test in the deployment guide
+
+**Why this is P2 (now docs-only):** the code surface is in place; without the recipes, operators reverse-engineer the right header/TLS combination per backend.
 
 ### 2.9 Webhook ingress (vendor push)
 
