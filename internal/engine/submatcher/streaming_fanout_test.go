@@ -6,6 +6,7 @@ package submatcher
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -151,10 +152,14 @@ func newWorkerWithLister(t *testing.T, l subscriptionLister, m Metrics) *Worker 
 }
 
 // expectFanoutPerMatchSQL programs the pgxmock pool to expect the per-
-// match write triple emitted by fanoutOne for one matching candidate:
+// match write pair emitted by fanoutOne for one matching candidate:
 //   - SELECT ... next_event_number (UPDATE ... RETURNING)
 //   - INSERT INTO deliveries
-//   - UPDATE subscriptions ... events_since_subscription_start
+//
+// Story #56 (S-12.4) folded the per-match `events_since_subscription_start`
+// UPDATE into a batched UPDATE issued after the streaming pass; tests
+// that want to assert that batched form should follow this helper with
+// a separate ExpectExec for the unnest($1::uuid[], $2::bigint[]) shape.
 func expectFanoutPerMatchSQL(t *testing.T, mockPool pgxmock.PgxPoolIface, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
@@ -164,10 +169,18 @@ func expectFanoutPerMatchSQL(t *testing.T, mockPool pgxmock.PgxPoolIface, n int)
 		mockPool.ExpectQuery(`INSERT INTO deliveries`).
 			WithArgs(anyArgsN(8)...).
 			WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
-		mockPool.ExpectExec(`UPDATE subscriptions\s+SET events_since_subscription_start`).
-			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnResult(pgconn.NewCommandTag("UPDATE 1"))
 	}
+}
+
+// expectBatchedCursorAdvanceSQL programs one batched
+// `events_since_subscription_start` UPDATE expectation. Callers pair
+// this with `expectFanoutPerMatchSQL(...)` once per fanout pass when
+// at least one Match accumulated cursor-advance pairs.
+func expectBatchedCursorAdvanceSQL(t *testing.T, mockPool pgxmock.PgxPoolIface, batchSize int) {
+	t.Helper()
+	mockPool.ExpectExec(`UPDATE subscriptions\s+SET events_since_subscription_start.*unnest\(\$1::uuid\[\], \$2::bigint\[\]\)`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag(fmt.Sprintf("UPDATE %d", batchSize)))
 }
 
 // anyArgsN returns n pgxmock.AnyArg matchers for varargs spread.
@@ -198,6 +211,9 @@ func TestFanoutStreamsRowsOneAtATime(t *testing.T) {
 	defer mockPool.Close()
 	mockPool.ExpectBegin()
 	expectFanoutPerMatchSQL(t, mockPool, len(rows))
+	// Story #56: a single batched cursor advance after streaming
+	// completes (replaces the per-match inline UPDATE).
+	expectBatchedCursorAdvanceSQL(t, mockPool, len(rows))
 	// MarkProcessed: ehrEventsRepo.MarkProcessed issues an UPDATE
 	// guarded by id + created_month.
 	mockPool.ExpectExec(`UPDATE ehr_events`).
@@ -413,9 +429,11 @@ func BenchmarkFanoutStreamingMemory(b *testing.B) {
 	}
 }
 
-// newBenchExpectations programs the pgxmock pool with one full
-// per-match write triple per row. Helper for the benchmark.
+// newBenchExpectations programs the pgxmock pool with one
+// nextEventNumber+INSERT pair per row plus one batched cursor-advance
+// UPDATE per CursorAdvanceBatchSize-sized batch (story #56).
 func newBenchExpectations(_ *testing.B, mockPool pgxmock.PgxPoolIface, n int) {
+	const batchSize = 1000
 	for i := 0; i < n; i++ {
 		mockPool.ExpectQuery(`UPDATE subscriptions\s+SET next_event_number`).
 			WithArgs(pgxmock.AnyArg()).
@@ -423,9 +441,20 @@ func newBenchExpectations(_ *testing.B, mockPool pgxmock.PgxPoolIface, n int) {
 		mockPool.ExpectQuery(`INSERT INTO deliveries`).
 			WithArgs(anyArgsN(8)...).
 			WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(uuid.New()))
-		mockPool.ExpectExec(`UPDATE subscriptions\s+SET events_since_subscription_start`).
+		// One batched cursor advance every time the in-memory batch
+		// fills (i.e., every batchSize matches).
+		if (i+1)%batchSize == 0 {
+			mockPool.ExpectExec(`UPDATE subscriptions\s+SET events_since_subscription_start.*unnest`).
+				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgconn.NewCommandTag(fmt.Sprintf("UPDATE %d", batchSize)))
+		}
+	}
+	// Trailing flush for any remainder (n not a clean multiple of
+	// batchSize).
+	if n%batchSize != 0 {
+		mockPool.ExpectExec(`UPDATE subscriptions\s+SET events_since_subscription_start.*unnest`).
 			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
-			WillReturnResult(pgconn.NewCommandTag("UPDATE 1"))
+			WillReturnResult(pgconn.NewCommandTag(fmt.Sprintf("UPDATE %d", n%batchSize)))
 	}
 }
 

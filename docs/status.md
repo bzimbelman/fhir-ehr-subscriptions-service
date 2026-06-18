@@ -141,7 +141,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | S-12.1 | ListActiveByTopic materializes full list | RESOLVED | RESOLVED ✓ | story/55 | submatcher fanoutOne now drives StreamActiveByTopic with a per-row callback (Evaluate + delivery write inside the iterator); streamFakeLister unit test asserts maxInFlight==1 even at 64 candidates; benchmark verifies the streaming contract at N=1k/10k |
 | audit | S-12.2 | submatcher PoolSize knob missing | RESOLVED | RESOLVED ✓ | d3fad44 | Config.PoolSize |
 | audit | S-12.3 | submatcher MaxRowAttempts | PARTIAL | PARTIAL ✓ | d3fad44 | knob added; counter wiring pending |
-| audit | S-12.4 | Fanout tx inline events_since_subscription_start UPDATE | DEFERRED | DEFERRED ✓ | — | hot-subscription scaling |
+| audit | S-12.4 | Fanout tx inline events_since_subscription_start UPDATE | RESOLVED | RESOLVED ✓ | story/56 | submatcher fanoutOne accumulates (subscription_id, event_number) pairs while streaming and flushes via single `UPDATE subscriptions ... FROM unnest($1::uuid[], $2::bigint[])`; CursorAdvanceBatchSize default 1000; pgxmock unit tests pin one-batched-UPDATE for N=64 and 3 batches at N=250/cap=100; latency-aware benchmark shows ~990x throughput at 100µs/Exec on a 1000-subscriber topic |
 | audit | S-12.5 | resourceTypeOf materializes full body | RESOLVED | RESOLVED ✓ | d3fad44 | streaming json.Decoder |
 | audit | S-12.6 | Builder sort non-deterministic on tie | RESOLVED | RESOLVED ✓ | d3fad44 | sort.SliceStable + ID tiebreaker |
 | audit | S-12.7 | Bundle/notificationEvent timestamps RFC3339 | RESOLVED | RESOLVED ✓ | d3fad44 | RFC3339Nano |
