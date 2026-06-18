@@ -288,7 +288,7 @@ func (c *jwksCache) fetch(ctx context.Context, url string) (keyfunc.Keyfunc, err
 	if e, ok := c.entries[url]; ok && c.now().Before(e.expires) {
 		return e.kf, nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, err
 	}

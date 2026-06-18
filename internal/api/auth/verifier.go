@@ -116,7 +116,7 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 // request's Authorization header. The returned status is 0 on success;
 // otherwise the HTTP status to return (401 or 403) and a short reason
 // string suitable for OperationOutcome.diagnostics.
-func (v *Verifier) Authenticate(r *http.Request) (*Principal, int, string) {
+func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status int, reason string) {
 	header := r.Header.Get("Authorization")
 	if header == "" || !strings.HasPrefix(header, "Bearer ") {
 		return nil, http.StatusUnauthorized, "missing bearer token"
@@ -164,16 +164,16 @@ func (v *Verifier) Authenticate(r *http.Request) (*Principal, int, string) {
 
 	var keyFn jwt.Keyfunc
 	var validMethods []string
-	if useServerKey {
+	switch {
+	case useServerKey:
 		secret := v.cfg.IssuedSecret
-		keyFn = func(token *jwt.Token) (any, error) { return secret, nil }
+		keyFn = func(_ *jwt.Token) (any, error) { return secret, nil }
 		validMethods = []string{"HS256"}
-	} else {
-		if client.JwksURL == "" {
-			return nil, http.StatusUnauthorized, "client has no jwks_url configured"
-		}
-		kf, err := v.keyfuncFor(r.Context(), client.JwksURL)
-		if err != nil {
+	case client.JwksURL == "":
+		return nil, http.StatusUnauthorized, "client has no jwks_url configured"
+	default:
+		kf, kfErr := v.keyfuncFor(r.Context(), client.JwksURL)
+		if kfErr != nil {
 			return nil, http.StatusUnauthorized, "jwks unavailable"
 		}
 		keyFn = kf.Keyfunc
@@ -270,7 +270,7 @@ func (v *Verifier) keyfuncFor(ctx context.Context, jwksURL string) (keyfunc.Keyf
 		return entry.keyfunc, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("auth: build jwks request: %w", err)
 	}

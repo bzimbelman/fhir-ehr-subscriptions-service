@@ -363,7 +363,10 @@ func TestIntegration_ExpiredToken(t *testing.T) {
 	})
 	req, _ := http.NewRequest(http.MethodGet, i.httpSrv.URL+"/Subscription", nil)
 	req.Header.Set("Authorization", "Bearer "+expired)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status=%d", resp.StatusCode)
@@ -384,7 +387,10 @@ func TestIntegration_WrongAudience(t *testing.T) {
 	})
 	req, _ := http.NewRequest(http.MethodGet, i.httpSrv.URL+"/Subscription", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status=%d", resp.StatusCode)
@@ -405,7 +411,10 @@ func TestIntegration_UnknownClient(t *testing.T) {
 	})
 	req, _ := http.NewRequest(http.MethodGet, i.httpSrv.URL+"/Subscription", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status=%d", resp.StatusCode)

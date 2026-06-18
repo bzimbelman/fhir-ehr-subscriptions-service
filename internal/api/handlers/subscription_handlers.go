@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -72,21 +73,21 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	if !requireScopes(w, p, "system/Subscription.c") {
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
+	body, readErr := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if readErr != nil {
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
 			"could not read body")
 		return
 	}
-	if err := schemas.ValidateSubscription(body); err != nil {
+	if vErr := schemas.ValidateSubscription(body); vErr != nil {
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
-			err.Error())
+			vErr.Error())
 		return
 	}
-	internal, err := parseInternalFromBody(body)
-	if err != nil {
+	internal, parseErr := parseInternalFromBody(body)
+	if parseErr != nil {
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure,
-			err.Error())
+			parseErr.Error())
 		return
 	}
 	if internal.TopicURL == "" {
@@ -121,8 +122,8 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 
 	row := internal.toRow(p.ClientID, repos.SubRequested)
-	id, err := s.deps.Subscriptions.Insert(r.Context(), row)
-	if err != nil {
+	id, insertErr := s.deps.Subscriptions.Insert(r.Context(), row)
+	if insertErr != nil {
 		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
 			"insert failed")
 		return
@@ -180,12 +181,13 @@ func (s *server) findActiveTopicByURL(ctx context.Context, url string) (*repos.S
 		return nil, err
 	}
 	var best *repos.SubscriptionTopicRow
-	for i, r := range rows {
-		if r.URL != url {
+	for i := range rows {
+		row := &rows[i]
+		if row.URL != url {
 			continue
 		}
-		if best == nil || r.Version > best.Version {
-			best = &rows[i]
+		if best == nil || row.Version > best.Version {
+			best = row
 		}
 	}
 	return best, nil
@@ -291,13 +293,13 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
+	body, readErr := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if readErr != nil {
 		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, "could not read body")
 		return
 	}
-	if err := schemas.ValidateSubscription(body); err != nil {
-		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, err.Error())
+	if vErr := schemas.ValidateSubscription(body); vErr != nil {
+		fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeStructure, vErr.Error())
 		return
 	}
 	newDoc, err := parseInternalFromBody(body)
@@ -390,7 +392,7 @@ func equalJSON(a, b []byte) bool {
 	_ = json.Unmarshal(b, &bv)
 	ab, _ := json.Marshal(av)
 	bb, _ := json.Marshal(bv)
-	return string(ab) == string(bb)
+	return bytes.Equal(ab, bb)
 }
 
 // deleteSubscription is DELETE /Subscription/{id}.
@@ -528,11 +530,12 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	notificationEvents := make([]map[string]any, 0, len(events))
-	for _, ev := range events {
+	for i := range events {
+		ev := &events[i]
 		entry := map[string]any{
-			"eventNumber":            ev.EventNumber,
-			"timestamp":              ev.OccurredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			"focus":                  map[string]any{"reference": ev.Focus},
+			"eventNumber": ev.EventNumber,
+			"timestamp":   ev.OccurredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			"focus":       map[string]any{"reference": ev.Focus},
 		}
 		notificationEvents = append(notificationEvents, entry)
 	}
@@ -628,9 +631,9 @@ func (s *server) searchTopics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entries := make([]any, 0, len(rows))
-	for _, row := range rows {
+	for i := range rows {
 		var topic map[string]any
-		if err := json.Unmarshal(row.Body, &topic); err == nil {
+		if uErr := json.Unmarshal(rows[i].Body, &topic); uErr == nil {
 			entries = append(entries, map[string]any{"resource": topic})
 		}
 	}
@@ -661,14 +664,15 @@ func (s *server) readTopic(w http.ResponseWriter, r *http.Request) {
 			"topic catalog lookup failed")
 		return
 	}
-	for _, row := range rows {
-		if row.ID == id {
-			var topic map[string]any
-			_ = json.Unmarshal(row.Body, &topic)
-			body, _ := json.Marshal(topic)
-			writeJSON(w, http.StatusOK, body)
-			return
+	for i := range rows {
+		if rows[i].ID != id {
+			continue
 		}
+		var topic map[string]any
+		_ = json.Unmarshal(rows[i].Body, &topic)
+		body, _ := json.Marshal(topic)
+		writeJSON(w, http.StatusOK, body)
+		return
 	}
 	fhirerror.WriteError(w, http.StatusNotFound, fhirerror.CodeNotFound, "no such topic")
 }
@@ -742,8 +746,8 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 		channelCodes = append(channelCodes, map[string]any{"code": code})
 	}
 	topicURLs := make([]any, 0, len(rows))
-	for _, t := range rows {
-		topicURLs = append(topicURLs, map[string]any{"url": t.URL, "version": t.Version})
+	for i := range rows {
+		topicURLs = append(topicURLs, map[string]any{"url": rows[i].URL, "version": rows[i].Version})
 	}
 	return map[string]any{
 		"resourceType": "CapabilityStatement",

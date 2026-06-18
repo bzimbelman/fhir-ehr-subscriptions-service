@@ -313,7 +313,10 @@ func TestCreateSubscription_UnknownTopic_422(t *testing.T) {
 	}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -330,7 +333,10 @@ func TestCreateSubscription_BadBody_400(t *testing.T) {
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription", strings.NewReader(`{not json`))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -355,7 +361,10 @@ func TestCreateSubscription_InsufficientScope_403(t *testing.T) {
 	}`
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -376,7 +385,10 @@ func TestReadSubscription_OwnedByOtherClient_404(t *testing.T) {
 		MaxCount:    1,
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
-	resp, _ := http.Get(srv.URL + "/Subscription/" + id.String())
+	resp, err := http.Get(srv.URL + "/Subscription/" + id.String())
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -397,7 +409,10 @@ func TestReadSubscription_Owned_200(t *testing.T) {
 		MaxCount:    1,
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
-	resp, _ := http.Get(srv.URL + "/Subscription/" + id.String())
+	resp, err := http.Get(srv.URL + "/Subscription/" + id.String())
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -436,7 +451,10 @@ func TestUpdateSubscription_TakesEffectImmediately(t *testing.T) {
 	}`
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/Subscription/"+id.String(), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -477,7 +495,10 @@ func TestUpdateSubscription_ChangedEndpoint_TriggersReHandshake(t *testing.T) {
 	}`
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/Subscription/"+id.String(), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -508,7 +529,10 @@ func TestDeleteSubscription_Owned_204(t *testing.T) {
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/Subscription/"+id.String(), nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -534,7 +558,10 @@ func TestStatusSingle_Returns_SubscriptionStatus(t *testing.T) {
 		EventsSinceSubscriptionStart: 7,
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
-	resp, _ := http.Get(srv.URL + "/Subscription/" + id.String() + "/$status")
+	resp, err := http.Get(srv.URL + "/Subscription/" + id.String() + "/$status")
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -569,7 +596,10 @@ func TestEvents_Replay(t *testing.T) {
 		{EventNumber: 3, TopicURL: "http://example.org/topics/other", Focus: "Encounter/x"},
 	}
 	srv := newTestServer(t, defaultPrincipal(), deps)
-	resp, _ := http.Get(srv.URL + "/Subscription/" + id.String() + "/$events?eventsSinceNumber=1&eventsUntilNumber=2")
+	resp, err := http.Get(srv.URL + "/Subscription/" + id.String() + "/$events?eventsSinceNumber=1&eventsUntilNumber=2")
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -637,7 +667,10 @@ func TestGetWsBindingToken_NotWebsocket_422(t *testing.T) {
 	})
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/Subscription/"+id.String()+"/$get-ws-binding-token", nil)
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d", resp.StatusCode)
@@ -648,7 +681,10 @@ func TestRoutes_NotFoundIsOperationOutcome(t *testing.T) {
 	t.Parallel()
 	deps := defaultDeps(t)
 	srv := newTestServer(t, defaultPrincipal(), deps)
-	resp, _ := http.Get(srv.URL + "/no/such/path")
+	resp, err := http.Get(srv.URL + "/no/such/path")
+	if err != nil {
+		t.Fatalf("http: %v", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d", resp.StatusCode)

@@ -20,20 +20,20 @@ const (
 // IssueType values used on OperationOutcome.issue[*].code per the
 // IssueType ValueSet (https://hl7.org/fhir/R5/valueset-issue-type.html).
 const (
-	CodeInvalid       = "invalid"
-	CodeStructure     = "structure"
-	CodeValue         = "value"
-	CodeNotFound      = "not-found"
-	CodeForbidden     = "forbidden"
-	CodeSecurity      = "security"
-	CodeLogin         = "login"
-	CodeConflict      = "conflict"
-	CodeNotSupported  = "not-supported"
-	CodeBusinessRule  = "business-rule"
-	CodeProcessing    = "processing"
-	CodeException     = "exception"
-	CodeTransient     = "transient"
-	CodeThrottled     = "throttled"
+	CodeInvalid      = "invalid"
+	CodeStructure    = "structure"
+	CodeValue        = "value"
+	CodeNotFound     = "not-found"
+	CodeForbidden    = "forbidden"
+	CodeSecurity     = "security"
+	CodeLogin        = "login"
+	CodeConflict     = "conflict"
+	CodeNotSupported = "not-supported"
+	CodeBusinessRule = "business-rule"
+	CodeProcessing   = "processing"
+	CodeException    = "exception"
+	CodeTransient    = "transient"
+	CodeThrottled    = "throttled"
 )
 
 // Issue is one entry in OperationOutcome.issue.
