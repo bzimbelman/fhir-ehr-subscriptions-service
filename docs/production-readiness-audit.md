@@ -122,7 +122,7 @@ Every finding from the audit (BLOCKER, SHOULD-FIX sub-bullet, NICE-TO-HAVE polis
 | S-8.3 | Permanent build errors retried | RESOLVED | `acd798d` | `isPermanentBuildError` |
 | S-8.4 | `MaxAttempts` not per-channel-type | RESOLVED | `acd798d` | `RetryConfig.PerChannel` |
 | S-8.5 | Jitter uncapped | RESOLVED | `acd798d` | `MaxJitter=0.5` clamp |
-| S-8.6 | Inline UPDATE SQL in worker | DEFERRED | — | full migration to DeliveriesRepo tracked under storage refactor |
+| S-8.6 | Inline UPDATE SQL in worker | RESOLVED | story/51 | Decision-driven UPDATEs go through `DeliveriesRepo.{MarkDelivered, MarkPending, MarkDead}`; worker no longer references `deliveries` column names |
 | S-9.1 | MLLP read goroutine no per-message frame deadline | RESOLVED | story/52 | `FrameAssemblyTimeout` (default 30s) on `ListenerConfig`; `ErrFrameDeadline` + `MetricFrameDeadlineExceeded` |
 | S-9.2 | `persistCtx` decoupled — `PersistTimeout` cap missing | RESOLVED | story/52 | `Validate` rejects `PersistTimeout > ShutdownDrainGrace` with explicit error |
 | S-9.3 | `isClosedConnErr` substring-matches "closed" | RESOLVED | `acd798d` | `errors.Is(net.ErrClosed)` |

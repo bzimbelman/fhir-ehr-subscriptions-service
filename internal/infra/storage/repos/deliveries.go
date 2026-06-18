@@ -101,15 +101,45 @@ func (r *DeliveriesRepo) ClaimPending(ctx context.Context, tx pgx.Tx, limit int3
 	return out, nil
 }
 
-// MarkDelivered transitions a row to delivered.
-func (r *DeliveriesRepo) MarkDelivered(ctx context.Context, q Querier, id uuid.UUID) error {
+// MarkDelivered transitions a row to delivered, recording the post-attempt
+// count and clearing last_error. The scheduler calls this from the
+// ActionMarkDelivered branch after a successful channel.Deliver (S-8.6).
+func (r *DeliveriesRepo) MarkDelivered(ctx context.Context, q Querier, id uuid.UUID, attempts int32) error {
 	const sql = `
 		UPDATE deliveries
-		SET status = 'delivered', updated_at = now()
-		WHERE id = $1`
-	_, err := q.Exec(ctx, sql, id)
-	if err != nil {
+		   SET status = 'delivered', attempts = $2, last_error = NULL, updated_at = now()
+		 WHERE id = $1`
+	if _, err := q.Exec(ctx, sql, id, attempts); err != nil {
 		return fmt.Errorf("deliveries: mark delivered: %w", err)
+	}
+	return nil
+}
+
+// MarkPending requeues a row for a future retry. The scheduler calls this
+// from the ActionRescheduleTransient branch — both the post-channel
+// outcome path and the bail-out paths (S-8.6).
+func (r *DeliveriesRepo) MarkPending(ctx context.Context, q Querier, id uuid.UUID, attempts int32, nextAttemptAt time.Time, reason string) error {
+	const sql = `
+		UPDATE deliveries
+		   SET status = 'pending', attempts = $2, next_attempt_at = $3,
+		       last_error = $4, updated_at = now()
+		 WHERE id = $1`
+	if _, err := q.Exec(ctx, sql, id, attempts, nextAttemptAt, reason); err != nil {
+		return fmt.Errorf("deliveries: mark pending: %w", err)
+	}
+	return nil
+}
+
+// MarkDead transitions a row to the terminal 'dead' status. The scheduler
+// calls this from the ActionDeadLetter branch; the dead_letters insert is
+// performed separately under the same transaction (S-8.6).
+func (r *DeliveriesRepo) MarkDead(ctx context.Context, q Querier, id uuid.UUID, attempts int32, reason string) error {
+	const sql = `
+		UPDATE deliveries
+		   SET status = 'dead', attempts = $2, last_error = $3, updated_at = now()
+		 WHERE id = $1`
+	if _, err := q.Exec(ctx, sql, id, attempts, reason); err != nil {
+		return fmt.Errorf("deliveries: mark dead: %w", err)
 	}
 	return nil
 }
