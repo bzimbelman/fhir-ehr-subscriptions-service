@@ -1,0 +1,26 @@
+apiVersion: v2
+name: fhir-subs
+description: FHIR Subscriptions service bridging FHIR Subscriptions on the subscriber side and EHR systems on the back side.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/bzimbelman/fhir-ehr-subscriptions-service
+sources:
+  - https://github.com/bzimbelman/fhir-ehr-subscriptions-service
+maintainers:
+  - name: fhir-ehr-subscriptions-service maintainers
+icon: https://www.hl7.org/fhir/assets/images/fhir-logo-www.png
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - fhir
+  - subscriptions
+  - hl7
+  - mllp
+  - ehr
+annotations:
+  category: Healthcare
+# Postgres is intentionally an external dependency. The chart deploys against
+# an operator-managed Postgres (CrunchyData PGO, Zalando, CloudNativePG, RDS,
+# etc.) to keep the chart focused and to align with production patterns where
+# stateful services are managed separately. See README.md for setup recipes.
+dependencies: []

@@ -1,0 +1,68 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "fhir-subs.fullname" . }}
+  labels:
+    {{- include "fhir-subs.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "fhir-subs.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # API port
+    - ports:
+        - port: api
+          protocol: TCP
+      {{- with .Values.networkPolicy.ingress.api.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    # MLLP port
+    - ports:
+        - port: mllp
+          protocol: TCP
+      {{- with .Values.networkPolicy.ingress.mllp.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    # Probe + metrics ports
+    - ports:
+        - port: probes
+          protocol: TCP
+        - port: metrics
+          protocol: TCP
+      {{- with .Values.networkPolicy.ingress.probes.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.dns.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    {{- end }}
+    {{- if .Values.networkPolicy.egress.postgres.enabled }}
+    - to:
+        - podSelector:
+            {{- toYaml .Values.networkPolicy.egress.postgres.podSelector | nindent 12 }}
+      ports:
+        - port: {{ .Values.networkPolicy.egress.postgres.port }}
+          protocol: TCP
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.extraRules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

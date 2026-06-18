@@ -1,0 +1,260 @@
+# Default values for fhir-subs. See deploy/helm/README.md for the full
+# reference of every key.
+
+# Number of replicas. With multi-instance support (P2.10) the schedulers and
+# matchers cooperate via advisory locks; values >1 are safe in production.
+replicaCount: 2
+
+image:
+  repository: ghcr.io/bzimbelman/fhir-ehr-subscriptions-service
+  pullPolicy: IfNotPresent
+  # Empty string means use Chart.appVersion.
+  tag: ""
+  # Image digest (sha256:...). When set, overrides `tag` for supply-chain
+  # pinning (reproducible deploys, image signature workflows).
+  digest: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# Distroless static image runs as nonroot (uid 65532).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+service:
+  type: ClusterIP
+  apiPort: 8443
+  probePort: 8081
+  mllpPort: 2575
+  metricsPort: 9090
+  annotations: {}
+
+# Ingress is intentionally optional. The API talks TLS directly, so most
+# clusters want a Gateway / Ingress doing TLS passthrough rather than
+# re-terminating, since clients (subscribers) can use mTLS.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    enabled: true
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    timeoutSeconds: 3
+    # (failureThreshold * periodSeconds) = total budget for first migration +
+    # bind. Default = 5 minutes.
+    failureThreshold: 60
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+  # Set to a number to enable; null leaves memory-based HPA off.
+  targetMemoryUtilizationPercentage: null
+
+podDisruptionBudget:
+  enabled: true
+  # Either minAvailable OR maxUnavailable. Default: keep at least 1 up.
+  minAvailable: 1
+  maxUnavailable: null
+
+# Default-locks ingress to API/probe/MLLP and egress to DNS, Postgres, and
+# any subscriber endpoints you allow. Tune for your cluster.
+networkPolicy:
+  enabled: true
+  ingress:
+    api:
+      # Empty `from` allows ingress to the API port from any pod in the same
+      # namespace. Override with explicit selectors in production.
+      from: []
+    mllp:
+      from: []
+    probes:
+      # kubelet-driven probes come from the node. Empty `from` allows the
+      # cluster default; override only if your CNI requires explicit allow.
+      from: []
+  egress:
+    dns:
+      enabled: true
+    postgres:
+      enabled: true
+      # Match your Postgres service. Operator charts (PGO etc.) name the
+      # primary service `<cluster>-primary`; adjust the selector to match.
+      podSelector:
+        matchLabels:
+          postgres-operator.crunchydata.com/role: master
+      port: 5432
+    extraRules: []
+
+# Service config mounted at /etc/fhir-subs/config.yaml inside the container.
+# Use ${env:VAR} or ${file:/path} placeholders for any secret value.
+config:
+  contents: |
+    deployment:
+      facility_id: example
+      environment: dev
+      log_level: info
+      log_format: json
+    server:
+      http:
+        bind: ":8443"
+        probe_bind: ":8081"
+        tls:
+          cert_file: /etc/fhir-subs/tls/tls.crt
+          key_file: /etc/fhir-subs/tls/tls.key
+    lifecycle:
+      shutdown_grace_period: 30s
+      postgres_probe_timeout: 5s
+    storage:
+      postgres:
+        url: ${env:DATABASE_URL}
+        pool_size: 16
+        statement_timeout: 30s
+      encryption:
+        at_rest_key: ${file:/etc/fhir-subs/secrets/at_rest_key}
+    auth:
+      schemes:
+        - bearer
+      jwks:
+        cache_ttl: 5m
+    adapter:
+      id: default
+    observability:
+      metrics:
+        bind: ":9090"
+
+# External Secrets Operator (ESO). When enabled the chart creates an
+# ExternalSecret that syncs the listed keys from your secret store backend
+# into a Kubernetes Secret that this chart consumes.
+externalSecrets:
+  enabled: false
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+  refreshInterval: 1h
+  # dataKey (target secret key) -> remoteRef (path in your store).
+  data:
+    DATABASE_URL:
+      remoteRef:
+        key: fhir-subs/db
+        property: url
+    at_rest_key:
+      remoteRef:
+        key: fhir-subs/at-rest-key
+  # When set, no ExternalSecret is created and the named Secret is mounted
+  # as-is.
+  existingSecret: ""
+
+# Without ESO, supply secrets out of band and tell the chart the Secret
+# name + the env / file mounts you want.
+secrets:
+  existingSecret: ""
+  env:
+    - name: DATABASE_URL
+      key: DATABASE_URL
+  files:
+    - key: at_rest_key
+      mountPath: /etc/fhir-subs/secrets/at_rest_key
+
+# TLS certificate for the public Subscriptions API. The most common pattern
+# is cert-manager-managed: set existingSecret to the Secret created by your
+# Certificate resource.
+tls:
+  enabled: true
+  existingSecret: ""
+  mountPath: /etc/fhir-subs/tls
+
+# Migration init container. Runs the same image with --check-config so the
+# pod fails fast on bad config before the main container attempts startup.
+# Schema migrations themselves run in the main container guarded by a
+# Postgres advisory lock (B-33), which is multi-replica safe.
+migrationInit:
+  enabled: true
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Optional sidecar for log collection / OTel agent / Vector. Keep empty in
+# the typical case where you use a node-level agent.
+sidecars: []
+
+extraVolumes: []
+extraVolumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+# Default antiaffinity spreads replicas across nodes.
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: fhir-subs
+          topologyKey: kubernetes.io/hostname
+topologySpreadConstraints: []
+
+# Optional Prometheus Operator ServiceMonitor.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  portName: metrics
+  path: /metrics
+  namespaceSelector: {}
+  labels: {}
+  honorLabels: true
