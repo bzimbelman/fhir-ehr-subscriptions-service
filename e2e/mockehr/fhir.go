@@ -116,8 +116,8 @@ func (s *FHIRStore) handlePut(w http.ResponseWriter, req *http.Request, rType, i
 	defer req.Body.Close()
 
 	var resource map[string]any
-	if err := json.Unmarshal(body, &resource); err != nil {
-		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+	if uerr := json.Unmarshal(body, &resource); uerr != nil {
+		http.Error(w, "invalid json: "+uerr.Error(), http.StatusBadRequest)
 		return
 	}
 

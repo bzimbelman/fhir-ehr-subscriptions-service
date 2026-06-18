@@ -37,8 +37,8 @@ const (
 
 // ORC-1 control codes used by the harness.
 const (
-	ORCControlNew    = "NW"
-	ORCControlCancel = "CA"
+	ORCControlNew     = "NW"
+	ORCControlCancel  = "CA"
 	ORCControlReplace = "RP"
 )
 

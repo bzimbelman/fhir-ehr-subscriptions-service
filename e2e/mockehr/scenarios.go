@@ -68,11 +68,11 @@ func (c *ControlPlane) Handler() http.Handler {
 }
 
 type admitPatientReq struct {
-	PatientID   string `json:"patient_id"`
-	MessageID   string `json:"message_id"`
-	Trigger     string `json:"trigger"`
-	FamilyName  string `json:"family_name"`
-	GivenName   string `json:"given_name"`
+	PatientID  string `json:"patient_id"`
+	MessageID  string `json:"message_id"`
+	Trigger    string `json:"trigger"`
+	FamilyName string `json:"family_name"`
+	GivenName  string `json:"given_name"`
 }
 
 func (c *ControlPlane) handleAdmitPatient(w http.ResponseWriter, req *http.Request) {
@@ -159,11 +159,11 @@ func (c *ControlPlane) handleFinalizeLab(w http.ResponseWriter, req *http.Reques
 }
 
 type cancelAndReplaceReq struct {
-	PlacerOrderID         string `json:"placer_order_id"`
-	FillerOrderID         string `json:"filler_order_id"`
-	PatientID             string `json:"patient_id"`
-	CancelMessageID       string `json:"cancel_message_id"`
-	ReplacementMessageID  string `json:"replacement_message_id"`
+	PlacerOrderID        string `json:"placer_order_id"`
+	FillerOrderID        string `json:"filler_order_id"`
+	PatientID            string `json:"patient_id"`
+	CancelMessageID      string `json:"cancel_message_id"`
+	ReplacementMessageID string `json:"replacement_message_id"`
 }
 
 func (c *ControlPlane) handleCancelAndReplace(w http.ResponseWriter, req *http.Request) {
@@ -240,7 +240,7 @@ func (c *ControlPlane) handleBurstMessages(w http.ResponseWriter, req *http.Requ
 		}
 	}
 	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(fmt.Sprintf(`{"emitted":%d}`, body.Count)))
+	_, _ = fmt.Fprintf(w, `{"emitted":%d}`, body.Count)
 }
 
 // send is the shared exit path for one-shot scenario emitters: send the

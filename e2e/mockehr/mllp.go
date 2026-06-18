@@ -93,25 +93,25 @@ func (c *MLLPClient) Send(ctx context.Context, body []byte) ([]byte, error) {
 	}
 	_ = conn.SetDeadline(deadline)
 
-	if _, err := conn.Write(frameMLLP(body)); err != nil {
-		return nil, fmt.Errorf("mockehr: write frame: %w", err)
+	if _, writeErr := conn.Write(frameMLLP(body)); writeErr != nil {
+		return nil, fmt.Errorf("mockehr: write frame: %w", writeErr)
 	}
 
 	buf := make([]byte, 4096)
 	var acc bytes.Buffer
 	for {
-		n, err := conn.Read(buf)
+		n, readErr := conn.Read(buf)
 		if n > 0 {
 			acc.Write(buf[:n])
 		}
 		if bytes.Contains(acc.Bytes(), []byte{mllpEndBlock, mllpCR}) {
 			break
 		}
-		if err != nil {
-			if err == io.EOF {
+		if readErr != nil {
+			if readErr == io.EOF {
 				break
 			}
-			return nil, fmt.Errorf("mockehr: read ACK: %w", err)
+			return nil, fmt.Errorf("mockehr: read ACK: %w", readErr)
 		}
 	}
 	ack, err := unframeMLLP(acc.Bytes())

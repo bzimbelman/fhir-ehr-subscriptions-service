@@ -35,11 +35,11 @@ func TestControlPlane_AdmitPatient_EmitsADT(t *testing.T) {
 	defer srv.Close()
 
 	body := map[string]any{
-		"patient_id":   "MRN9001",
-		"message_id":   "ADT-CP-1",
-		"trigger":      "A01",
-		"family_name":  "Doe",
-		"given_name":   "Jane",
+		"patient_id":  "MRN9001",
+		"message_id":  "ADT-CP-1",
+		"trigger":     "A01",
+		"family_name": "Doe",
+		"given_name":  "Jane",
 	}
 	postJSON(t, srv.URL+"/scenarios/admit_patient", body)
 
@@ -89,10 +89,10 @@ func TestControlPlane_CancelAndReplaceOrder_EmitsTwoLinkedFrames(t *testing.T) {
 	defer srv.Close()
 
 	body := map[string]any{
-		"placer_order_id": "PL-CP-2",
-		"filler_order_id": "FL-CP-2",
-		"patient_id":      "MRN9002",
-		"cancel_message_id":     "ORM-CA-CP-2",
+		"placer_order_id":        "PL-CP-2",
+		"filler_order_id":        "FL-CP-2",
+		"patient_id":             "MRN9002",
+		"cancel_message_id":      "ORM-CA-CP-2",
 		"replacement_message_id": "ORM-NW-CP-2",
 	}
 	postJSON(t, srv.URL+"/scenarios/cancel_and_replace_order", body)

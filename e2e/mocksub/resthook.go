@@ -65,17 +65,23 @@ func (r *ReceivedNotification) UnmarshalJSON(data []byte) error {
 
 // RestHookReceiver journals POSTs to /hook/{subscription_id} and exposes
 // a control plane the orchestrator drives.
+//
+// inserted is broadcast (closed-and-replaced) on every successful insert
+// so handleAssertNotificationReceived can wake out of its wait without
+// polling the journal. A close-and-replace channel pattern is used in
+// preference to sync.Cond because it composes naturally with the
+// timeout select in the assertion handler.
 type RestHookReceiver struct {
-	mu      sync.Mutex
-	journal []ReceivedNotification
-	cond    *sync.Cond
+	mu       sync.Mutex
+	journal  []ReceivedNotification
+	inserted chan struct{}
 }
 
 // NewRestHookReceiver returns an empty receiver.
 func NewRestHookReceiver() *RestHookReceiver {
-	r := &RestHookReceiver{}
-	r.cond = sync.NewCond(&r.mu)
-	return r
+	return &RestHookReceiver{
+		inserted: make(chan struct{}),
+	}
 }
 
 // Received returns a copy of the journal filtered by subscription id; "" returns all.
@@ -132,8 +138,10 @@ func (r *RestHookReceiver) handleHook(w http.ResponseWriter, req *http.Request) 
 
 	r.mu.Lock()
 	r.journal = append(r.journal, entry)
-	r.cond.Broadcast()
+	prev := r.inserted
+	r.inserted = make(chan struct{})
 	r.mu.Unlock()
+	close(prev)
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -163,8 +171,10 @@ func (r *RestHookReceiver) handleJournal(w http.ResponseWriter, req *http.Reques
 	}
 	r.mu.Lock()
 	r.journal = nil
-	r.cond.Broadcast()
+	prev := r.inserted
+	r.inserted = make(chan struct{})
 	r.mu.Unlock()
+	close(prev)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -187,30 +197,33 @@ func (r *RestHookReceiver) handleAssertNotificationReceived(w http.ResponseWrite
 		body.TimeoutMs = 5000
 	}
 	deadline := time.Now().Add(time.Duration(body.TimeoutMs) * time.Millisecond)
+	timeout := time.NewTimer(time.Until(deadline))
+	defer timeout.Stop()
 
-	// Use a poll loop with the cond var so we wake on broadcast but also
-	// honor the timeout precisely. We do not rely on the request's
-	// context cancellation because tests deliberately need a 408
-	// response, not a connection close.
-	r.mu.Lock()
+	// Wait on inserted-channel + timeout. We deliberately don't honor
+	// the request's context cancellation because tests need to observe
+	// a 408 status, not a connection close.
 	for {
+		r.mu.Lock()
 		matched := r.matchesLocked(body.SubscriptionID)
+		signal := r.inserted
+		r.mu.Unlock()
+
 		if matched != nil {
-			r.mu.Unlock()
 			writeJSON(w, http.StatusOK, matched)
 			return
 		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			r.mu.Unlock()
+		if time.Now().After(deadline) {
 			http.Error(w, "timeout waiting for notification", http.StatusRequestTimeout)
 			return
 		}
-		// Sleep with the lock released; broadcast on insert wakes us up.
-		r.mu.Unlock()
-		t := time.NewTimer(min(remaining, 50*time.Millisecond))
-		<-t.C
-		r.mu.Lock()
+		select {
+		case <-signal:
+			// New entry inserted; loop and re-check.
+		case <-timeout.C:
+			http.Error(w, "timeout waiting for notification", http.StatusRequestTimeout)
+			return
+		}
 	}
 }
 
@@ -228,11 +241,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
 }

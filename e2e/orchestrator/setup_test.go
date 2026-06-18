@@ -8,6 +8,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -94,8 +95,14 @@ var allowNoDocker bool
 // testcontainers v0.34's MustExtractDockerHost panics on missing socket
 // rather than returning an error, so setupHarness is wrapped in a
 // defer/recover that converts the panic into harnessSetupErr.
+//
+// `go test -short` and the E2E_ALLOW_NO_DOCKER=1 env var are both
+// treated as "developer is intentionally running without the harness"
+// signals. They flip dockerGate from fail-loud to skip-loud. CI sets
+// neither.
 func TestMain(m *testing.M) {
-	allowNoDocker = os.Getenv("E2E_ALLOW_NO_DOCKER") == "1"
+	flag.Parse()
+	allowNoDocker = os.Getenv("E2E_ALLOW_NO_DOCKER") == "1" || testing.Short()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()

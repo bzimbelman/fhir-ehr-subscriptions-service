@@ -18,36 +18,36 @@ import (
 
 func TestFakeSMTP_AcceptsAndJournalsMessage(t *testing.T) {
 	t.Parallel()
-	s, err := StartFakeSMTP("127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("start smtp: %v", err)
+	s, startErr := StartFakeSMTP("127.0.0.1:0")
+	if startErr != nil {
+		t.Fatalf("start smtp: %v", startErr)
 	}
 	defer s.Close()
 
 	addr := s.Addr().String()
 	host, _, _ := net.SplitHostPort(addr)
-	c, err := smtp.Dial(addr)
-	if err != nil {
-		t.Fatalf("smtp.Dial: %v", err)
+	c, dialErr := smtp.Dial(addr)
+	if dialErr != nil {
+		t.Fatalf("smtp.Dial: %v", dialErr)
 	}
 	defer c.Close()
 
-	if err := c.Hello(host); err != nil {
-		t.Fatalf("hello: %v", err)
+	if helloErr := c.Hello(host); helloErr != nil {
+		t.Fatalf("hello: %v", helloErr)
 	}
-	if err := c.Mail("sender@example.com"); err != nil {
-		t.Fatalf("mail: %v", err)
+	if mailErr := c.Mail("sender@example.com"); mailErr != nil {
+		t.Fatalf("mail: %v", mailErr)
 	}
-	if err := c.Rcpt("subscriber@example.com"); err != nil {
-		t.Fatalf("rcpt: %v", err)
+	if rcptErr := c.Rcpt("subscriber@example.com"); rcptErr != nil {
+		t.Fatalf("rcpt: %v", rcptErr)
 	}
-	wc, err := c.Data()
-	if err != nil {
-		t.Fatalf("data: %v", err)
+	wc, dataErr := c.Data()
+	if dataErr != nil {
+		t.Fatalf("data: %v", dataErr)
 	}
 	body := "Subject: Notification\r\n\r\nHello world\r\n"
-	if _, err := wc.Write([]byte(body)); err != nil {
-		t.Fatalf("write: %v", err)
+	if _, writeErr := wc.Write([]byte(body)); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
 	}
 	if err := wc.Close(); err != nil {
 		t.Fatalf("close data: %v", err)

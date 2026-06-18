@@ -99,24 +99,24 @@ func startEchoMLLPListener(t *testing.T, kind ackKind) *echoListener {
 		t.Fatalf("listen: %v", err)
 	}
 	go func() {
-		conn, err := l.Accept()
-		if err != nil {
+		conn, acceptErr := l.Accept()
+		if acceptErr != nil {
 			return
 		}
 		defer conn.Close()
 		buf := make([]byte, 4096)
 		var acc bytes.Buffer
 		for {
-			conn.SetReadDeadline(time.Now().Add(time.Second))
-			n, err := conn.Read(buf)
+			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			n, readErr := conn.Read(buf)
 			if n > 0 {
 				acc.Write(buf[:n])
 			}
 			if bytes.Contains(acc.Bytes(), []byte{0x1C, 0x0D}) {
 				break
 			}
-			if err != nil {
-				if err == io.EOF {
+			if readErr != nil {
+				if readErr == io.EOF {
 					break
 				}
 				return
