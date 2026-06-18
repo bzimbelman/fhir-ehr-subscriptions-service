@@ -164,8 +164,8 @@ func TestServer_TimeoutsConfigured(t *testing.T) {
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
-			Bind:     pickFreeAddr(t),
-			Insecure: true,
+			Bind:              pickFreeAddr(t),
+			Insecure:          true,
 			ReadHeaderTimeout: 2 * time.Second,
 			ReadTimeout:       3 * time.Second,
 			WriteTimeout:      11 * time.Second,

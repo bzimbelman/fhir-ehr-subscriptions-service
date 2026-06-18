@@ -16,29 +16,33 @@ Roughly **30 BLOCKERs**, **~70 SHOULD-FIX**, **~30 NICE-TO-HAVE**. The system ha
 
 ### BLOCKER
 
-#### B-1: `/readyz` always returns 503 in production entry point
+#### B-1: `/readyz` always returns 503 in production entry point — RESOLVED in commits 35b2cea, 192ab8e
 - **File:** `cmd/fhir-subs/probes.go:59-75`, `cmd/fhir-subs/run.go:69-72`
 - **What:** `makeReadyz` is hardcoded to write `unready: ["all_components"]`; the probe handler is never replaced by the real `lifecycle.Module.Probes()` output.
 - **Why it matters:** k8s will mark every pod NotReady forever; no traffic ever flows in a real cluster.
 - **Fix:** Wire the lifecycle module's readiness aggregator into the probe mux before `markStartupComplete()`.
+- **Resolution:** `cmd/fhir-subs/run.go` now constructs `lifecycle.LifecycleModule` and mounts `Probes().Readyz` on the HTTP mux. With no readiness checks registered the aggregator returns 200 ready; per-component checks (DB pool, etc.) plug in via `lcMod.RegisterReadiness(...)` when B-4's storage wiring lands. The hardcoded `failed=["all_components"]` 503 path is gone — the legacy `probeMux/makeReadyz/makeHealthz/makeStartup` helpers were removed entirely.
 
-#### B-2: HTTP server has no `WriteTimeout` / `IdleTimeout` / `MaxHeaderBytes`
+#### B-2: HTTP server has no `WriteTimeout` / `IdleTimeout` / `MaxHeaderBytes` — RESOLVED in commit 35b2cea
 - **File:** `cmd/fhir-subs/run.go:69-72`
 - **What:** Only `ReadHeaderTimeout` is set on the production `http.Server` that hosts every API and probe route.
 - **Why it matters:** Slowloris-style write-side hangs / unbounded idle conns; trivial DoS against the only HTTP listener.
 - **Fix:** Mirror the `lifecycle/probe_server.go` pattern (Write/Idle/MaxHeaderBytes); make values configurable.
+- **Resolution:** `HTTPConfig` gains `read_header_timeout`, `read_timeout`, `write_timeout`, `idle_timeout`, `max_header_bytes` (YAML keys, also `--set server.http.*`). Defaults `5s/30s/30s/120s/1MiB` are applied via `applyTimeoutDefaults` from both `loadConfig` and `runWithHooks` so every code path gets the safe values.
 
-#### B-3: `markStartupComplete()` fires before the system is actually ready
+#### B-3: `markStartupComplete()` fires before the system is actually ready — RESOLVED in commits 35b2cea, 192ab8e
 - **File:** `cmd/fhir-subs/run.go:50-89`
 - **What:** Liveness `/healthz` flips to OK as soon as the listener binds; DB, migrations, observability, lifecycle modules don't gate it.
 - **Why it matters:** A stuck pod that never finished startup will be considered live forever — k8s will not restart it.
 - **Fix:** Defer `markStartupComplete` until lifecycle Start returns success across all modules.
+- **Resolution:** `runWithHooks` now calls `lcMod.MarkStartupComplete()` only after `lifecycle.Start` succeeds AND the listener has bound. The shutdown path also routes through the lifecycle sequencer: `srv.Shutdown` is registered as a `PhaseCloseConnections` hook so the Phase-1 ProbeObserveWindow elapses (k8s observes `/readyz=503 shutting_down`) BEFORE the listener stops accepting. When B-4's storage/handlers/pipeline wiring lands, every module registers before this gate.
 
-#### B-4: Production `cmd/fhir-subs/run.go` never calls `handlers.RegisterRoutes` — the API is wired only in tests
+#### B-4: Production `cmd/fhir-subs/run.go` never calls `handlers.RegisterRoutes` — the API is wired only in tests — PARTIALLY RESOLVED (scaffolding) in commit 192ab8e; full wiring deferred
 - **File:** `cmd/fhir-subs/run.go` (whole file)
 - **What:** The HTTP server in run.go serves only the probe mux; `handlers.RegisterRoutes` (the real subscription API) is invoked only from tests / e2e harness.
 - **Why it matters:** Today the binary literally does not serve the FHIR subscription endpoints. A "real-world deployment" is impossible.
 - **Fix:** Construct the full router (subscriptions, $get-ws-binding-token, $events, $status, /metadata) inside run.go and mount it; gate behind auth + observability middleware.
+- **Status:** The new `buildHTTPMux` is the single seam where the lifecycle probes + `/metadata` are mounted today and where `handlers.RegisterRoutes` will plug in once the production binary gains config knobs for the database URL, codec key provider, auth issuer/audience/JWKS, channel constructors, and MLLP listener. The full wiring is intentionally deferred from this branch because each new dependency adds blast radius (DB connection failure modes, key rotation surface, channel TLS) that deserves its own RED/GREEN cycle on top of the lifecycle gate the B-1/B-2/B-3 fix already gives operators. The probe-only binary is now safe to deploy as a "known-not-yet-serving-API" stage; the same binary will gain the API + pipeline workers in the follow-up B-4-full commit.
 
 #### B-5: jwksCache map has no mutex; concurrent `/token` requests will fatal-error the process
 - **File:** `internal/api/auth/token_endpoint.go:352-393`
