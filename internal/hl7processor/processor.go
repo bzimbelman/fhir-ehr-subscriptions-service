@@ -238,8 +238,15 @@ func (p *Processor) claimAndProcessOnce(ctx context.Context) error {
 }
 
 // peekUnprocessed returns the ids of up to ClaimBatchSize unprocessed
-// queue rows. The intent here is purely to fan work out across multiple
-// process_one calls; the per-row tx reacquires FOR UPDATE on the row.
+// queue rows that are NOT currently held in pending_pairs. The intent
+// here is purely to fan work out across multiple process_one calls; the
+// per-row tx reacquires FOR UPDATE on the row.
+//
+// We exclude rows referenced by pending_pairs.source_message_id because
+// LLD §4.2 says held source rows stay processed=false (so a restart
+// resumes them via the reaper) but we must NOT re-claim them through
+// the normal claim loop or the framework will re-translate the held
+// half as a same-kind pair under its own correlation key.
 func (p *Processor) peekUnprocessed(ctx context.Context) ([]uuid.UUID, error) {
 	tx, err := p.deps.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -249,8 +256,11 @@ func (p *Processor) peekUnprocessed(ctx context.Context) ([]uuid.UUID, error) {
 
 	rows, err := tx.Query(ctx, `
 		SELECT id
-		FROM hl7_message_queue
+		FROM hl7_message_queue q
 		WHERE processed = false
+		  AND NOT EXISTS (
+		      SELECT 1 FROM pending_pairs p WHERE p.source_message_id = q.id
+		  )
 		ORDER BY received_at ASC
 		LIMIT $1`, p.cfg.ClaimBatchSize)
 	if err != nil {
