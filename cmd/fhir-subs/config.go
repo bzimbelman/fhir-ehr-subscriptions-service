@@ -95,7 +95,7 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
-	if len(strings.TrimSpace(string(body))) > 0 {
+	if strings.TrimSpace(string(body)) != "" {
 		// Use strict-ish parsing: malformed YAML is a startup error.
 		dec := yaml.NewDecoder(strings.NewReader(string(body)))
 		if err := dec.Decode(cfg); err != nil {
