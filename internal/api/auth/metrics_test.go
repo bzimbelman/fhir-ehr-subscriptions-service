@@ -38,9 +38,9 @@ func (t tokenFormData) body() io.Reader {
 
 // recordingMetrics captures auth failure reasons in-memory for assertions.
 type recordingMetrics struct {
-	mu             sync.Mutex
-	failures       map[string]int
-	tokensIssued   int
+	mu           sync.Mutex
+	failures     map[string]int
+	tokensIssued int
 }
 
 func newRecordingMetrics() *recordingMetrics {
