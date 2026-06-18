@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "lifecycle",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "shutdown_grace_period": {"type": "string"},
+    "postgres_probe_timeout": {"type": "string"}
+  }
+}

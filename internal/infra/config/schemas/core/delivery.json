@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "delivery",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "default_max_count": {"type": "integer", "minimum": 1},
+    "max_batch_wait": {"type": "string"},
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_attempts": {"type": "integer", "minimum": 1},
+        "backoff": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"type": "string", "enum": ["exponential", "fixed"]},
+            "initial": {"type": "string"},
+            "max": {"type": "string"},
+            "jitter": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
+      }
+    },
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_period": {"type": "string"},
+        "min_period": {"type": "string"},
+        "max_period": {"type": "string"}
+      }
+    }
+  }
+}

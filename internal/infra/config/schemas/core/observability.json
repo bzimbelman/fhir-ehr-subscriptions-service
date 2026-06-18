@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "observability",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bind": {"type": "string"}
+      }
+    },
+    "tracing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "otlp_endpoint": {"type": "string"},
+        "sample_rate": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "audit_log": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sink": {"type": "string", "enum": ["stdout", "file", "syslog", "otlp", "none"]},
+        "file_path": {"type": "string"}
+      }
+    }
+  }
+}
