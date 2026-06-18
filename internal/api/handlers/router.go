@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
@@ -226,6 +227,17 @@ type Deps struct {
 	// relation pointing at the next eventsSinceNumber. Zero means
 	// DefaultEventReplayPageSize. (S-2.15)
 	EventReplayPageSize int
+
+	// SubscriptionCreateRateLimit, when non-nil, gates POST /Subscription
+	// behind a per-client token bucket so a single rogue client cannot
+	// starve others. Nil disables rate limiting on this endpoint
+	// (legacy behavior). (S-3.3)
+	SubscriptionCreateRateLimit *auth.ClientRateLimiter
+
+	// WSBindingTokenRateLimit, when non-nil, gates the
+	// $get-ws-binding-token operation behind a per-client token bucket.
+	// Nil disables rate limiting on this endpoint. (S-3.3)
+	WSBindingTokenRateLimit *auth.ClientRateLimiter
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
