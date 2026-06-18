@@ -53,6 +53,14 @@ type Config struct {
 	// fail the fanout transaction before it gets dead-lettered
 	// (S-12). Default 8. Without this a poison row pins the worker.
 	MaxRowAttempts int32
+	// CursorAdvanceBatchSize bounds how many (subscription_id,
+	// event_number) pairs are flushed in a single batched UPDATE of
+	// `events_since_subscription_start` (story #56 — S-12.4). Default
+	// 1000. Postgres caps each extended-protocol bind at 65535
+	// parameters and the planner cost of a giant unnest grows with
+	// the array length, so we cap it to keep the per-flush UPDATE
+	// snappy on hot topics.
+	CursorAdvanceBatchSize int
 }
 
 // ApplyDefaults fills zero values per the LLD.
@@ -74,6 +82,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.MaxRowAttempts == 0 {
 		c.MaxRowAttempts = 8
+	}
+	if c.CursorAdvanceBatchSize == 0 {
+		c.CursorAdvanceBatchSize = 1000
 	}
 }
 
@@ -373,6 +384,29 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 	}
 
 	matched := 0
+	// Per-subscription cursor batch (story #56 — S-12.4). The pre-#56
+	// fanout issued one inline UPDATE of events_since_subscription_start
+	// per Match, so a topic with N hot subscriptions paid N UPDATE
+	// round-trips inside the fanout transaction. We accumulate
+	// (subscription_id, event_number) pairs while streaming and flush
+	// them via a single batched UPDATE keyed on
+	// `unnest($1::uuid[], $2::bigint[])`. The cap (CursorAdvanceBatchSize)
+	// keeps the per-flush UPDATE snappy and well under Postgres' 65535
+	// extended-protocol bind-parameter ceiling on truly hot topics.
+	batchCap := w.cfg.CursorAdvanceBatchSize
+	cursorIDs := make([]uuid.UUID, 0, batchCap)
+	cursorNums := make([]int64, 0, batchCap)
+	flushCursor := func() error {
+		if len(cursorIDs) == 0 {
+			return nil
+		}
+		if err := batchedAdvanceCursor(cctx, tx, cursorIDs, cursorNums); err != nil {
+			return err
+		}
+		cursorIDs = cursorIDs[:0]
+		cursorNums = cursorNums[:0]
+		return nil
+	}
 	// Reusable single-element slice fed to Evaluate so the pure
 	// evaluator's signature stays unchanged but we never grow a
 	// per-topic slab.
@@ -440,23 +474,21 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 				return fmt.Errorf("submatcher: insert delivery: %w", err)
 			}
 			// Advance the subscription's per-subscriber cursor in the
-			// same transaction. Cursor is the wire-visible
-			// eventsSinceSubscriptionStart; it must equal
-			// MAX(event_number) for the subscription so that the next
-			// fanout's GREATEST() compute is correct even if the
-			// scheduler is behind on actual delivery. The LLD
-			// distinguishes "delivered cursor" (advanced on Delivered)
-			// from "pending cursor"; the storage schema only holds one
-			// counter, which we treat as the pending counter at fanout
-			// time. Scheduler is the one that records "delivered."
-			if _, err := tx.Exec(cctx,
-				`UPDATE subscriptions
-				    SET events_since_subscription_start = GREATEST(events_since_subscription_start, $1),
-				        updated_at = now()
-				  WHERE id = $2`,
-				eventNum, d.Subscription.ID,
-			); err != nil {
-				return fmt.Errorf("submatcher: advance cursor: %w", err)
+			// same transaction. Story #56 (S-12.4): we accumulate the
+			// (subscription_id, event_number) pair and flush in one
+			// batched UPDATE per CursorAdvanceBatchSize (or once at
+			// the end of streaming, whichever comes first). The
+			// cursor is the wire-visible eventsSinceSubscriptionStart
+			// and must equal MAX(event_number) for the subscription so
+			// the next fanout's GREATEST() compute stays correct even
+			// if the scheduler is behind on actual delivery. The
+			// batched form preserves the GREATEST semantics per row.
+			cursorIDs = append(cursorIDs, d.Subscription.ID)
+			cursorNums = append(cursorNums, eventNum)
+			if len(cursorIDs) >= batchCap {
+				if err := flushCursor(); err != nil {
+					return err
+				}
 			}
 			matched++
 		case FanoutEvaluationError:
@@ -475,11 +507,48 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 		return fmt.Errorf("submatcher: stream subs: %w", err)
 	}
 
+	// Trailing flush of any pairs accumulated since the last cap-fill
+	// (or the only flush, when N <= cap).
+	if err := flushCursor(); err != nil {
+		return err
+	}
+
 	if _, err := w.ehr.MarkProcessed(cctx, tx, row.ID, row.CreatedMonth); err != nil {
 		return fmt.Errorf("submatcher: mark processed: %w", err)
 	}
 
 	w.metrics.EventProcessed(row.TopicURL, matched)
+	return nil
+}
+
+// batchedAdvanceCursor flushes a (subscription_id, event_number) batch
+// into one UPDATE statement on `subscriptions`. The form
+//
+//	UPDATE subscriptions
+//	   SET events_since_subscription_start =
+//	         GREATEST(events_since_subscription_start, batch.event_number),
+//	       updated_at = now()
+//	  FROM unnest($1::uuid[], $2::bigint[]) AS batch(id, event_number)
+//	 WHERE subscriptions.id = batch.id
+//
+// preserves the per-row GREATEST semantics of the pre-#56 inline
+// UPDATE while collapsing N round-trips into 1. Story #56 — S-12.4.
+func batchedAdvanceCursor(ctx context.Context, tx pgx.Tx, ids []uuid.UUID, nums []int64) error {
+	if len(ids) != len(nums) {
+		return fmt.Errorf("submatcher: cursor batch length mismatch: %d ids vs %d nums", len(ids), len(nums))
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	const sql = `
+		UPDATE subscriptions
+		   SET events_since_subscription_start = GREATEST(subscriptions.events_since_subscription_start, batch.event_number),
+		       updated_at = now()
+		  FROM unnest($1::uuid[], $2::bigint[]) AS batch(id, event_number)
+		 WHERE subscriptions.id = batch.id`
+	if _, err := tx.Exec(ctx, sql, ids, nums); err != nil {
+		return fmt.Errorf("submatcher: advance cursor: %w", err)
+	}
 	return nil
 }
 
