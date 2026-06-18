@@ -107,6 +107,17 @@ type Options struct {
 	MaxFrameBytes       int
 	TransientRetryAfter time.Duration
 	AckTimeout          time.Duration
+
+	// OriginPatterns is the allow-list of host patterns the upgrade
+	// handler accepts in the WebSocket handshake's Origin header (B-17).
+	// Patterns follow the coder/websocket AcceptOptions.OriginPatterns
+	// matcher: a host glob like "trusted.example" or "*.example.com".
+	// Empty / nil means "same-origin only" — cross-origin upgrades are
+	// rejected with HTTP 403. To opt into accepting upgrades from a
+	// browser hosted on a different domain, list its host explicitly.
+	// Reverse-proxy deployments behind TLS termination should set this
+	// to the public host(s) the browser sees, not the upstream service.
+	OriginPatterns []string
 }
 
 // Channel is the websocket notification channel.
@@ -121,6 +132,7 @@ type Channel struct {
 	maxFrameBytes       int
 	transientRetryAfter time.Duration
 	ackTimeout          time.Duration
+	originPatterns      []string
 
 	// sessions holds the at-most-one bound session per subscription.
 	mu       sync.Mutex
@@ -139,12 +151,26 @@ type session struct {
 
 	// ackMu protects the ack waiters map.
 	ackMu    sync.Mutex
-	ackWaits map[uint64]chan struct{}
+	ackWaits map[uint64]*ackWaiter
 
 	// closing is set when the read loop has terminated.
 	closing chan struct{}
 
 	logger *slog.Logger
+}
+
+// ackWaiter wraps the per-sequence ack channel with a sync.Once so the
+// channel is closed exactly once even when multiple paths race to close
+// it (B-18). Before this, deliverAck and any timed-out Deliver path
+// could each call close on the same channel under concurrent ack
+// arrival, panicking the goroutine.
+type ackWaiter struct {
+	ch   chan struct{}
+	once sync.Once
+}
+
+func (a *ackWaiter) closeOnce() {
+	a.once.Do(func() { close(a.ch) })
 }
 
 // New constructs a Channel. Tokens and Replayer are required.
@@ -166,6 +192,7 @@ func New(opts Options) (*Channel, error) {
 		maxFrameBytes:       opts.MaxFrameBytes,
 		transientRetryAfter: opts.TransientRetryAfter,
 		ackTimeout:          opts.AckTimeout,
+		originPatterns:      append([]string(nil), opts.OriginPatterns...),
 		sessions:            make(map[uuid.UUID]*session),
 	}
 	if c.now == nil {
@@ -211,16 +238,20 @@ func (c *Channel) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Channel) upgrade(w http.ResponseWriter, r *http.Request) {
+	// B-17: enforce Origin checking. Default-deny cross-origin
+	// upgrades; operators opt in via Options.OriginPatterns. The
+	// underlying coder/websocket library rejects with HTTP 403 when an
+	// upgrade request presents an Origin not on the list AND the host
+	// does not match. Reverse-proxy deployments do NOT check Origin —
+	// the application must.
 	conn, err := codingws.Accept(w, r, &codingws.AcceptOptions{
-		// InsecureSkipVerify is fine for tests using httptest with a
-		// matching Origin; for production deployments, operators set
-		// allowed origins via the host's TLS-terminating reverse proxy.
-		InsecureSkipVerify: true,
+		OriginPatterns: c.originPatterns,
 	})
 	if err != nil {
 		c.logger.WarnContext(r.Context(), "websocket accept failed",
 			slog.String("channel", channelName),
-			slog.String("err", err.Error()))
+			slog.String("err", err.Error()),
+			slog.String("origin", r.Header.Get("Origin")))
 		return
 	}
 
@@ -297,7 +328,7 @@ func (c *Channel) runConnection(ctx context.Context, conn *codingws.Conn) {
 		subID:    res.SubscriptionID,
 		clientID: res.ClientID,
 		conn:     conn,
-		ackWaits: make(map[uint64]chan struct{}),
+		ackWaits: make(map[uint64]*ackWaiter),
 		closing:  make(chan struct{}),
 		logger:   c.logger.With(slog.String("subscription_id", res.SubscriptionID.String())),
 	}
@@ -438,10 +469,22 @@ func (c *Channel) Deliver(ctx context.Context, env channel.NotificationEnvelope)
 
 	// Register the ack waiter BEFORE the write so we cannot miss an ack
 	// that arrives before we begin waiting.
-	var ackCh chan struct{}
+	var (
+		ackCh chan struct{}
+		w     *ackWaiter
+	)
 	if expectAck {
-		ackCh = sess.registerAck(env.Sequence)
-		defer sess.cancelAck(env.Sequence)
+		w = sess.registerAck(env.Sequence)
+		ackCh = w.ch
+		// On exit, remove from map and ensure the channel is closed
+		// exactly once. Without closeOnce on the cleanup path, a stray
+		// late client ack arriving after deliverAck removed our entry
+		// would close on a stale reference. With closeOnce, the close
+		// is single-owner regardless of who fires first (B-18).
+		defer func() {
+			sess.cancelAck(env.Sequence)
+			w.closeOnce()
+		}()
 	}
 
 	sess.sendMu.Lock()
@@ -528,29 +571,51 @@ func (c *Channel) observeOutcome(k channel.OutcomeKind) {
 
 // session methods.
 
-func (s *session) registerAck(eventNumber uint64) chan struct{} {
-	ch := make(chan struct{})
+// registerAck installs (or reuses) a single ackWaiter for eventNumber
+// and returns it. If a waiter already exists (e.g., a duplicate Deliver
+// call for the same sequence) the existing one is returned so both
+// callers wait on the same single-owner close.
+func (s *session) registerAck(eventNumber uint64) *ackWaiter {
 	s.ackMu.Lock()
-	s.ackWaits[eventNumber] = ch
-	s.ackMu.Unlock()
-	return ch
+	defer s.ackMu.Unlock()
+	if existing, ok := s.ackWaits[eventNumber]; ok {
+		return existing
+	}
+	w := &ackWaiter{ch: make(chan struct{})}
+	s.ackWaits[eventNumber] = w
+	return w
 }
 
+// cancelAck removes the waiter for eventNumber from the map. It does
+// NOT close the channel: the Deliver path that registered the waiter
+// owns the lifecycle through closeOnce, which is safe to invoke from
+// any goroutine. This keeps a stray late ack from observing a missing
+// map entry plus a double-close.
 func (s *session) cancelAck(eventNumber uint64) {
 	s.ackMu.Lock()
 	delete(s.ackWaits, eventNumber)
 	s.ackMu.Unlock()
 }
 
+// deliverAck wakes any goroutine waiting on the given eventNumber. It
+// is safe to invoke for unknown event numbers (no-op) and for the
+// same eventNumber from multiple goroutines (sync.Once guards the
+// close). Deliver removes the waiter from the map under ackMu before
+// closing so a late client ack does not see a stale entry.
+//
+// B-18: previously this path called close(ch) directly while the
+// matching Deliver could also close on the timeout path, panicking on
+// close-of-closed-channel. The closeOnce wrapper makes the close
+// single-owner regardless of who arrives first.
 func (s *session) deliverAck(eventNumber uint64) {
 	s.ackMu.Lock()
-	ch, ok := s.ackWaits[eventNumber]
+	w, ok := s.ackWaits[eventNumber]
 	if ok {
 		delete(s.ackWaits, eventNumber)
 	}
 	s.ackMu.Unlock()
 	if ok {
-		close(ch)
+		w.closeOnce()
 	}
 }
 

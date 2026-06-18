@@ -37,6 +37,11 @@ const (
 	MetricReadErrorsTotal       = "fhir_subs_mllp_read_errors"
 	MetricDisconnectMidFrame    = "fhir_subs_mllp_disconnect_mid_frame"
 	MetricDropForPersistFails   = "fhir_subs_mllp_drop_for_persist_failures"
+
+	// MetricConnectionsRefusedTotal counts TCP connections rejected by
+	// the admission semaphore (B-19): MaxConnections or
+	// MaxConnectionsPerIP exceeded.
+	MetricConnectionsRefusedTotal = "fhir_subs_mllp_connections_refused_total"
 )
 
 // Outcome label values for MetricMessagesAckedTotal.

@@ -74,11 +74,13 @@ type STARTTLSPolicy string
 const (
 	// STARTTLSRequired refuses to send if the relay does not advertise
 	// STARTTLS. Submission upgrades the connection before MAIL FROM.
+	// This is the default and the only safe policy for PHI traffic.
 	STARTTLSRequired STARTTLSPolicy = "required"
 	// STARTTLSPreferred upgrades when offered, falls back to plaintext
-	// when not. Default for backward compatibility with legacy relays.
+	// when not. WARNING: this enables a strip-STARTTLS MITM against PHI.
+	// Operators must opt in explicitly; New emits a startup WARN log.
 	STARTTLSPreferred STARTTLSPolicy = "preferred"
-	// STARTTLSDisabled never upgrades.
+	// STARTTLSDisabled never upgrades. Intended for closed local relays.
 	STARTTLSDisabled STARTTLSPolicy = "disabled"
 )
 
@@ -139,6 +141,14 @@ type Config struct {
 	// AuthIdentity is the optional PLAIN-mode identity. Empty for the
 	// usual "username = identity" case.
 	AuthIdentity string
+
+	// AllowCleartextAuth opts the operator into shipping AUTH credentials
+	// over a non-TLS connection. Default false. When false, New refuses
+	// to construct a Channel that could leak credentials in plaintext —
+	// i.e. STARTTLS=Disabled with a non-empty AuthMechanism. Required only
+	// for closed local relays where TLS is not available; almost always
+	// the wrong thing for a healthcare deployment (see B-15).
+	AllowCleartextAuth bool
 
 	// AttachmentThresholdBytes is the size at which the channel
 	// switches from inline body to multipart/mixed with the bundle as
@@ -211,7 +221,9 @@ func New(cfg Config) (*Channel, error) {
 		return nil, fmt.Errorf("email: SMTPPort %d out of range", cfg.SMTPPort)
 	}
 	if cfg.STARTTLS == "" {
-		cfg.STARTTLS = STARTTLSPreferred
+		// B-14: default to Required. Healthcare service shipping PHI in
+		// cleartext over the public network is a HIPAA breach.
+		cfg.STARTTLS = STARTTLSRequired
 	}
 	switch cfg.STARTTLS {
 	case STARTTLSRequired, STARTTLSPreferred, STARTTLSDisabled:
@@ -226,6 +238,16 @@ func New(cfg Config) (*Channel, error) {
 		}
 		if cfg.AuthUsername == "" {
 			return nil, errors.New("email: AuthUsername required for non-empty AuthMechanism")
+		}
+		// B-15: refuse to ship credentials over a connection that is
+		// definitionally plaintext. STARTTLS=Disabled with AUTH leaks
+		// the relay password on first AUTH frame. Operator must opt in
+		// via AllowCleartextAuth (closed-network deployments only).
+		if cfg.STARTTLS == STARTTLSDisabled && !cfg.AllowCleartextAuth {
+			return nil, fmt.Errorf(
+				"email: AuthMechanism %q with STARTTLS=disabled would ship credentials in plaintext; "+
+					"set AllowCleartextAuth=true only on a closed-network relay",
+				cfg.AuthMechanism)
 		}
 	}
 	if cfg.AttachmentThresholdBytes <= 0 {
@@ -254,6 +276,21 @@ func New(cfg Config) (*Channel, error) {
 	if cfg.dialFunc == nil {
 		cfg.dialFunc = defaultDial
 	}
+	// B-14: surface the strip-STARTTLS risk loud and clear when the
+	// operator opts into Preferred (or Disabled with AllowCleartextAuth).
+	switch cfg.STARTTLS {
+	case STARTTLSPreferred:
+		logger.Warn("email: STARTTLS=preferred allows plaintext fallback; PHI may be exposed to a MITM strip-STARTTLS attack",
+			slog.String("channel", channelName),
+			slog.String("policy", string(cfg.STARTTLS)),
+			slog.String("smtp_host", cfg.SMTPHost))
+	case STARTTLSDisabled:
+		logger.Warn("email: STARTTLS=disabled — all SMTP traffic is plaintext",
+			slog.String("channel", channelName),
+			slog.String("policy", string(cfg.STARTTLS)),
+			slog.String("smtp_host", cfg.SMTPHost),
+			slog.Bool("allow_cleartext_auth", cfg.AllowCleartextAuth))
+	}
 	return &Channel{cfg: cfg, metrics: metrics, logger: logger}, nil
 }
 
@@ -278,6 +315,13 @@ func (c *Channel) Deliver(ctx context.Context, env channel.NotificationEnvelope)
 
 // deliverInner does the work and returns the classified outcome.
 func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnvelope) channel.DeliveryOutcome {
+	// B-16: reject CRLF / control chars in the correlation id BEFORE any
+	// MIME assembly or wire I/O. This is a header-injection sink and the
+	// channel must fail closed permanently.
+	if err := validateHeaderToken(env.CorrelationID); err != nil {
+		return channel.PermanentFailure(fmt.Sprintf("invalid correlation id: %v", err))
+	}
+
 	rcpt, err := parseMailto(env.SubscriptionEndpoint)
 	if err != nil {
 		return channel.PermanentFailure(fmt.Sprintf("invalid mailto endpoint: %v", err))
@@ -491,11 +535,62 @@ func buildSummary(env channel.NotificationEnvelope) string {
 }
 
 // writeHeader writes a single MIME header line followed by CRLF.
+//
+// As a defense-in-depth against header injection (B-16), CR / LF in the
+// header value are stripped here so a buggy caller cannot leak smuggled
+// headers into the wire. Envelope-level validation is the primary
+// control; this is the redundant inner check.
 func writeHeader(w *bytes.Buffer, name, value string) {
 	w.WriteString(name)
 	w.WriteString(": ")
-	w.WriteString(value)
+	w.WriteString(stripCRLF(value))
 	w.WriteString("\r\n")
+}
+
+// stripCRLF removes any CR or LF byte from s. Other whitespace is left
+// intact. Used at writeHeader as belt-and-braces against header
+// injection — primary validation lives at envelope construction.
+func stripCRLF(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\r' || c == '\n' {
+			continue
+		}
+		b = append(b, c)
+	}
+	return string(b)
+}
+
+// validateHeaderToken rejects a string that would forge SMTP / MIME
+// headers if interpolated into a header value. It is the primary B-16
+// control: envelope-level rejection before any wire I/O.
+//
+// The rule: no CR (0x0D), no LF (0x0A), no NUL (0x00), no other C0
+// control characters except HTAB (0x09). The character set is otherwise
+// permissive — RFC 2822 allows VCHAR + WSP, and the correlation_id is
+// a UUID in practice but we accept any printable ASCII to keep the
+// validator decoupled from the correlation package's own format check.
+func validateHeaderToken(s string) error {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\r':
+			return fmt.Errorf("CR at offset %d", i)
+		case c == '\n':
+			return fmt.Errorf("LF at offset %d", i)
+		case c == 0x00:
+			return fmt.Errorf("NUL at offset %d", i)
+		case c < 0x20 && c != '\t':
+			return fmt.Errorf("control byte 0x%02x at offset %d", c, i)
+		case c == 0x7F:
+			return fmt.Errorf("DEL at offset %d", i)
+		}
+	}
+	return nil
 }
 
 // writeBase64 writes value as a base64-encoded body, line-folded at 76
