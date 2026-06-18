@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "channels",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "rest_hook": {"type": "object"},
+    "websocket": {"type": "object"},
+    "email": {"type": "object"},
+    "message": {"type": "object"},
+    "custom": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "module": {"type": "string"},
+          "config": {"type": "object"}
+        },
+        "required": ["id"]
+      }
+    }
+  }
+}

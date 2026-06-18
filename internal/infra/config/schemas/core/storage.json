@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "storage",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "postgres": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": {"type": "string", "minLength": 1, "x-sensitive": true},
+        "pool_size": {"type": "integer", "minimum": 1},
+        "statement_timeout": {"type": "string"}
+      },
+      "required": ["url"]
+    },
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "at_rest_key": {"type": "string", "x-sensitive": true}
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "hl7_message_queue": {"type": "string"},
+        "resource_changes": {"type": "string"},
+        "ehr_events": {"type": "string"},
+        "deliveries": {"type": "string"},
+        "dead_letters": {"type": "string"},
+        "audit_log": {"type": "string"}
+      }
+    }
+  },
+  "required": ["postgres"]
+}

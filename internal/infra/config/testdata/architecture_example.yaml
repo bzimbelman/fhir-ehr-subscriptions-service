@@ -1,0 +1,148 @@
+# Canonical example YAML from docs/architecture.md "Configuration".
+# Used by the configuration module's integration test.
+deployment:
+  facility_id: "memorial-hospital-east"
+  environment: "production"
+  log_level: "info"
+  log_format: "json"
+
+server:
+  http:
+    bind: "0.0.0.0:8443"
+    tls:
+      cert_file: "/etc/fhir-subs/tls.crt"
+      key_file: "/etc/fhir-subs/tls.key"
+    probe_bind: null
+  websocket:
+    enabled: true
+    max_connections: 10000
+
+lifecycle:
+  shutdown_grace_period: "30s"
+  postgres_probe_timeout: "2s"
+
+storage:
+  postgres:
+    url: "${env:DATABASE_URL}"
+    pool_size: 16
+    statement_timeout: "30s"
+  encryption:
+    at_rest_key: "${env:STORAGE_ENCRYPTION_KEY}"
+  retention:
+    hl7_message_queue: "7d"
+    resource_changes: "30d"
+    ehr_events: "30d"
+    deliveries: "90d"
+    dead_letters: "180d"
+    audit_log: "7y"
+
+auth:
+  schemes: ["smart-backend-services"]
+  jwks:
+    cache_ttl: "1h"
+  trusted_issuers:
+    - issuer: "https://idp.example.org"
+      jwks_url: "https://idp.example.org/.well-known/jwks.json"
+      audience: "https://fhir-subs.example.org"
+  client_registry:
+    - id: "lab-results-consumer"
+      jwks_url: "https://lab.example.org/.well-known/jwks.json"
+      scopes: ["system/Subscription.cruds", "system/SubscriptionTopic.r"]
+
+topics:
+  catalog_dir: "/etc/fhir-subs/topics"
+  value_sets_dir: "/etc/fhir-subs/value-sets"
+
+mllp_listener:
+  endpoints:
+    - name: adt-feed
+      bind: "0.0.0.0:2575"
+      tls: false
+      allowed_message_types: ["ADT"]
+    - name: orders-results-feed
+      bind: "0.0.0.0:2576"
+      tls: false
+      allowed_message_types: ["ORM", "ORU"]
+
+adapter:
+  id: "epic"
+  version_pin: ">=2024.1"
+  config:
+    fhir_base_url: "https://fhir.example-hospital.org/api/FHIR/R4"
+    fhir_auth:
+      kind: "smart-backend-services"
+      client_id: "${env:EPIC_CLIENT_ID}"
+      private_key_file: "/run/secrets/epic-key.pem"
+      token_url: "https://fhir.example-hospital.org/oauth2/token"
+    hl7v2:
+      ack_mode: "AL"
+    interconnect:
+      base_url: "https://interconnect.example-hospital.org"
+      api_key: "${env:EPIC_INTERCONNECT_KEY}"
+
+channels:
+  rest_hook:
+    user_agent: "fhir-subscriptions-foss/1.0"
+    request_timeout: "30s"
+    max_retries: 8
+    backoff: "exponential"
+
+  websocket:
+    ping_interval: "30s"
+    idle_timeout: "5m"
+
+  email:
+    enabled: true
+    mode: "smtp"
+    from: "no-reply@example-hospital.org"
+    smtp:
+      host: "smtp.example-hospital.org"
+      port: 587
+      starttls: "required"
+      auth:
+        username: "${env:SMTP_USERNAME}"
+        password: "${env:SMTP_PASSWORD}"
+        mechanism: "PLAIN"
+      timeout: "30s"
+      pool_size: 4
+    body:
+      attachment_threshold_bytes: 65536
+
+  message:
+    fhir_message_endpoint_default: null
+
+  custom:
+    - id: "kafka"
+      module: "channels/kafka"
+      config:
+        brokers: ["kafka-1:9092", "kafka-2:9092"]
+        topic_prefix: "fhir-subs"
+        auth:
+          mechanism: "SASL_SSL"
+          username: "${env:KAFKA_USER}"
+          password: "${env:KAFKA_PASSWORD}"
+
+delivery:
+  default_max_count: 1
+  max_batch_wait: "30s"
+  retry:
+    max_attempts: 8
+    backoff:
+      kind: "exponential"
+      initial: "10s"
+      max: "1h"
+      jitter: 0.2
+  heartbeat:
+    default_period: "5m"
+    min_period: "1m"
+    max_period: "1h"
+
+observability:
+  metrics:
+    bind: "0.0.0.0:9090"
+  tracing:
+    otlp_endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
+    sample_rate: 0.1
+  audit_log:
+    sink: "stdout"
+    file_path: "/var/log/fhir-subs/audit.log"

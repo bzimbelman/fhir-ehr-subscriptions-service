@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "deployment",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "facility_id": {"type": "string", "minLength": 1},
+    "environment": {"type": "string", "enum": ["production", "staging", "dev"]},
+    "log_level": {"type": "string", "enum": ["trace", "debug", "info", "warn", "error"]},
+    "log_format": {"type": "string", "enum": ["json", "text"]}
+  },
+  "required": ["facility_id"]
+}

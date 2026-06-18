@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "topics",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "catalog_dir": {"type": "string"},
+    "value_sets_dir": {"type": "string"}
+  }
+}

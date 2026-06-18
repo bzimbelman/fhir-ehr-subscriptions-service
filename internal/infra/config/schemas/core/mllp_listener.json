@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mllp_listener",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "endpoints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "bind": {"type": "string", "minLength": 1},
+          "tls": {"type": "boolean"},
+          "allowed_message_types": {"type": ["array", "null"], "items": {"type": "string"}}
+        },
+        "required": ["name", "bind"]
+      }
+    }
+  }
+}

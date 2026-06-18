@@ -1,0 +1,34 @@
+name: e2e
+
+# The e2e suite spins up Postgres via testcontainers and exercises the
+# mocks end-to-end. It is opt-in per PR via the `run-e2e` label so the
+# default PR experience stays fast; pushing to main always runs it.
+
+on:
+  pull_request:
+    types: [labeled, synchronize, opened, reopened]
+  push:
+    branches: [main]
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    # Run on:
+    #   - any push to main
+    #   - any PR carrying the `run-e2e` label
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'run-e2e')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+      - run: go mod download
+      - name: Run e2e suite
+        run: go test -race -tags e2e ./e2e/... -count=1 -v
