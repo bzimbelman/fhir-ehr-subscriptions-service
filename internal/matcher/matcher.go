@@ -940,12 +940,12 @@ type MetricsEmitter interface {
 // nopMetrics is the default zero-allocation no-op emitter.
 type nopMetrics struct{}
 
-func (nopMetrics) ResourceChangeClaimed(string)        {}
-func (nopMetrics) TopicEvaluated(string)               {}
-func (nopMetrics) TopicMatch(string)                   {}
-func (nopMetrics) FHIRPathTimeout(string)              {}
-func (nopMetrics) EvaluateDuration(string, float64)    {}
-func (nopMetrics) EhrEventEmitted()                    {}
+func (nopMetrics) ResourceChangeClaimed(string)     {}
+func (nopMetrics) TopicEvaluated(string)            {}
+func (nopMetrics) TopicMatch(string)                {}
+func (nopMetrics) FHIRPathTimeout(string)           {}
+func (nopMetrics) EvaluateDuration(string, float64) {}
+func (nopMetrics) EhrEventEmitted()                 {}
 
 // metricsEmitter is the process-global emitter. Wiring installs once at
 // startup; the matcher reads via load on the hot path.

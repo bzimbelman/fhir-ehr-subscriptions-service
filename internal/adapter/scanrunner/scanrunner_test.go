@@ -17,10 +17,10 @@ import (
 )
 
 type fakeRunner struct {
-	plan    []spi.ScanTarget
-	pages   [][]spi.FhirResource // each call to RunScan returns the next page
-	cursor  int
-	mu      sync.Mutex
+	plan   []spi.ScanTarget
+	pages  [][]spi.FhirResource // each call to RunScan returns the next page
+	cursor int
+	mu     sync.Mutex
 }
 
 func (f *fakeRunner) ScanPlan() []spi.ScanTarget { return f.plan }

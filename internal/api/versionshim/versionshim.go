@@ -83,7 +83,7 @@ func Negotiate(acceptHeader string) (Version, error) {
 //   - endpoint:            →       channel.endpoint
 //   - content:             →       channel.payload (R4B uses the same field for content style)
 //   - header:              →       channel.header (array of strings — R5 uses an array of objects; we
-//                                  flatten {name,value} pairs into "Name: Value" strings per the IG)
+//     flatten {name,value} pairs into "Name: Value" strings per the IG)
 //   - heartbeatPeriod:     →       channel.heartbeatPeriod (seconds, integer)
 //   - timeout:             →       channel.timeout (seconds, integer)
 //   - reason:                      stays at top-level
@@ -91,8 +91,8 @@ func Negotiate(acceptHeader string) (Version, error) {
 //   - error:                       stays at top-level
 //   - id:                          stays at top-level
 //   - filterBy:            →       criteria-filter Backport extension (we emit it under
-//                                  `_criteria.extension` per the IG; if no filterBy is present,
-//                                  the extension is omitted)
+//     `_criteria.extension` per the IG; if no filterBy is present,
+//     the extension is omitted)
 //
 // On any unexpected shape we fall back to returning the input bytes
 // unchanged — better to ship the R5 form than fail the read. The
@@ -167,7 +167,7 @@ func RenderSubscriptionR4B(r5Body []byte) ([]byte, error) {
 					continue
 				}
 				ext = append(ext, map[string]any{
-					"url": "http://hl7.org/fhir/uv/subscriptions-backport/StructureDefinition/backport-filter-criteria",
+					"url":         "http://hl7.org/fhir/uv/subscriptions-backport/StructureDefinition/backport-filter-criteria",
 					"valueString": filterByToCriteriaString(m),
 				})
 			}

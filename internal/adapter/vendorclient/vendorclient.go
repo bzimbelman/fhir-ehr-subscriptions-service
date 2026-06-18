@@ -73,9 +73,9 @@ type Worker struct {
 	sink      RowSink
 	clock     func() time.Time
 
-	initialCursor   []byte
-	backoffInitial  time.Duration
-	backoffMax      time.Duration
+	initialCursor  []byte
+	backoffInitial time.Duration
+	backoffMax     time.Duration
 
 	mu     sync.Mutex
 	cursor []byte
