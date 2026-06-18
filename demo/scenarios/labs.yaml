@@ -1,0 +1,60 @@
+# Demo publisher catalog — drives cmd/demo-publisher.
+#
+# Each entry produces one HL7 v2 message that demo-publisher frames over
+# MLLP and sends to the bridge's listener. The publisher prints a "→ send"
+# line and a "← ACK" line per message.
+#
+# Schema:
+#   messages:                      # required, non-empty
+#     - description: string         # printed in the trailing column
+#       delay: duration             # Go time.ParseDuration syntax (1s, 500ms)
+#       template: oru-r01|adt-a01   # required; closed set
+#       fields:                     # required; must include patient_id
+#         patient_id: string         # required for both templates
+#         observation_code: string   # oru-r01 only — LOINC like "718-7"
+#         value: string              # oru-r01 only
+#         unit: string               # oru-r01 only
+#         reference_range: string    # oru-r01 only (optional)
+#         abnormal_flag: string      # oru-r01 only (optional)
+#         family_name: string        # adt-a01 only (optional, defaults Doe)
+#         given_name: string         # adt-a01 only (optional, defaults Jane)
+#         facility: string           # adt-a01 only (optional, prints in summary)
+#
+# Operator demo flow: register a Subscription against the lab-results topic
+# with filter patient=ABC123, then run this catalog. Two of the four sends
+# match the subscription, one is filtered out by patient, one by topic.
+
+messages:
+  - description: "Lab result for patient ABC123 (matches subscription)"
+    delay: 1s
+    template: oru-r01
+    fields:
+      patient_id: "ABC123"
+      observation_code: "718-7"
+      value: "13.5"
+      unit: "g/dL"
+
+  - description: "Lab result for patient XYZ999 (filtered OUT — wrong patient)"
+    delay: 2s
+    template: oru-r01
+    fields:
+      patient_id: "XYZ999"
+      observation_code: "718-7"
+      value: "12.0"
+      unit: "g/dL"
+
+  - description: "Encounter admit for ABC123 (filtered OUT — wrong topic)"
+    delay: 3s
+    template: adt-a01
+    fields:
+      patient_id: "ABC123"
+      facility: "Demo Hospital"
+
+  - description: "Lab result for patient ABC123 (matches subscription)"
+    delay: 4s
+    template: oru-r01
+    fields:
+      patient_id: "ABC123"
+      observation_code: "789-8"
+      value: "4.5"
+      unit: "10^6/uL"
