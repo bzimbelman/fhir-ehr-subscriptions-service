@@ -215,3 +215,43 @@ func TestLoadConfig_ApplySetsBadFormat(t *testing.T) {
 		t.Fatal("expected error for malformed --set")
 	}
 }
+
+// TestApplySets_RedactsValueOnError asserts that when --set fails parsing
+// (bad bool, bad duration, bad int) the error MUST NOT echo the raw RHS
+// because the value can carry a secret (e.g. `--set
+// channels.email.smtp_password=hunter2`). A future stricter loader will
+// support every dotted key; until then the failure path here is the
+// place an operator's secret is most likely to reach a log via stderr.
+// (S-1.1)
+func TestApplySets_RedactsValueOnError(t *testing.T) {
+	t.Parallel()
+
+	p := writeTempYAML(t, minimalValidYAML)
+	cfg, _ := loadConfig(p)
+
+	cases := []struct {
+		name string
+		set  string
+		bad  string
+	}{
+		{name: "bad bool", set: "server.http.insecure=hunter2", bad: "hunter2"},
+		{name: "bad duration", set: "lifecycle.shutdown_grace_period=hunter2", bad: "hunter2"},
+		{name: "bad int", set: "server.http.max_header_bytes=hunter2", bad: "hunter2"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := applySets(cfg, []string{tc.set})
+			if err == nil {
+				t.Fatalf("expected error for %q", tc.set)
+			}
+			if strings.Contains(err.Error(), tc.bad) {
+				t.Fatalf("error must not echo raw value %q: %v", tc.bad, err)
+			}
+			if !strings.Contains(err.Error(), "<redacted>") {
+				t.Fatalf("error should indicate redaction: %v", err)
+			}
+		})
+	}
+}
