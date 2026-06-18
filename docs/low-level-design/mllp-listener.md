@@ -490,20 +490,20 @@ The `persist_timeout` MUST be strictly less than `storage.postgres.statement_tim
 All metrics carry an `endpoint` label.
 
 Counters:
-- `mllp_received_total` — frames persisted and ACKed.
-- `mllp_ack_total` — ACK^AA writes attempted.
-- `mllp_nack_total{reason}` — `inflight_cap`, `message_type`, `persist_transient`, `persist_permanent`, `msh9_unparseable`.
-- `mllp_drop_for_persist_failures` — connections dropped at the consecutive-failure threshold.
-- `mllp_disconnect_mid_frame` — peer closed inside an open frame.
-- `mllp_malformed_total{reason}` — framing rejections, by `MalformedReason`.
-- `mllp_accept_errors`, `mllp_read_errors` — socket-level errors.
+- `fhir_subs_mllp_received_total` — frames persisted and ACKed.
+- `fhir_subs_mllp_ack_total` — ACK^AA writes attempted.
+- `fhir_subs_mllp_nack_total{reason}` — `inflight_cap`, `message_type`, `persist_transient`, `persist_permanent`, `msh9_unparseable`.
+- `fhir_subs_mllp_drop_for_persist_failures` — connections dropped at the consecutive-failure threshold.
+- `fhir_subs_mllp_disconnect_mid_frame` — peer closed inside an open frame.
+- `fhir_subs_mllp_malformed_total{reason}` — framing rejections, by `MalformedReason`.
+- `fhir_subs_mllp_accept_errors`, `fhir_subs_mllp_read_errors` — socket-level errors.
 
 Histograms:
-- `mllp_persist_duration_ms` — INSERT + COMMIT latency. Buckets tuned around the fast path (1–10 ms) and the `persist_timeout` boundary.
+- `fhir_subs_mllp_persist_duration_ms` — INSERT + COMMIT latency. Buckets tuned around the fast path (1–10 ms) and the `persist_timeout` boundary.
 
 Gauges:
-- `mllp_active_connections` — open TCP connections per endpoint.
-- `mllp_inflight_per_connection` — summary distribution; surfaces per-connection-cap hits.
+- `fhir_subs_mllp_active_connections` — open TCP connections per endpoint.
+- `fhir_subs_mllp_inflight_per_connection` — summary distribution; surfaces per-connection-cap hits.
 
 Every log line carries a stable field subset: `endpoint`, `peer_addr`, `connection_id` (UUID per TCP connection), `correlation_id` (UUID matching the persisted row, letting operators pivot from a log line to a `hl7_message_queue` row to a downstream `resource_changes` row), `mllp_message_id` (when extractable), and `event` (one of `accept`, `frame_received`, `persisted`, `acked`, `nacked`, `dropped`, `malformed`, `disconnect_mid_frame`, `shutdown_drain_start`, `shutdown_drain_complete`).
 
@@ -515,16 +515,16 @@ Every error class the listener can encounter, what it does in response, what it 
 
 | Error class | Cause | Listener response | Log / metric | Recovery / EHR expectation |
 |---|---|---|---|---|
-| Malformed framing — start byte mid-frame | Peer software bug (rare) | Drop connection without ACK/NACK | `warn`, `mllp_malformed_total{reason=UnexpectedStartByteMidFrame}` | EHR reconnects; per-message MLLP retries |
+| Malformed framing — start byte mid-frame | Peer software bug (rare) | Drop connection without ACK/NACK | `warn`, `fhir_subs_mllp_malformed_total{reason=UnexpectedStartByteMidFrame}` | EHR reconnects; per-message MLLP retries |
 | Malformed framing — end before start | Junk bytes from a misbehaving peer | Discard junk, continue reading | `debug`, count noise bytes | None |
-| Oversized message (`> max_message_bytes`) | Peer sent unreasonably large body, or framing went wrong | Drop connection without ACK/NACK | `warn`, `mllp_malformed_total{reason=OversizedMessage}` | EHR reconnects; operator should investigate peer |
-| Peer disconnect mid-message | Network blip, peer restart | Drop in-flight buffer, exit task | `info`, `mllp_disconnect_mid_frame` | EHR reconnects, re-sends un-ACKed messages |
+| Oversized message (`> max_message_bytes`) | Peer sent unreasonably large body, or framing went wrong | Drop connection without ACK/NACK | `warn`, `fhir_subs_mllp_malformed_total{reason=OversizedMessage}` | EHR reconnects; operator should investigate peer |
+| Peer disconnect mid-message | Network blip, peer restart | Drop in-flight buffer, exit task | `info`, `fhir_subs_mllp_disconnect_mid_frame` | EHR reconnects, re-sends un-ACKed messages |
 | Read idle timeout | Idle connection beyond `read_idle_timeout` | Close connection | `debug`, no error metric | EHR reconnects on next message |
-| Inflight cap reached | Slow downstream causing per-connection backlog | NACK^AE this message; do not drop yet | `warn`, `mllp_nack_inflight_cap` | EHR holds and re-sends after backoff |
-| Disallowed `MSH-9` (`allowed_message_types` filter) | Misconfigured peer or wrong endpoint | NACK^AE this message | `warn`, `mllp_nack_message_type` | Operator: route the feed to the correct endpoint |
-| DB write transient (pool exhausted, statement timeout, retryable PG error) | Postgres slow / saturated | NACK^AE; increment `consecutive_persist_failures`; drop connection if threshold hit | `warn`, `mllp_nack_persist_transient` (and `mllp_drop_for_persist_failures` on drop) | EHR holds and re-sends; downstream / DBA addresses backlog |
-| DB write permanent (integrity violation, connection-string mis-config) | Programmer error or schema drift | NACK^AE this message; do not drop on first occurrence (the EHR will retry the same payload and likely fail again — operator-visible) | `error`, `mllp_nack_persist_permanent` | Operator action required — programmer error |
-| ACK write failure after commit | TCP socket broken between commit and ACK write | Log; metrics already incremented for `received_total`; let connection_task exit | `warn`, no row state change | EHR will time out and re-send; downstream idempotency dedupes |
+| Inflight cap reached | Slow downstream causing per-connection backlog | NACK^AE this message; do not drop yet | `warn`, `fhir_subs_mllp_nack_total{reason=inflight_cap}` | EHR holds and re-sends after backoff |
+| Disallowed `MSH-9` (`allowed_message_types` filter) | Misconfigured peer or wrong endpoint | NACK^AE this message | `warn`, `fhir_subs_mllp_nack_total{reason=message_type}` | Operator: route the feed to the correct endpoint |
+| DB write transient (pool exhausted, statement timeout, retryable PG error) | Postgres slow / saturated | NACK^AE; increment `consecutive_persist_failures`; drop connection if threshold hit | `warn`, `fhir_subs_mllp_nack_total{reason=persist_transient}` (and `fhir_subs_mllp_drop_for_persist_failures` on drop) | EHR holds and re-sends; downstream / DBA addresses backlog |
+| DB write permanent (integrity violation, connection-string mis-config) | Programmer error or schema drift | NACK^AE this message; do not drop on first occurrence (the EHR will retry the same payload and likely fail again — operator-visible) | `error`, `fhir_subs_mllp_nack_total{reason=persist_permanent}` | Operator action required — programmer error |
+| ACK write failure after commit | TCP socket broken between commit and ACK write | Log; metrics already incremented for `fhir_subs_mllp_received_total`; let connection_task exit | `warn`, no row state change | EHR will time out and re-send; downstream idempotency dedupes |
 | Bind failure at startup | Port already in use, missing TLS material | Fail fast: `MllpListener::start` returns error | `error`, no metric | Operator action required |
 
 The matrix's load-bearing rule: **the listener never ACKs without a successful Postgres COMMIT**, and **it never refuses to ACK a successfully-committed row** (the row is durable; a failed ACK write is an EHR-side retry, not a listener-side rollback).
@@ -545,13 +545,13 @@ Graceful shutdown: idle connections close immediately on Draining; connection wi
 
 ### 9.2 Integration tests (TCP loopback + Postgres)
 
-- Single endpoint, single client, 100 sequential messages — all persisted in order, all ACKed, `received_total = 100`.
+- Single endpoint, single client, 100 sequential messages — all persisted in order, all ACKed, `fhir_subs_mllp_received_total = 100`.
 - Single endpoint, 16 concurrent clients — every message persisted exactly once, no cross-connection framer corruption.
 - Three endpoints with disjoint `allowed_message_types` — wrong-endpoint messages NACKed, right-endpoint pass.
 - DB outage: pause Postgres writes 10s; NACKs accumulate, `consecutive_persist_failures` advances, connection drops at threshold, EHR-emulator reconnects after Postgres resumes, every message eventually persisted.
 - Slow DB: hold each INSERT for `persist_timeout + 1s`; timeouts produce NACKs, no rows leak, no ACKs without commit.
 - Graceful shutdown drain: 50 messages mid-stream, SIGTERM, all 50 persisted-and-ACKed before exit, no NACKs during drain.
-- Peer disconnect mid-message: client sends `0x0B` + half a body and closes; no row written, `mllp_disconnect_mid_frame` incremented.
+- Peer disconnect mid-message: client sends `0x0B` + half a body and closes; no row written, `fhir_subs_mllp_disconnect_mid_frame` incremented.
 
 ### 9.3 Conformance scenarios
 

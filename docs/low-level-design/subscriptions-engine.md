@@ -247,7 +247,7 @@ fn evaluate_candidates(self, event: EhrEventRow, candidates: Vec<SubscriptionRow
 
 ### Filter evaluation, auth re-check, and the zero-match invariant
 
-`FilterEvaluator` is the same `core/filter` module the Topic Matcher uses, accepting the same supported subset of search-parameter expressions and FHIRPath. The matcher passes both `event.resource` and `event.previous_resource` so previous-state filter semantics work without re-loading. A filter that errors at runtime produces `EvaluationError`: the matcher skips that subscription for that event, increments `filter_runtime_errors`, and lights an operator alert if the per-subscription rate crosses a threshold.
+`FilterEvaluator` is the same `core/filter` module the Topic Matcher uses, accepting the same supported subset of search-parameter expressions and FHIRPath. The matcher passes both `event.resource` and `event.previous_resource` so previous-state filter semantics work without re-loading. A filter that errors at runtime produces `EvaluationError`: the matcher skips that subscription for that event, increments `fhir_subs_filter_runtime_errors_total`, and lights an operator alert if the per-subscription rate crosses a threshold.
 
 `AuthValidator.recheck_scopes` performs the spec-mandated delivery-time scope check. `Revoked` skips the delivery row and triggers the audit + transition path. `Error` (auth backend unreachable) is treated as transient — the `ehr_events` row is left unprocessed and the next loop pass retries. Persistent auth outage is a separate operational alert.
 
@@ -357,7 +357,7 @@ async fn build_full_resource_entries(self, job: BuildJob) -> Result<Vec<BundleEn
             match self.ctx.hydration.fetch_resource(r, hydration_deadline(job)).await {
                 Ok(res)                                  => { cache.map.insert(r, res); entries.push(BundleEntry { resource: res }) }
                 Err(HydrationError::Timeout | Network)   => return Err(BuildError::HydrationTransient(r)),  // scheduler retries
-                Err(HydrationError::NotFound)            => self.ctx.metrics.inc("hydration_skipped_not_found"),  // best-effort include
+                Err(HydrationError::NotFound)            => self.ctx.metrics.inc("fhir_subs_hydration_skipped_not_found"),  // best-effort include
                 Err(HydrationError::Forbidden)           => return Err(BuildError::HydrationForbidden(r)),  // scheduler dead-letters
             }
         }
@@ -731,7 +731,7 @@ async fn apply_update(self, sub_id: Uuid, new_state: SubscriptionRow, drain: boo
 }
 ```
 
-The drain is bounded by `delivery.drain_max_wait` (default 60s, > `max_batch_wait` so the drain has time to wait for one full flush window). If drain exceeds the bound, the in-flight batch is dropped — its `pending` rows are flipped to `failed_permanent` with reason `drain_timeout` and dead-lettered. The metric `update_drain_timeouts_total` increments. This is expected to be exceedingly rare because the drain only has to wait for one in-flight envelope to finish or one batch flush window to elapse.
+The drain is bounded by `delivery.drain_max_wait` (default 60s, > `max_batch_wait` so the drain has time to wait for one full flush window). If drain exceeds the bound, the in-flight batch is dropped — its `pending` rows are flipped to `failed_permanent` with reason `drain_timeout` and dead-lettered. The metric `fhir_subs_update_drain_timeouts_total` increments. This is expected to be exceedingly rare because the drain only has to wait for one in-flight envelope to finish or one batch flush window to elapse.
 
 `PUT` on a subscription in `error` is allowed: the scheduler applies the change against the stored row and the next retry uses the new state. `PUT` on a subscription in `off` (terminated) is rejected at the API.
 
@@ -825,7 +825,7 @@ The matrix below is exhaustive for the engine's failure surface. "Outcome" is wh
 | Hydration timeout / network error | Builder, returns `BuildError::HydrationTransient` | Delivery treated as transient: row stays/returns to `pending`, `attempts` incremented, retry curve applied | Same as endpoint timeout (counts toward `consecutive_failures`) | Inspect adapter Hydration Service; possible EHR slowdown |
 | Hydration `NotFound` | Builder | Resource skipped in Bundle; build proceeds | None | None — expected when EHR has deleted a referenced resource |
 | Hydration `Forbidden` | Builder, returns `BuildError::HydrationForbidden` | `deliveries` row dead-lettered | Increment `consecutive_failures`; possible transition to `off` if subscription has lost EHR-side access | Audit; revoke subscription if appropriate |
-| Filter evaluation runtime error | Matcher | No `deliveries` row written for that event for that subscription; `filter_runtime_errors` metric increments | None on first failure; consistent failure across many events lights operator alert | Fix the filter expression (subscriber must `PUT` a corrected filter) |
+| Filter evaluation runtime error | Matcher | No `deliveries` row written for that event for that subscription; `fhir_subs_filter_runtime_errors_total` metric increments | None on first failure; consistent failure across many events lights operator alert | Fix the filter expression (subscriber must `PUT` a corrected filter) |
 | Authorization revoked at delivery prep | Matcher | No `deliveries` row written; subscription transitioned to `error` (or `off` per `auth.on_revoked`); audit entry written | `active` -> `error` (or `off`) | Re-register the subscriber or remove subscription |
 | Authorization backend unreachable | Matcher | Treated transient: `ehr_events` row not processed, `claimed_at` reset on next sweep | None (subscription untouched) | Investigate auth backend; matcher recovers when auth comes back |
 | Builder serialization error | Builder | Treated permanent: `deliveries` row dead-lettered with reason `serialization_error` | Increment `consecutive_failures` | Investigate; this is a server bug to fix, not a subscriber problem |
@@ -883,24 +883,24 @@ Prometheus names are notional. Tags listed where useful.
 
 | Metric | Type | Tags |
 |---|---|---|
-| `events_fanned_out_total` | counter | `topic_url` |
-| `ehr_events_zero_match_total` | counter | `topic_url` |
-| `deliveries_by_status` (pending, delivering, delivered, failed_transient, failed_permanent) | gauge | `status` |
-| `delivery_retry_count` (histogram of `attempts` at delivered or dead-letter) | histogram | `channel_type` |
-| `dead_letter_count_total` | counter | `channel_type`, `reason` |
-| `end_to_end_latency_seconds` (`delivered_at - ehr_events.occurred_at`) | histogram | `topic_url`, `payload_type` |
-| `fanout_to_delivery_latency_seconds` (engine-only slice) | histogram | `topic_url` |
-| `heartbeat_lag_seconds` (positive means overdue) | gauge | per subscription |
-| `heartbeats_sent_total`, `heartbeat_failures_total` | counter | `channel_type` |
-| `handshake_outcomes_total` (succeeded / failed / timeout) | counter | `outcome` |
-| `subscription_state_transitions_total` | counter | `from`, `to`, `reason` |
-| `update_drain_timeouts_total` (channel / filter_or_topic) | counter | `kind` |
-| `filter_runtime_errors_total` (sample at scrape, high-cardinality) | counter | `subscription_id`, `error_class` |
-| `auth_revoked_at_delivery_prep_total` | counter | `subscription_id` |
-| `hydration_call_total`, `hydration_transient_errors_total` | counter | `outcome`, `subscription_id` |
-| `bundle_size_bytes` | histogram | `payload_type` |
-| `cursor_advance_total` | counter | `subscription_id` |
-| `engine_postgres_unavailable_total` | counter | `stage` |
+| `fhir_subs_events_fanned_out_total` | counter | `topic_url` |
+| `fhir_subs_ehr_events_zero_match_total` | counter | `topic_url` |
+| `fhir_subs_deliveries_by_status` (pending, delivering, delivered, failed_transient, failed_permanent) | gauge | `status` |
+| `fhir_subs_delivery_retry_count` (histogram of `attempts` at delivered or dead-letter) | histogram | `channel_type` |
+| `fhir_subs_dead_letter_count_total` | counter | `channel_type`, `reason` |
+| `fhir_subs_end_to_end_latency_seconds` (`delivered_at - ehr_events.occurred_at`) | histogram | `topic_url`, `payload_type` |
+| `fhir_subs_fanout_to_delivery_latency_seconds` (engine-only slice) | histogram | `topic_url` |
+| `fhir_subs_heartbeat_lag_seconds` (positive means overdue) | gauge | per subscription |
+| `fhir_subs_heartbeats_sent_total`, `fhir_subs_heartbeat_failures_total` | counter | `channel_type` |
+| `fhir_subs_handshake_outcomes_total` (succeeded / failed / timeout) | counter | `outcome` |
+| `fhir_subs_subscription_state_transitions_total` | counter | `from`, `to`, `reason` |
+| `fhir_subs_update_drain_timeouts_total` (channel / filter_or_topic) | counter | `kind` |
+| `fhir_subs_filter_runtime_errors_total` (sample at scrape, high-cardinality) | counter | `subscription_id`, `error_class` |
+| `fhir_subs_auth_revoked_at_delivery_prep_total` | counter | `subscription_id` |
+| `fhir_subs_hydration_call_total`, `fhir_subs_hydration_transient_errors_total` | counter | `outcome`, `subscription_id` |
+| `fhir_subs_bundle_size_bytes` | histogram | `payload_type` |
+| `fhir_subs_cursor_advance_total` | counter | `subscription_id` |
+| `fhir_subs_engine_postgres_unavailable_total` | counter | `stage` |
 
 ## Test plan
 

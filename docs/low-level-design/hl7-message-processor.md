@@ -588,7 +588,7 @@ async fn flush_one_expired(ctx, correlation_key) {
         await insert_resource_change(tx, unpaired_change)
         await tx.commit()
 
-        ctx.metrics.inc("pairs_expired", { resource_type: row.resource_type })
+        ctx.metrics.inc("fhir_subs_pairs_expired", { resource_type: row.resource_type })
     } catch err {
         await tx.rollback()
         ctx.logger.error("expire_reaper transaction rolled back", { error: err })
@@ -777,7 +777,7 @@ When a dead-letter is emitted:
 | Postgres write of `resource_changes` fails | `process_one` | rolled back, stays unprocessed | none (tx rolled back) | none | `messages_processed{outcome=rolled_back}` |
 | Postgres write of `pending_pairs` fails | `process_one` | rolled back, stays unprocessed | none | none | `messages_processed{outcome=rolled_back}` |
 | Reaper transaction fails on partner-row mark-processed | `flush_one_expired` | unchanged | none | unchanged | logged; next reaper tick retries |
-| Hold-window race: partner arrives during reaper tick | both `on_partner_arrival` and `flush_one_expired` compete on `FOR UPDATE` | exactly one wins; the loser sees a missing row and no-ops | exactly one row emitted | row deleted exactly once | one of `pairs_resolved` or `pairs_expired` |
+| Hold-window race: partner arrives during reaper tick | both `on_partner_arrival` and `flush_one_expired` compete on `FOR UPDATE` | exactly one wins; the loser sees a missing row and no-ops | exactly one row emitted | row deleted exactly once | one of `fhir_subs_pairs_resolved` or `fhir_subs_pairs_expired` |
 | Same-kind pair (two cancellations under same key) | `on_partner_arrival` | the just-translated row is emitted plain; held row stays held | the just-translated row produces a plain `delete` | unchanged | logged at error level |
 | Process restart with held pairs | `run_claim_loop` startup hook | source rows still `processed=false` | none on startup | rows persisted; reaper resumes | none on startup |
 
@@ -815,7 +815,7 @@ The two interesting races -- "partner arrives during reaper" and "two workers cl
 - **Per-resource-type hold-window catalog shape.** This LLD assumes `correlation_hold_window(resource_type)` returns the right value; the configuration shape (map vs list-with-default) is left to the configuration domain.
 - **Reordered partners.** Resolved by [decisions/0008](../high-level-design/decisions/0008-resolved-design-questions.md#7): the framework holds replacements symmetrically with cancellations. Subscribers see the same merged `update` regardless of arrival order. Vendor `classify` is responsible for tagging both halves; the framework does the rest.
 - **Cross-listener correlation keys.** Resolved by [decisions/0008](../high-level-design/decisions/0008-resolved-design-questions.md#8): pairing is **same-endpoint only**. The framework includes `listener_endpoint` in the `pending_pairs` lookup key alongside `correlation_key`. Two halves arriving on different endpoints are treated as unrelated and emit as plain `delete` / `create`. Each unmatched cross-endpoint half increments `fhir_subs_pairs_cross_endpoint_unmatched_total` so operators can detect misconfigured feeds.
-- **Multi-replica reaper.** The current single-replica deployment uses one reaper. `FOR UPDATE SKIP LOCKED` already makes N concurrent reapers safe; the metric `pairs_expired` would need a `replica` label.
+- **Multi-replica reaper.** The current single-replica deployment uses one reaper. `FOR UPDATE SKIP LOCKED` already makes N concurrent reapers safe; the metric `fhir_subs_pairs_expired` would need a `replica` label.
 
 ## 12. What this LLD does NOT cover
 
