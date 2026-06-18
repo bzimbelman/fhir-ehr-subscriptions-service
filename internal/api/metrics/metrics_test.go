@@ -210,7 +210,7 @@ func TestRequestMiddleware_RecordsStatusFromError(t *testing.T) {
 	}
 }
 
-func TestRequestMiddleware_UnmatchedRouteUsesPath(t *testing.T) {
+func TestRequestMiddleware_DefaultStatusIs200(t *testing.T) {
 	t.Parallel()
 	reg := prometheus.NewRegistry()
 	m, err := apimetrics.New(reg)
@@ -220,31 +220,17 @@ func TestRequestMiddleware_UnmatchedRouteUsesPath(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(m.RequestMiddleware())
-	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+	// Handler doesn't call WriteHeader explicitly; default should be 200.
+	r.Get("/Subscription", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/no/such/path", nil)
+	req := httptest.NewRequest(http.MethodGet, "/Subscription", nil)
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	// We don't care about exact label here — just that some series was
-	// recorded so the middleware doesn't crash on unmatched routes.
-	mfs, err := reg.Gather()
-	if err != nil {
-		t.Fatalf("Gather: %v", err)
-	}
-	found := false
-	for _, mf := range mfs {
-		if mf.GetName() == "fhir_subs_api_requests_total" {
-			for _, mtr := range mf.GetMetric() {
-				if mtr.GetCounter().GetValue() > 0 {
-					found = true
-				}
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected at least one requests_total observation")
+	got := testutil.ToFloat64(m.RequestsTotal.WithLabelValues("GET", "/Subscription", "200"))
+	if got != 1 {
+		t.Errorf("implicit 200 = %v; want 1", got)
 	}
 }
