@@ -179,6 +179,21 @@ type Deps struct {
 	// so subscribers can discover the negotiable set without speaking
 	// the wire (P1.7).
 	SupportedFHIRVersions []string
+
+	// AdminToken, when non-empty, enables the read-only admin operator
+	// surface mounted at AdminPathPrefix (default `/admin`). The token
+	// is the only auth gate; network-level scoping is the operator's
+	// responsibility (P1.6). Empty means the admin surface is disabled
+	// at the router layer — the routes do not exist.
+	AdminToken string
+
+	// AdminPathPrefix overrides the default `/admin` mount point. Empty
+	// means DefaultAdminPathPrefix.
+	AdminPathPrefix string
+
+	// DeadLetters is the read-only dead-letters list adapter the admin
+	// surface needs. Nil disables /admin/dead_letters (returns 503).
+	DeadLetters DeadLettersListStore
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
