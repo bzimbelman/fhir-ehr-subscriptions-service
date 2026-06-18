@@ -187,7 +187,7 @@ The single comprehensive view. `Source` is `audit` (production-readiness-audit.m
 | audit | N-1.6 | formatTraceparent doesn't validate hex | RESOLVED | RESOLVED ✓ | 2c8e258 | |
 | audit | N-1.7 | WS ack handling no eventNumber-in-sent-set check | RESOLVED | RESOLVED ✓ | 79921ca | MetricUnknownAckTotal |
 | audit | N-1.8 | WS Deliver / Close race documentation | RESOLVED | RESOLVED ✓ (doc-only) | 79921ca | doc-block; no code change |
-| audit | N-1.9 | message channel wrapInMessageBundle non-deterministic | DEFERRED | DEFERRED ✓ | — | JCS-canonicalizer |
+| audit | N-1.9 | message channel wrapInMessageBundle non-deterministic | RESOLVED | RESOLVED ✓ | story/59 | typed-struct + json.RawMessage passthrough + injectable Clock/NewID; ADR 0011 |
 | audit | N-1.10 | ComputeBackoff doubling-loop iteration cap | RESOLVED | RESOLVED ✓ | 79921ca | maxBackoffDoublingSteps = 64 |
 | audit | N-1.11 | Channel setup-error retries forever | RESOLVED | RESOLVED ✓ (documented) | ffe847b | doc-block; behavior unchanged |
 | audit | N-1.12 | pending_kind enum reuses 'create' | RESOLVED | RESOLVED ✓ (documented) | ffe847b | doc-block |

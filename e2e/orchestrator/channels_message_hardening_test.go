@@ -111,3 +111,82 @@ func TestE2E_Message_ValidateContentTypeAtBoundary(t *testing.T) {
 		t.Errorf("fhir+xml should be rejected at create time")
 	}
 }
+
+// TestE2E_Message_BundleBytesDeterministic exercises story #59 (N-1.9):
+// wrapping the same envelope twice with a fixed Clock and NewID must
+// yield byte-identical wire bytes. A sink-side de-dup hash and the
+// audit-chain `chain_input` both depend on byte-stability for the same
+// input; flapping bytes would silently break dedup and audit replay.
+func TestE2E_Message_BundleBytesDeterministic(t *testing.T) {
+	t.Parallel()
+
+	gotBodies := make(chan []byte, 10)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBodies <- b
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	fixed := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	const fixedID = "00000000-0000-0000-0000-0000000000ff"
+	ch, err := message.New(message.Options{
+		HTTPClient:     srv.Client(),
+		ServerEndpoint: "https://fhir-subs.example.org/facility/test",
+		Clock:          func() time.Time { return fixed },
+		NewID:          func() string { return fixedID },
+	})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+
+	// Inner Bundle WITHOUT an id so the channel must mint one — this
+	// exercises the NewID injection point.
+	inner := map[string]any{
+		"resourceType": "Bundle",
+		"type":         "subscription-notification",
+		"entry": []any{
+			map[string]any{"resource": map[string]any{
+				"resourceType": "SubscriptionStatus",
+				"type":         "event-notification",
+			}},
+		},
+	}
+	innerBytes, err := json.Marshal(inner)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	const N = 5
+	for i := 0; i < N; i++ {
+		env := channel.NotificationEnvelope{
+			SubscriptionID:       uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+			Sequence:             1,
+			BundleBytes:          innerBytes,
+			BundleKind:           channel.BundleEventNotification,
+			ContentType:          channel.ContentTypeFHIRJSON,
+			Attempt:              1,
+			SubscriptionEndpoint: srv.URL + "/messaging",
+			Deadline:             time.Now().Add(5 * time.Second),
+		}
+		out, derr := ch.Deliver(context.Background(), env)
+		if derr != nil {
+			t.Fatalf("deliver iter %d: %v", i, derr)
+		}
+		if out.Kind != channel.OutcomeDelivered {
+			t.Fatalf("deliver iter %d: outcome=%v reason=%q", i, out.Kind, out.Reason)
+		}
+	}
+
+	var first []byte
+	for i := 0; i < N; i++ {
+		b := <-gotBodies
+		if first == nil {
+			first = b
+			continue
+		}
+		if string(b) != string(first) {
+			t.Fatalf("iter %d differs from iter 0\nfirst: %s\nthis : %s", i, first, b)
+		}
+	}
+}

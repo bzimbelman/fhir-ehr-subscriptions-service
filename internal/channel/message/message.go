@@ -172,6 +172,16 @@ type Options struct {
 	// TLSMinVersion is the minimum TLS version the default client will
 	// negotiate (S-5). Zero falls back to tls.VersionTLS12.
 	TLSMinVersion uint16
+
+	// Clock is the time source for the outer Bundle.timestamp. nil →
+	// time.Now. Injected so the wrapped Bundle bytes are byte-stable
+	// for the same input (story #59 / N-1.9). Mirrors the same hook
+	// on engine/builder.
+	Clock func() time.Time
+	// NewID mints the inner Bundle id when the inner Bundle has none.
+	// nil → uuid.NewString. Injected so that wrapping the same input
+	// twice yields byte-identical output (story #59 / N-1.9).
+	NewID func() string
 }
 
 // Channel implements the FHIR messaging delivery channel. Construct with
@@ -184,6 +194,8 @@ type Channel struct {
 	userAgent      string
 	timeout        time.Duration
 	serverEndpoint string
+	clock          func() time.Time
+	newID          func() string
 }
 
 // New constructs a message Channel.
@@ -195,6 +207,14 @@ func New(opts Options) (*Channel, error) {
 		userAgent:      opts.UserAgent,
 		timeout:        opts.RequestTimeout,
 		serverEndpoint: opts.ServerEndpoint,
+		clock:          opts.Clock,
+		newID:          opts.NewID,
+	}
+	if c.clock == nil {
+		c.clock = time.Now
+	}
+	if c.newID == nil {
+		c.newID = uuid.NewString
 	}
 	if c.timeout <= 0 {
 		c.timeout = DefaultRequestTimeout
@@ -331,6 +351,69 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 	return c.classifyHTTPResponse(resp)
 }
 
+// outerBundle is the FHIR `Bundle.type=message` envelope this channel
+// emits. Field order on the wire follows the canonical Bundle ordering
+// — resourceType, type, timestamp, entry — and entries carry the inner
+// Bundle's bytes verbatim through `json.RawMessage` so wrapping the
+// same input twice produces byte-identical output (story #59 / N-1.9).
+type outerBundle struct {
+	ResourceType string             `json:"resourceType"`
+	Type         string             `json:"type"`
+	Timestamp    string             `json:"timestamp"`
+	Entry        []outerBundleEntry `json:"entry"`
+}
+
+// outerBundleEntry wraps the verbatim inner-entry resource bytes. The
+// Channel constructs the very first entry from a typed messageHeader so
+// it serializes in a deterministic key order; subsequent entries are
+// passed through with no re-marshaling so their bytes are stable.
+type outerBundleEntry struct {
+	Resource json.RawMessage `json:"resource"`
+}
+
+// messageHeader is the FHIR R5 MessageHeader resource the channel
+// synthesizes for entry[0] of the outer Bundle. Field order matches
+// the FHIR canonical ordering.
+type messageHeader struct {
+	ResourceType string                  `json:"resourceType"`
+	EventCoding  messageHeaderCoding     `json:"eventCoding"`
+	Destination  []messageHeaderEndpoint `json:"destination"`
+	Source       *messageHeaderEndpoint  `json:"source,omitempty"`
+	Focus        []messageHeaderFocus    `json:"focus"`
+}
+
+type messageHeaderCoding struct {
+	System string `json:"system"`
+	Code   string `json:"code"`
+}
+
+type messageHeaderEndpoint struct {
+	Endpoint string `json:"endpoint"`
+}
+
+type messageHeaderFocus struct {
+	Reference string `json:"reference"`
+}
+
+// innerBundleShape is the minimal subset of the inner Bundle this
+// channel needs to read. Entries are kept as RawMessage so we can
+// re-emit them byte-for-byte without map-roundtrip churn.
+type innerBundleShape struct {
+	ResourceType string            `json:"resourceType"`
+	ID           string            `json:"id,omitempty"`
+	Type         string            `json:"type,omitempty"`
+	Entry        []json.RawMessage `json:"entry,omitempty"`
+}
+
+// innerEntryShape is just enough to fish the SubscriptionStatus.type
+// code out of entry[0] without touching anything else.
+type innerEntryShape struct {
+	Resource struct {
+		ResourceType string `json:"resourceType"`
+		Type         string `json:"type"`
+	} `json:"resource"`
+}
+
 // wrapInMessageBundle parses the envelope's inner subscription-notification
 // Bundle and produces a Bundle.type="message" whose first entry is a
 // MessageHeader. Returns the serialized outer Bundle.
@@ -339,17 +422,18 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 // for fhir+json or fhir+xml, but a FHIR XML serializer is not in tree. v1
 // rejects fhir+xml at this seam with an error so the scheduler dead-letters
 // the delivery rather than producing malformed wire bytes.
+//
+// Determinism contract (story #59 / N-1.9): with a fixed Clock and NewID,
+// wrapping the same envelope twice yields byte-identical output. The
+// Bundle is built from typed structs (canonical key order) and inner
+// entries are re-emitted through json.RawMessage so their bytes are
+// preserved verbatim.
 func (c *Channel) wrapInMessageBundle(env channel.NotificationEnvelope) ([]byte, error) {
 	if env.ContentType != channel.ContentTypeFHIRJSON {
 		return nil, fmt.Errorf("content type %q not supported by message channel in v1 (json only)", env.ContentType)
 	}
 
-	var inner struct {
-		ResourceType string                   `json:"resourceType"`
-		ID           string                   `json:"id,omitempty"`
-		Type         string                   `json:"type,omitempty"`
-		Entry        []map[string]interface{} `json:"entry,omitempty"`
-	}
+	var inner innerBundleShape
 	if err := json.Unmarshal(env.BundleBytes, &inner); err != nil {
 		return nil, fmt.Errorf("inner bundle parse: %w", err)
 	}
@@ -367,60 +451,78 @@ func (c *Channel) wrapInMessageBundle(env channel.NotificationEnvelope) ([]byte,
 	innerID := inner.ID
 	innerRef := "Bundle/" + innerID
 	if innerID == "" {
-		innerID = uuid.NewString()
+		innerID = c.newID()
 		innerRef = "urn:uuid:" + innerID
 	}
 
-	header := map[string]interface{}{
-		"resourceType": "MessageHeader",
-		"eventCoding": map[string]interface{}{
-			"system": EventCodingSystem,
-			"code":   statusType,
+	header := messageHeader{
+		ResourceType: "MessageHeader",
+		EventCoding: messageHeaderCoding{
+			System: EventCodingSystem,
+			Code:   statusType,
 		},
-		"destination": []map[string]interface{}{
-			{"endpoint": env.SubscriptionEndpoint},
-		},
-		"focus": []map[string]interface{}{
-			{"reference": innerRef},
-		},
+		Destination: []messageHeaderEndpoint{{Endpoint: env.SubscriptionEndpoint}},
+		Focus:       []messageHeaderFocus{{Reference: innerRef}},
 	}
 	if c.serverEndpoint != "" {
-		header["source"] = map[string]interface{}{"endpoint": c.serverEndpoint}
+		header.Source = &messageHeaderEndpoint{Endpoint: c.serverEndpoint}
+	}
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		return nil, fmt.Errorf("marshal MessageHeader: %w", err)
 	}
 
-	outerEntries := make([]map[string]interface{}, 0, len(inner.Entry)+1)
-	outerEntries = append(outerEntries, map[string]interface{}{"resource": header})
-	outerEntries = append(outerEntries, inner.Entry...)
+	outerEntries := make([]outerBundleEntry, 0, len(inner.Entry)+1)
+	outerEntries = append(outerEntries, outerBundleEntry{Resource: headerBytes})
+	for _, raw := range inner.Entry {
+		// Pull just the "resource" field from the inner entry so we
+		// drop entry-level metadata that is not meaningful for a
+		// Bundle.type=message wrap, while preserving the inner
+		// resource bytes verbatim.
+		var ent struct {
+			Resource json.RawMessage `json:"resource"`
+		}
+		if uerr := json.Unmarshal(raw, &ent); uerr != nil {
+			return nil, fmt.Errorf("inner entry parse: %w", uerr)
+		}
+		if len(ent.Resource) == 0 {
+			return nil, errors.New("inner entry missing resource")
+		}
+		outerEntries = append(outerEntries, outerBundleEntry{Resource: ent.Resource})
+	}
 
-	outer := map[string]interface{}{
-		"resourceType": "Bundle",
-		"type":         "message",
+	outer := outerBundle{
+		ResourceType: "Bundle",
+		Type:         "message",
 		// FHIR `instant` requires sub-second precision. RFC3339 (second
 		// precision) parses but mis-shapes the value; use RFC3339Nano so
 		// the outer Bundle.timestamp validates cleanly as `instant` (S-5).
-		"timestamp": time.Now().UTC().Format(time.RFC3339Nano),
-		"entry":     outerEntries,
+		// Clock is injectable so wrapping the same input twice yields
+		// byte-identical bytes (story #59 / N-1.9).
+		Timestamp: c.clock().UTC().Format(time.RFC3339Nano),
+		Entry:     outerEntries,
 	}
-
 	return json.Marshal(outer)
 }
 
 // extractSubscriptionStatusType pulls the SubscriptionStatus.type code off
 // entry[0]. The inner Bundle is by spec a subscription-notification whose
 // first entry is a SubscriptionStatus.
-func extractSubscriptionStatusType(entry map[string]interface{}) (string, error) {
-	res, ok := entry["resource"].(map[string]interface{})
-	if !ok {
+func extractSubscriptionStatusType(raw json.RawMessage) (string, error) {
+	var ent innerEntryShape
+	if err := json.Unmarshal(raw, &ent); err != nil {
+		return "", fmt.Errorf("inner entry[0] parse: %w", err)
+	}
+	if ent.Resource.ResourceType == "" {
 		return "", errors.New("inner entry[0] missing resource")
 	}
-	if rt, _ := res["resourceType"].(string); rt != "SubscriptionStatus" {
-		return "", fmt.Errorf("inner entry[0].resource.resourceType = %q, want SubscriptionStatus", rt)
+	if ent.Resource.ResourceType != "SubscriptionStatus" {
+		return "", fmt.Errorf("inner entry[0].resource.resourceType = %q, want SubscriptionStatus", ent.Resource.ResourceType)
 	}
-	t, _ := res["type"].(string)
-	if t == "" {
+	if ent.Resource.Type == "" {
 		return "", errors.New("inner SubscriptionStatus.type is empty")
 	}
-	return t, nil
+	return ent.Resource.Type, nil
 }
 
 // applyDeadline derives an attempt context from ctx and the envelope's
