@@ -143,7 +143,17 @@ type Module struct {
 // Per LLD §5: parse CLI/env/file/defaults; merge by precedence;
 // structural-validate; resolve secrets; domain-validate; semantic-validate;
 // publish.
-func Start(_ context.Context, args CliArgs, cctx Context) (*Module, Handle, error) {
+//
+// ctx bounds the file reads inside loadAndMerge and the secret-file
+// reads inside ResolveWithFilePaths so a slow disk cannot pin process
+// startup.
+func Start(ctx context.Context, args CliArgs, cctx Context) (*Module, Handle, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, fmt.Errorf("config: ctx already canceled at Start: %w", err)
+	}
 	if cctx.Clock == nil {
 		cctx.Clock = time.Now
 	}

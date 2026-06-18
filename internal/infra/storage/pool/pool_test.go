@@ -40,6 +40,32 @@ func TestConfigDefaults(t *testing.T) {
 	if cfg.ApplicationName == "" {
 		t.Error("ApplicationName should default to non-empty")
 	}
+	if cfg.IdleInTransactionSessionTimeout == 0 {
+		t.Error("IdleInTransactionSessionTimeout should default to non-zero")
+	}
+	if cfg.LockTimeout == 0 {
+		t.Error("LockTimeout should default to non-zero")
+	}
+}
+
+// TestConfigCustomTimeoutsHonored asserts that operator overrides for
+// the new safety SETs (idle-in-txn, lock-timeout) are not silently
+// reset by ApplyDefaults. S-13 #4/#5.
+func TestConfigCustomTimeoutsHonored(t *testing.T) {
+	t.Parallel()
+
+	cfg := pool.Config{
+		URL:                             "postgres://localhost/x",
+		IdleInTransactionSessionTimeout: 17 * time.Second,
+		LockTimeout:                     900 * time.Millisecond,
+	}
+	cfg.ApplyDefaults()
+	if cfg.IdleInTransactionSessionTimeout != 17*time.Second {
+		t.Errorf("idle-in-txn changed: got %v", cfg.IdleInTransactionSessionTimeout)
+	}
+	if cfg.LockTimeout != 900*time.Millisecond {
+		t.Errorf("lock-timeout changed: got %v", cfg.LockTimeout)
+	}
 }
 
 func TestConfigDefaultsAreNotOverwritten(t *testing.T) {

@@ -13,6 +13,7 @@ package secrets
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,17 @@ const (
 	filePrefix = "${file:"
 	suffix     = "}"
 )
+
+// MaxSecretFileSize bounds how many bytes Resolve will read from a
+// ${file:/path} reference. Larger inputs return ErrSecretFileTooLarge
+// rather than OOMing the process. 1 MiB is two orders of magnitude
+// above any realistic secret (RS256 PEM, OAuth client secret, vendor
+// API token) and well below container memory pressure limits. S-15 #4.
+const MaxSecretFileSize int64 = 1 << 20
+
+// ErrSecretFileTooLarge is returned by ResolveWithFilePaths when a
+// ${file:...} reference exceeds MaxSecretFileSize.
+var ErrSecretFileTooLarge = errors.New("secrets: file exceeds MaxSecretFileSize")
 
 // Resolve walks the config tree, substitutes any ${env:VAR} or ${file:/path}
 // placeholder, and tags each resolved path as sensitive in the returned map.
@@ -114,9 +126,22 @@ func resolveString(s, path string, rmap *redaction.Map, files map[string]struct{
 		// obvious traversal-only forms. Operators occasionally point at
 		// /run/secrets/foo or /etc/fhir-subs/keys/foo; both are absolute.
 		clean := filepath.Clean(raw)
-		data, err := os.ReadFile(clean) //nolint:gosec // operator-supplied path
+		f, err := os.Open(clean) //nolint:gosec // operator-supplied path
 		if err != nil {
 			return "", fmt.Errorf("file %s referenced by %s is unreadable: %w", raw, path, err)
+		}
+		// io.LimitReader caps the byte budget at MaxSecretFileSize+1 so
+		// we can detect overflow with a single Read; an exactly-sized
+		// secret is fine, anything larger is rejected.
+		limited := io.LimitReader(f, MaxSecretFileSize+1)
+		data, readErr := io.ReadAll(limited)
+		_ = f.Close()
+		if readErr != nil {
+			return "", fmt.Errorf("file %s referenced by %s is unreadable: %w", raw, path, readErr)
+		}
+		if int64(len(data)) > MaxSecretFileSize {
+			return "", fmt.Errorf("%w: %s referenced by %s (%d > %d)",
+				ErrSecretFileTooLarge, raw, path, len(data), MaxSecretFileSize)
 		}
 		rmap.TagSensitive(path)
 		if files != nil {

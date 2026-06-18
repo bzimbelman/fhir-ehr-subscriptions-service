@@ -31,20 +31,46 @@ import (
 )
 
 // PHIFieldNames lists the operational-log field names the redactor
-// strips at info and above per LLD §6.2.
+// strips at info and above per LLD §6.2. Match is case-insensitive
+// so attribute keys whose case-shape varies across packages
+// ("Resource", "RESOURCE", "patient") all redact the same.
 var PHIFieldNames = map[string]struct{}{
 	"resource": {},
 	"bundle":   {},
 	"body":     {},
 	"raw":      {},
 	"hl7":      {},
+	// Expanded per S-14 #7: every common PHI / endpoint-shape field
+	// observed across emitters in this codebase. Anything that might
+	// carry a patient identifier, FHIR Patient subset, contact info,
+	// outbound webhook URL, or message header.
+	"patient":     {},
+	"payload":     {},
+	"dob":         {},
+	"birthdate":   {},
+	"birth_date":  {},
+	"mrn":         {},
+	"ssn":         {},
+	"npi":         {},
+	"webhook":     {},
+	"callback":    {},
+	"target":      {},
+	"name":        {},
+	"identifier":  {},
+	"phone":       {},
+	"address":     {},
+	"email":       {},
+	"hl7_message": {},
 }
 
 // QueryStringTargets lists the field names whose query string is
-// stripped (LLD §6.2 explicit list).
+// stripped (LLD §6.2 explicit list). Case-insensitive match.
 var QueryStringTargets = map[string]struct{}{
-	"endpoint": {},
-	"url":      {},
+	"endpoint":     {},
+	"url":          {},
+	"callback_url": {},
+	"webhook_url":  {},
+	"href":         {},
 }
 
 // RedactedMarker is the literal value substituted for redacted fields.
@@ -189,7 +215,8 @@ func (h *redactingHandler) redactAttr(a slog.Attr, allowPayloads bool) slog.Attr
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(newGroup...)}
 	}
 
-	if _, ok := PHIFieldNames[a.Key]; ok {
+	keyLC := strings.ToLower(a.Key)
+	if _, ok := PHIFieldNames[keyLC]; ok {
 		if !allowPayloads {
 			if h.onDropped != nil {
 				h.onDropped(a.Key)
@@ -198,7 +225,7 @@ func (h *redactingHandler) redactAttr(a slog.Attr, allowPayloads bool) slog.Attr
 		}
 	}
 
-	if _, ok := QueryStringTargets[a.Key]; ok {
+	if _, ok := QueryStringTargets[keyLC]; ok {
 		if a.Value.Kind() == slog.KindString {
 			s := a.Value.String()
 			if i := strings.Index(s, "?"); i >= 0 {

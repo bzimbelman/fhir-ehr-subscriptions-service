@@ -33,18 +33,36 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// genesisLiteral is the human-readable string hashed to seed the chain.
+// genesisLiteral is the default human-readable string hashed to seed
+// the chain. Operators MAY override this through WriterOptions.GenesisLiteral
+// (e.g., bound to a deployment id) so a leaked codebase fork cannot
+// produce a forged chain prefix that validates against the production
+// table. See LLD §8.1.
 const genesisLiteral = "fhir-ehr-subscriptions-service audit chain genesis"
 
-// GenesisHash returns the SHA-256 of the genesis literal (LLD §8.1).
+// GenesisHash returns the SHA-256 of the default genesis literal.
+//
+// Deprecated: callers should prefer GenesisHashFromLiteral so the
+// genesis is part of the store's typed configuration rather than a
+// package-level constant.
 func GenesisHash() []byte {
-	h := sha256.Sum256([]byte(genesisLiteral))
+	return GenesisHashFromLiteral(genesisLiteral)
+}
+
+// GenesisHashFromLiteral returns SHA-256 of the supplied genesis
+// literal. Empty literal falls back to the default.
+func GenesisHashFromLiteral(literal string) []byte {
+	if literal == "" {
+		literal = genesisLiteral
+	}
+	h := sha256.Sum256([]byte(literal))
 	out := make([]byte, len(h))
 	copy(out, h[:])
 	return out
@@ -108,15 +126,19 @@ type WriterOptions struct {
 	OnSinkFailure func(sink string)
 	// SinkName is the label passed to OnSinkFailure. Defaults to "stdout".
 	SinkName string
+	// GenesisLiteral overrides the chain seed. Empty falls back to
+	// the package default. See LLD §8.1 and S-14 #3.
+	GenesisLiteral string
 }
 
 // Writer is the audit-log front door.
 type Writer struct {
-	store         Store
-	sink          Sink
-	clock         func() time.Time
-	onSinkFailure func(string)
-	sinkName      string
+	store          Store
+	sink           Sink
+	clock          func() time.Time
+	onSinkFailure  func(string)
+	sinkName       string
+	genesisLiteral string
 }
 
 // NewWriter constructs a Writer.
@@ -137,12 +159,18 @@ func NewWriter(opts WriterOptions) (*Writer, error) {
 		sinkName = "stdout"
 	}
 	return &Writer{
-		store:         opts.Store,
-		sink:          sink,
-		clock:         clock,
-		onSinkFailure: opts.OnSinkFailure,
-		sinkName:      sinkName,
+		store:          opts.Store,
+		sink:           sink,
+		clock:          clock,
+		onSinkFailure:  opts.OnSinkFailure,
+		sinkName:       sinkName,
+		genesisLiteral: opts.GenesisLiteral,
 	}, nil
+}
+
+// genesisHash returns the chain seed bound to this writer's literal.
+func (w *Writer) genesisHash() []byte {
+	return GenesisHashFromLiteral(w.genesisLiteral)
 }
 
 // Emit appends evt to the durable store and to the configured sink. The
@@ -154,6 +182,18 @@ func NewWriter(opts WriterOptions) (*Writer, error) {
 // canonicalChainInput releases the lock before the panic propagates
 // (B-34). Without this, a panic between AcquireChainLock and the manual
 // release leaks the lock forever and every subsequent Emit blocks.
+//
+// # Throughput
+//
+// The advisory_lock + LastChainHash + INSERT triplet runs serially
+// per-process and per-cluster: that is the design — without it, two
+// concurrent appenders compute their chain bytes against the same
+// prior_hash and produce a fork. Sustained throughput is therefore
+// bounded by network round-trip time to Postgres (S-14 #4). Operators
+// who need >1k audit/s should batch through a single Writer and
+// place the audit DB next to the API pods to shrink the round-trip;
+// the chain itself cannot be parallelized without breaking the LLD
+// §8 invariant.
 func (w *Writer) Emit(ctx context.Context, evt Event) (retErr error) {
 	if evt.OccurredAt.IsZero() {
 		evt.OccurredAt = w.clock()
@@ -184,7 +224,7 @@ func (w *Writer) Emit(ctx context.Context, evt Event) (retErr error) {
 		return fmt.Errorf("audit: read prior chain hash: %w", err)
 	}
 	if prior == nil {
-		prior = GenesisHash()
+		prior = w.genesisHash()
 	}
 
 	chainInput, err := canonicalChainInput(evt, prior)
@@ -252,8 +292,20 @@ func canonicalChainInput(evt Event, prior []byte) ([]byte, error) {
 
 // VerifyChain walks rows in insertion order and verifies each row's chain
 // links to the prior row's chain_hash. Returns the first mismatch.
+//
+// Uses the package's default genesis literal. Callers running with a
+// custom genesis (see WriterOptions.GenesisLiteral) should use
+// VerifyChainWithGenesis instead.
 func VerifyChain(ctx context.Context, store Store) error {
-	prior := GenesisHash()
+	return VerifyChainWithGenesis(ctx, store, "")
+}
+
+// VerifyChainWithGenesis is VerifyChain with the chain seed bound to a
+// configurable literal so verification can run against a Writer that
+// was constructed with WriterOptions.GenesisLiteral. Empty literal
+// uses the package default.
+func VerifyChainWithGenesis(ctx context.Context, store Store, literal string) error {
+	prior := GenesisHashFromLiteral(literal)
 	idx := 0
 	return store.IterateRows(ctx, func(row Row) error {
 		if !bytesEqual(row.PriorHash, prior) {
@@ -450,16 +502,59 @@ func jsonString(s string) []byte {
 	return b
 }
 
-// canonicalNumber renders n per RFC 8785 §3.2.2: drop a trailing ".0" so
-// "1.0" -> "1", and pass through integer forms unchanged. For the audit
-// chain the only numeric values are integers and bounded floats from
-// payload maps; full ECMA-262 number formatting is not needed for chain
-// determinism because both writer and verifier walk the same code path.
+// canonicalNumber renders n per RFC 8785 §3.2.2.
+//
+// The full JCS rule is: emit the number using the ECMA-262 §7.1.12.1
+// "ToString Applied to the Number Type" algorithm, which strconv's
+// FormatFloat(_, 'g', -1, 64) approximates faithfully for Go's float64.
+// We:
+//   - parse n to float64 (json.Number is just a string with the
+//     decoded form)
+//   - re-render with the IEEE-754 shortest round-trip via strconv
+//   - keep integer-shaped values as-is so "42" stays "42" instead of
+//     becoming "4.2e+01"
+//
+// Both writer and verifier walk this same code path, so even if we
+// disagree with a strict external JCS implementation on a corner-case
+// IEEE-754 value, the chain stays internally consistent. Documenting
+// this here for the auditors who'll cross-check against a reference
+// JCS lib (S-14 #5).
 func canonicalNumber(n json.Number) ([]byte, error) {
 	s := string(n)
-	// Strip trailing zeros after a decimal point: "1.0" -> "1", "1.50" -> "1.5".
+
+	// Integer fast path: no '.' and no 'e'/'E'. Pass through.
+	hasDot := false
+	hasExp := false
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '.':
+			hasDot = true
+		case 'e', 'E':
+			hasExp = true
+		}
+	}
+	if !hasDot && !hasExp {
+		return []byte(s), nil
+	}
+
+	// Float path: round-trip through float64 + ECMA-262 shortest form.
+	f, err := n.Float64()
+	if err != nil {
+		// Fall back to the legacy trim — the value still hashes
+		// deterministically because both sides take this same branch.
+		return canonicalNumberLegacy(s), nil
+	}
+	// strconv 'g' with -1 precision is the IEEE-754 shortest round-trip
+	// representation, which matches ECMA-262 ToString for finite f64.
+	out := strconv.AppendFloat(nil, f, 'g', -1, 64)
+	return out, nil
+}
+
+// canonicalNumberLegacy is the previous trailing-zero strip. Retained
+// as a fallback for non-float64 numerics that slip past the integer
+// fast path.
+func canonicalNumberLegacy(s string) []byte {
 	if i := indexByte(s, '.'); i >= 0 {
-		// Walk from end stripping zeros.
 		end := len(s)
 		for end > i+1 && s[end-1] == '0' {
 			end--
@@ -469,7 +564,7 @@ func canonicalNumber(n json.Number) ([]byte, error) {
 		}
 		s = s[:end]
 	}
-	return []byte(s), nil
+	return []byte(s)
 }
 
 func indexByte(s string, b byte) int {

@@ -274,6 +274,18 @@ create trigger set_ehr_events_created_month
     for each row
     execute function set_ehr_events_created_month();
 
+-- Bootstrap partition seeding.
+--
+-- now() is evaluated at apply time on whichever pod first wins the
+-- migrate advisory lock. The schema_migrations row records the file's
+-- sha256, not the apply-time value of now(), so the checksum is
+-- stable across re-applies. The CREATE TABLE IF NOT EXISTS keeps the
+-- block idempotent: the second pod (which observes schema_migrations
+-- already populated) skips this body entirely; if the migration is
+-- ever re-run by hand the IF NOT EXISTS guard prevents a duplicate.
+-- The follow-on partition.Run() background loop creates the next
+-- month's partition each tick, so even at month-boundary apply time
+-- the production write path always finds an attached partition.
 do $$
 declare
     n int;

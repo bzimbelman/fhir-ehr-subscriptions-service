@@ -25,6 +25,17 @@ type Config struct {
 	ResourceChangesRetention time.Duration
 	EhrEventsRetention       time.Duration
 
+	// TickTimeout caps how long a single Run-driven Tick may take.
+	// Default: 30m. Without a per-Tick deadline, a stuck DETACH/DROP
+	// could pin the maintainer goroutine forever even with a healthy
+	// shutdown ctx.
+	TickTimeout time.Duration
+
+	// OnTickError is invoked once per Tick if the cycle returned a
+	// non-nil error. Tick errors used to be dropped on the floor; the
+	// hook lets the host log/observe them. Optional.
+	OnTickError func(error)
+
 	// Now is overridable for tests.
 	Now func() time.Time
 }
@@ -38,8 +49,17 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 	if cfg.RunInterval == 0 {
 		cfg.RunInterval = 24 * time.Hour
 	}
-	// Best-effort first tick.
-	_ = Tick(ctx, pool, cfg)
+	if cfg.TickTimeout <= 0 {
+		cfg.TickTimeout = 30 * time.Minute
+	}
+	tickOnce := func() {
+		tickCtx, cancel := context.WithTimeout(ctx, cfg.TickTimeout)
+		defer cancel()
+		if err := Tick(tickCtx, pool, cfg); err != nil && cfg.OnTickError != nil {
+			cfg.OnTickError(err)
+		}
+	}
+	tickOnce()
 
 	t := time.NewTimer(cfg.RunInterval)
 	defer t.Stop()
@@ -48,7 +68,7 @@ func Run(ctx context.Context, pool *pgxpool.Pool, cfg Config) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = Tick(ctx, pool, cfg)
+			tickOnce()
 			t.Reset(cfg.RunInterval)
 		}
 	}
@@ -133,14 +153,36 @@ func dropOlderThan(ctx context.Context, pool *pgxpool.Pool, table string, cutoff
 		if !ok || !ts.Before(cutoffMonth) {
 			continue
 		}
-		detach := fmt.Sprintf(`ALTER TABLE %s DETACH PARTITION %s`, table, p)
-		if _, err := pool.Exec(ctx, detach); err != nil {
-			return fmt.Errorf("partition: detach %s: %w", p, err)
+		if err := dropOnePartition(ctx, pool, table, p); err != nil {
+			return err
 		}
-		drop := fmt.Sprintf(`DROP TABLE %s`, p)
-		if _, err := pool.Exec(ctx, drop); err != nil {
-			return fmt.Errorf("partition: drop %s: %w", p, err)
+	}
+	return nil
+}
+
+// dropOnePartition runs DETACH + DROP in a single transaction so a
+// crash between the two steps cannot leave an orphan partition that
+// is no longer attached to its parent but still owns its data.
+func dropOnePartition(ctx context.Context, pool *pgxpool.Pool, parent, child string) (retErr error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("partition: begin %s: %w", child, err)
+	}
+	defer func() {
+		if retErr != nil {
+			_ = tx.Rollback(ctx)
 		}
+	}()
+	detach := fmt.Sprintf(`ALTER TABLE %s DETACH PARTITION %s`, parent, child)
+	if _, err := tx.Exec(ctx, detach); err != nil {
+		return fmt.Errorf("partition: detach %s: %w", child, err)
+	}
+	drop := fmt.Sprintf(`DROP TABLE %s`, child)
+	if _, err := tx.Exec(ctx, drop); err != nil {
+		return fmt.Errorf("partition: drop %s: %w", child, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("partition: commit drop %s: %w", child, err)
 	}
 	return nil
 }

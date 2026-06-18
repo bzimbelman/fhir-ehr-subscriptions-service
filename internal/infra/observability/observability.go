@@ -55,6 +55,16 @@ type TracingConfig struct {
 type LoggingConfig struct {
 	Level  string // "debug" | "info" (default) | "warn" | "error"
 	Format string // "json" (default) | "text"
+	// DebugLogPayloads opts in to retaining PHI-shaped fields when
+	// Level is debug. Default false; PHI is redacted at every level.
+	// Off by default because the LLD defaults Level to info, so this
+	// flag is dead weight unless an operator deliberately turns the
+	// firehose on for local diagnosis.
+	DebugLogPayloads bool
+	// Sink overrides the destination writer. Empty means os.Stdout.
+	// The host's process supervisor captures stdout to the central
+	// logging pipeline; tests inject a buffer.
+	Sink io.Writer
 }
 
 // AuditConfig is the audit-log config block.
@@ -189,10 +199,15 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 	if format == "" {
 		format = "json"
 	}
+	logSink := cfg.Logging.Sink
+	if logSink == nil {
+		logSink = os.Stdout
+	}
 	logger := logging.NewLogger(&logging.Options{
-		Sink:   os.Stdout,
-		Level:  level,
-		Format: format,
+		Sink:             logSink,
+		Level:            level,
+		Format:           format,
+		DebugLogPayloads: cfg.Logging.DebugLogPayloads,
 		OnPHIDropped: func(field string) {
 			inv.LoggingPHIDroppedTotal.Inc(prometheus.Labels{"field": field})
 		},
@@ -367,6 +382,7 @@ type fileSinkOptions struct {
 type fileSink struct {
 	mu       sync.Mutex
 	w        writeSyncer
+	inner    audit.Sink // pre-constructed once; avoids per-Emit allocation
 	mode     fileSyncMode
 	closed   bool
 	stopCh   chan struct{}
@@ -385,6 +401,10 @@ func newFileSinkWithSyncer(w writeSyncer, opts fileSinkOptions) *fileSink {
 		w:        w,
 		mode:     opts.Mode,
 		tickEach: tick,
+		// Construct the inner WriterSink once. fileSink.mu provides the
+		// serialization the inner sink would otherwise need; passing
+		// nil for the inner mutex keeps it lock-free per-call.
+		inner: audit.NewWriterSink("file", nil, w),
 	}
 	if opts.Mode == fileSyncBatched {
 		fs.stopCh = make(chan struct{})
@@ -400,7 +420,7 @@ func (s *fileSink) Emit(ctx context.Context, evt audit.Event) error {
 	if s.closed {
 		return errors.New("observability: file sink is closed")
 	}
-	if err := audit.NewWriterSink("file", nil, s.w).Emit(ctx, evt); err != nil {
+	if err := s.inner.Emit(ctx, evt); err != nil {
 		return err
 	}
 	if s.mode == fileSyncEveryWrite {

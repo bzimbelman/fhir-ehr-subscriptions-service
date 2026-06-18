@@ -9,6 +9,19 @@
 //
 // On read, the storage layer also has the row's `key_version int4`
 // column which is asserted equal to the envelope's version byte.
+//
+// # Key-rotation cadence
+//
+// AES-GCM uses 96-bit random nonces. Per NIST SP 800-38D §8.3, the
+// number of distinct messages encrypted under one key with random
+// nonces must stay below 2^32 to keep the collision probability below
+// 2^-32. Operators MUST rotate the active key version before any one
+// key approaches 2^32 PHI-column writes. As a coarse rule of thumb, at
+// 1k writes/sec sustained that is roughly 50 days; at 100/sec, ~500
+// days. Provision a key-version per quarter for typical traffic, more
+// often for write-heavy deployments. Old key versions remain
+// configured for decryption until all rows under them are
+// re-encrypted or aged out.
 package codec
 
 import (
