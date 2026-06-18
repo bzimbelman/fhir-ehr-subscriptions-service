@@ -119,6 +119,45 @@ func TestExtractFromHeaders_GeneratesIfMissing(t *testing.T) {
 	}
 }
 
+// S-14 #6: ExtractFromHeaders rejects oversized / malformed correlation
+// values rather than echoing them back into logs.
+func TestExtractFromHeaders_RejectsCRLF(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Correlation-ID", "abc\r\nX-Injected: 1")
+	ctx := correlation.ExtractFromHeaders(req.Context(), req.Header)
+	got := correlation.IDFromContext(ctx)
+	if strings.Contains(got, "\r") || strings.Contains(got, "\n") || strings.Contains(got, "X-Injected") {
+		t.Fatalf("expected sanitized id; got %q", got)
+	}
+	if _, err := uuid.Parse(got); err != nil {
+		t.Fatalf("expected fresh uuid fallback; got %q (%v)", got, err)
+	}
+}
+
+func TestExtractFromHeaders_RejectsOversize(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "/", nil)
+	huge := strings.Repeat("a", correlation.MaxCorrelationIDLen+1)
+	req.Header.Set("X-Correlation-ID", huge)
+	ctx := correlation.ExtractFromHeaders(req.Context(), req.Header)
+	got := correlation.IDFromContext(ctx)
+	if got == huge {
+		t.Fatalf("expected oversize id rejected; was forwarded verbatim")
+	}
+}
+
+func TestExtractFromHeaders_AcceptsAllowedShape(t *testing.T) {
+	t.Parallel()
+	req, _ := http.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Correlation-ID", "ord-2026.06.18-abc_123")
+	ctx := correlation.ExtractFromHeaders(req.Context(), req.Header)
+	got := correlation.IDFromContext(ctx)
+	if got != "ord-2026.06.18-abc_123" {
+		t.Fatalf("expected to keep allowed-shape id; got %q", got)
+	}
+}
+
 // InjectIntoHeaders writes the correlation_id and traceparent onto outbound headers.
 func TestInjectIntoHeaders(t *testing.T) {
 	t.Parallel()

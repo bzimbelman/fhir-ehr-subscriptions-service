@@ -108,12 +108,47 @@ func TraceparentFromContext(ctx context.Context) (TraceContext, bool) {
 	return TraceContext{}, false
 }
 
+// MaxCorrelationIDLen caps the length of an inbound correlation id so
+// log lines can never grow unbounded from a remote header. The W3C
+// traceparent trace-id is 32 hex chars and the canonical UUID form
+// is 36, so 128 is a generous ceiling that still allows custom
+// formats while keeping a single log record bounded.
+const MaxCorrelationIDLen = 128
+
+// IsValidCorrelationIDChar reports whether c is allowed in an inbound
+// X-Correlation-ID. Allowed: ASCII letters, digits, dash, dot,
+// underscore, and slash. Excluded: every control character (most
+// importantly CR/LF) and every byte that would let a remote attacker
+// inject a header / log line / metric label boundary.
+//
+// CRLF rejection is the load-bearing case (B-16); the rest of the
+// allow-list is a defense-in-depth budget that keeps the value usable
+// as a Postgres value, an HTTP header, and a log field without
+// further escaping.
+func IsValidCorrelationIDChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	case c == '-', c == '.', c == '_', c == '/':
+		return true
+	default:
+		return false
+	}
+}
+
 // ExtractFromHeaders pulls the X-Correlation-ID and traceparent headers
 // off h and returns a context carrying them. If the correlation header
-// is missing, a fresh UUIDv4 is generated.
+// is missing, blank, oversized, or contains characters outside the
+// allow-list (S-14 #6 / B-16), a fresh UUIDv4 is generated and the
+// remote-supplied value is dropped. The discarded value is never
+// surfaced to logs.
 func ExtractFromHeaders(ctx context.Context, h http.Header) context.Context {
 	id := h.Get(HeaderCorrelationID)
-	if id == "" {
+	if !validCorrelationID(id) {
 		id = NewID().String()
 	}
 	ctx = WithID(ctx, id)
@@ -123,6 +158,19 @@ func ExtractFromHeaders(ctx context.Context, h http.Header) context.Context {
 		}
 	}
 	return ctx
+}
+
+// validCorrelationID reports whether s is a safe value to forward.
+func validCorrelationID(s string) bool {
+	if s == "" || len(s) > MaxCorrelationIDLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !IsValidCorrelationIDChar(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // InjectIntoHeaders writes the correlation id (always) and traceparent (if
