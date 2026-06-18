@@ -675,6 +675,63 @@ func TestListener_InflightCap_DirectGate(t *testing.T) {
 	}
 }
 
+// LLD §5.7: during graceful shutdown drain, do NOT NACK on persist
+// failure. Drop silently and exit. The EHR will reconnect.
+//
+// We exercise the rule via a direct handleOneFrame call with draining=true
+// and a persister that fails. Assertions:
+//   - no MSA|AE| bytes are written to the connection,
+//   - MetricNackTotal does NOT increment,
+//   - the function returns true (drop the connection).
+func TestListener_NoNackDuringDrain(t *testing.T) {
+	p := &fakePersister{err: fmt.Errorf("simulated persist failure during drain")}
+	m := newFakeMetrics()
+	ep := EndpointConfig{Name: "adt-feed"}
+	cfg := defaultConfig(ep)
+
+	server, client := net.Pipe()
+
+	// Buffer reads on the client side so a write attempt by the handler
+	// would be visible.
+	readDone := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 256)
+		_ = client.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, _ := client.Read(buf)
+		readDone <- append([]byte(nil), buf[:n]...)
+	}()
+
+	state := newConnectionState("adt-feed", "127.0.0.1:5050")
+	clog := newConnectionLogger(nopLogger{}, ep.Name, "127.0.0.1:5050", state.id)
+	endpointLabels := map[string]string{"listener_endpoint": ep.Name}
+
+	body := []byte("MSH|^~\\&|S|F|||20240101||ADT^A01|DRAIN-1|P|2.5\r")
+	stop := handleOneFrame(context.Background(), server, body, ep, cfg, p, m, clog, state, endpointLabels, true /* draining */)
+
+	if !stop {
+		t.Fatalf("handleOneFrame must return true (drop) during drain on persist failure")
+	}
+	_ = server.Close()
+
+	got := <-readDone
+	if len(got) > 0 && strings.Contains(string(got), "MSA|AE") {
+		t.Fatalf("must not write NACK during drain; got %q", got)
+	}
+
+	if v := m.counter(MetricNackTotal, map[string]string{
+		"listener_endpoint": "adt-feed", "reason": "persist_transient",
+	}); v != 0 {
+		t.Fatalf("nack_total must not increment during drain; got %v", v)
+	}
+	if v := m.counter(MetricMessagesAckedTotal, map[string]string{
+		"listener_endpoint": "adt-feed", "outcome": OutcomeAE,
+	}); v != 0 {
+		t.Fatalf("acked_total{outcome=AE} must not increment during drain; got %v", v)
+	}
+
+	_ = client.Close()
+}
+
 // Graceful shutdown: in-flight persist completes, then handler exits without
 // accepting new frames.
 func TestListener_ShutdownDrainsInFlight(t *testing.T) {
