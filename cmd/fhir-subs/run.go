@@ -13,6 +13,7 @@ import (
 	"net/http"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 )
 
 // testForceCloseHook is a test seam: when non-nil, the shutdown path
@@ -45,6 +46,10 @@ type runHooks struct {
 	// before Serve runs. Tests use this to assert the production timeouts
 	// match the audit's B-2 requirements.
 	onServerConfigured func(s *http.Server)
+	// onLoggerReady fires once the observability logger has been
+	// constructed. Tests use this to emit a probe record and assert the
+	// PHI-redacting handler is in the chain (S-1.4).
+	onLoggerReady func(lg *slog.Logger)
 }
 
 // run is the production entry point used by main(). It is a thin wrapper
@@ -68,7 +73,17 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	}
 	cfg.Server.HTTP.applyTimeoutDefaults()
 
-	logger := slog.New(slog.NewJSONHandler(logOut, &slog.HandlerOptions{Level: slogLevel(cfg.Deployment.LogLevel)}))
+	// Use the observability/logging redacting handler so PHI fields are
+	// scrubbed at info+ regardless of caller carelessness (S-1.4). The
+	// JSON sink is preserved because container log shippers expect it.
+	logger := logging.NewLogger(&logging.Options{
+		Sink:   logOut,
+		Level:  slogLevel(cfg.Deployment.LogLevel),
+		Format: "json",
+	})
+	if hooks.onLoggerReady != nil {
+		hooks.onLoggerReady(logger)
+	}
 	logger.Info(banner(cfg.Deployment.FacilityID, cfg.Adapter.ID),
 		"facility_id", cfg.Deployment.FacilityID,
 		"adapter_id", cfg.Adapter.ID,
