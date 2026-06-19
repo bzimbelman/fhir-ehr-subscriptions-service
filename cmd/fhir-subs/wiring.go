@@ -255,6 +255,26 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	if tokenSrv != nil {
 		r.Method(http.MethodPost, "/token", tokenSrv)
 	}
+
+	// Story #92: mount the read-only admin operator surface on the SAME
+	// chi router that backs the FHIR API. Token < MinAdminTokenBytes is
+	// a wire-up failure — the binary refuses to start rather than
+	// silently disabling /admin.
+	if cfg.Admin.Token != "" && len(cfg.Admin.Token) < handlers.MinAdminTokenBytes {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("admin: token must be at least %d bytes (got %d)",
+			handlers.MinAdminTokenBytes, len(cfg.Admin.Token))
+	}
+	deps.AdminToken = cfg.Admin.Token
+	deps.AdminPathPrefix = cfg.Admin.PathPrefix
+	deps.DeadLetters = handlers.NewPgDeadLettersStore(pool, dl)
+	deps.AdminRateLimit = auth.NewClientRateLimiter(auth.RateLimit{
+		Burst:           cfg.Admin.RateLimit.Burst,
+		RefillPerSecond: cfg.Admin.RateLimit.RefillPerSecond,
+		MaxKeys:         cfg.Admin.RateLimit.MaxKeys,
+	}, nil)
+	handlers.RegisterAdminRoutes(r, deps)
+
 	rt.router = r
 
 	// --- 8. MLLP listener (optional) ------------------------------------

@@ -31,6 +31,7 @@ type Config struct {
 	Pipeline   PipelineConfig   `yaml:"pipeline"`
 	Channels   ChannelsConfig   `yaml:"channels"`
 	Topics     TopicsConfig     `yaml:"topics"`
+	Admin      AdminConfig      `yaml:"admin"`
 
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
@@ -249,6 +250,26 @@ type TopicsConfig struct {
 	CatalogDir string `yaml:"catalog_dir"`
 }
 
+// AdminConfig models admin.* fields. The admin surface is the read-only
+// operator triage API mounted at PathPrefix (default `/admin`); story #92.
+//
+// Token is the operator-supplied shared secret. It must be at least
+// handlers.MinAdminTokenBytes (32) bytes; an empty Token disables the
+// admin surface entirely (the routes are not mounted, requests 404).
+//
+// PathPrefix overrides the default `/admin` mount point. Empty falls back
+// to handlers.DefaultAdminPathPrefix.
+//
+// RateLimit is the per-token (per-IP fallback) bucket the admin surface
+// is wrapped in so a runaway operator script cannot pin the audit-log
+// write rate. Burst <= 0 disables the rate limit (handler chain is
+// unwrapped).
+type AdminConfig struct {
+	Token      string          `yaml:"token"`
+	PathPrefix string          `yaml:"path_prefix"`
+	RateLimit  RateLimitConfig `yaml:"rate_limit"`
+}
+
 // LifecycleConfig models lifecycle.* fields used by the entry point.
 type LifecycleConfig struct {
 	ShutdownGracePeriod time.Duration `yaml:"shutdown_grace_period"`
@@ -457,6 +478,28 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Codec.ActiveKeyVersion = int32(n)
+		case "admin.token":
+			cfg.Admin.Token = val
+		case "admin.path_prefix":
+			cfg.Admin.PathPrefix = val
+		case "admin.rate_limit.burst":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Admin.RateLimit.Burst = n
+		case "admin.rate_limit.refill_per_second":
+			f, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Admin.RateLimit.RefillPerSecond = f
+		case "admin.rate_limit.max_keys":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Admin.RateLimit.MaxKeys = n
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)
 		}

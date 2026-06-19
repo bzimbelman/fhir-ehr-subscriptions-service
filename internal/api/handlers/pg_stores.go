@@ -343,6 +343,42 @@ func (s *PgTopicsStore) ListActive(ctx context.Context) ([]repos.SubscriptionTop
 	return out, nil
 }
 
+// PgDeadLettersStore wraps repos.DeadLettersRepo for the admin
+// /admin/dead_letters surface. Mirrors the other Pg*Store adapters'
+// pattern: hold a pool + repo, derive a read context, delegate to the
+// repo, translate timeout errors to ErrQueryTimeout (story #92).
+type PgDeadLettersStore struct {
+	Pool     *pgxpool.Pool
+	Repo     *repos.DeadLettersRepo
+	Timeouts QueryTimeouts
+}
+
+// NewPgDeadLettersStore constructs the store with default timeouts.
+func NewPgDeadLettersStore(pool *pgxpool.Pool, repo *repos.DeadLettersRepo) *PgDeadLettersStore {
+	return NewPgDeadLettersStoreWithTimeouts(pool, repo, QueryTimeouts{})
+}
+
+// NewPgDeadLettersStoreWithTimeouts lets the operator override per-query
+// deadlines.
+func NewPgDeadLettersStoreWithTimeouts(pool *pgxpool.Pool, repo *repos.DeadLettersRepo, qt QueryTimeouts) *PgDeadLettersStore {
+	qt.ApplyDefaults()
+	return &PgDeadLettersStore{Pool: pool, Repo: repo, Timeouts: qt}
+}
+
+// ListRecent delegates to the existing repo.ListRecent under a bounded
+// read context. The repo intentionally omits the encrypted
+// payload_redacted blob; the admin handler also redacts it on the way
+// out.
+func (s *PgDeadLettersStore) ListRecent(ctx context.Context, limit int) ([]repos.DeadLetterRow, error) {
+	qctx, cancel := s.Timeouts.withRead(ctx)
+	defer cancel()
+	out, err := s.Repo.ListRecent(qctx, s.Pool, limit)
+	if err != nil {
+		return nil, TranslateQueryErr(ctx, qctx, err, "dead_letters: list recent")
+	}
+	return out, nil
+}
+
 // PgEventsStore implements EhrEventsStore for $events replay. We add a
 // single read query directly to avoid touching the repo.
 type PgEventsStore struct {
