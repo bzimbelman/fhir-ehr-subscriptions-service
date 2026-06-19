@@ -305,7 +305,12 @@ func TestRun_LogsCloseErrorAfterShutdownTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	logs := &strings.Builder{}
+	// safeBuf protects the logger sink: with a microsecond grace
+	// period, runWithHooks may return while the lifecycle sequencer
+	// goroutine is still flushing its "shutdown complete" log. A
+	// plain *strings.Builder would race that final write against the
+	// test's logs.String() reads. (OP #239)
+	logs := &safeBuf{}
 
 	started := make(chan struct{})
 	hooks := runHooks{
@@ -329,12 +334,34 @@ func TestRun_LogsCloseErrorAfterShutdownTimeout(t *testing.T) {
 		t.Fatal("run did not return")
 	}
 
-	if !strings.Contains(logs.String(), "force close") {
-		t.Fatalf("expected force-close log; got: %s", logs.String())
+	out := logs.String()
+	if !strings.Contains(out, "force close") {
+		t.Fatalf("expected force-close log; got: %s", out)
 	}
-	if !strings.Contains(logs.String(), errSimulatedClose.Error()) {
-		t.Fatalf("expected close error in logs; got: %s", logs.String())
+	if !strings.Contains(out, errSimulatedClose.Error()) {
+		t.Fatalf("expected close error in logs; got: %s", out)
 	}
+}
+
+// safeBuf is a sync.Mutex-protected io.Writer used by tests that share
+// the logger sink with runWithHooks. The lifecycle sequencer's final
+// log write can land after runWithHooks returns when the shutdown grace
+// period is microscopic, so the sink must be safe for concurrent use.
+type safeBuf struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (s *safeBuf) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *safeBuf) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
 }
 
 var errSimulatedClose = fmt.Errorf("simulated close error")
