@@ -137,6 +137,10 @@ networkPolicy:
 
 # Service config mounted at /etc/fhir-subs/config.yaml inside the container.
 # Use ${env:VAR} or ${file:/path} placeholders for any secret value.
+#
+# Every key below MUST exist in cmd/fhir-subs/config.go::Config — the
+# helm_chart_test.go contract test parses this rendered output and
+# fails on any orphan that yaml.v3 would silently route to Config.Extra.
 config:
   contents: |
     deployment:
@@ -155,26 +159,42 @@ config:
         tls:
           cert_file: /etc/fhir-subs/tls/tls.crt
           key_file: /etc/fhir-subs/tls/tls.key
+          min_version: "1.3"
     lifecycle:
       shutdown_grace_period: 30s
-      postgres_probe_timeout: 5s
-    storage:
-      postgres:
-        url: ${env:DATABASE_URL}
-        pool_size: 16
-        statement_timeout: 30s
-      encryption:
-        at_rest_key: ${file:/etc/fhir-subs/secrets/at_rest_key}
+    database:
+      url: ${env:DATABASE_URL}
+    codec:
+      active_key_version: 1
+      keys:
+        - version: 1
+          material: ${file:/etc/fhir-subs/secrets/at_rest_key}
     auth:
-      schemes:
-        - bearer
-      jwks:
-        cache_ttl: 5m
+      jwks_cache_ttl: 5m
     adapter:
       id: default
-    observability:
-      metrics:
-        bind: ":9090"
+    metrics:
+      bind: ":9090"
+      path: /metrics
+    topics:
+      catalog_dir: /etc/fhir-subs/topics
+
+# Operator-supplied SubscriptionTopic catalog. Each key in `files` is
+# a filename (e.g. `lab-results.json`) and the value is the JSON body
+# of a SubscriptionTopic resource. The chart projects this map into a
+# ConfigMap and mounts it at /etc/fhir-subs/topics — the directory
+# Config.Topics.CatalogDir defaults to.
+#
+# When empty, the binary boots with no operator topics; the matcher
+# walks zero topics and the pipeline silently delivers nothing. Story
+# #115's RequireNonEmpty + Validate hardening is tracked separately;
+# wiring the chart projection is the first half of that fix.
+topicCatalog:
+  # mountPath is the directory the topics ConfigMap is mounted at
+  # inside the container. Must match Config.Topics.CatalogDir; the
+  # binary default is /etc/fhir-subs/topics.
+  mountPath: /etc/fhir-subs/topics
+  files: {}
 
 # External Secrets Operator (ESO). When enabled the chart creates an
 # ExternalSecret that syncs the listed keys from your secret store backend

@@ -409,6 +409,14 @@ type HTTPConfig struct {
 	Insecure bool      `yaml:"insecure"`
 	TLS      TLSConfig `yaml:"tls"`
 
+	// ProbeBind is the bind address for the unauthenticated probe
+	// listener (S-118). The kubelet hits /healthz, /readyz, /startup
+	// here on a port that is NEVER wrapped in auth middleware so a
+	// buggy auth config can't 401 a probe. Must differ from Bind so
+	// the helm chart's `port: probes -> 8081` actually maps to a real
+	// open socket. Default :8081 (set in defaultConfig + loadConfig).
+	ProbeBind string `yaml:"probe_bind"`
+
 	// ReadHeaderTimeout caps the time the server reads request headers.
 	// Default 5s.
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
@@ -489,11 +497,15 @@ func defaultConfig() *Config {
 		},
 		Server: ServerConfig{
 			HTTP: HTTPConfig{
-				Bind: "0.0.0.0:8443",
+				Bind:      "0.0.0.0:8443",
+				ProbeBind: "0.0.0.0:8081",
 			},
 		},
 		Lifecycle: LifecycleConfig{
 			ShutdownGracePeriod: 30 * time.Second,
+		},
+		Topics: TopicsConfig{
+			CatalogDir: "/etc/fhir-subs/topics",
 		},
 	}
 }
@@ -524,11 +536,17 @@ func loadConfig(path string) (*Config, error) {
 	if cfg.Server.HTTP.Bind == "" {
 		cfg.Server.HTTP.Bind = "0.0.0.0:8443"
 	}
+	if cfg.Server.HTTP.ProbeBind == "" {
+		cfg.Server.HTTP.ProbeBind = "0.0.0.0:8081"
+	}
 	if cfg.Lifecycle.ShutdownGracePeriod == 0 {
 		cfg.Lifecycle.ShutdownGracePeriod = 30 * time.Second
 	}
 	if cfg.Deployment.Mode == "" {
 		cfg.Deployment.Mode = DeploymentModeProduction
+	}
+	if strings.TrimSpace(cfg.Topics.CatalogDir) == "" {
+		cfg.Topics.CatalogDir = "/etc/fhir-subs/topics"
 	}
 	cfg.Server.HTTP.applyTimeoutDefaults()
 
@@ -574,6 +592,14 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Server.HTTP.Bind) == "" {
 		problems = append(problems, "server.http.bind is required")
+	}
+	if strings.TrimSpace(c.Server.HTTP.ProbeBind) == "" {
+		problems = append(problems, "server.http.probe_bind is required")
+	}
+	if c.Server.HTTP.Bind == c.Server.HTTP.ProbeBind &&
+		strings.TrimSpace(c.Server.HTTP.Bind) != "" {
+		problems = append(problems,
+			"server.http.bind and server.http.probe_bind must differ")
 	}
 
 	// Story #117: deployment.mode is the explicit opt-in that gates

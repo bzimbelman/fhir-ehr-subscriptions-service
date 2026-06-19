@@ -45,7 +45,7 @@ func TestProductionWiring_AdminRoutesAreReachable(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 		Database:   DatabaseConfig{URL: dbURL},
 		// Codec / Auth: minimal viable — Phase B fills in the

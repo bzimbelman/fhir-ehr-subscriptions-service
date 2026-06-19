@@ -75,6 +75,11 @@ spec:
               mountPath: {{ .Values.tls.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.topicCatalog.files }}
+            - name: topics
+              mountPath: {{ .Values.topicCatalog.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -158,6 +163,11 @@ spec:
               mountPath: {{ .Values.tls.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.topicCatalog.files }}
+            - name: topics
+              mountPath: {{ .Values.topicCatalog.mountPath }}
+              readOnly: true
+            {{- end }}
             - name: tmp
               mountPath: /tmp
             {{- with .Values.extraVolumeMounts }}
@@ -183,6 +193,11 @@ spec:
             secretName: {{ include "fhir-subs.fullname" . }}-tls
             {{- end }}
             defaultMode: 0400
+        {{- end }}
+        {{- if .Values.topicCatalog.files }}
+        - name: topics
+          configMap:
+            name: {{ include "fhir-subs.fullname" . }}-topics
         {{- end }}
         # readOnlyRootFilesystem requires writable /tmp via emptyDir.
         - name: tmp

@@ -1,0 +1,13 @@
+{{- if .Values.topicCatalog.files }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fhir-subs.fullname" . }}-topics
+  labels:
+    {{- include "fhir-subs.labels" . | nindent 4 }}
+data:
+  {{- range $name, $body := .Values.topicCatalog.files }}
+  {{ $name }}: |
+{{ $body | indent 4 }}
+  {{- end }}
+{{- end }}

@@ -98,6 +98,7 @@ func TestRun_ServesTLS_WhenCertConfigured(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     pickFreeAddr(t),
+			ProbeBind: pickFreeAddr(t),
 			Insecure: false,
 			TLS: TLSConfig{
 				CertFile:   certPath,
@@ -137,11 +138,14 @@ func TestRun_ServesTLS_WhenCertConfigured(t *testing.T) {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, //nolint:gosec // self-signed cert in test
 		},
 	}
-	resp, err := httpsClient.Get("https://" + addr + "/healthz")
+	// Probes live on a separate listener (S-118); to assert TLS is
+	// active on the main listener, hit /metadata which is the
+	// probe-only-mode route mounted on the main mux.
+	resp, err := httpsClient.Get("https://" + addr + "/metadata")
 	if err != nil {
 		cancel()
 		<-done
-		t.Fatalf("https GET /healthz: %v (logs=%s)", err, logs.String())
+		t.Fatalf("https GET /metadata: %v (logs=%s)", err, logs.String())
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
@@ -151,13 +155,13 @@ func TestRun_ServesTLS_WhenCertConfigured(t *testing.T) {
 		t.Fatalf("https status: %d body=%s", resp.StatusCode, body)
 	}
 
-	// Plain HTTP GET to the same address must NOT be served by the
-	// healthz handler — Go's http.Server detects the plaintext request
-	// and replies with "Client sent an HTTP request to an HTTPS server"
-	// at status 400. Either an error or a non-2xx response proves the
-	// server is no longer accepting cleartext.
+	// Plain HTTP GET to the same address must NOT be served — Go's
+	// http.Server detects the plaintext request and replies with
+	// "Client sent an HTTP request to an HTTPS server" at status 400.
+	// Either an error or a non-2xx response proves the server is no
+	// longer accepting cleartext.
 	httpClient := &http.Client{Timeout: 2 * time.Second}
-	httpResp, httpErr := httpClient.Get("http://" + addr + "/healthz")
+	httpResp, httpErr := httpClient.Get("http://" + addr + "/metadata")
 	switch {
 	case httpErr != nil:
 		// Connection-level error is acceptable.
@@ -192,6 +196,7 @@ func TestValidate_RejectsMissingCertFile(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
+			ProbeBind: "0.0.0.0:8081",
 			Insecure: false,
 			TLS: TLSConfig{
 				CertFile: "/nonexistent/cert.pem",
@@ -230,6 +235,7 @@ func TestValidate_RejectsNonPEMCertFile(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
+			ProbeBind: "0.0.0.0:8081",
 			Insecure: false,
 			TLS: TLSConfig{
 				CertFile: certPath,
@@ -260,6 +266,7 @@ func TestValidate_DefaultMinVersionIs1_3(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
+			ProbeBind: "0.0.0.0:8081",
 			Insecure: false,
 			TLS: TLSConfig{
 				CertFile: certPath,
@@ -290,6 +297,7 @@ func TestValidate_RejectsInvalidMinVersion(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
+			ProbeBind: "0.0.0.0:8081",
 			Insecure: false,
 			TLS: TLSConfig{
 				CertFile:   certPath,
@@ -401,7 +409,7 @@ func TestValidate_MLLPTLSRequiresCertKey(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:8443", Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:8443", ProbeBind: "0.0.0.0:8081", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 30 * time.Second},
 		MLLP: MLLPConfig{
 			Listeners: []MLLPListener{
@@ -434,7 +442,7 @@ func TestValidate_MLLPMTLSRequiresClientCA(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:8443", Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:8443", ProbeBind: "0.0.0.0:8081", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 30 * time.Second},
 		MLLP: MLLPConfig{
 			Listeners: []MLLPListener{

@@ -137,7 +137,7 @@ func integrationCfg(t *testing.T, dbURL string) *Config {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1", Environment: "test", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 		Database:   DatabaseConfig{URL: dbURL},
 		Codec: CodecConfig{
