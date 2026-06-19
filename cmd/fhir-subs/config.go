@@ -25,6 +25,7 @@ type Config struct {
 	Server     ServerConfig     `yaml:"server"`
 	Lifecycle  LifecycleConfig  `yaml:"lifecycle"`
 	Database   DatabaseConfig   `yaml:"database"`
+	Storage    StorageConfig    `yaml:"storage"`
 	Codec      CodecConfig      `yaml:"codec"`
 	Auth       AuthConfig       `yaml:"auth"`
 	MLLP       MLLPConfig       `yaml:"mllp"`
@@ -83,6 +84,49 @@ type AuditConfig struct {
 // DatabaseConfig models database.* fields.
 type DatabaseConfig struct {
 	URL string `yaml:"url"`
+}
+
+// StorageConfig models storage.* fields used by the production binary
+// to drive the partition maintainer + retention sweeper goroutines that
+// storage.Start launches. Story #95 acceptance criterion: "Default
+// storage.RetentionConfig MUST be parsed from storage.retention.* in
+// YAML (six retention windows per the architecture doc)." All durations
+// are optional; storage.Config.ApplyDefaults fills in the defaults the
+// architecture doc specifies. Operators only override values they
+// actually want different.
+type StorageConfig struct {
+	Retention    StorageRetentionConfig    `yaml:"retention"`
+	Partitioning StoragePartitioningConfig `yaml:"partitioning"`
+}
+
+// StorageRetentionConfig models storage.retention.* — the chunked
+// retention sweeper for non-partitioned tables. Four row-level sweep
+// windows plus tunables for the loop cadence and chunk size.
+type StorageRetentionConfig struct {
+	Hl7MessageQueue time.Duration `yaml:"hl7_message_queue"`
+	Deliveries      time.Duration `yaml:"deliveries"`
+	DeadLetters     time.Duration `yaml:"dead_letters"`
+	// AuditLog is accepted for backwards compatibility; the sweeper now
+	// silently ignores it because audit retention is handled by partition
+	// rotation (the audit chain does not survive a row-level DELETE).
+	AuditLog time.Duration `yaml:"audit_log"`
+
+	RunInterval time.Duration `yaml:"run_interval"`
+	BatchSize   int32         `yaml:"batch_size"`
+	BatchPause  time.Duration `yaml:"batch_pause"`
+	TickTimeout time.Duration `yaml:"tick_timeout"`
+}
+
+// StoragePartitioningConfig models storage.partitioning.* — the daily
+// partition maintainer that creates next-month partitions and (when
+// AutoDrop is true) drops partitions older than the per-table retention.
+type StoragePartitioningConfig struct {
+	AutoDrop                 bool          `yaml:"auto_drop"`
+	PartitionLockTimeout     time.Duration `yaml:"partition_lock_timeout"`
+	RunInterval              time.Duration `yaml:"run_interval"`
+	TickTimeout              time.Duration `yaml:"tick_timeout"`
+	ResourceChangesRetention time.Duration `yaml:"resource_changes_retention"`
+	EhrEventsRetention       time.Duration `yaml:"ehr_events_retention"`
 }
 
 // CodecConfig models codec.* fields.

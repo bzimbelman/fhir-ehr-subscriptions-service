@@ -19,8 +19,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/claim"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/outbox"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/partition"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/pool"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
@@ -92,6 +94,12 @@ type PartitionConfig struct {
 	// resource_changes and ehr_events.
 	ResourceChangesRetention time.Duration
 	EhrEventsRetention       time.Duration
+
+	// Now is overridable for tests so the rollover behavior at month
+	// boundaries can be exercised deterministically without waiting for
+	// real wall-clock advance. Production callers leave this nil; the
+	// runner falls back to time.Now.
+	Now func() time.Time
 }
 
 // ApplyDefaults fills in zero-valued fields with sensible defaults from
@@ -222,7 +230,9 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 		auditLog: repos.NewAuditLogRepo(),
 	}
 
-	// Start partition maintainer.
+	// Start partition maintainer. cfg.Partitioning.Now is plumbed
+	// through so tests can drive a fast-forward "what does the runner
+	// do at month T+4" assertion without waiting for real wall-clock.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -233,6 +243,7 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 			ResourceChangesRetention: cfg.Partitioning.ResourceChangesRetention,
 			EhrEventsRetention:       cfg.Partitioning.EhrEventsRetention,
 			TickTimeout:              cfg.Partitioning.TickTimeout,
+			Now:                      cfg.Partitioning.Now,
 		})
 	}()
 
@@ -392,3 +403,29 @@ func (s *Storage) Pool() *pool.Pool { return s.pool }
 // to roll keys outside the normal write path can request the codec
 // directly.
 func (s *Storage) Codec() *codec.Codec { return s.cdc }
+
+// Outbox runs fn inside a transactional-outbox transaction on the
+// pool. Thin re-export of outbox.Run so callers reach the helper via
+// the canonical storage handle rather than importing
+// internal/infra/storage/outbox directly. Returns an error if the
+// storage handle is not initialized.
+func (s *Storage) Outbox(ctx context.Context, fn func(ctx context.Context, tx outbox.Tx) error) (outbox.Outcome, error) {
+	if s == nil || s.pool == nil {
+		return outbox.Outcome{}, errors.New("storage: not initialized")
+	}
+	return outbox.Run(ctx, s.pool.Pgx(), fn)
+}
+
+// ClaimUnprocessed is a generic package-level re-export of
+// claim.Unprocessed so the claim sub-package reaches production callers
+// via a single storage import. Go does not allow generic methods on
+// concrete types, so this is a function rather than a Storage method.
+func ClaimUnprocessed[T any](
+	ctx context.Context,
+	tx pgx.Tx,
+	decode func(claim.Scanner) (T, error),
+	sql string,
+	args ...any,
+) ([]T, error) {
+	return claim.Unprocessed(ctx, tx, decode, sql, args...)
+}

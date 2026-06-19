@@ -31,8 +31,9 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/pool"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/mllp"
@@ -44,6 +45,7 @@ import (
 // keys). The fields are owned by the wiring; Shutdown closes them in
 // reverse construction order.
 type productionRuntime struct {
+	storage     *storage.Storage
 	pool        *pgxpool.Pool
 	codec       *codec.Codec
 	authVerif   *auth.Verifier
@@ -81,55 +83,25 @@ type productionRuntime struct {
 func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logger, lcMod *lifecycle.LifecycleModule) (*productionRuntime, error) {
 	rt := &productionRuntime{logger: logger}
 
-	// --- 1. Postgres pool + migrations -----------------------------------
-	// Use ParseConfig + explicit ConnectTimeout so the per-attempt dial
-	// honors a bound the operator can reason about. Without it, an
-	// unreachable Postgres lets pgxpool's internal retry loop outrun the
-	// caller's pingCtx and the diagnostic surfaces only during shutdown
-	// (D-3).
-	poolCfg, err := buildPoolConfig(cfg.Database.URL, 0)
+	// --- 1. Storage layer (pool + migrations + codec + background workers) ---
+	// storage.Start owns the pool, runs migrations, builds the codec, and
+	// launches the partition maintainer + retention sweeper goroutines.
+	// Story #95: previously this function opened pgxpool directly and never
+	// invoked storage.Start, so the partition + retention runners were
+	// dead code. After the third month rollover (migration 0001 bootstraps
+	// only 3 partitions) inserts would fail with "no partition for value."
+	keys, kerr := decodeCodecKeys(cfg.Codec)
+	if kerr != nil {
+		return nil, fmt.Errorf("codec: %w", kerr)
+	}
+	storageCfg := buildStorageConfig(cfg, keys)
+	store, err := storage.Start(ctx, storageCfg, storage.Context{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("storage: %w", err)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
-	if err != nil {
-		return nil, fmt.Errorf("database: open: %w", err)
-	}
-	rt.pool = pool
-
-	// Ping under a tight bound so a misconfigured DB at startup fails
-	// fast and the orchestrator restarts the pod, instead of hanging
-	// the listener registration past the operator's startup probe.
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	pingErrCh := make(chan error, 1)
-	go func() { pingErrCh <- pool.Ping(pingCtx) }()
-	select {
-	case pErr := <-pingErrCh:
-		if pErr != nil {
-			rt.shutdown(context.Background())
-			return nil, fmt.Errorf("database: ping: %w", pErr)
-		}
-	case <-pingCtx.Done():
-		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("database: ping: %w", pingCtx.Err())
-	}
-
-	migCtx, cancelMig := context.WithTimeout(ctx, 60*time.Second)
-	if migErr := migrate.Up(migCtx, pool); migErr != nil {
-		cancelMig()
-		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("database: migrate: %w", migErr)
-	}
-	cancelMig()
-
-	// --- 2. Codec --------------------------------------------------------
-	cdc, err := buildCodec(cfg.Codec)
-	if err != nil {
-		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("codec: %w", err)
-	}
-	rt.codec = cdc
+	rt.storage = store
+	rt.pool = store.Pool().Pgx()
+	rt.codec = store.Codec()
 
 	// --- 3. Adapter registry --------------------------------------------
 	adReg := registry.New()
@@ -163,6 +135,8 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	})
 
 	// --- 4. Repos --------------------------------------------------------
+	cdc := rt.codec
+	pool := rt.pool
 	hl7Q := repos.NewHl7MessageQueueRepo(cdc)
 	rcs := repos.NewResourceChangesRepo(cdc)
 	ehrEvts := repos.NewEhrEventsRepo(cdc)
@@ -604,14 +578,20 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 		})
 	}
 
+	// storage.drain stops the partition maintainer + retention sweeper
+	// goroutines so they don't block the database close in the next
+	// phase. Storage owns those runners; calling Storage.Shutdown is the
+	// canonical way to drain them. This hook also closes the underlying
+	// pool (Storage.Shutdown wraps pool.Close), so a separate
+	// database.close hook is no longer needed (story #95).
 	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
-		Name:  "database.close",
-		Phase: lifecycle.PhaseCloseConnections,
-		Run: func(_ context.Context) error {
-			if r.pool != nil {
-				r.pool.Close()
+		Name:  "storage.drain",
+		Phase: lifecycle.PhaseDrainInFlight,
+		Run: func(ctx context.Context) error {
+			if r.storage == nil {
+				return nil
 			}
-			return nil
+			return r.storage.Shutdown(ctx)
 		},
 	})
 }
@@ -630,10 +610,15 @@ func (r *productionRuntime) shutdown(ctx context.Context) {
 	if r.mllpListen != nil {
 		_ = r.mllpListen.Shutdown(ctx)
 	}
+	if r.storage != nil {
+		// Storage.Shutdown owns the partition + retention drain AND the
+		// pool close. Bound by ctx so a stuck dial inside pgxpool can't
+		// pin the failure path; storage's own internal budget continues
+		// in the background.
+		_ = r.storage.Shutdown(ctx)
+		return
+	}
 	if r.pool != nil {
-		// Close the pool in a bounded goroutine so a stuck dial inside
-		// pgxpool can't pin the failure path. The pool's own Close will
-		// continue in the background; the process is exiting anyway.
 		closed := make(chan struct{})
 		go func() {
 			r.pool.Close()
@@ -646,9 +631,12 @@ func (r *productionRuntime) shutdown(ctx context.Context) {
 	}
 }
 
-// buildCodec parses the configured key bundle, decodes the base64
-// material, and constructs a Codec.
-func buildCodec(cfg CodecConfig) (*codec.Codec, error) {
+// decodeCodecKeys validates and base64-decodes the YAML codec key
+// bundle into the version->bytes map storage.Config.KeyVersions
+// expects. Story #95: storage.Start owns the codec construction now,
+// so this helper is shared between the wiring path (storage.Start) and
+// the audit-CLI path (which still builds a freestanding codec).
+func decodeCodecKeys(cfg CodecConfig) (map[int32][]byte, error) {
 	if len(cfg.Keys) == 0 {
 		return nil, errors.New("at least one key required")
 	}
@@ -672,7 +660,44 @@ func buildCodec(cfg CodecConfig) (*codec.Codec, error) {
 	if _, ok := keys[cfg.ActiveKeyVersion]; !ok {
 		return nil, fmt.Errorf("active_key_version=%d not present in keys[]", cfg.ActiveKeyVersion)
 	}
-	return codec.New(codec.NewStaticKeyProvider(keys, cfg.ActiveKeyVersion))
+	return keys, nil
+}
+
+// buildStorageConfig translates the cmd-side YAML config into the
+// storage.Config bundle storage.Start consumes. Operator-supplied
+// storage.retention.* and storage.partitioning.* values pass through;
+// zero values fall back to storage.Config.ApplyDefaults inside
+// storage.Start.
+func buildStorageConfig(cfg *Config, keys map[int32][]byte) storage.Config {
+	return storage.Config{
+		PostgresURL: cfg.Database.URL,
+		Pool: pool.Config{
+			ApplicationName: "fhir-ehr-subscriptions-service",
+		},
+		KeyVersions: keys,
+		ActiveKey:   cfg.Codec.ActiveKeyVersion,
+		Retention: storage.RetentionConfig{
+			Hl7MessageQueue: cfg.Storage.Retention.Hl7MessageQueue,
+			Deliveries:      cfg.Storage.Retention.Deliveries,
+			DeadLetters:     cfg.Storage.Retention.DeadLetters,
+			AuditLog:        cfg.Storage.Retention.AuditLog,
+			RunInterval:     cfg.Storage.Retention.RunInterval,
+			BatchSize:       cfg.Storage.Retention.BatchSize,
+			BatchPause:      cfg.Storage.Retention.BatchPause,
+			TickTimeout:     cfg.Storage.Retention.TickTimeout,
+		},
+		Partitioning: storage.PartitionConfig{
+			AutoDrop:                 cfg.Storage.Partitioning.AutoDrop,
+			PartitionLockTimeout:     cfg.Storage.Partitioning.PartitionLockTimeout,
+			RunInterval:              cfg.Storage.Partitioning.RunInterval,
+			TickTimeout:              cfg.Storage.Partitioning.TickTimeout,
+			ResourceChangesRetention: cfg.Storage.Partitioning.ResourceChangesRetention,
+			EhrEventsRetention:       cfg.Storage.Partitioning.EhrEventsRetention,
+		},
+		Lifecycle: storage.LifecycleConfig{
+			ShutdownGracePeriod: cfg.Lifecycle.ShutdownGracePeriod,
+		},
+	}
 }
 
 // buildAuthEndpoints constructs the verifier and token endpoint from

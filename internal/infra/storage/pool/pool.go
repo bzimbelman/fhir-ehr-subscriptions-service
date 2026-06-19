@@ -50,6 +50,11 @@ type Config struct {
 	// ApplicationName is forwarded to libpq via the connection string.
 	// Default "fhir-ehr-subscriptions-service".
 	ApplicationName string
+	// ConnectTimeout caps the per-attempt TCP dial. Applied via
+	// pgx.ConnConfig.ConnectTimeout. Default 5s. Without this, an
+	// unreachable Postgres lets pgxpool's internal retry loop outrun
+	// the caller's startup ping context (audit D-3).
+	ConnectTimeout time.Duration
 }
 
 // ApplyDefaults fills in any zero-valued fields with the documented
@@ -84,6 +89,9 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.ApplicationName == "" {
 		c.ApplicationName = "fhir-ehr-subscriptions-service"
+	}
+	if c.ConnectTimeout <= 0 {
+		c.ConnectTimeout = 5 * time.Second
 	}
 }
 
@@ -131,6 +139,7 @@ func Open(ctx context.Context, cfg Config) (*Pool, error) {
 	pcfg.MaxConnLifetime = cfg.MaxConnectionLifetime
 	pcfg.MaxConnIdleTime = cfg.IdleTimeout
 	pcfg.HealthCheckPeriod = cfg.HealthCheckInterval
+	pcfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
 
 	if pcfg.ConnConfig.RuntimeParams == nil {
 		pcfg.ConnConfig.RuntimeParams = make(map[string]string)

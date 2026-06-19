@@ -288,6 +288,20 @@ func (m *LifecycleModule) Probes() ProbeHandlers {
 	return m.probes
 }
 
+// RegisteredShutdownNames returns the names of all shutdown hooks
+// registered for the given phase. Order is name-sorted, matching the
+// underlying registry's snapshot. Tests use this to assert that the
+// production wiring has registered the expected hooks (storage drain,
+// pipeline drain, etc.) without poking at unexported internals.
+func (m *LifecycleModule) RegisteredShutdownNames(phase Phase) []string {
+	hooks := m.reg.hooksInPhase(phase)
+	out := make([]string, 0, len(hooks))
+	for _, h := range hooks {
+		out = append(out, h.Name)
+	}
+	return out
+}
+
 // installSignalHandlers wires SIGTERM and SIGINT to RequestShutdown. The
 // implementation lives in signals.go; this method exists to keep Start
 // readable.
