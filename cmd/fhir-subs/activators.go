@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	chemail "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/email"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
@@ -210,7 +211,7 @@ func buildHandshakeBundle(row repos.SubscriptionRow) ([]byte, error) {
 	b := bundle{
 		ResourceType: "Bundle",
 		Type:         "subscription-notification",
-		Timestamp:    time.Time{}.UTC().Format(time.RFC3339),
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 		Entry: []entry{
 			{
 				FullURL:  "urn:uuid:handshake",
@@ -219,4 +220,51 @@ func buildHandshakeBundle(row repos.SubscriptionRow) ([]byte, error) {
 		},
 	}
 	return json.Marshal(&b)
+}
+
+// emailActivator implements handlers.ChannelActivator by running a real
+// SMTP RCPT-TO probe against the channel's configured relay. It
+// replaces defaultActivator{} for the "email" channel type. OP #114
+// (scope-reduced; WS halves moved to #114b/#114c).
+//
+// Activation classification:
+//   - ProbeAccepted (RCPT TO 2xx) -> HandshakeSucceeded
+//   - ProbeRejected (5xx, malformed mailto, STARTTLS-required-not-offered) -> HandshakeFailed
+//   - ProbeTransient (4xx, dial error, deadline) -> HandshakeFailed
+//
+// HandshakeFailed surfaces upstream as the handlers.activate path
+// flipping the row to repos.SubError, NOT keeping it stuck at
+// "requested". Operators see a real failure reason in the audit log,
+// not a synthetic "handshake succeeded" lie.
+type emailActivator struct {
+	channel *chemail.Channel
+}
+
+// newEmailActivator constructs an activator that delegates to
+// channel.ProbeRecipient. The channel is the same instance the
+// scheduler uses for delivery — activation reuses the configured relay
+// host, port, STARTTLS policy, and AUTH mechanism so a probe that
+// succeeds is a strong predictor that delivery against the same relay
+// will at least connect and authenticate.
+func newEmailActivator(ch *chemail.Channel) *emailActivator {
+	return &emailActivator{channel: ch}
+}
+
+// ActivateSubscription runs the RCPT-TO probe for sub.Endpoint. The
+// caller (handlers.activate) treats HandshakeSucceeded as authorization
+// to flip the row to "active" and HandshakeFailed as a terminal error.
+// Errors are reserved for caller-side bugs; protocol/transport failures
+// are folded into the HandshakeOutcome.
+func (a *emailActivator) ActivateSubscription(ctx context.Context, sub repos.SubscriptionRow) (handlers.HandshakeOutcome, error) {
+	if a == nil || a.channel == nil {
+		return handlers.HandshakeFailed, fmt.Errorf("email activator: nil channel")
+	}
+	res, err := a.channel.ProbeRecipient(ctx, sub.Endpoint)
+	if err != nil {
+		return handlers.HandshakeFailed, err
+	}
+	if res.Outcome == chemail.ProbeAccepted {
+		return handlers.HandshakeSucceeded, nil
+	}
+	return handlers.HandshakeFailed, nil
 }

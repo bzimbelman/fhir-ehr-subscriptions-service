@@ -329,11 +329,14 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// API layer share one policy surface (OP #182).
 	// rest-hook gets a real activator that POSTs a synthetic FHIR R5
 	// handshake bundle to the subscriber endpoint and only flips status
-	// to active on a 2xx response (D-2). websocket and email continue to
-	// use the no-op default — the websocket handshake is asynchronous
-	// (the subscriber binds with a token after creation), and email
-	// handshake semantics depend on relay AUTH that is not modeled
-	// today. Both are tracked in future-work.
+	// to active on a 2xx response (D-2). email gets a real RCPT-TO probe
+	// activator that exercises the configured SMTP relay (OP #114
+	// scope-reduced after split: WS halves moved to #114b/#114c).
+	// websocket continues to use the no-op default — the websocket
+	// handshake is asynchronous (the subscriber binds with a token after
+	// creation) and the SPI seams for a real handshake do not exist yet
+	// (#114b adds them, #114c uses them). message stays on the default
+	// pending its own activation story.
 	rhActivator := newRestHookActivator(restHookActivatorOptions{
 		AllowHTTP: cfg.Auth.AllowInsecure,
 		Timeout:   cfg.Channels.RestHook.RequestTimeout,
@@ -344,6 +347,13 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		"websocket": defaultActivator{},
 		"email":     defaultActivator{},
 		"message":   defaultActivator{},
+	}
+	// Replace the email default only when an email Channel was actually
+	// constructed (cfg.Channels.Email.SMTPHost non-empty); otherwise
+	// keep the default so dev binaries without an SMTP relay still
+	// boot. When wired, this is the real RCPT-TO probe.
+	if rt.emailChannel != nil {
+		channels["email"] = newEmailActivator(rt.emailChannel)
 	}
 	// Auth middleware: in production cfg.Auth.Audience is required and
 	// Validate has already enforced it (story #116). The dev-bypass

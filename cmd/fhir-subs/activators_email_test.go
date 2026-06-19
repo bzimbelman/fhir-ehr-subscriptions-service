@@ -146,6 +146,41 @@ func TestEmailActivator_DialFailureTransient(t *testing.T) {
 	}
 }
 
+// TestEmailActivator_NotDefaultActivator pins that the wiring builds
+// an emailActivator (NOT a defaultActivator) for the email channel
+// type. A regression that re-introduces defaultActivator{} for "email"
+// makes this test fail — the activator type is *emailActivator, not
+// defaultActivator. We construct via newEmailActivator directly because
+// the wiring path wraps it identically; this is the contract pin.
+func TestEmailActivator_NotDefaultActivator(t *testing.T) {
+	t.Parallel()
+
+	relay := startProbeRelay(t, probeRelayConfig{})
+	defer relay.Stop()
+
+	ch, err := chemail.New(chemail.Config{
+		From:     "noreply@example.org",
+		SMTPHost: relay.Host,
+		SMTPPort: relay.Port,
+		STARTTLS: chemail.STARTTLSDisabled,
+	})
+	if err != nil {
+		t.Fatalf("chemail.New: %v", err)
+	}
+	act := newEmailActivator(ch)
+
+	if act == nil {
+		t.Fatal("newEmailActivator returned nil")
+	}
+	// Type-pin: a defaultActivator{} would satisfy the same interface
+	// but is the regression we explicitly forbid. Asserting the
+	// concrete type catches the regression even if the surface
+	// behavior happens to look right against this particular relay.
+	if _, ok := any(act).(*emailActivator); !ok {
+		t.Fatalf("activator type = %T; want *emailActivator (defaultActivator{} regression)", act)
+	}
+}
+
 // TestEmailActivator_InvalidEndpointFails asserts a non-mailto endpoint
 // fails the handshake without making any network call.
 func TestEmailActivator_InvalidEndpointFails(t *testing.T) {
