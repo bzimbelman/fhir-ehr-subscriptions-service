@@ -18,9 +18,23 @@ this README is the operator's cheat sheet.
 These are documented in the design doc and called out here so nobody is
 surprised when they peek at `config.yaml`:
 
-- **Auth.** No SMART Backend Services token mint, no JWKS. The bridge runs
-  with no audience configured, which mounts the no-op auth middleware.
+- **Auth.** No SMART Backend Services token mint, no JWKS. The bridge
+  runs with `auth.audience` unset and `auth.allow_dev_bypass: true`,
+  so `cmd/fhir-subs/wiring.go` installs the no-op
+  `devPrincipalMiddleware` rather than the production verifier.
 - **TLS.** MLLP and HTTP both run plaintext.
+- **`auth.allow_insecure_jwks: true`.** The bridge config sets this so
+  the rest-hook URL validator accepts `http://` subscriber endpoints
+  (the demo subscriber advertises an http URL on the compose network).
+  In production this flag allows JWKS to be fetched over plaintext
+  http and bypasses TLS verification — DO NOT enable it. Full security
+  implications are documented in
+  [`README-compose.md`](README-compose.md#what-the-demo-intentionally-does-not-show).
+- **`auth.allow_subscriber_hosts: [demo-subscriber]`.** Whitelists the
+  compose-internal subscriber hostname past the URL validator's
+  loopback / RFC1918 SSRF policy.  Production deployments must leave
+  this empty unless they have an explicit reason to trust an internal
+  hostname.
 - **Multiple channels.** Only rest-hook. WSS / email / message channels exist
   on `main` but the demo picks the simplest one.
 - **Heartbeats / replay / multi-subscriber fan-out.** Future work; not
@@ -56,6 +70,12 @@ The compose stack brings up:
   ingest. Both are exposed on the host. The bridge loads its
   `SubscriptionTopic` catalog from [`topics/`](topics/) (`lab-results`,
   `vitals`, `encounter-admit`).
+- `demo-subscriber` — long-running rest-hook receiver running
+  `cmd/demo-subscriber`. POSTs a Subscription to the bridge for the
+  `lab-results` topic, listens on `:9090` for delivery POSTs, and
+  exposes `GET /journal` (host port 9090) so an operator can inspect
+  what the bridge has delivered. Waits for `bridge /readyz` before
+  subscribing so a slow Postgres warm-up doesn't race the POST.
 
 Wait for the bridge to report `/readyz` OK:
 
@@ -63,54 +83,52 @@ Wait for the bridge to report `/readyz` OK:
 curl -fsS http://localhost:8443/readyz
 ```
 
-> **Note.** If `demo/docker-compose.yml` is not present in your checkout
-> yet, story #82 owns landing it. Until then you can run the bridge directly
-> with `go run ./cmd/fhir-subs --config demo/config.yaml` and a local
-> Postgres pointed at by `demo/config.yaml`'s `database.url`. Everything
-> after this point is identical.
-
 ## Walk-through
 
-### Terminal A — start the subscriber
+### Terminal A — watch the subscriber
+
+The compose stack already started `demo-subscriber`; tail its log
+stream to see the bridge → subscriber handshake and incoming Bundles:
 
 ```sh
-./demo-subscriber \
-  --bridge http://localhost:8443 \
-  --topic http://demo.org/topics/lab-results \
-  --filter patient=ABC123 \
-  --token demo-token
+docker compose logs -f demo-subscriber
 ```
 
-`demo-subscriber`:
+You should see one log line for the activation handshake the bridge
+fires after creating the Subscription, then one line per delivered
+notification Bundle.
 
-1. Brings up a local HTTP listener that the bridge will POST notification
-   Bundles to.
-2. POSTs a rest-hook `Subscription` to the bridge with the topic + filter
-   from the flags and `endpoint` set to its own listener URL.
-3. Pretty-prints each Bundle the bridge delivers, color-coded by topic.
-
-It logs the subscription `id`, the `endpoint` it advertised, and the bearer
-token it used so the bridge ↔ subscriber side of the handshake is auditable
-from the terminal.
-
-The full flag list lives in `cmd/demo-subscriber/main.go`; the most useful
-ones are `--listen` (override the bind address), `--advertise` (override the
-URL the bridge POSTs to — useful when listening on `0.0.0.0` inside Docker),
-and the JWT-mint flags (`--client-id`, `--private-key`, `--kid`) for
-exercising the SMART backend services flow.
+The subscriber's flags are baked into `docker-compose.yml` so the
+demo is reproducible: it advertises `http://demo-subscriber:9090`
+(the compose-internal hostname, whitelisted by
+`auth.allow_subscriber_hosts` in `config.yaml`), uses the static
+bearer `--token demo-token` (auth bypass mode — see
+[`README-compose.md`](README-compose.md)), and waits up to 120s for
+`/readyz` before subscribing. Edit the service in `docker-compose.yml`
+or rerun the binary by hand with different flags to exercise the
+JWT-mint path or a different topic / filter.
 
 ### Terminal B — run the publisher
 
+`demo-publisher` is profile-gated in compose so `compose up` does
+not run it automatically. Trigger it on demand:
+
 ```sh
-./demo-publisher \
-  --addr 127.0.0.1:2575 \
-  --catalog scenarios/labs.yaml
+docker compose run --rm demo-publisher
 ```
 
-`demo-publisher` walks the catalog top-to-bottom, dialing the bridge's MLLP
-listener for each entry, framing one HL7 v2 message, and printing a
-`→ send` line followed by an `← ACK` line per message. Delays between
-sends are taken from the `delay:` field on each catalog entry.
+This walks the bundled `scenarios/labs.yaml` against the bridge's
+MLLP listener (over the compose network at `bridge:2575`), framing
+one HL7 v2 message per entry. Delays between sends are taken from
+the `delay:` field on each catalog entry. To run the publisher
+against a different scenario, edit `scenarios/labs.yaml` (the file
+is mounted into the container read-only) or override the
+`--catalog` argument:
+
+```sh
+docker compose run --rm demo-publisher \
+  --addr bridge:2575 --catalog /etc/fhir-subs/scenarios/labs.yaml
+```
 
 The bundled `scenarios/labs.yaml` has four messages:
 

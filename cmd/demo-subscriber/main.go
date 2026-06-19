@@ -38,6 +38,31 @@ func main() {
 	}
 }
 
+// waitForReadyz polls url every 500ms until a 2xx response is observed
+// or deadline elapses. The polling honours ctx so SIGTERM /
+// docker-stop unblocks the wait. Used by the --wait-for-readyz flag
+// to ride out a slow bridge boot in compose.
+func waitForReadyz(ctx context.Context, url string, deadline time.Duration) error {
+	pollCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	client := &http.Client{Timeout: 2 * time.Second}
+	for {
+		req, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, url, nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+		}
+		select {
+		case <-pollCtx.Done():
+			return fmt.Errorf("timed out waiting for %s: last err=%v", url, err)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
 type cliFlags struct {
 	bridge      string
 	listen      string
@@ -55,6 +80,12 @@ type cliFlags struct {
 	noColor     bool
 	pretty      bool
 	subscribeTO time.Duration
+
+	// waitForReadyz, when non-zero, polls <bridge>/readyz before
+	// subscribing. Lets the demo subscriber survive a slow bridge
+	// boot (e.g. running under docker compose where the bridge needs
+	// to migrate the demo Postgres before /readyz flips to 200).
+	waitForReadyz time.Duration
 }
 
 func parseFlags(args []string) (cliFlags, error) {
@@ -75,6 +106,7 @@ func parseFlags(args []string) (cliFlags, error) {
 	fs.BoolVar(&f.noColor, "no-color", false, "disable ANSI color (kept for backward compat; prefer NO_COLOR env)")
 	fs.BoolVar(&f.pretty, "pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")
 	fs.DurationVar(&f.subscribeTO, "subscribe-timeout", 10*time.Second, "timeout for the POST /Subscription request")
+	fs.DurationVar(&f.waitForReadyz, "wait-for-readyz", 0, "if >0, poll <bridge>/readyz until 2xx or this duration elapses before subscribing (default 0 = no wait)")
 
 	if err := fs.Parse(args); err != nil {
 		return f, err
@@ -184,6 +216,17 @@ func run(args []string, stdout *os.File) error {
 			return fmt.Errorf("mint token: %w", mErr)
 		}
 		logger.printInfo("minted access token (%d-byte JWT)", len(bearer))
+	}
+
+	// 3.5. Optionally wait for the bridge's /readyz to flip to 2xx so
+	//      a slow boot (compose: bridge migrates Postgres before
+	//      Subscription API serves) does not race the subscribe POST.
+	if f.waitForReadyz > 0 {
+		readyzURL := strings.TrimRight(f.bridge, "/") + "/readyz"
+		if rerr := waitForReadyz(ctx, readyzURL, f.waitForReadyz); rerr != nil {
+			return fmt.Errorf("wait for bridge readyz: %w", rerr)
+		}
+		logger.printInfo("bridge readyz observed at %s", readyzURL)
 	}
 
 	// 4. POST the Subscription.

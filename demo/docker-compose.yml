@@ -4,9 +4,18 @@
 # Closes Demo gap-5 from docs/subscription-sidecar-demo.md.
 #
 # Brings up:
-#   - postgres   — Postgres 16 (the bridge's only hard dependency)
-#   - bridge     — the fhir-subs binary, built from this repo's Dockerfile
-#                  (../Dockerfile), running with demo/config.yaml.
+#   - postgres        — Postgres 16 (the bridge's only hard dependency)
+#   - bridge          — the fhir-subs binary, built from this repo's Dockerfile
+#                       (../Dockerfile), running with demo/config.yaml.
+#   - demo-subscriber — long-running rest-hook receiver (cmd/demo-subscriber)
+#                       that POSTs a Subscription to the bridge and exposes
+#                       /journal on host:9090 for inspection.  OP #154 added
+#                       this so the documented walkthrough actually delivers.
+#   - demo-publisher  — one-shot HL7 v2 publisher (cmd/demo-publisher) that
+#                       walks scenarios/labs.yaml against the bridge's MLLP
+#                       listener.  Profile-gated so `compose up` does not
+#                       run it automatically; invoke via
+#                       `docker compose run --rm demo-publisher`.
 #
 # The topics catalog volume is mounted from ./topics so the demo
 # SubscriptionTopic JSON files seeded by Demo gap-6 are picked up at
@@ -15,6 +24,7 @@
 # Run from this directory:
 #   docker compose up -d
 #   curl -fsS http://localhost:8443/readyz   # 200 within ~60s
+#   docker compose run --rm demo-publisher    # send the bundled scenario
 #
 # Tear down:
 #   docker compose down -v
@@ -79,6 +89,76 @@ services:
     # curl, and no wget. Operators verify readiness from the host with
     # `curl http://localhost:8443/readyz` — see README-compose.md.
     restart: unless-stopped
+
+  # demo-subscriber — long-running rest-hook receiver. Reuses the same
+  # image as the bridge (Dockerfile builds /demo-subscriber alongside
+  # /fhir-subs after OP #154). Listens on :9090 inside the container,
+  # advertises `http://demo-subscriber:9090` so the bridge can route to
+  # it across the compose network. The bridge's URLValidator
+  # whitelists this hostname via auth.allow_subscriber_hosts in
+  # config.yaml — without that the rest-hook delivery would be
+  # rejected as private-IP SSRF.
+  demo-subscriber:
+    image: fhir-subs:demo
+    container_name: fhir-subs-demo-subscriber
+    depends_on:
+      bridge:
+        condition: service_started
+    entrypoint: ["/demo-subscriber"]
+    command:
+      - "--bridge"
+      - "http://bridge:8443"
+      - "--listen"
+      - "0.0.0.0:9090"
+      - "--advertise"
+      - "http://demo-subscriber:9090"
+      - "--topic"
+      - "http://demo.org/topics/lab-results"
+      - "--filter"
+      - "patient=ABC123"
+      - "--token"
+      - "demo-token"
+      - "--pretty=false"
+      # Wait up to 120s for bridge /readyz to flip to 2xx before
+      # subscribing. The bridge boots Postgres + migrations + the
+      # observability stack first, so the Subscription API can take
+      # ~10s to be reachable in a cold compose stack.
+      - "--wait-for-readyz=120s"
+    ports:
+      # Host-side journal access. The /journal endpoint serves the
+      # JSON-encoded list of received POSTs and is what the e2e/demo
+      # test polls to confirm deliveries arrived.
+      - "9090:9090"
+    restart: unless-stopped
+
+  # demo-publisher — one-shot HL7 v2 publisher. Walks the bundled
+  # scenarios/labs.yaml against the bridge's MLLP listener, exits.
+  # Lives behind a `demo` profile so `compose up -d` does not run it;
+  # invoke via `docker compose run --rm demo-publisher` (or
+  # `docker compose --profile demo up demo-publisher`).
+  demo-publisher:
+    image: fhir-subs:demo
+    container_name: fhir-subs-demo-publisher
+    depends_on:
+      bridge:
+        condition: service_started
+      demo-subscriber:
+        condition: service_started
+    entrypoint: ["/demo-publisher"]
+    command:
+      - "--addr"
+      - "bridge:2575"
+      - "--catalog"
+      - "/etc/fhir-subs/scenarios/labs.yaml"
+      - "--pretty=false"
+    volumes:
+      # The runtime image is distroless (no scenarios on disk); mount
+      # the catalog from the repo so a contributor can hand-edit
+      # scenarios/labs.yaml without rebuilding.
+      - ./scenarios:/etc/fhir-subs/scenarios:ro
+    profiles: ["demo"]
+    # Auto-injected when invoked via `compose run`; exits on its own.
+    restart: "no"
 
 volumes:
   pgdata:
