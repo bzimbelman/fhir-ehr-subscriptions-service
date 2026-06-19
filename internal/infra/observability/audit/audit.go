@@ -367,7 +367,11 @@ func VerifyChainWithGenesis(ctx context.Context, store Store, literal string) er
 		if !bytes.Equal(sum[:], row.ChainHash) {
 			return fmt.Errorf("audit: chain break at row %d: chain_hash mismatch", idx)
 		}
-		prior = row.ChainHash
+		// Advance with the application-recomputed hash for consistency
+		// with VerifyChainReport (story #108): on a clean chain
+		// sum[:] == row.ChainHash; this returns on the first break
+		// anyway, so the choice only matters as documentation.
+		prior = sum[:]
 		idx++
 		return nil
 	})
