@@ -398,44 +398,6 @@ func NewPgEventsStoreWithTimeouts(pool *pgxpool.Pool, qt QueryTimeouts) *PgEvent
 	return &PgEventsStore{Pool: pool, Timeouts: qt}
 }
 
-// ListByTopicAndRange is a read of ehr_events filtered by topic and
-// event_number range. since/until of 0 mean unbounded.
-func (s *PgEventsStore) ListByTopicAndRange(ctx context.Context, topicURL string, since, until int64) ([]repos.EhrEventRow, error) {
-	const sql = `
-		SELECT id, event_number, topic_url, focus, change_kind, occurred_at,
-		       resource_change_id
-		FROM ehr_events
-		WHERE topic_url = $1
-		  AND ($2 = 0 OR event_number >= $2)
-		  AND ($3 = 0 OR event_number <= $3)
-		ORDER BY event_number ASC
-		LIMIT 1000`
-	qctx, cancel := s.Timeouts.withRead(ctx)
-	defer cancel()
-	rows, err := s.Pool.Query(qctx, sql, topicURL, since, until)
-	if err != nil {
-		return nil, TranslateQueryErr(ctx, qctx, err, "ehr_events: replay")
-	}
-	defer rows.Close()
-	out := make([]repos.EhrEventRow, 0)
-	for rows.Next() {
-		var rec repos.EhrEventRow
-		var kind string
-		if err := rows.Scan(
-			&rec.ID, &rec.EventNumber, &rec.TopicURL, &rec.Focus, &kind,
-			&rec.OccurredAt, &rec.ResourceChangeID,
-		); err != nil {
-			return nil, TranslateQueryErr(ctx, qctx, err, "ehr_events: scan")
-		}
-		rec.ChangeKind = repos.ChangeKind(kind)
-		out = append(out, rec)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, TranslateQueryErr(ctx, qctx, err, "ehr_events: replay")
-	}
-	return out, nil
-}
-
 // PgDeliveriesStore implements DeliveriesStore for $status. The
 // existing repo doesn't expose lastDeliveredEventNumber so we run the
 // query inline here.
@@ -657,7 +619,15 @@ func (s *PgSubscriptionsStore) ListByClientPage(ctx context.Context, clientID st
 	return out, nil
 }
 
-func (s *PgEventsStore) ListByTopicAndRangePage(ctx context.Context, topicURL string, since, until int64, limit int) ([]repos.EhrEventRow, error) {
+// ListByTopicAndRangePage returns ehr_events rows for the given
+// (topic_url, client_id) pair. clientID is the authenticated caller's
+// tenant id; the predicate enforces tenant isolation in the event log
+// (OP #274). Passing the empty string is treated as "no events" so a
+// missing principal cannot accidentally bypass the filter.
+func (s *PgEventsStore) ListByTopicAndRangePage(ctx context.Context, topicURL, clientID string, since, until int64, limit int) ([]repos.EhrEventRow, error) {
+	if clientID == "" {
+		return []repos.EhrEventRow{}, nil
+	}
 	if limit <= 0 {
 		// Defensive cap so a buggy caller cannot exhaust the pool. The
 		// production path never hits this because the handler always
@@ -668,17 +638,18 @@ func (s *PgEventsStore) ListByTopicAndRangePage(ctx context.Context, topicURL st
 		limit = maxEventReplayPageSize
 	}
 	const sql = `
-		SELECT id, event_number, topic_url, focus, change_kind, occurred_at,
+		SELECT id, event_number, client_id, topic_url, focus, change_kind, occurred_at,
 		       resource_change_id
 		FROM ehr_events
 		WHERE topic_url = $1
-		  AND ($2 = 0 OR event_number >= $2)
-		  AND ($3 = 0 OR event_number <= $3)
+		  AND client_id = $2
+		  AND ($3 = 0 OR event_number >= $3)
+		  AND ($4 = 0 OR event_number <= $4)
 		ORDER BY event_number ASC
-		LIMIT $4`
+		LIMIT $5`
 	//nolint:gosec // limit is bounded above by maxEventReplayPageSize which fits int32
 	limit32 := int32(limit)
-	rows, err := s.Pool.Query(ctx, sql, topicURL, since, until, limit32)
+	rows, err := s.Pool.Query(ctx, sql, topicURL, clientID, since, until, limit32)
 	if err != nil {
 		return nil, fmt.Errorf("ehr_events: replay page: %w", err)
 	}
@@ -688,7 +659,7 @@ func (s *PgEventsStore) ListByTopicAndRangePage(ctx context.Context, topicURL st
 		var rec repos.EhrEventRow
 		var kind string
 		if err := rows.Scan(
-			&rec.ID, &rec.EventNumber, &rec.TopicURL, &rec.Focus, &kind,
+			&rec.ID, &rec.EventNumber, &rec.ClientID, &rec.TopicURL, &rec.Focus, &kind,
 			&rec.OccurredAt, &rec.ResourceChangeID,
 		); err != nil {
 			return nil, fmt.Errorf("ehr_events: scan: %w", err)

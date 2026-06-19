@@ -165,6 +165,7 @@ func seedFanout(t *testing.T, s *storage.Storage, channelType string) (uuid.UUID
 
 	corr := uuid.New()
 	ehrID, _, err := s.EhrEvents().Insert(ctx, s.Pool().Pgx(), repos.EhrEventRow{
+		ClientID:         "client-S",
 		TopicURL:         "http://example.org/t",
 		Focus:            "ServiceRequest/abc",
 		ChangeKind:       repos.ChangeCreate,
@@ -360,6 +361,7 @@ func TestIntegrationSchedulerConcurrentSkipLocked(t *testing.T) {
 		}
 		for j := 0; j < perSub; j++ {
 			ehrID, _, err := s.EhrEvents().Insert(ctx, s.Pool().Pgx(), repos.EhrEventRow{
+				ClientID: "client-Z",
 				TopicURL: "http://example.org/t", Focus: fmt.Sprintf("X/%d-%d", i, j),
 				ChangeKind: repos.ChangeCreate,
 				Resource:   []byte(`{"resourceType":"X"}`), CorrelationID: uuid.New(),

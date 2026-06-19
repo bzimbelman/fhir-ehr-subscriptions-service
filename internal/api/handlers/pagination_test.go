@@ -235,6 +235,7 @@ func TestEvents_ReplayCap_TruncationAdvertisesNext(t *testing.T) {
 	events := deps.Events.(*memEvents)
 	for i := int64(1); i <= 7; i++ {
 		events.rows = append(events.rows, repos.EhrEventRow{
+			ClientID:    "client-A",
 			EventNumber: i,
 			TopicURL:    "http://example.org/topics/orders",
 			Focus:       fmt.Sprintf("ServiceRequest/%d", i),
@@ -281,6 +282,7 @@ func TestEvents_ReplayCap_FollowNextReturnsRest(t *testing.T) {
 	events := deps.Events.(*memEvents)
 	for i := int64(1); i <= 5; i++ {
 		events.rows = append(events.rows, repos.EhrEventRow{
+			ClientID:    "client-A",
 			EventNumber: i,
 			TopicURL:    "http://example.org/topics/orders",
 			Focus:       fmt.Sprintf("ServiceRequest/%d", i),
@@ -334,8 +336,8 @@ func TestEvents_ReplayCap_NoTruncationNoNextLink(t *testing.T) {
 	})
 	events := deps.Events.(*memEvents)
 	events.rows = []repos.EhrEventRow{
-		{EventNumber: 1, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/a"},
-		{EventNumber: 2, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/b"},
+		{ClientID: "client-A", EventNumber: 1, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/a"},
+		{ClientID: "client-A", EventNumber: 2, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/b"},
 	}
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	resp, err := http.Get(srv.URL + "/Subscription/" + id.String() + "/$events")

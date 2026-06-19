@@ -93,9 +93,14 @@ type SubscriptionTopicsStore interface {
 // `next` pointing the client at eventsSinceNumber=lastEventNumber+1.
 // limit <= 0 means "no cap"; production callers always pass a positive
 // value.
+//
+// clientID scopes the read to one tenant (OP #274). Passing the
+// authenticated principal's client_id is mandatory: the handler's
+// per-subscription owner check guards the subscription row but not
+// the ehr_events log, so without this predicate two tenants on the
+// same topic would see each other's events (OP #197).
 type EhrEventsStore interface {
-	ListByTopicAndRange(ctx context.Context, topicURL string, since, until int64) ([]repos.EhrEventRow, error)
-	ListByTopicAndRangePage(ctx context.Context, topicURL string, since, until int64, limit int) ([]repos.EhrEventRow, error)
+	ListByTopicAndRangePage(ctx context.Context, topicURL, clientID string, since, until int64, limit int) ([]repos.EhrEventRow, error)
 }
 
 // DeliveriesStore is the narrow read-only interface for $status.

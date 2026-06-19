@@ -896,17 +896,30 @@ func (c *Config) ApplyDefaults() {
 // source-row mark-processed update inside one transaction (the
 // transactional outbox).
 type Worker struct {
-	pool    *pgxpool.Pool
-	catalog CatalogProvider
-	rcsRepo *repos.ResourceChangesRepo
-	ehrRepo *repos.EhrEventsRepo
-	cfg     Config
+	pool     *pgxpool.Pool
+	catalog  CatalogProvider
+	rcsRepo  *repos.ResourceChangesRepo
+	ehrRepo  *repos.EhrEventsRepo
+	subsRepo *repos.SubscriptionsRepo
+	cfg      Config
 }
 
 // NewWorker constructs a Worker.
 func NewWorker(pool *pgxpool.Pool, rcs *repos.ResourceChangesRepo, ehr *repos.EhrEventsRepo, cp CatalogProvider, cfg Config) *Worker {
 	cfg.ApplyDefaults()
 	return &Worker{pool: pool, rcsRepo: rcs, ehrRepo: ehr, catalog: cp, cfg: cfg}
+}
+
+// SetSubscriptionsRepo installs the subscriptions repo the worker uses
+// to enumerate active subscriptions per (topic) for cross-tenant
+// fan-out. When set, the worker emits one ehr_events row per
+// (resource_change × topic × subscription.client_id) so each row carries
+// its recipient tenant. When unset, the worker falls back to the
+// pre-#272 single-row-per-topic behavior; production wiring MUST set it
+// (OP #272). Tests that exercise the no-subscription path can leave it
+// unset.
+func (w *Worker) SetSubscriptionsRepo(subs *repos.SubscriptionsRepo) {
+	w.subsRepo = subs
 }
 
 // MetricsEmitter is the host-supplied seam for the matcher metric set
@@ -1103,25 +1116,54 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 		OccurredAt:       row.OccurredAt,
 	})
 
+	// Cross-tenant fan-out (OP #272): enumerate distinct active
+	// subscription client_ids per matched topic and emit one
+	// ehr_events row per (match × client_id). The worker holds an
+	// in-tx, per-iteration cache so two matches on the same topic
+	// share one subscription read.
+	clientCache := map[string][]string{}
 	for i := range matches {
 		m := &matches[i]
-		_, _, err := w.ehrRepo.Insert(ctx, tx, repos.EhrEventRow{
-			TopicURL:              m.TopicURL,
-			Focus:                 m.Focus,
-			ChangeKind:            repos.ChangeKind(m.ChangeKind),
-			Resource:              m.Resource,
-			PreviousResource:      m.PreviousResource,
-			CorrelationID:         m.CorrelationID,
-			OccurredAt:            m.OccurredAt,
-			NotificationShapeHint: m.NotificationShapeHint,
-			ResourceChangeID:      m.ResourceChangeID,
-		})
-		if err != nil {
+		if w.subsRepo == nil {
+			// Production wiring MUST install a subscriptions repo;
+			// erroring here is preferable to writing rows with a
+			// stub client_id that would defeat OP #274's tenant
+			// isolation guarantee.
 			em.ResourceChangeClaimed("error")
 			em.RowAttempt("error")
-			return false, fmt.Errorf("matcher: insert ehr_events: %w", err)
+			return false, fmt.Errorf("matcher: subscriptions repo not installed; cannot fan out for topic %q", m.TopicURL)
 		}
-		em.EhrEventEmitted()
+		clients, ok := clientCache[m.TopicURL]
+		if !ok {
+			cs, err := w.distinctActiveClientIDs(ctx, tx, m.TopicURL)
+			if err != nil {
+				em.ResourceChangeClaimed("error")
+				em.RowAttempt("error")
+				return false, fmt.Errorf("matcher: enumerate clients for topic %q: %w", m.TopicURL, err)
+			}
+			clients = cs
+			clientCache[m.TopicURL] = clients
+		}
+		for _, clientID := range clients {
+			_, _, err := w.ehrRepo.Insert(ctx, tx, repos.EhrEventRow{
+				ClientID:              clientID,
+				TopicURL:              m.TopicURL,
+				Focus:                 m.Focus,
+				ChangeKind:            repos.ChangeKind(m.ChangeKind),
+				Resource:              m.Resource,
+				PreviousResource:      m.PreviousResource,
+				CorrelationID:         m.CorrelationID,
+				OccurredAt:            m.OccurredAt,
+				NotificationShapeHint: m.NotificationShapeHint,
+				ResourceChangeID:      m.ResourceChangeID,
+			})
+			if err != nil {
+				em.ResourceChangeClaimed("error")
+				em.RowAttempt("error")
+				return false, fmt.Errorf("matcher: insert ehr_events: %w", err)
+			}
+			em.EhrEventEmitted()
+		}
 	}
 
 	if _, err := w.rcsRepo.MarkProcessed(ctx, tx, row.ID, row.CreatedMonth); err != nil {
@@ -1139,4 +1181,32 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	em.ResourceChangeClaimed("processed")
 	em.RowAttempt("processed")
 	return true, nil
+}
+
+// distinctActiveClientIDs returns the set of distinct client_ids whose
+// subscriptions are active for topicURL, in stable ascending order so
+// the per-row fan-out is deterministic. Two subscriptions from the
+// same client on the same topic collapse into one ehr_events row —
+// ehr_events stores per-recipient-tenant rows, not per-subscription
+// rows; the deliveries table is the per-subscription log (OP #272).
+func (w *Worker) distinctActiveClientIDs(ctx context.Context, tx pgx.Tx, topicURL string) ([]string, error) {
+	const sql = `
+		SELECT DISTINCT client_id
+		FROM subscriptions
+		WHERE topic_url = $1 AND status = 'active'
+		ORDER BY client_id`
+	rows, err := tx.Query(ctx, sql, topicURL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

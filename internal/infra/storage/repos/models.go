@@ -98,8 +98,13 @@ type ResourceChangeRow struct {
 
 // EhrEventRow mirrors ehr_events.
 type EhrEventRow struct {
-	ID                    uuid.UUID
-	EventNumber           int64
+	ID          uuid.UUID
+	EventNumber int64
+	// ClientID is the recipient tenant. Migration 0008 added the
+	// column NOT NULL referencing auth_clients(id); the matcher
+	// emits one row per (resource_change × topic × subscription.client_id)
+	// and the $events read filters by it (OP #272 + #274).
+	ClientID              string
 	TopicURL              string
 	Focus                 string
 	ChangeKind            ChangeKind

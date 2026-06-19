@@ -928,7 +928,13 @@ func (s *server) opEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ask for limit+1 so the handler can detect truncation without a
 	// second round-trip and emit a Bundle.link `next` (S-2.15).
-	events, err := s.deps.Events.ListByTopicAndRangePage(r.Context(), sub.TopicURL, since, until, limit+1)
+	//
+	// OP #274: filter the ehr_events read by the caller's client_id
+	// so two tenants subscribed to the same topic do not see each
+	// other's events. The owner check above (`sub.ClientID == p.ClientID`)
+	// already proved the principal owns the subscription row; passing
+	// the same client_id here makes the event log read tenant-scoped.
+	events, err := s.deps.Events.ListByTopicAndRangePage(r.Context(), sub.TopicURL, p.ClientID, since, until, limit+1)
 	if err != nil {
 		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
 			"event log read failed")

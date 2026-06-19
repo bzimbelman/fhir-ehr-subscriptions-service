@@ -190,6 +190,7 @@ func TestIntegrationSchedulerInvokesHydratorForFullResource(t *testing.T) {
 	corr := uuid.New()
 	srBody := []byte(`{"resourceType":"ServiceRequest","id":"abc","status":"active","subject":{"reference":"Patient/p1"}}`)
 	ehrID, _, err := s.EhrEvents().Insert(ctx, s.Pool().Pgx(), repos.EhrEventRow{
+		ClientID:         "client-S",
 		TopicURL:         topicURL,
 		Focus:            "ServiceRequest/abc",
 		ChangeKind:       repos.ChangeCreate,
