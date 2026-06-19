@@ -373,6 +373,194 @@ func TestIntegrationPartitionMaintainerCreatesNextMonth(t *testing.T) {
 	}
 }
 
+// TestIntegrationStorageStartLaunchesPartitionRunner asserts that
+// storage.Start spawns a partition.Run goroutine that performs a
+// CREATE-IF-NOT-EXISTS for next-month resource_changes / ehr_events
+// partitions on its first tick, without an explicit caller invoking
+// Tick. Story #95 acceptance criterion: partition maintainer goroutine
+// starts and creates partitions on cadence.
+func TestIntegrationStorageStartLaunchesPartitionRunner(t *testing.T) {
+	t.Parallel()
+	url := startPostgres(t)
+	s := newTestStorage(t, url)
+
+	// The maintainer's first Tick fires synchronously inside the goroutine
+	// at startup, so the next-month partition should appear quickly.
+	next := time.Now().AddDate(0, 1, 0)
+	suffix := time.Date(next.Year(), next.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006_01")
+	target := "resource_changes_" + suffix
+
+	deadline := time.Now().Add(5 * time.Second)
+	var exists bool
+	for time.Now().Before(deadline) {
+		if err := s.Pool().Pgx().QueryRow(context.Background(),
+			`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)`, target,
+		).Scan(&exists); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		if exists {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !exists {
+		t.Errorf("expected next-month partition %q after storage.Start; not found", target)
+	}
+}
+
+// TestIntegrationPartitionMaintainerDoesNotClobberExisting asserts that
+// the partition maintainer's CREATE TABLE IF NOT EXISTS path is
+// idempotent: a second call (or a concurrent call from another pod)
+// must not error out, drop the existing partition, or empty its rows.
+// Story #95 negative case.
+func TestIntegrationPartitionMaintainerDoesNotClobberExisting(t *testing.T) {
+	t.Parallel()
+	url := startPostgres(t)
+	s := newTestStorage(t, url)
+	ctx := context.Background()
+
+	// First tick: creates the next-month partition.
+	if err := partition.Tick(ctx, s.Pool().Pgx(), partition.Config{
+		AutoDrop: false,
+		Now:      time.Now,
+	}); err != nil {
+		t.Fatalf("first Tick: %v", err)
+	}
+
+	// Insert a synthetic row into the partition that just got created.
+	// We pick a now-instant inside next-month so the row lands in the
+	// fresh partition rather than the seeded current-month one.
+	next := time.Now().AddDate(0, 1, 0)
+	insertAt := time.Date(next.Year(), next.Month(), 5, 12, 0, 0, 0, time.UTC)
+	corr := uuid.New()
+	if _, err := s.Pool().Pgx().Exec(ctx,
+		`INSERT INTO resource_changes
+		 (adapter_id, correlation_id, resource_type, change_kind, resource, occurred_at, key_version)
+		 VALUES ('default', $1, 'ServiceRequest', 'create', $2, $3, 1)`,
+		corr,
+		[]byte("ciphertext-placeholder"),
+		insertAt,
+	); err != nil {
+		t.Fatalf("insert into next-month partition: %v", err)
+	}
+
+	// Second tick: must be idempotent. Row count must not change.
+	if err := partition.Tick(ctx, s.Pool().Pgx(), partition.Config{
+		AutoDrop: false,
+		Now:      time.Now,
+	}); err != nil {
+		t.Fatalf("second Tick: %v", err)
+	}
+
+	var n int
+	if err := s.Pool().Pgx().QueryRow(ctx,
+		`SELECT count(*) FROM resource_changes WHERE correlation_id = $1`, corr,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("re-running partition Tick clobbered existing partition: row count = %d, want 1", n)
+	}
+}
+
+// TestIntegrationStorageShutdownDrainsRunners asserts that Storage.Shutdown
+// cancels the partition + retention goroutines and waits for them to
+// exit. After Shutdown returns, attempting to use the pool must surface
+// the closed-pool error, confirming the runners no longer hold connections.
+// Story #95 acceptance criterion: both shut down cleanly on lifecycle
+// drain.
+func TestIntegrationStorageShutdownDrainsRunners(t *testing.T) {
+	t.Parallel()
+	url := startPostgres(t)
+
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	cfg := storage.Config{
+		PostgresURL: url,
+		KeyVersions: map[int32][]byte{1: key},
+		ActiveKey:   1,
+	}
+	cfg.Partitioning.RunInterval = 50 * time.Millisecond
+	cfg.Retention.RunInterval = 50 * time.Millisecond
+	cfg.Retention.Hl7MessageQueue = 24 * time.Hour
+	cfg.Retention.Deliveries = 24 * time.Hour
+	cfg.Retention.DeadLetters = 24 * time.Hour
+	cfg.Lifecycle.ShutdownGracePeriod = 5 * time.Second
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer startCancel()
+	s, err := storage.Start(startCtx, cfg, storage.Context{})
+	if err != nil {
+		t.Fatalf("storage.Start: %v", err)
+	}
+
+	// Let the runners spin a bit so we know they're really live.
+	time.Sleep(200 * time.Millisecond)
+
+	// Shutdown must return well before the lifecycle grace period
+	// expires when nothing is stuck.
+	shCtx, shCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shCancel()
+	t0 := time.Now()
+	if err := s.Shutdown(shCtx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if elapsed := time.Since(t0); elapsed > 5*time.Second {
+		t.Errorf("Shutdown took too long: %v (runners did not respect ctx cancel)", elapsed)
+	}
+
+	// After Shutdown the pool is closed; any subsequent Acquire
+	// must fail rather than block.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer probeCancel()
+	if perr := s.Probe(probeCtx, time.Second); perr == nil {
+		t.Errorf("expected Probe to fail after Shutdown; got nil")
+	}
+}
+
+// TestIntegrationRetentionSweeperLeavesUnexpiredRows asserts the negative
+// case: a sweeper Tick at the configured retention window must NOT
+// remove rows whose age is below the window. Story #95 negative case.
+func TestIntegrationRetentionSweeperLeavesUnexpiredRows(t *testing.T) {
+	t.Parallel()
+	url := startPostgres(t)
+	s := newTestStorage(t, url)
+	ctx := context.Background()
+
+	// Insert a fresh dead-letter (created_at = now()).
+	young := uuid.New()
+	if _, err := s.Pool().Pgx().Exec(ctx,
+		`INSERT INTO dead_letters
+		 (kind, source_table, source_id, reason)
+		 VALUES ('hl7_unparseable', 'hl7_message_queue', $1, 'fresh')`,
+		young,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run a sweep with a 30-day retention. Fresh row must survive.
+	if err := retention.Tick(ctx, s.Pool().Pgx(), retention.Config{
+		BatchSize:   100,
+		BatchPause:  time.Millisecond,
+		DeadLetters: 30 * 24 * time.Hour,
+		Now:         time.Now,
+	}); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	var n int
+	if err := s.Pool().Pgx().QueryRow(ctx,
+		`SELECT count(*) FROM dead_letters WHERE source_id = $1`, young,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("retention swept an unexpired row: count = %d, want 1", n)
+	}
+}
+
 func TestIntegrationRetentionSweeperDeletesOldRows(t *testing.T) {
 	t.Parallel()
 	url := startPostgres(t)
