@@ -77,7 +77,11 @@ mllp:
   listeners:
     - name: demo-feed
       bind: "0.0.0.0:2575"
-      tls: false
+      # TLS omitted -> cleartext MLLP. Production deployments MUST set
+      # the `tls` block per endpoint (B-20). The previous `tls: false`
+      # was a no-op (the field is a *MLLPListenerTLSConfig pointer that
+      # YAML cannot unmarshal a bool into) and made the demo binary
+      # error out at config-load time.
 
 topics:
   # The compose file mounts ./topics (the SubscriptionTopic JSON seeded
