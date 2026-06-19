@@ -155,7 +155,6 @@ func main() {
 	jr := &journal{wire: os.Stdout}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	if wsURL != "" {
 		go connectAndReceive(ctx, wsURL, wsToken, wsTopic, jr)
@@ -207,8 +206,11 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("listen: %v", err)
+	err := srv.ListenAndServe()
+	cancel()
+	if err != nil {
+		log.Printf("listen: %v", err)
+		os.Exit(1)
 	}
 	_ = fmt.Sprint
 }
