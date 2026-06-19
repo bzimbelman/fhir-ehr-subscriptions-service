@@ -408,6 +408,90 @@ func TestIntegrationStorageStartLaunchesPartitionRunner(t *testing.T) {
 	}
 }
 
+// TestIntegrationPartitionRunnerCreatesPartitionAfterFourMonthAdvance
+// proves the runner's clock seam: storage.Start launches the partition
+// maintainer with cfg.Partitioning.Now = (real now) + 4 months, and the
+// runner's first Tick must create a partition for the month *after*
+// (real now + 4mo) — i.e., (real now + 5mo). This exercises the
+// scenario migration 0001 cannot survive on its own (it seeds only 3
+// partitions), proving the runner is the safety net.
+//
+// Story #95 acceptance criterion: "boot a Postgres testcontainer,
+// advance now() by 4 months via the partition runner's clock seam,
+// assert resource_changes_<NEXT_MONTH> table exists."
+func TestIntegrationPartitionRunnerCreatesPartitionAfterFourMonthAdvance(t *testing.T) {
+	t.Parallel()
+	url := startPostgres(t)
+
+	// Real-world clock + 4 months — that's outside the 3 partitions
+	// migration 0001 seeded.
+	advanced := time.Now().AddDate(0, 4, 0)
+
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i + 1)
+	}
+	cfg := storage.Config{
+		PostgresURL: url,
+		KeyVersions: map[int32][]byte{1: key},
+		ActiveKey:   1,
+	}
+	cfg.Partitioning.AutoDrop = false
+	cfg.Partitioning.RunInterval = time.Hour     // far away so loop doesn't fire
+	cfg.Partitioning.Now = func() time.Time { return advanced }
+	cfg.Retention.RunInterval = time.Hour
+	cfg.Retention.Hl7MessageQueue = 0
+
+	startCtx, startCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer startCancel()
+	s, err := storage.Start(startCtx, cfg, storage.Context{})
+	if err != nil {
+		t.Fatalf("storage.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		shctx, sc := context.WithTimeout(context.Background(), 10*time.Second)
+		defer sc()
+		_ = s.Shutdown(shctx)
+	})
+
+	// The runner's first Tick (synchronous before the loop sleep) creates
+	// the partition for advanced + 1 month.
+	wantMonth := time.Date(advanced.Year(), advanced.Month(), 1, 0, 0, 0, 0, time.UTC).
+		AddDate(0, 1, 0)
+	suffix := wantMonth.Format("2006_01")
+	target := "resource_changes_" + suffix
+
+	deadline := time.Now().Add(10 * time.Second)
+	var exists bool
+	for time.Now().Before(deadline) {
+		if qerr := s.Pool().Pgx().QueryRow(context.Background(),
+			`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)`, target,
+		).Scan(&exists); qerr != nil {
+			t.Fatalf("query: %v", qerr)
+		}
+		if exists {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !exists {
+		t.Fatalf("expected partition %s after +4mo clock advance; not found — runner did not honor the clock seam", target)
+	}
+
+	// Belt-and-suspenders: the matching ehr_events partition must also
+	// exist. Both tables are partitioned by month, and the runner walks
+	// both on every Tick.
+	ehrTarget := "ehr_events_" + suffix
+	if qerr := s.Pool().Pgx().QueryRow(context.Background(),
+		`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)`, ehrTarget,
+	).Scan(&exists); qerr != nil {
+		t.Fatal(qerr)
+	}
+	if !exists {
+		t.Errorf("expected partition %s after +4mo clock advance; not found", ehrTarget)
+	}
+}
+
 // TestIntegrationPartitionMaintainerDoesNotClobberExisting asserts that
 // the partition maintainer's CREATE TABLE IF NOT EXISTS path is
 // idempotent: a second call (or a concurrent call from another pod)

@@ -94,6 +94,12 @@ type PartitionConfig struct {
 	// resource_changes and ehr_events.
 	ResourceChangesRetention time.Duration
 	EhrEventsRetention       time.Duration
+
+	// Now is overridable for tests so the rollover behavior at month
+	// boundaries can be exercised deterministically without waiting for
+	// real wall-clock advance. Production callers leave this nil; the
+	// runner falls back to time.Now.
+	Now func() time.Time
 }
 
 // ApplyDefaults fills in zero-valued fields with sensible defaults from
@@ -224,7 +230,9 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 		auditLog: repos.NewAuditLogRepo(),
 	}
 
-	// Start partition maintainer.
+	// Start partition maintainer. cfg.Partitioning.Now is plumbed
+	// through so tests can drive a fast-forward "what does the runner
+	// do at month T+4" assertion without waiting for real wall-clock.
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -235,6 +243,7 @@ func Start(ctx context.Context, cfg Config, _ Context) (*Storage, error) {
 			ResourceChangesRetention: cfg.Partitioning.ResourceChangesRetention,
 			EhrEventsRetention:       cfg.Partitioning.EhrEventsRetention,
 			TickTimeout:              cfg.Partitioning.TickTimeout,
+			Now:                      cfg.Partitioning.Now,
 		})
 	}()
 
