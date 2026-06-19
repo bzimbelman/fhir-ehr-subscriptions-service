@@ -59,7 +59,7 @@ func TestAPISSRFMetadata(t *testing.T) {
 	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, api.URL+"/Subscription/", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}

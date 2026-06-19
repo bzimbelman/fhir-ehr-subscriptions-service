@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"testing"
 	"time"
 
@@ -118,7 +117,7 @@ func (fx *scenarioFixture) createSubscription(
 	ctx context.Context, t *testing.T, h *Harness, body []byte,
 ) uuid.UUID {
 	t.Helper()
-	id, err := hpipe.PostSubscription(ctx, fx.api, http.DefaultClient, body)
+	id, err := hpipe.PostSubscription(ctx, fx.api, fx.api.Client(), body)
 	if err != nil {
 		t.Fatalf("POST /Subscription: %v", err)
 	}

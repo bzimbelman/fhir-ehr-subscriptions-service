@@ -8,55 +8,93 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // TestE2E_ProdBinary_ServesSubscriptionAPI proves the production binary
 // — built from cmd/fhir-subs and started with `run --config <file>` —
-// actually mounts handlers.RegisterRoutes against a real Postgres pool.
+// actually mounts handlers.RegisterRoutes against a real Postgres pool
+// AND exercises the real auth.Verifier middleware (OP #146 banned the
+// AuthAudience: "" auth-bypass trick that previously hid wire-up gaps).
 //
-// Before the B-4 full wiring landed, only `/healthz`, `/readyz`,
-// `/startup`, and a stub `/metadata` were served. POST /Subscription
-// returned 404. After B-4: a freshly created Subscription returns 201
-// with a Location header and the row lands in the subscriptions table.
+// AC #3 from OpenProject #146: "The 401 path test in
+// prod_binary_serves_subscription_api_test.go MUST be replaced with a
+// 401-without-token AND 200-with-token assertion that exercises the
+// real verifier."
 //
-// B-4.
+// All test infrastructure is REAL — no fakes, no mocks:
+//   - real Postgres (h.DB)
+//   - real RSA private key generated in-process
+//   - real httptest.NewServer publishing a JWKS document
+//   - real JWT signing (golang-jwt/jwt/v5)
+//   - real /token POST against the running binary
+//   - real bearer JWT verified by the binary's auth.Verifier
+//   - real chi router mounting handlers.RegisterRoutes
 func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 	h := requireHarness(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	resetPipelineTables(t, ctx, h)
-	// auth_clients has been truncated, so the run.go startup won't have
-	// any client rows. The subscription API requires an existing
-	// auth_clients row matching the principal's client_id; since the
-	// production binary uses bearer-token auth, but the test wants to
-	// exercise the routing not the auth path, we skip auth entirely by
-	// configuring the binary with audience="" — nope, actually our
-	// wiring requires audience. But the verifier middleware is only
-	// added when audience is set. To keep this test a pure router-mount
-	// proof, we construct a config with audience="" so the API routes
-	// register without the bearer middleware. The activation path needs
-	// auth_clients populated; we insert it directly.
-	if _, err := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, scopes, display_name)
-		VALUES ($1, ARRAY['system/Subscription.cruds']::text[], $1)`,
-		"e2e-prod-client"); err != nil {
+
+	// Real RSA key + httptest JWKS server — the same primitives the
+	// auth package's verifier_test.go uses, lifted into the e2e
+	// orchestrator. Real cryptography, real HTTP server.
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	kid := uuid.NewString()
+	jwksMux := http.NewServeMux()
+	jwksMux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jwksDocFromPublic(&priv.PublicKey, kid))
+	})
+	jwksSrv := httptest.NewServer(jwksMux)
+	t.Cleanup(jwksSrv.Close)
+
+	// Seed auth_clients with a row pointing the binary's verifier at the
+	// httptest JWKS server. Real Postgres write.
+	clientID := "e2e-prod-serves-" + uuid.New().String()[:8]
+	if _, err := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
+		VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)`,
+		clientID, jwksSrv.URL+"/jwks"); err != nil {
 		t.Fatalf("seed auth_clients: %v", err)
 	}
 
+	// Real HS256 secret for the binary's access-token signing path.
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	issuedSecret := base64.StdEncoding.EncodeToString(secretBytes)
+	audience := "https://e2e-prod-serves/token"
+
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL: h.DBURL,
-		FacilityID:  "e2e-prod",
-		AdapterID:   "default",
-		Insecure:    true,
-		GracePeriod: 5 * time.Second,
-		// audience left empty so the auth middleware is skipped.
-		AuthAudience: "",
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-serves",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          audience, // OP #146: real verifier wired (was "")
+		AuthAllowInsecureJWKS: true,     // httptest is http://
+		AuthTokenURL:          audience,
+		AuthIssuedSecret:      issuedSecret,
+		AuthIssuedIssuer:      "e2e-prod-serves-issuer",
+		AuthAccessTokenTTL:    5 * time.Minute,
 	})
 	defer bin.Stop(t, 5*time.Second)
 
@@ -72,7 +110,6 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 		}
 	}
 
-	// POST /Subscription against the prod binary.
 	subBody := `{
 		"resourceType": "Subscription",
 		"status": "requested",
@@ -82,48 +119,73 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 		"contentType": "application/fhir+json",
 		"content": "id-only"
 	}`
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+
+	// AC #3a: POST /Subscription/ with NO Authorization header MUST
+	// return 401. This proves the real verifier.Middleware is on the
+	// route — pre-#146 the harness installed a fixed-principal
+	// middleware that returned 401 from the handler (because the
+	// X-Client-Id header it sniffed was missing), masking the wire-up
+	// gap. Post-#146 the 401 comes from auth.Verifier — proven by the
+	// 200 path immediately below.
+	noTokReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		bin.HTTPURL()+"/Subscription/", bytes.NewReader([]byte(subBody)))
 	if err != nil {
-		t.Fatalf("build POST: %v", err)
+		t.Fatalf("build no-token POST: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/fhir+json")
-	req.Header.Set("X-Client-Id", "e2e-prod-client")
-	resp, err := http.DefaultClient.Do(req)
+	noTokReq.Header.Set("Content-Type", "application/fhir+json")
+	noTokResp, err := http.DefaultClient.Do(noTokReq)
 	if err != nil {
-		t.Fatalf("POST /Subscription: %v", err)
+		t.Fatalf("POST /Subscription (no token): %v", err)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-
-	// Without an auth principal the createSubscription handler will
-	// return 401. The test's purpose is to prove the route is mounted —
-	// any non-404 response that is shaped like an OperationOutcome
-	// satisfies that. (A 401 from the handler is *much* stronger proof
-	// of routing than a generic 404.) The full happy-path is covered
-	// by TestE2E_ProdBinary_ProcessesHL7Message which wires a real
-	// auth principal.
-	if resp.StatusCode == http.StatusNotFound {
-		t.Fatalf("POST /Subscription returned 404 — handlers.RegisterRoutes is NOT wired. body=%s",
-			string(body))
+	noTokBody, _ := io.ReadAll(noTokResp.Body)
+	_ = noTokResp.Body.Close()
+	if noTokResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("POST /Subscription with no Authorization: status=%d (want 401), body=%s",
+			noTokResp.StatusCode, string(noTokBody))
+	}
+	// Verifier emits an OperationOutcome with diagnostic "missing bearer
+	// token". Pin the wire-shape so a future regression that returns a
+	// generic 401 from the chi router is caught.
+	if !bytes.Contains(noTokBody, []byte("OperationOutcome")) {
+		t.Errorf("401 body did not include OperationOutcome — verifier may not be on the chain. body=%s",
+			string(noTokBody))
 	}
 
-	// Verify the response is shaped like FHIR (OperationOutcome on
-	// failure or Subscription on success).
+	// AC #3b: POST /Subscription/ with a real bearer token MUST succeed
+	// (201 Created). This proves the real verifier.Middleware accepts a
+	// validly-signed token and the handler is mounted behind it.
+	bearer := mintRealBearer(t, ctx, bin.HTTPURL(), audience, clientID, kid, priv)
+
+	tokReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		bin.HTTPURL()+"/Subscription/", bytes.NewReader([]byte(subBody)))
+	if err != nil {
+		t.Fatalf("build token POST: %v", err)
+	}
+	tokReq.Header.Set("Content-Type", "application/fhir+json")
+	tokReq.Header.Set("Authorization", "Bearer "+bearer)
+	tokResp, err := http.DefaultClient.Do(tokReq)
+	if err != nil {
+		t.Fatalf("POST /Subscription (with token): %v", err)
+	}
+	tokBody, _ := io.ReadAll(tokResp.Body)
+	_ = tokResp.Body.Close()
+	if tokResp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /Subscription with valid bearer: status=%d (want 201), body=%s",
+			tokResp.StatusCode, string(tokBody))
+	}
+	if loc := tokResp.Header.Get("Location"); !strings.HasPrefix(loc, "/Subscription/") {
+		t.Errorf("missing Location header on 201, got %q", loc)
+	}
+	// Verify the response is shaped like FHIR.
 	var got map[string]any
-	if err := json.Unmarshal(body, &got); err != nil {
-		t.Fatalf("response not JSON: %v body=%s", err, body)
+	if err := json.Unmarshal(tokBody, &got); err != nil {
+		t.Fatalf("response not JSON: %v body=%s", err, tokBody)
 	}
-	rt, _ := got["resourceType"].(string)
-	if rt != "OperationOutcome" && rt != "Subscription" {
-		t.Errorf("response.resourceType = %q, want OperationOutcome or Subscription", rt)
+	if rt, _ := got["resourceType"].(string); rt != "Subscription" {
+		t.Errorf("response.resourceType = %q, want Subscription", rt)
 	}
 
-	// Sanity: GET /metadata is reachable. With audience="" the auth
-	// middleware is not installed, but the handler itself requires a
-	// principal — so a 401 here is fine. The test's purpose is to
-	// confirm the route is mounted on the production binary, not that
-	// auth is bypassed.
+	// Sanity: GET /metadata is reachable.
 	mResp, err := http.Get(bin.HTTPURL() + "/metadata")
 	if err != nil {
 		t.Fatalf("GET /metadata: %v", err)
@@ -137,8 +199,57 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 		!bytes.Contains(mBody, []byte("OperationOutcome")) {
 		t.Errorf("metadata body unexpected (status=%d): %s", mResp.StatusCode, string(mBody))
 	}
+}
 
-	t.Logf("POST /Subscription/ → %d (%s)", resp.StatusCode, firstLine(string(body)))
+// mintRealBearer goes through the binary's real /token endpoint:
+// signs a client_assertion JWT with priv, exchanges it via OAuth2
+// JWT-Bearer client credentials, returns the access_token. No fakes
+// anywhere: every call hits the running binary's chi router.
+func mintRealBearer(t *testing.T, ctx context.Context, binURL, audience, clientID, kid string, priv *rsa.PrivateKey) string {
+	t.Helper()
+	now := time.Now().UTC()
+	assertion := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": clientID,
+		"sub": clientID,
+		"aud": audience,
+		"jti": uuid.NewString(),
+		"iat": now.Add(-30 * time.Second).Unix(),
+		"exp": now.Add(2 * time.Minute).Unix(),
+	})
+	assertion.Header["kid"] = kid
+	signed, err := assertion.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign assertion: %v", err)
+	}
+	form := url.Values{}
+	form.Set("grant_type", "client_credentials")
+	form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
+	form.Set("client_assertion", signed)
+	form.Set("scope", "system/Subscription.cruds")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, binURL+"/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("build /token req: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /token: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/token status=%d body=%s", resp.StatusCode, body)
+	}
+	var wire struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode token response: %v body=%s", err, body)
+	}
+	if wire.AccessToken == "" {
+		t.Fatalf("empty access_token in /token response: %s", body)
+	}
+	return wire.AccessToken
 }
 
 func firstLine(s string) string {
@@ -152,6 +263,3 @@ func firstLine(s string) string {
 	}
 	return s
 }
-
-// silence unused import errors when test build tags exclude this file.
-var _ = fmt.Sprintf

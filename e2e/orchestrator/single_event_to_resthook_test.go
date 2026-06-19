@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"testing"
 	"time"
 
@@ -114,7 +113,7 @@ func TestScenario_single_event_to_resthook(t *testing.T) {
 		"channel":      map[string]any{"type": "rest-hook", "endpoint": endpoint},
 	})
 
-	subID, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, subBody)
+	subID, err := hpipe.PostSubscription(ctx, api, api.Client(), subBody)
 	if err != nil {
 		t.Fatalf("POST subscription: %v", err)
 	}

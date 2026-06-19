@@ -126,7 +126,7 @@ func TestScenario_wss_delivery_and_reconnect(t *testing.T) {
 	  "content": "id-only",
 	  "channel": {"type": "websocket"}
 	}`)
-	subID, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, subBody)
+	subID, err := hpipe.PostSubscription(ctx, api, api.Client(), subBody)
 	if err != nil {
 		t.Fatalf("POST subscription: %v", err)
 	}

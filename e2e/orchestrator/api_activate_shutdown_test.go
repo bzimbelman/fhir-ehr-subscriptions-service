@@ -8,7 +8,6 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -82,7 +81,7 @@ func TestAPIActivate_ShutdownCancelsHandshake(t *testing.T) {
 		"content":      "id-only",
 		"channel":      map[string]any{"type": "rest-hook", "endpoint": "https://example.org/wh"},
 	})
-	subID, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, subBody)
+	subID, err := hpipe.PostSubscription(ctx, api, api.Client(), subBody)
 	if err != nil {
 		t.Fatalf("POST subscription: %v", err)
 	}

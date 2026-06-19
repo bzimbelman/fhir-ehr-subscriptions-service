@@ -86,7 +86,7 @@ func TestE2E_S12_9_RejectFHIRXMLOnCreate(t *testing.T) {
 			body, _ := json.Marshal(tc.body)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, api.URL+"/Subscription", bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/fhir+json")
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := api.Client().Do(req)
 			if err != nil {
 				t.Fatalf("POST: %v", err)
 			}
@@ -141,7 +141,7 @@ func TestE2E_S12_9_RejectFHIRXMLOnUpdate(t *testing.T) {
 			"endpoint": "https://example.org/wh",
 		},
 	})
-	id, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, createBody)
+	id, err := hpipe.PostSubscription(ctx, api, api.Client(), createBody)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestE2E_S12_9_RejectFHIRXMLOnUpdate(t *testing.T) {
 	})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, api.URL+"/Subscription/"+id.String(), bytes.NewReader(updateBody))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("PUT: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestE2E_S12_9_RejectFHIRXMLOnUpdate(t *testing.T) {
 
 	// Read back: endpoint must NOT have changed to wh-new.
 	getReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+"/Subscription/"+id.String(), nil)
-	getResp, err := http.DefaultClient.Do(getReq)
+	getResp, err := api.Client().Do(getReq)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

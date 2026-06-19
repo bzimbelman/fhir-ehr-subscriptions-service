@@ -56,7 +56,7 @@ func TestE2E_S2_EventsRejectsInvalidSinceParam(t *testing.T) {
 			"endpoint": "https://example.org/wh",
 		},
 	})
-	id, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, body)
+	id, err := hpipe.PostSubscription(ctx, api, api.Client(), body)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestE2E_S2_EventsRejectsInvalidSinceParam(t *testing.T) {
 	}
 	for _, q := range cases {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+"/Subscription/"+id.String()+"/$events?"+q, nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := api.Client().Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", q, err)
 		}
@@ -104,7 +104,7 @@ func TestE2E_S2_StatusBulkCapped(t *testing.T) {
 		parts = append(parts, "id="+fmt.Sprintf("%d-0000-0000-0000-000000000000", i+1000))
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+"/Subscription/$status?"+strings.Join(parts, "&"), nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestE2E_S2_MetadataInstantUsesZForm(t *testing.T) {
 	t.Cleanup(func() { _ = api.Close() })
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+"/metadata", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("GET /metadata: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestE2E_S2_BodySizeOversize413(t *testing.T) {
 	body := `{"resourceType":"Subscription","junk":"` + huge + `"}`
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, api.URL+"/Subscription/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
