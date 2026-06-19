@@ -345,15 +345,19 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	channels := handlers.ChannelRegistry{
 		"rest-hook": rhActivator,
 		"websocket": defaultActivator{},
-		"email":     defaultActivator{},
 		"message":   defaultActivator{},
 	}
-	// Replace the email default only when an email Channel was actually
-	// constructed (cfg.Channels.Email.SMTPHost non-empty); otherwise
-	// keep the default so dev binaries without an SMTP relay still
-	// boot. When wired, this is the real RCPT-TO probe.
+	// Email activator: real RCPT-TO probe when SMTP is configured;
+	// fail-closed activator when it isn't. Critically, NEVER
+	// defaultActivator{} for email — the no-fakes rule is strict
+	// (epic #91 / OP #114) and a dev binary that accepts email
+	// subscriptions without an SMTP relay must not lie about
+	// activation. The fail-closed activator returns HandshakeFailed
+	// with a reason the operator can see in the audit log.
 	if rt.emailChannel != nil {
 		channels["email"] = newEmailActivator(rt.emailChannel)
+	} else {
+		channels["email"] = unconfiguredEmailActivator{}
 	}
 	// Auth middleware: in production cfg.Auth.Audience is required and
 	// Validate has already enforced it (story #116). The dev-bypass

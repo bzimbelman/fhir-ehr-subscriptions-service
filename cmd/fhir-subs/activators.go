@@ -250,6 +250,22 @@ func newEmailActivator(ch *chemail.Channel) *emailActivator {
 	return &emailActivator{channel: ch}
 }
 
+// unconfiguredEmailActivator is the fail-closed activator wired when
+// the operator has not configured an SMTP relay
+// (cfg.Channels.Email.SMTPHost empty). It returns HandshakeFailed with
+// a reason the operator can see in the audit log — the lie of
+// defaultActivator{} ("succeeded") is forbidden under epic #91 / OP
+// #114. A subscription created against a binary with no SMTP relay
+// cannot be activated; the row flips to error rather than to a
+// silently-broken "active" state.
+type unconfiguredEmailActivator struct{}
+
+// ActivateSubscription always fails. The reason is folded into the
+// audit log via handlers.activate's "handshake failed" path.
+func (unconfiguredEmailActivator) ActivateSubscription(_ context.Context, _ repos.SubscriptionRow) (handlers.HandshakeOutcome, error) {
+	return handlers.HandshakeFailed, fmt.Errorf("email channel not configured: SMTP relay missing (channels.email.smtp_host)")
+}
+
 // ActivateSubscription runs the RCPT-TO probe for sub.Endpoint. The
 // caller (handlers.activate) treats HandshakeSucceeded as authorization
 // to flip the row to "active" and HandshakeFailed as a terminal error.
