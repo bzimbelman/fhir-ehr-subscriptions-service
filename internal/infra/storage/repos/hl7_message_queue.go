@@ -24,25 +24,31 @@ func NewHl7MessageQueueRepo(c *codec.Codec) *Hl7MessageQueueRepo {
 }
 
 // Insert persists a row. RawBody is encrypted under the codec's active
-// key. Returns the generated UUID.
+// key with AAD bound to (table, id, key_version). The row's id is
+// generated app-side so it can be bound into the AAD before Encrypt.
 func (r *Hl7MessageQueueRepo) Insert(ctx context.Context, q Querier, row Hl7MessageQueueRow) (uuid.UUID, error) {
-	enc, kv, err := r.codec.Encrypt(row.RawBody)
+	id := row.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	kv := r.codec.ActiveVersion()
+	enc, kvOut, err := r.codec.Encrypt(row.RawBody, AADHl7MessageQueue(id, kv))
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("hl7_message_queue: encrypt: %w", err)
 	}
 	const sql = `
 		INSERT INTO hl7_message_queue
-			(listener_endpoint, peer_addr, mllp_message_id, correlation_id, raw_body, key_version)
-		VALUES ($1, $2, $3, $4, $5, $6)
+			(id, listener_endpoint, peer_addr, mllp_message_id, correlation_id, raw_body, key_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id`
-	var id uuid.UUID
+	var got uuid.UUID
 	if err := q.QueryRow(ctx, sql,
-		row.ListenerEndpoint, row.PeerAddr, row.MllpMessageID,
-		row.CorrelationID, enc, kv,
-	).Scan(&id); err != nil {
+		id, row.ListenerEndpoint, row.PeerAddr, row.MllpMessageID,
+		row.CorrelationID, enc, kvOut,
+	).Scan(&got); err != nil {
 		return uuid.Nil, fmt.Errorf("hl7_message_queue: insert: %w", err)
 	}
-	return id, nil
+	return got, nil
 }
 
 // ClaimUnprocessed pulls up to limit unprocessed rows under FOR UPDATE
@@ -74,7 +80,7 @@ func (r *Hl7MessageQueueRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, l
 		); err != nil {
 			return nil, fmt.Errorf("hl7_message_queue: scan: %w", err)
 		}
-		body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+		body, err := r.codec.Decrypt(enc, rec.KeyVersion, AADHl7MessageQueue(rec.ID, rec.KeyVersion))
 		if err != nil {
 			return nil, fmt.Errorf("hl7_message_queue: decrypt: %w", err)
 		}
@@ -141,7 +147,7 @@ func (r *Hl7MessageQueueRepo) GetByID(ctx context.Context, q Querier, id uuid.UU
 		}
 		return nil, fmt.Errorf("hl7_message_queue: get: %w", err)
 	}
-	body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+	body, err := r.codec.Decrypt(enc, rec.KeyVersion, AADHl7MessageQueue(rec.ID, rec.KeyVersion))
 	if err != nil {
 		return nil, fmt.Errorf("hl7_message_queue: decrypt: %w", err)
 	}

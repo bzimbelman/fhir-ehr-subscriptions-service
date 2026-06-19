@@ -5,10 +5,15 @@
 // PHI-bearing columns. The envelope is a single bytea column with the
 // shape:
 //
-//	[version u8][nonce 12]B[ciphertext+tag]
+//	[format u8][reserved u8 = 0][nonceLen u16 BE][nonce][ciphertext+tag]
 //
 // On read, the storage layer also has the row's `key_version int4`
-// column which is asserted equal to the envelope's version byte.
+// column. The codec selects the cipher by that key_version and verifies
+// the GCM auth tag against an Additional Authenticated Data (AAD) blob
+// derived from the row's identity. AAD binding ties each ciphertext to
+// its (table, primary key, key_version, envelope format) tuple so an
+// operator with raw DB write access cannot swap envelopes between rows
+// or tables and have the receiving row's read path succeed.
 //
 // # Key-rotation cadence
 //
@@ -153,16 +158,47 @@ func New(kp KeyProvider) (*Codec, error) {
 // holds the envelope; the byte is the same shape for every row).
 const envelopeFormat byte = 0x01
 
+// aadDomain prefixes every AAD so the AAD namespace is unambiguous and
+// future-proofed against accidental collision with other byte streams.
+const aadDomain = "fhir-ehr-subs:codec/v1"
+
+// BuildAAD returns the canonical Additional Authenticated Data blob
+// bound into the AES-GCM envelope. The shape is:
+//
+//	"fhir-ehr-subs:codec/v1" || 0x00 ||
+//	envelopeFormat (1B) || keyVersion (4B BE) ||
+//	len(table) (2B BE) || table || len(rowKey) (2B BE) || rowKey
+//
+// All ciphertexts in the system MUST be sealed under an AAD produced by
+// this function. Callers pass a stable rowKey derived from the row's
+// primary key (UUID bytes for tables with `id uuid`, the composite key
+// joined with 0x1F for tables with composite PKs).
+func BuildAAD(table string, rowKey []byte, keyVersion int32) []byte {
+	tb := []byte(table)
+	out := make([]byte, 0, len(aadDomain)+1+1+4+2+len(tb)+2+len(rowKey))
+	out = append(out, []byte(aadDomain)...)
+	out = append(out, 0x00, envelopeFormat,
+		byte(keyVersion>>24), byte(keyVersion>>16),
+		byte(keyVersion>>8), byte(keyVersion))
+	tl := len(tb)
+	out = append(out, byte(tl>>8), byte(tl&0xFF))
+	out = append(out, tb...)
+	rl := len(rowKey)
+	out = append(out, byte(rl>>8), byte(rl&0xFF))
+	out = append(out, rowKey...)
+	return out
+}
+
 // Encrypt produces the ciphertext envelope plus the key_version column
-// that should accompany it on the row.
+// that should accompany it on the row. The aad MUST be produced by
+// BuildAAD with the row's table name, primary key bytes, and the
+// codec's active key version. Decrypt must later receive the same AAD
+// or the GCM auth tag will reject the envelope.
 //
 // Envelope layout:
 //
-//	[1 byte format][1 byte zero pad][2 bytes nonce_len][nonce][ciphertext]
-//
-// We keep the layout self-describing so a future codec can recognize
-// foreign-shaped envelopes deterministically.
-func (c *Codec) Encrypt(plaintext []byte) (envelope []byte, keyVersion int32, err error) {
+//	[1 byte format][1 byte zero pad][2 bytes nonce_len][nonce][ciphertext+tag]
+func (c *Codec) Encrypt(plaintext, aad []byte) (envelope []byte, keyVersion int32, err error) {
 	gcm, ok := c.gcms[c.active]
 	if !ok {
 		return nil, 0, fmt.Errorf("%w: active=%d", ErrUnknownKeyVersion, c.active)
@@ -171,7 +207,7 @@ func (c *Codec) Encrypt(plaintext []byte) (envelope []byte, keyVersion int32, er
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, 0, fmt.Errorf("codec: read nonce: %w", err)
 	}
-	ct := gcm.Seal(nil, nonce, plaintext, nil)
+	ct := gcm.Seal(nil, nonce, plaintext, aad)
 
 	// Layout: [format][reserved=0][nonceLen hi][nonceLen lo][nonce][ct]
 	out := make([]byte, 0, 4+len(nonce)+len(ct))
@@ -183,10 +219,9 @@ func (c *Codec) Encrypt(plaintext []byte) (envelope []byte, keyVersion int32, er
 	return out, c.active, nil
 }
 
-// Decrypt unwraps an envelope produced by this codec. The keyVersion
-// argument is the value of the row's key_version column; we use it to
-// pick the cipher.
-func (c *Codec) Decrypt(envelope []byte, keyVersion int32) ([]byte, error) {
+// Decrypt unwraps an envelope produced by this codec. keyVersion is the
+// row's key_version column; aad MUST equal what Encrypt was called with.
+func (c *Codec) Decrypt(envelope []byte, keyVersion int32, aad []byte) ([]byte, error) {
 	if len(envelope) < 4 {
 		return nil, ErrEnvelopeMalformed
 	}
@@ -204,7 +239,7 @@ func (c *Codec) Decrypt(envelope []byte, keyVersion int32) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: requested=%d", ErrUnknownKeyVersion, keyVersion)
 	}
-	pt, err := gcm.Open(nil, nonce, ct, nil)
+	pt, err := gcm.Open(nil, nonce, ct, aad)
 	if err != nil {
 		return nil, fmt.Errorf("codec: open: %w", err)
 	}

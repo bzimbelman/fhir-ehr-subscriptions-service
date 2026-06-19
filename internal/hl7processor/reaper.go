@@ -204,7 +204,8 @@ func (p *Processor) lockPendingForReap(ctx context.Context, tx pgx.Tx, key, endp
 		return reapedPending{}, false, err
 	}
 	row.PendingKind = repos.PendingKind(kind)
-	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion)
+	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion,
+		repos.AADPendingPairs(row.CorrelationKey, row.ListenerEndpoint, row.KeyVersion))
 	if err != nil {
 		return reapedPending{}, false, fmt.Errorf("decrypt pending: %w", err)
 	}
