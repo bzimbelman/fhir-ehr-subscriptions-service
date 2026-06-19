@@ -165,7 +165,7 @@ func TestServer_TimeoutsConfigured(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:              pickFreeAddr(t),
-			ProbeBind: pickFreeAddr(t),
+			ProbeBind:         pickFreeAddr(t),
 			Insecure:          true,
 			ReadHeaderTimeout: 2 * time.Second,
 			ReadTimeout:       3 * time.Second,
