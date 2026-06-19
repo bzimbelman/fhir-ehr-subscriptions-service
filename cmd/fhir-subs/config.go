@@ -38,10 +38,20 @@ type Config struct {
 	Tracing    TracingConfig    `yaml:"tracing"`
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	Audit      AuditConfig      `yaml:"audit"`
+	Hydration  HydrationConfig  `yaml:"hydration"`
 
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
 	Extra map[string]any `yaml:",inline"`
+}
+
+// HydrationConfig models hydration.* fields. Story #98: the FHIR base
+// URL the adapter HydrationService dials when fetching include /
+// revinclude targets for full-resource subscriptions. Empty means the
+// operator did not enable hydration; the scheduler's full-resource
+// path falls back to focus-only bundles.
+type HydrationConfig struct {
+	FhirBaseURL string `yaml:"fhir_base_url"`
 }
 
 // TracingConfig models tracing.* fields. Operator-tunable per

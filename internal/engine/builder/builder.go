@@ -97,6 +97,14 @@ type Job struct {
 	// event). Empty falls back to the first event's correlation, then
 	// to a fresh UUID.
 	CorrelationIDOverride string
+
+	// Hydrated carries already-fetched include resource bodies the
+	// scheduler resolved via the adapter's HydrationService for
+	// full-resource subscriptions (story #98 AC #2). The builder
+	// appends each entry to the Bundle as a `searchEntry.mode=include`
+	// resource entry after the focus body entries. Non-nil only for
+	// full-resource payloads.
+	Hydrated [][]byte
 }
 
 // reference is a FHIR Reference shape; only `reference` is emitted in v1.
@@ -249,6 +257,21 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			var probe json.RawMessage
 			if uerr := json.Unmarshal(ev.Resource, &probe); uerr != nil {
 				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode focus resource: %w", uerr)
+			}
+			entries = append(entries, bundleEntry{Resource: probe})
+		}
+		// Append hydrated include resources after focus bodies. The
+		// scheduler is the authority on which references to fetch
+		// (story #98 AC #2 — driven by the topic's notificationShape).
+		// Each entry must parse as JSON; a malformed include body is
+		// a permanent build error.
+		for _, body := range job.Hydrated {
+			if len(body) == 0 {
+				continue
+			}
+			var probe json.RawMessage
+			if uerr := json.Unmarshal(body, &probe); uerr != nil {
+				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode hydrated resource: %w", uerr)
 			}
 			entries = append(entries, bundleEntry{Resource: probe})
 		}

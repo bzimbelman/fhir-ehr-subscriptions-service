@@ -319,9 +319,9 @@ func TestProductionRuntime_HydrationDispatchesIncludesEndToEnd(t *testing.T) {
 	}
 	got, err := hs.Fetch(ctx, adapterspi.FhirReference{ResourceType: "Patient", ID: "p1"})
 	if err != nil {
-		t.Fatalf("HydrationService.Fetch against real FHIR test server failed: %v. " +
-			"Phase B MUST configure the default adapter's HydrationService to dial " +
-			"AdapterContext.HydrationFhirBaseURL via real HTTP.")
+		t.Fatalf("HydrationService.Fetch against real FHIR test server failed: %v. "+
+			"Phase B MUST configure the default adapter's HydrationService to dial "+
+			"AdapterContext.HydrationFhirBaseURL via real HTTP.", err)
 	}
 	if got.ResourceType != "Patient" || got.ID != "p1" {
 		t.Errorf("HydrationService.Fetch returned wrong identity: got %s/%s want Patient/p1",

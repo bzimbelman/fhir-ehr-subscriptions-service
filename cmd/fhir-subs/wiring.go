@@ -117,6 +117,13 @@ type productionRuntime struct {
 	// (story #94 AC #2, #6).
 	obsModule *observability.ObservabilityModule
 
+	// loadedAdapter is the adapter the registry chose for this run.
+	// Story #98: tests reach for it via reflection to assert
+	// HydrationService wire-up; production code holds the reference
+	// here so the lifecycle module can call OnShutdown later if a
+	// future adapter uses that hook.
+	loadedAdapter adapterspi.EhrAdapter
+
 	logger *slog.Logger
 }
 
@@ -177,10 +184,28 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("adapter load: %w", err)
 	}
+	rt.loadedAdapter = loadedAdapter
 	hl7Proc := loadedAdapter.BuildHl7Processor(adapterspi.AdapterContext{
 		AdapterID: cfg.Adapter.ID,
 		Now:       time.Now,
 	})
+
+	// Story #98: build the adapter HydrationService so the scheduler
+	// can expand `_include` / `_revinclude` rules for full-resource
+	// notifications. The adapter manifest is the source of truth: we
+	// only call BuildHydrationService when the loaded adapter declares
+	// Capabilities.HydrationService=true (registry validation in #65
+	// already guarantees the builder is non-nil when the capability is
+	// declared). Adapters that omit hydration leave the scheduler with
+	// a nil service; full-resource bundles fall back to focus-only.
+	var hydrationSvc adapterspi.HydrationService
+	if loadedAdapter.Manifest().Capabilities.HydrationService {
+		hydrationSvc = loadedAdapter.BuildHydrationService(adapterspi.AdapterContext{
+			AdapterID:            cfg.Adapter.ID,
+			Now:                  time.Now,
+			HydrationFhirBaseURL: cfg.Hydration.FhirBaseURL,
+		})
+	}
 
 	// --- 4. Repos --------------------------------------------------------
 	cdc := rt.codec
@@ -581,6 +606,24 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	if schedPoll == 0 {
 		schedPoll = 200 * time.Millisecond
 	}
+	// Story #98: thread the loaded adapter's HydrationService and a
+	// topic-lookup closure into the scheduler so full-resource
+	// subscriptions get `_include` / `_revinclude` expansion at
+	// dispatch time. The closure is hot — it reads through
+	// catalogProv so a SIGHUP catalog reload (the catalog reload
+	// handler is registered below at step 12) propagates into the
+	// scheduler without a restart.
+	topicLookup := scheduler.TopicLookup(func(url string) (*catalog.Topic, bool) {
+		cat := cp.Get()
+		if cat == nil {
+			return nil, false
+		}
+		t := cat.Get(url)
+		if t == nil {
+			return nil, false
+		}
+		return t, true
+	})
 	schedulerWorker := scheduler.NewWorker(
 		pool, subsRepo, ehrEvts, dlv, dl, chReg,
 		builder.New(builder.Config{}),
@@ -595,7 +638,9 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 			},
 		},
 		scheduler.Options{
-			Logger: logger.With("component", "scheduler"),
+			Logger:           logger.With("component", "scheduler"),
+			HydrationService: hydrationSvc,
+			Topics:           topicLookup,
 		},
 	)
 	rt.scheduler = schedulerWorker
