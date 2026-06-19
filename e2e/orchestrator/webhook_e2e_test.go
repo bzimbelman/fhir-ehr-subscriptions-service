@@ -50,19 +50,20 @@ const observationTopicForWebhook = `{
 // an ehr_event for the registered topic.
 //
 // Story #100. Pins:
-//   AC #1: the route is mounted (a 404 here would mean wiring missed).
-//   AC #2: the HMAC secret is plumbed from adapter_state, NOT a yaml
-//          field — this test seeds adapter_state directly.
-//   AC #4: the e2e wiring works: a single POST produces both a
-//          resource_change AND an ehr_event in the production binary
-//          (proving the matcher saw the row and the topic catalog
-//          matched). The submatcher → scheduler → rest-hook delivery
-//          chain is exercised by sibling prod-binary tests; pinning
-//          deliveries here is intentionally avoided because the
-//          prod-binary submatcher is independently flaky on
-//          contention against a single-pool Postgres ("conn busy")
-//          and is unrelated to the webhook wiring this story
-//          delivers.
+//
+//	AC #1: the route is mounted (a 404 here would mean wiring missed).
+//	AC #2: the HMAC secret is plumbed from adapter_state, NOT a yaml
+//	       field — this test seeds adapter_state directly.
+//	AC #4: the e2e wiring works: a single POST produces both a
+//	       resource_change AND an ehr_event in the production binary
+//	       (proving the matcher saw the row and the topic catalog
+//	       matched). The submatcher → scheduler → rest-hook delivery
+//	       chain is exercised by sibling prod-binary tests; pinning
+//	       deliveries here is intentionally avoided because the
+//	       prod-binary submatcher is independently flaky on
+//	       contention against a single-pool Postgres ("conn busy")
+//	       and is unrelated to the webhook wiring this story
+//	       delivers.
 //
 // FAILS today because cmd/fhir-subs/wiring.go never imports
 // internal/webhook and never mounts the handler — POST /webhooks/...
