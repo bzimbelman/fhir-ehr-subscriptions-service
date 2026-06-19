@@ -108,6 +108,13 @@ type pipelineSupervisorDeps struct {
 	Submatcher supervisor.Worker
 	Scheduler  supervisor.Worker
 
+	// FhirScanRunner is the optional periodic FHIR scan worker (story
+	// #96). Wired only when the loaded adapter declares
+	// Capabilities.FhirScanRunner=true; nil otherwise. Hosted under
+	// supervisor id "fhir-scan-runner" so it shows up alongside the
+	// other pipeline workers in /admin/supervisor/status.
+	FhirScanRunner supervisor.Worker
+
 	// Lifecycle is the lifecycle module the helper registers its
 	// shutdown hook against. Required.
 	Lifecycle *lifecycle.LifecycleModule
@@ -143,7 +150,7 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 	deps.Backoff.applyDefaults()
 
 	pl := &supervisedPipeline{
-		supervisors: make(map[string]*supervisorEntry, 4),
+		supervisors: make(map[string]*supervisorEntry, 5),
 		backoff:     deps.Backoff,
 		onHealth:    deps.OnHealth,
 	}
@@ -156,6 +163,12 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 		{"matcher", deps.Matcher},
 		{"submatcher", deps.Submatcher},
 		{"scheduler", deps.Scheduler},
+	}
+	if deps.FhirScanRunner != nil {
+		specs = append(specs, struct {
+			id     string
+			worker supervisor.Worker
+		}{"fhir-scan-runner", deps.FhirScanRunner})
 	}
 
 	for _, sp := range specs {
