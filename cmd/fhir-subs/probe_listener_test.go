@@ -46,6 +46,7 @@ func TestRun_ProbeListener_ServesHealthzOnSeparatePort(t *testing.T) {
 			FacilityID: "probe-test",
 			LogLevel:   "error",
 			LogFormat:  "json",
+			Mode:       DeploymentModeProbeOnly,
 		},
 		Adapter: AdapterConfig{ID: "default"},
 		Server: ServerConfig{

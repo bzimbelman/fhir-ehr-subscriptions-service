@@ -30,12 +30,14 @@ func stubAuthMiddleware(next http.Handler) http.Handler {
 }
 
 // newAuthWiredServer builds a router exactly as production wiring should:
-// the auth middleware is supplied via Deps.Auth; RegisterRoutes is the
-// only thing the caller invokes (no separate r.Use is required).
+// public routes (RegisterPublicRoutes) mount first on the bare router;
+// the auth middleware is supplied via Deps.Auth and RegisterRoutes
+// installs the auth-protected FHIR API on top.
 func newAuthWiredServer(t *testing.T, deps handlers.Deps) *httptest.Server {
 	t.Helper()
 	deps.Auth = stubAuthMiddleware
 	r := chi.NewRouter()
+	handlers.RegisterPublicRoutes(r, deps)
 	handlers.RegisterRoutes(r, deps)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)

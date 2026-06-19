@@ -25,7 +25,7 @@ func TestRun_ReadyzReturns200WhenAllChecksPass(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
@@ -87,7 +87,7 @@ func TestRun_HealthzGatedOnLifecycleStart(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
@@ -161,7 +161,7 @@ func TestServer_TimeoutsConfigured(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:              pickFreeAddr(t),
@@ -245,7 +245,7 @@ func TestServer_TimeoutDefaults(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
@@ -303,7 +303,7 @@ func TestRun_StartupCompleteFiresAfterLifecycleStart(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},

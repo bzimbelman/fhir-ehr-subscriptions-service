@@ -43,7 +43,7 @@ func TestProductionWiring_AdminRoutesAreReachable(t *testing.T) {
 	// not yet present in the struct (applySets returns an error for
 	// unknown keys, which becomes a runtime test failure).
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},

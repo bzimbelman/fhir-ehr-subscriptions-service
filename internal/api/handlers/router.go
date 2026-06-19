@@ -348,7 +348,10 @@ func RegisterRoutes(r chi.Router, d Deps) {
 
 		r.Get("/SubscriptionTopic", h.searchTopics)
 		r.Get("/SubscriptionTopic/{id}", h.readTopic)
-		r.Get("/metadata", h.getCapabilityStatement)
+		// /metadata moved to RegisterPublicRoutes (story #93 / S-2.1).
+		// FHIR conformance probes (Inferno, HL7 testkit) hit /metadata
+		// without a bearer token; mounting it inside this auth-protected
+		// group breaks every probe.
 
 		// Catch-all: every unknown route returns an OperationOutcome 404.
 		r.NotFound(func(w http.ResponseWriter, _ *http.Request) {

@@ -113,14 +113,20 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	// onShutdownStart test hook) to the lifecycle module's flags.
 	reg := newLifecycleRegistry()
 
-	// B-4: when the operator supplied a complete config (database +
-	// codec + auth), construct the full production runtime: DB pool +
+	// B-4: when the operator opted into production mode AND configured
+	// a database URL, construct the full production runtime: DB pool +
 	// migrations, codec, channel registry, adapter, auth verifier,
 	// handlers.RegisterRoutes, MLLP listener, pipeline workers. Every
 	// failure here is fatal — listener never binds, /healthz never
 	// flips to ok, the binary exits non-zero with a clear error.
+	//
+	// Story #117: probe-only mode is the explicit opt-in for
+	// running without the production runtime; a missing database URL
+	// no longer silently downgrades the deployment. The integration
+	// tests that exercise specific subsystems set mode=probe-only
+	// alongside a real DB — the runtime still builds in that case.
 	var prod *productionRuntime
-	if cfg.Database.URL != "" {
+	if cfg.Deployment.Mode == DeploymentModeProduction || cfg.Database.URL != "" {
 		var rtErr error
 		prod, rtErr = buildProductionRuntime(ctx, cfg, logger, lcMod)
 		if rtErr != nil {
@@ -344,8 +350,12 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 // buildHTTPMux assembles the production HTTP handler for the main
 // (auth-protected) listener. Probes are NOT mounted here; they live on
 // the dedicated probe listener (S-118) so a buggy auth wrap cannot 401
-// a kubelet probe. Probe-only mode (no DB) keeps the legacy `/metadata`
-// stub so the existing smoke tests continue to function.
+// a kubelet probe. The auth-protected FHIR API sits behind
+// RegisterRoutes' middleware; the public CapabilityStatement
+// (RegisterPublicRoutes' /metadata) sits on the bare chi router so
+// FHIR conformance probes reach it without a bearer token (story #93).
+// Probe-only mode (no DB) keeps the legacy `/metadata` stub so the
+// existing smoke tests continue to function.
 func buildHTTPMux(_ *lifecycle.LifecycleModule, prod *productionRuntime) http.Handler {
 	mux := http.NewServeMux()
 

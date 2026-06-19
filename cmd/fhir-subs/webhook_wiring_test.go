@@ -51,7 +51,7 @@ func TestProductionRuntime_MountsWebhookRoute(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
@@ -127,7 +127,7 @@ func TestProductionRuntime_WebhookSecretFromAdapterState(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: adapterID},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
@@ -217,7 +217,7 @@ func TestProductionRuntime_WebhookEnqueuesResourceChange(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: adapterID},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},

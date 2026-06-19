@@ -231,6 +231,14 @@ topics:
 	if cfg.AuthAllowInsecureJWKS {
 		authInsecureLine = "\n  allow_insecure_jwks: true"
 	}
+	// Story #117: an empty AuthAudience means "skip the bearer
+	// middleware in this e2e". Validate() will reject an empty
+	// audience in production mode unless auth.allow_dev_bypass=true is
+	// set explicitly. Render the flag so existing e2e tests that
+	// want the dev-only no-auth path keep booting.
+	if cfg.AuthAudience == "" {
+		authInsecureLine += "\n  allow_dev_bypass: true"
+	}
 
 	// Story #104: render the per-client rate-limit blocks into the
 	// auth section so the production binary's wiring constructs the
@@ -274,11 +282,29 @@ tracing:
 `, cfg.TracingOTLPEndpoint, sampleRate, insecureLine)
 	}
 
+	// Story #117: e2e tests historically constructed Configs that
+	// satisfied buildProductionRuntime (real DB, codec, channels) but
+	// did not configure the full production posture (no auth audience,
+	// no topics catalog dir, no MLLP listeners, no trusted issuers).
+	// Render mode=probe-only so the production-mode strict checks do
+	// not reject the test config; the production runtime still builds
+	// because cfg.Database.URL is set.
+	deploymentMode := "probe-only"
+	if cfg.AuthAudience != "" && cfg.TopicsCatalogDir != "" && cfg.MLLPBind != "" {
+		// A test that supplies the full production posture explicitly
+		// wants to assert the production-mode validation path. Today
+		// no e2e takes this branch; the field is left here so the
+		// future check-config story can flip a single test over
+		// without re-renaming the helper.
+		deploymentMode = "production"
+	}
+
 	yamlBody := fmt.Sprintf(`deployment:
   facility_id: %s
   environment: e2e
   log_level: info
   log_format: json
+  mode: %s
 adapter:
   id: %s
 server:
@@ -312,7 +338,7 @@ pipeline:
   correlation_hold_window: 1s
 %s%s%s
 `,
-		cfg.FacilityID, cfg.AdapterID, cfg.HTTPBind, cfg.Insecure,
+		cfg.FacilityID, deploymentMode, cfg.AdapterID, cfg.HTTPBind, cfg.Insecure,
 		cfg.GracePeriod.String(),
 		cfg.DatabaseURL, keyB64, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock,
 	)

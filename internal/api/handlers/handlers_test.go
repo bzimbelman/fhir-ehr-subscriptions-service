@@ -331,11 +331,14 @@ func principalMiddleware(p *auth.Principal) func(http.Handler) http.Handler {
 }
 
 // newTestServer wires a chi router with all handler routes plus a
-// preset principal supplied via Deps.Auth (story #58 / N-1.4).
+// preset principal supplied via Deps.Auth (story #58 / N-1.4). Public
+// routes (story #93) mount on the bare router before the auth-protected
+// group so the in-test wiring matches production wiring.
 func newTestServer(t *testing.T, principal *auth.Principal, deps handlers.Deps) *httptest.Server {
 	t.Helper()
 	deps.Auth = principalMiddleware(principal)
 	r := chi.NewRouter()
+	handlers.RegisterPublicRoutes(r, deps)
 	handlers.RegisterRoutes(r, deps)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)

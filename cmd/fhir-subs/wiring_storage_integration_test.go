@@ -62,7 +62,7 @@ func b64Key() string {
 func fullProductionConfig(t *testing.T, dbURL string) *Config {
 	t.Helper()
 	return &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1", Environment: "test"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Environment: "test", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
