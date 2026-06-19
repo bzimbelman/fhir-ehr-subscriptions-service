@@ -1115,18 +1115,12 @@ func (s *server) readTopic(w http.ResponseWriter, r *http.Request) {
 	fhirerror.WriteError(w, http.StatusNotFound, fhirerror.CodeNotFound, "no such topic")
 }
 
-// getCapabilityStatement is GET /metadata when mounted behind the
-// authenticated surface (RegisterRoutes).
-func (s *server) getCapabilityStatement(w http.ResponseWriter, r *http.Request) {
-	if mustPrincipal(w, r) == nil {
-		return
-	}
-	s.writeCapabilityStatement(w, r)
-}
-
 // getCapabilityStatementPublic serves /metadata on the pre-auth
 // surface (RegisterPublicRoutes). FHIR conformance probes hit
-// /metadata without a bearer token (S-2.1).
+// /metadata without a bearer token (S-2.1 / story #93). The
+// auth-protected variant was removed when /metadata moved off the
+// auth-protected route group; the public handler is the canonical
+// CapabilityStatement responder.
 func (s *server) getCapabilityStatementPublic(w http.ResponseWriter, r *http.Request) {
 	s.writeCapabilityStatement(w, r)
 }

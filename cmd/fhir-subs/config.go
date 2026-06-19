@@ -164,6 +164,13 @@ type AuthConfig struct {
 	JWKSAllowed    []string       `yaml:"jwks_allowed_hosts"`
 	TrustedIssuers []TrustedIssue `yaml:"trusted_issuers"`
 
+	// AllowDevBypass, when true, lets the binary run without
+	// auth.audience set — the dev / e2e path. Production deployments
+	// MUST leave this false. Story #117 made this an explicit opt-in
+	// so an empty audience field cannot silently install the no-op
+	// devPrincipalMiddleware that authorizes every caller.
+	AllowDevBypass bool `yaml:"allow_dev_bypass"`
+
 	// SubscriptionCreateRateLimit configures the per-authenticated-client
 	// rate limit on POST /Subscription (S-3.3). Burst <= 0 disables.
 	SubscriptionCreateRateLimit RateLimitConfig `yaml:"subscription_create_rate_limit"`
@@ -367,7 +374,22 @@ type DeploymentConfig struct {
 	Environment string `yaml:"environment"`
 	LogLevel    string `yaml:"log_level"`
 	LogFormat   string `yaml:"log_format"`
+	// Mode is the deployment posture. "production" (default) requires
+	// the database / codec / auth / topics blocks to be populated and
+	// enforces auth on every FHIR API endpoint. "probe-only" boots
+	// without any of those — only /healthz, /readyz, /startup, and the
+	// public /metadata endpoint are served. Story #117 made this an
+	// explicit opt-in so a typo'd database URL cannot silently turn a
+	// production deployment into a probes-only pod.
+	Mode string `yaml:"mode"`
 }
+
+// DeploymentMode values for DeploymentConfig.Mode. Validate() rejects
+// any other value rather than silently falling through to a default.
+const (
+	DeploymentModeProduction = "production"
+	DeploymentModeProbeOnly  = "probe-only"
+)
 
 // AdapterConfig models adapter.* fields.
 type AdapterConfig struct {
@@ -459,6 +481,12 @@ type LifecycleConfig struct {
 // start from this and overlay the file, env, and CLI on top.
 func defaultConfig() *Config {
 	return &Config{
+		Deployment: DeploymentConfig{
+			// Mode defaults to production so a YAML that omits
+			// deployment.mode cannot silently boot in probe-only.
+			// Story #117.
+			Mode: DeploymentModeProduction,
+		},
 		Server: ServerConfig{
 			HTTP: HTTPConfig{
 				Bind: "0.0.0.0:8443",
@@ -498,6 +526,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if cfg.Lifecycle.ShutdownGracePeriod == 0 {
 		cfg.Lifecycle.ShutdownGracePeriod = 30 * time.Second
+	}
+	if cfg.Deployment.Mode == "" {
+		cfg.Deployment.Mode = DeploymentModeProduction
 	}
 	cfg.Server.HTTP.applyTimeoutDefaults()
 
@@ -543,6 +574,62 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Server.HTTP.Bind) == "" {
 		problems = append(problems, "server.http.bind is required")
+	}
+
+	// Story #117: deployment.mode is the explicit opt-in that gates
+	// the rest of the production-mode requirements. Unknown values
+	// MUST fail rather than silently fall through to a default.
+	switch c.Deployment.Mode {
+	case "", DeploymentModeProduction:
+		c.Deployment.Mode = DeploymentModeProduction
+		// Story #116: production mode requires the database, codec,
+		// auth, and topics blocks to be populated. Any one missing
+		// makes the binary non-functional; we want the operator to
+		// see the loud error at --check-config time, not a 404 storm
+		// after the pod is Ready.
+		if strings.TrimSpace(c.Database.URL) == "" {
+			problems = append(problems, "database.url is required when deployment.mode=production")
+		}
+		if len(c.Codec.Keys) == 0 {
+			problems = append(problems, "codec.keys is required when deployment.mode=production")
+		}
+		if c.Codec.ActiveKeyVersion == 0 {
+			problems = append(problems, "codec.active_key_version is required when deployment.mode=production")
+		}
+		if !c.Auth.AllowDevBypass && strings.TrimSpace(c.Auth.Audience) == "" {
+			problems = append(problems,
+				"auth.audience is required when deployment.mode=production (set auth.allow_dev_bypass=true to opt out — dev / e2e only)")
+		}
+		if strings.TrimSpace(c.Auth.Audience) != "" &&
+			len(c.Auth.TrustedIssuers) == 0 {
+			problems = append(problems,
+				"auth.trusted_issuers is required when auth.audience is set in production")
+		}
+		if strings.TrimSpace(c.Topics.CatalogDir) == "" {
+			problems = append(problems, "topics.catalog_dir is required when deployment.mode=production")
+		}
+		if len(c.MLLP.Listeners) == 0 {
+			problems = append(problems, "mllp.listeners must be non-empty when deployment.mode=production")
+		}
+	case DeploymentModeProbeOnly:
+		// Probe-only mode is the explicit opt-in path: the binary
+		// boots without the strict production block requirements.
+		// Optional blocks (database, codec) may still be configured —
+		// some integration tests rely on this — but auth, topics, and
+		// MLLP listeners are not required. Story #117.
+		//
+		// MLLP listeners are NOT allowed here because they cannot
+		// persist anything without a database guarantee, and a
+		// configured listener that silently drops is exactly the
+		// failure mode the audit doc flagged (#41).
+		if len(c.MLLP.Listeners) > 0 {
+			problems = append(problems,
+				"mllp.listeners is not supported when deployment.mode=probe-only; remove the block or switch to production mode")
+		}
+	default:
+		problems = append(problems,
+			fmt.Sprintf("deployment.mode=%q: must be %q or %q",
+				c.Deployment.Mode, DeploymentModeProduction, DeploymentModeProbeOnly))
 	}
 	if !c.Server.HTTP.Insecure {
 		if strings.TrimSpace(c.Server.HTTP.TLS.CertFile) == "" || strings.TrimSpace(c.Server.HTTP.TLS.KeyFile) == "" {

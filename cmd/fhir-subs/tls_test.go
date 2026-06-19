@@ -94,7 +94,7 @@ func TestRun_ServesTLS_WhenCertConfigured(t *testing.T) {
 	certPath, keyPath := genSelfSignedCert(t, dir)
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     pickFreeAddr(t),
@@ -188,7 +188,7 @@ func TestValidate_RejectsMissingCertFile(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
@@ -226,7 +226,7 @@ func TestValidate_RejectsNonPEMCertFile(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
@@ -256,7 +256,7 @@ func TestValidate_DefaultMinVersionIs1_3(t *testing.T) {
 	certPath, keyPath := genSelfSignedCert(t, dir)
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
@@ -286,7 +286,7 @@ func TestValidate_RejectsInvalidMinVersion(t *testing.T) {
 	certPath, keyPath := genSelfSignedCert(t, dir)
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:     "0.0.0.0:8443",
@@ -399,7 +399,7 @@ func TestValidate_MLLPTLSRequiresCertKey(t *testing.T) {
 	t.Parallel()
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:8443", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 30 * time.Second},
@@ -432,7 +432,7 @@ func TestValidate_MLLPMTLSRequiresClientCA(t *testing.T) {
 	certPath, keyPath := genSelfSignedCert(t, dir)
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:8443", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 30 * time.Second},

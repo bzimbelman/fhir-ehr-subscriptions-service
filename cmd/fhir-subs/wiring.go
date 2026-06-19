@@ -336,18 +336,27 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		"email":     defaultActivator{},
 		"message":   defaultActivator{},
 	}
-	// Auth middleware: in production cfg.Auth.Audience is required, so
-	// verif is non-nil. Probe-only / dev-loopback fallback may have
-	// verif == nil; in that case install a dev-only principal-from-
-	// header middleware so handlers that require a Principal still
-	// reach their happy path. The X-Client-Id header is only honored
-	// when no real auth is wired (dev / e2e). N-1.4 still holds — the
-	// route group always has SOME middleware bound.
-	authMiddleware := handlers.Middleware(func(next http.Handler) http.Handler { return next })
-	if verif != nil {
+	// Auth middleware: in production cfg.Auth.Audience is required and
+	// Validate has already enforced it (story #116). The dev-bypass
+	// path — verif == nil because cfg.Auth.AllowDevBypass=true — is the
+	// ONLY place we install devPrincipalMiddleware; story #117 made
+	// this an explicit opt-in so an empty audience field cannot
+	// silently install a no-op auth gate that authorizes every caller.
+	// N-1.4 still holds — the route group always has SOME middleware
+	// bound.
+	var authMiddleware handlers.Middleware
+	switch {
+	case verif != nil:
 		authMiddleware = verif.Middleware
-	} else {
+	case cfg.Auth.AllowDevBypass:
 		authMiddleware = devPrincipalMiddleware()
+	default:
+		// Validate guarantees we never reach this branch in
+		// production. The runtime guard exists so a future regression
+		// in Validate fails closed rather than installing a no-op
+		// middleware.
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("wiring: auth.audience is empty and auth.allow_dev_bypass is false; refusing to install no-op auth")
 	}
 
 	deps := handlers.Deps{
@@ -384,6 +393,12 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// Mount /metrics on the chi router so Prometheus scrapes against
 	// the same HTTP listener as the FHIR API (story #94 AC #3).
 	r.Handle("/metrics", obsMod.PrometheusHandler())
+	// Story #93 / S-2.1: mount the public routes (today: just
+	// /metadata for FHIR conformance probes) BEFORE RegisterRoutes
+	// installs the auth-protected group. chi serves the bare-router
+	// GET /metadata to unauthenticated callers; the auth-protected
+	// FHIR API sits behind the auth middleware on the inner group.
+	handlers.RegisterPublicRoutes(r, deps)
 	handlers.RegisterRoutes(r, deps)
 	if tokenSrv != nil {
 		r.Method(http.MethodPost, "/token", tokenSrv)

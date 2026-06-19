@@ -144,6 +144,10 @@ config:
       environment: dev
       log_level: info
       log_format: json
+      # Production posture: refuse to boot without database / codec /
+      # auth / topics / mllp blocks. Override to "probe-only" in
+      # values.yaml for synthetic probe deployments. Story #117.
+      mode: production
     server:
       http:
         bind: ":8443"

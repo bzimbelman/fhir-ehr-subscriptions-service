@@ -169,6 +169,7 @@ func TestConfig_TracingBlock_EmptyEndpointIsValid(t *testing.T) {
 deployment:
   facility_id: hospital-a
   environment: dev
+  mode: probe-only
 adapter:
   id: default
 server:
@@ -400,7 +401,7 @@ func TestProductionRuntime_MountsMetricsEndpoint(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
@@ -458,7 +459,7 @@ func TestProductionRuntime_ObservabilityModuleStored(t *testing.T) {
 	}
 
 	cfg := &Config{
-		Deployment: DeploymentConfig{FacilityID: "f1"},
+		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "default"},
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
