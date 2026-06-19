@@ -145,9 +145,12 @@ func startProdBinary(t *testing.T, ctx context.Context, cfg prodBinaryConfig) *p
 	if cfg.GracePeriod == 0 {
 		cfg.GracePeriod = 5 * time.Second
 	}
-	if cfg.AuthAudience == "" {
-		cfg.AuthAudience = "https://api.test.local"
-	}
+	// Empty AuthAudience means "do not configure auth" — buildAuthEndpoints
+	// returns (nil, nil, nil) in that case so the chi router runs with a
+	// no-op middleware. Tests that explicitly want bearer auth set
+	// AuthAudience to a non-empty string. (Story #94 audit test relies on
+	// this so the POST /Subscription request reaches the handler that
+	// writes the audit row.)
 
 	// Build the binary into a temp dir.
 	repoRoot, err := findRepoRoot()

@@ -31,10 +31,52 @@ type Config struct {
 	Pipeline   PipelineConfig   `yaml:"pipeline"`
 	Channels   ChannelsConfig   `yaml:"channels"`
 	Topics     TopicsConfig     `yaml:"topics"`
+	Tracing    TracingConfig    `yaml:"tracing"`
+	Metrics    MetricsConfig    `yaml:"metrics"`
+	Audit      AuditConfig      `yaml:"audit"`
 
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
 	Extra map[string]any `yaml:",inline"`
+}
+
+// TracingConfig models tracing.* fields. Operator-tunable per
+// docs/operations/otel-exporter-recipes.md (story #94 AC #1). All
+// fields are optional; an empty OTLPEndpoint disables tracing entirely
+// (the observability layer returns a no-op tracer).
+type TracingConfig struct {
+	OTLPEndpoint    string            `yaml:"otlp_endpoint"`
+	SampleRate      float64           `yaml:"sample_rate"`
+	ExporterTimeout time.Duration     `yaml:"exporter_timeout"`
+	Insecure        bool              `yaml:"insecure"`
+	TLS             TracingTLSConfig  `yaml:"tls"`
+	Headers         map[string]string `yaml:"headers"`
+}
+
+// TracingTLSConfig models tracing.tls.* fields. Used to build the OTLP
+// HTTP transport's TLS config (mTLS when CertFile + KeyFile are set,
+// custom CA when CAFile is set).
+type TracingTLSConfig struct {
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+	CAFile   string `yaml:"ca_file"`
+}
+
+// MetricsConfig models metrics.* fields. Mirrors
+// observability.MetricsConfig field naming so the wiring helper is a
+// straight 1:1 copy.
+type MetricsConfig struct {
+	Bind string `yaml:"bind"`
+	Path string `yaml:"path"`
+}
+
+// AuditConfig models audit.* fields. Mirrors observability.AuditConfig
+// field naming.
+type AuditConfig struct {
+	Sink              string        `yaml:"sink"`
+	FilePath          string        `yaml:"file_path"`
+	FileSyncMode      string        `yaml:"file_sync_mode"`
+	FileBatchInterval time.Duration `yaml:"file_batch_interval"`
 }
 
 // DatabaseConfig models database.* fields.
@@ -351,6 +393,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Lifecycle.ShutdownGracePeriod <= 0 {
 		problems = append(problems, "lifecycle.shutdown_grace_period must be positive")
+	}
+	// tracing.sample_rate must be in [0,1]; the OTel sampler treats any
+	// rate <= 0 as "drop all" and >1 as "sample all", but we surface it
+	// here so the operator gets a loud config error rather than silent
+	// telemetry loss (story #94).
+	if c.Tracing.SampleRate < 0 || c.Tracing.SampleRate > 1 {
+		problems = append(problems,
+			"tracing.sample_rate must be between 0.0 and 1.0")
 	}
 
 	if len(problems) > 0 {

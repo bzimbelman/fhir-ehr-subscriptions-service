@@ -21,6 +21,7 @@ import (
 	adapterspi "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	apimetrics "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 	chresthook "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/resthook"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/builder"
@@ -28,6 +29,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/submatcher"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/hl7processor"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
@@ -60,6 +62,13 @@ type productionRuntime struct {
 	// activation goroutines either finish, time out, or are cancelled
 	// before the process exits (B-10).
 	activationWG sync.WaitGroup
+
+	// obsModule owns the observability lifecycle (metrics registry,
+	// OTel tracer, audit hash-chain writer, dead-letter reporter).
+	// Nil only for failure paths before observability.Start runs;
+	// Shutdown is registered with the lifecycle module on success
+	// (story #94 AC #2, #6).
+	obsModule *observability.ObservabilityModule
 
 	logger *slog.Logger
 }
@@ -162,6 +171,60 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	subsRepo := repos.NewSubscriptionsRepo()
 	authClients := repos.NewAuthClientsRepo()
 
+	// --- 4b. Observability (metrics + tracing + audit + dead-letter
+	// reporter). Build the audit Store first so observability.Start can
+	// hand the hash-chained writer back through Handles.Audit; the
+	// returned module owns its lifetime and is shut down by the
+	// lifecycle sequencer (story #94).
+	auditStore, err := newPgAuditStore(pool)
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("audit store: %w", err)
+	}
+	obsCfg := buildObservabilityConfig(cfg)
+	obsClock := func() time.Time { return time.Now().UTC() }
+	obsMod, obsHandles, err := observability.Start(ctx, obsCfg, observability.Context{
+		StoragePool: auditStore,
+		Clock:       obsClock,
+	})
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("observability: %w", err)
+	}
+	rt.obsModule = obsMod
+	// Build the API metrics set once the registry exists; this is the
+	// MetricsRecorder shape the handlers consume (story #94 AC #4).
+	apiMetrics, err := apimetrics.New(obsMod.Registry())
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("api metrics: %w", err)
+	}
+	// Boot audit event — exercises the hash-chained writer at startup
+	// so operators always see at least one row in audit_log even before
+	// the first API request. The chain genesis is verified here and
+	// catches a misconfigured durable store loud at boot rather than
+	// on the first user-visible failure.
+	if bootErr := obsHandles.Audit.Emit(ctx, observability.AuditEvent{
+		OccurredAt: obsClock(),
+		ActorKind:  "system",
+		ActorID:    cfg.Deployment.FacilityID,
+		Action:     "service.started",
+		TargetKind: "service",
+		TargetID:   "fhir-subs",
+		Outcome:    "success",
+		Payload: map[string]any{
+			"facility":    cfg.Deployment.FacilityID,
+			"adapter_id":  cfg.Adapter.ID,
+			"environment": cfg.Deployment.Environment,
+			"version":     Version,
+		},
+	}); bootErr != nil {
+		// Boot audit failures are loud — if the chain cannot extend on
+		// the first row, the durable store is broken.
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("audit boot event: %w", bootErr)
+	}
+
 	// --- 5. Auth verifier + token endpoint ------------------------------
 	verif, tokenSrv, err := buildAuthEndpoints(cfg.Auth, pool, authClients)
 	if err != nil {
@@ -207,11 +270,16 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 	// Auth middleware: in production cfg.Auth.Audience is required, so
 	// verif is non-nil. Probe-only / dev-loopback fallback may have
-	// verif == nil; in that case install a no-op middleware so the
-	// chi.Middleware-typed Deps.Auth invariant still holds (N-1.4).
+	// verif == nil; in that case install a dev-only principal-from-
+	// header middleware so handlers that require a Principal still
+	// reach their happy path. The X-Client-Id header is only honored
+	// when no real auth is wired (dev / e2e). N-1.4 still holds — the
+	// route group always has SOME middleware bound.
 	authMiddleware := handlers.Middleware(func(next http.Handler) http.Handler { return next })
 	if verif != nil {
 		authMiddleware = verif.Middleware
+	} else {
+		authMiddleware = devPrincipalMiddleware()
 	}
 
 	deps := handlers.Deps{
@@ -221,8 +289,9 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		Events:              handlers.NewPgEventsStore(pool),
 		Deliveries:          handlers.NewPgDeliveriesStore(pool),
 		WsTokens:            handlers.NewPgWsBindingTokensStore(pool),
-		Audit:               handlers.NewPgAuditStore(pool),
+		Audit:               newObservabilityAuditAdapter(obsHandles.Audit, obsClock),
 		Channels:            channels,
+		Metrics:             apiMetrics,
 		Now:                 func() time.Time { return time.Now().UTC() },
 		WSBindingTTL:        5 * time.Minute,
 		BaseURL:             "https://" + cfg.Server.HTTP.Bind,
@@ -235,6 +304,9 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 
 	r := chi.NewRouter()
+	// Mount /metrics on the chi router so Prometheus scrapes against
+	// the same HTTP listener as the FHIR API (story #94 AC #3).
+	r.Handle("/metrics", obsMod.PrometheusHandler())
 	handlers.RegisterRoutes(r, deps)
 	if tokenSrv != nil {
 		r.Method(http.MethodPost, "/token", tokenSrv)
@@ -495,6 +567,22 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 		},
 	})
 
+	if r.obsModule != nil {
+		// Register the observability shutdown FIRST so the registry
+		// holds it before "database.close". Within a phase the
+		// sequencer fans the hooks out concurrently — both run together
+		// — but registering early keeps the ordering deterministic for
+		// any future caller that switches to sequential execution
+		// (story #94 AC #6).
+		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+			Name:  "observability.shutdown",
+			Phase: lifecycle.PhaseCloseConnections,
+			Run: func(ctx context.Context) error {
+				return r.obsModule.Shutdown(ctx)
+			},
+		})
+	}
+
 	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
 		Name:  "database.close",
 		Phase: lifecycle.PhaseCloseConnections,
@@ -731,3 +819,76 @@ func nonZeroInt32(v, fallback int32) int32 {
 // scaffolding is still being written. The reference here goes away
 // once the e2e harness exercises every component.
 var _ channel.Channel = channel.Channel(nil)
+
+// devPrincipalMiddleware reads the X-Client-Id header and, when
+// present, attaches a Principal to the request context with a
+// permissive scope set covering every operator-mintable scope used by
+// the API. The scope set mirrors the auth_clients.scopes column so a
+// dev request behaves exactly like an authenticated client whose
+// scopes were granted out-of-band.
+//
+// This is wired ONLY when cfg.Auth.Audience is empty (the dev
+// /e2e fallback path). Production deployments MUST set audience so the
+// real verifier is installed instead. Empty header still produces a
+// 401 from mustPrincipal — the dev path does not invent identities.
+func devPrincipalMiddleware() handlers.Middleware {
+	scopes := []string{
+		"system/Subscription.cruds",
+		"system/Subscription.r",
+		"system/Subscription.s",
+		"system/Subscription.c",
+		"system/Subscription.u",
+		"system/Subscription.d",
+		"system/Subscription.$status",
+		"system/Subscription.$events",
+		"system/Subscription.$get-ws-binding-token",
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			cid := r.Header.Get("X-Client-Id")
+			if cid == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			p := &auth.Principal{ClientID: cid, Scopes: scopes}
+			next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+		})
+	}
+}
+
+// buildObservabilityConfig translates the operator-facing tracing /
+// metrics / audit blocks into the observability package's typed
+// shape. The mapping is 1:1 today; the helper exists so future
+// non-trivial transforms (e.g. env-var interpolation, default
+// elision) have a single owner (story #94 AC #1, #7).
+func buildObservabilityConfig(cfg *Config) observability.Config {
+	if cfg == nil {
+		return observability.Config{}
+	}
+	return observability.Config{
+		Metrics: observability.MetricsConfig{
+			Bind: cfg.Metrics.Bind,
+			Path: cfg.Metrics.Path,
+		},
+		Tracing: observability.TracingConfig{
+			OTLPEndpoint:    cfg.Tracing.OTLPEndpoint,
+			SampleRate:      cfg.Tracing.SampleRate,
+			ExporterTimeout: cfg.Tracing.ExporterTimeout,
+			Insecure:        cfg.Tracing.Insecure,
+			TLSCertFile:     cfg.Tracing.TLS.CertFile,
+			TLSKeyFile:      cfg.Tracing.TLS.KeyFile,
+			TLSCAFile:       cfg.Tracing.TLS.CAFile,
+			Headers:         cfg.Tracing.Headers,
+		},
+		Logging: observability.LoggingConfig{
+			Level:  cfg.Deployment.LogLevel,
+			Format: cfg.Deployment.LogFormat,
+		},
+		Audit: observability.AuditConfig{
+			Sink:              cfg.Audit.Sink,
+			FilePath:          cfg.Audit.FilePath,
+			FileSyncMode:      cfg.Audit.FileSyncMode,
+			FileBatchInterval: cfg.Audit.FileBatchInterval,
+		},
+	}
+}
