@@ -28,6 +28,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/submatcher"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/hl7processor"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
@@ -214,6 +215,21 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		authMiddleware = verif.Middleware
 	}
 
+	auditStore, err := audit.NewPgStore(pool, audit.PgStoreOptions{})
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("audit store: %w", err)
+	}
+	auditWriter, err := audit.NewWriter(audit.WriterOptions{
+		Store: auditStore,
+		Sink:  audit.NewStdoutSink(),
+		Clock: time.Now,
+	})
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("audit writer: %w", err)
+	}
+
 	deps := handlers.Deps{
 		Auth:                authMiddleware,
 		Subscriptions:       handlers.NewPgSubscriptionsStore(pool),
@@ -221,7 +237,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		Events:              handlers.NewPgEventsStore(pool),
 		Deliveries:          handlers.NewPgDeliveriesStore(pool),
 		WsTokens:            handlers.NewPgWsBindingTokensStore(pool),
-		Audit:               handlers.NewPgAuditStore(pool),
+		Audit:               handlers.NewChainedAuditStore(auditWriter),
 		Channels:            channels,
 		Now:                 func() time.Time { return time.Now().UTC() },
 		WSBindingTTL:        5 * time.Minute,

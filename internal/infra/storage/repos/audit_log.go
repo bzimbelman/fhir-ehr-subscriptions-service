@@ -31,11 +31,16 @@ func NewAuditLogRepo() *AuditLogRepo { return &AuditLogRepo{} }
 // row.PrevHash — Append does not validate it. New callers should
 // prefer AppendChained, which verifies the prev-hash against the
 // prior row in the same transaction.
+//
+// Story #106: column names align with migration 0007 — chain_hash,
+// prior_hash, chain_input — so the repos package and the
+// observability/audit package read/write the same table without a
+// schema mismatch.
 func (r *AuditLogRepo) Append(ctx context.Context, q Querier, row AuditLogRow) (int64, error) {
 	const sql = `
 		INSERT INTO audit_log
 			(actor_kind, actor_id, action, target_kind, target_id, outcome,
-			 correlation_id, canonical_form, hash, prev_hash)
+			 correlation_id, chain_input, chain_hash, prior_hash)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING seq`
 	var seq int64
@@ -60,7 +65,7 @@ func (r *AuditLogRepo) Append(ctx context.Context, q Querier, row AuditLogRow) (
 // belt-and-braces check on top of the chain logic in the
 // observability/audit module.
 func (r *AuditLogRepo) AppendChained(ctx context.Context, q Querier, row AuditLogRow) (int64, error) {
-	const selSQL = `SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1`
+	const selSQL = `SELECT chain_hash FROM audit_log ORDER BY seq DESC LIMIT 1`
 	var prior []byte
 	switch err := q.QueryRow(ctx, selSQL).Scan(&prior); {
 	case err == nil:

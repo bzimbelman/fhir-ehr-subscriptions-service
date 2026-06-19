@@ -20,6 +20,7 @@ import (
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
@@ -156,6 +157,19 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		channels[k] = v
 	}
 
+	auditStore, err := audit.NewPgStore(cfg.Pool, audit.PgStoreOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("harness: audit store: %w", err)
+	}
+	auditWriter, err := audit.NewWriter(audit.WriterOptions{
+		Store: auditStore,
+		Sink:  audit.NewStdoutSink(),
+		Clock: time.Now,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("harness: audit writer: %w", err)
+	}
+
 	deps := handlers.Deps{
 		Auth: principalMiddleware(&auth.Principal{
 			ClientID: cfg.ClientID,
@@ -173,7 +187,7 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		Events:              handlers.NewPgEventsStore(cfg.Pool),
 		Deliveries:          handlers.NewPgDeliveriesStore(cfg.Pool),
 		WsTokens:            handlers.NewPgWsBindingTokensStore(cfg.Pool),
-		Audit:               handlers.NewPgAuditStore(cfg.Pool),
+		Audit:               handlers.NewChainedAuditStore(auditWriter),
 		Channels:            channels,
 		Now:                 func() time.Time { return time.Now().UTC() },
 		WSBindingTTL:        5 * time.Minute,
