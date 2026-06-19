@@ -29,6 +29,12 @@ type SubscribeConfig struct {
 	ChannelType   string
 	Endpoint      string
 	HTTPClient    *http.Client
+	// ClientID, when non-empty, is sent as the X-Client-Id header so a
+	// bridge running in dev-bypass mode (cfg.Auth.AllowDevBypass=true,
+	// no audience configured) attaches a Principal to the request.
+	// Production-mode bridges ignore the header — the real auth verifier
+	// gates on the Authorization bearer token instead.
+	ClientID string
 }
 
 // FilterPair is a parsed name=value Subscription filter.
@@ -101,6 +107,9 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 	req.Header.Set("Accept", "application/fhir+json")
 	if cfg.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
+	}
+	if cfg.ClientID != "" {
+		req.Header.Set("X-Client-Id", cfg.ClientID)
 	}
 
 	client := cfg.HTTPClient
