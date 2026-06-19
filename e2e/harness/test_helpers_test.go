@@ -68,9 +68,9 @@ func (acceptAllBackend) NewSession(_ *smtp.Conn) (smtp.Session, error) {
 
 type acceptAllSession struct{}
 
-func (acceptAllSession) AuthPlain(_, _ string) error                  { return nil }
-func (acceptAllSession) Mail(_ string, _ *smtp.MailOptions) error     { return nil }
-func (acceptAllSession) Rcpt(_ string, _ *smtp.RcptOptions) error     { return nil }
+func (acceptAllSession) AuthPlain(_, _ string) error              { return nil }
+func (acceptAllSession) Mail(_ string, _ *smtp.MailOptions) error { return nil }
+func (acceptAllSession) Rcpt(_ string, _ *smtp.RcptOptions) error { return nil }
 func (acceptAllSession) Data(r io.Reader) error {
 	_, _ = io.Copy(io.Discard, r)
 	return nil
