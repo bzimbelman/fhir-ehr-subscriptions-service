@@ -50,6 +50,12 @@ auth:
   allow_subscriber_hosts:
     - demo-subscriber
   allow_dev_bypass: true
+  # Pre-seed an auth_clients row for the demo subscriber so the
+  # subscriptions.client_id FK passes when it POSTs a Subscription.
+  # The dev-bypass middleware identifies the caller by X-Client-Id,
+  # which demo-subscriber sets via its --client-id flag.
+  dev_bypass_client_ids:
+    - demo-subscriber
 
 server:
   http:
