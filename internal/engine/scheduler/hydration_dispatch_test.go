@@ -73,7 +73,9 @@ func (s *realHTTPHydrationService) Fetch(ctx context.Context, ref adapterspi.Fhi
 
 type httpStatusError struct{ code int }
 
-func (e *httpStatusError) Error() string { return "fhir status " + strings.TrimSpace(http.StatusText(e.code)) }
+func (e *httpStatusError) Error() string {
+	return "fhir status " + strings.TrimSpace(http.StatusText(e.code))
+}
 
 // TestIntegrationSchedulerInvokesHydratorForFullResource pins story #98
 // AC #4: when a subscription's Content is "full-resource", the
@@ -310,4 +312,3 @@ func (r *recordingChannel) last() channel.NotificationEnvelope {
 	defer r.mu.Unlock()
 	return r.calls[len(r.calls)-1]
 }
-
