@@ -231,15 +231,15 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	})
 	jwksSrv := httptest.NewServer(jwksMux)
 
-	if _, err := cfg.Pool.Exec(ctx, `
+	if _, seedErr := cfg.Pool.Exec(ctx, `
 		INSERT INTO auth_clients (id, scopes, display_name, jwks_url)
 		VALUES ($1, $2::text[], $1, $3)
 		ON CONFLICT (id) DO UPDATE SET
 			scopes = EXCLUDED.scopes,
 			jwks_url = EXCLUDED.jwks_url
-	`, cfg.ClientID, scopes, jwksSrv.URL+"/jwks"); err != nil {
+	`, cfg.ClientID, scopes, jwksSrv.URL+"/jwks"); seedErr != nil {
 		jwksSrv.Close()
-		return nil, fmt.Errorf("harness: seed auth_clients: %w", err)
+		return nil, fmt.Errorf("harness: seed auth_clients: %w", seedErr)
 	}
 
 	channels, err := buildHarnessChannels(cfg)
