@@ -47,7 +47,7 @@ func waitForReadyz(ctx context.Context, url string, deadline time.Duration) erro
 	defer cancel()
 	client := &http.Client{Timeout: 2 * time.Second}
 	for {
-		req, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, url, nil)
+		req, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, url, http.NoBody)
 		resp, err := client.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
@@ -81,11 +81,17 @@ type cliFlags struct {
 	pretty      bool
 	subscribeTO time.Duration
 
-	// waitForReadyz, when non-zero, polls <bridge>/readyz before
+	// waitForReadyz, when non-zero, polls a readyz URL before
 	// subscribing. Lets the demo subscriber survive a slow bridge
 	// boot (e.g. running under docker compose where the bridge needs
 	// to migrate the demo Postgres before /readyz flips to 200).
 	waitForReadyz time.Duration
+	// readyzURL is the URL to poll when waitForReadyz > 0. Defaults
+	// to <bridge>/readyz, but the bridge serves probes on a separate
+	// port from the FHIR API in production
+	// (cmd/fhir-subs/config.go ProbeBind defaults to :8081), so a
+	// caller using compose must override this.
+	readyzURL string
 }
 
 func parseFlags(args []string) (cliFlags, error) {
@@ -106,7 +112,8 @@ func parseFlags(args []string) (cliFlags, error) {
 	fs.BoolVar(&f.noColor, "no-color", false, "disable ANSI color (kept for backward compat; prefer NO_COLOR env)")
 	fs.BoolVar(&f.pretty, "pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")
 	fs.DurationVar(&f.subscribeTO, "subscribe-timeout", 10*time.Second, "timeout for the POST /Subscription request")
-	fs.DurationVar(&f.waitForReadyz, "wait-for-readyz", 0, "if >0, poll <bridge>/readyz until 2xx or this duration elapses before subscribing (default 0 = no wait)")
+	fs.DurationVar(&f.waitForReadyz, "wait-for-readyz", 0, "if >0, poll the readyz URL until 2xx or this duration elapses before subscribing (default 0 = no wait)")
+	fs.StringVar(&f.readyzURL, "readyz-url", "", "URL to poll for readiness (default <bridge>/readyz). Override when probes are served on a different port than the FHIR API.")
 
 	if err := fs.Parse(args); err != nil {
 		return f, err
@@ -222,7 +229,10 @@ func run(args []string, stdout *os.File) error {
 	//      a slow boot (compose: bridge migrates Postgres before
 	//      Subscription API serves) does not race the subscribe POST.
 	if f.waitForReadyz > 0 {
-		readyzURL := strings.TrimRight(f.bridge, "/") + "/readyz"
+		readyzURL := f.readyzURL
+		if readyzURL == "" {
+			readyzURL = strings.TrimRight(f.bridge, "/") + "/readyz"
+		}
 		if rerr := waitForReadyz(ctx, readyzURL, f.waitForReadyz); rerr != nil {
 			return fmt.Errorf("wait for bridge readyz: %w", rerr)
 		}

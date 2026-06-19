@@ -170,11 +170,13 @@ func TestDemoWalkthroughDeliversNotifications(t *testing.T) {
 	//    build all three binaries).
 	composeRun(t, project, "up", "-d", "--build", "--wait", "--wait-timeout", "180")
 
-	// 2. Wait for bridge readiness via the published port from the
-	//    compose mapping (host:8443 -> bridge:8443).
-	bridgeURL := "http://localhost:8443"
-	deadline := time.Now().Add(60 * time.Second)
-	if err := waitForHTTP(bridgeURL+"/readyz", deadline); err != nil {
+	// 2. Wait for bridge readiness. /readyz lives on the probe
+	//    listener (cmd/fhir-subs/config.go ProbeBind, default :8081),
+	//    NOT on the FHIR API at :8443 — compose maps both to the
+	//    host so the test can poll directly.
+	probeURL := "http://localhost:8081"
+	deadline := time.Now().Add(120 * time.Second)
+	if err := waitForHTTP(probeURL+"/readyz", deadline); err != nil {
 		// Dump bridge logs to make CI failures debuggable.
 		logs, _ := composeCmd(t, project, "logs", "bridge").CombinedOutput()
 		t.Fatalf("bridge /readyz never became healthy: %v\nbridge logs:\n%s", err, string(logs))
