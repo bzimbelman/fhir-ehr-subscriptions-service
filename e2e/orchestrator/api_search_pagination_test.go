@@ -60,7 +60,7 @@ func TestE2E_S2_SearchSubscriptionsPaginates(t *testing.T) {
 				"endpoint": fmt.Sprintf("https://example.org/wh-%d", i),
 			},
 		})
-		id, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, body)
+		id, err := hpipe.PostSubscription(ctx, api, api.Client(), body)
 		if err != nil {
 			t.Fatalf("post %d: %v", i, err)
 		}
@@ -71,7 +71,7 @@ func TestE2E_S2_SearchSubscriptionsPaginates(t *testing.T) {
 	}
 
 	// Page 1: _count=2 → 2 entries + next link.
-	page1 := fetchPage(t, ctx, api.URL+"/Subscription?_count=2")
+	page1 := fetchPage(t, ctx, api, api.URL+"/Subscription?_count=2")
 	if got := len(page1.Entries); got != 2 {
 		t.Fatalf("page1 entries = %d; want 2", got)
 	}
@@ -81,7 +81,7 @@ func TestE2E_S2_SearchSubscriptionsPaginates(t *testing.T) {
 	}
 
 	// Page 2: follow cursor.
-	page2 := fetchPage(t, ctx, api.URL+nextURL)
+	page2 := fetchPage(t, ctx, api, api.URL+nextURL)
 	if got := len(page2.Entries); got != 2 {
 		t.Fatalf("page2 entries = %d; want 2", got)
 	}
@@ -98,7 +98,7 @@ func TestE2E_S2_SearchSubscriptionsPaginates(t *testing.T) {
 	if nextURL2 == "" {
 		t.Fatalf("page2 missing next link; body=%s", page2.RawBody)
 	}
-	page3 := fetchPage(t, ctx, api.URL+nextURL2)
+	page3 := fetchPage(t, ctx, api, api.URL+nextURL2)
 	if got := len(page3.Entries); got != 1 {
 		t.Fatalf("page3 entries = %d; want 1", got)
 	}
@@ -141,7 +141,7 @@ func TestE2E_S2_SearchRejectsBadCount(t *testing.T) {
 	cases := []string{"_count=-3", "_count=abc", "_cursor=not-a-cursor"}
 	for _, q := range cases {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+"/Subscription?"+q, nil)
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := api.Client().Do(req)
 		if err != nil {
 			t.Fatalf("GET ?%s: %v", q, err)
 		}
@@ -175,10 +175,10 @@ func (b pagedBundle) linkHref(rel string) string {
 	return ""
 }
 
-func fetchPage(t *testing.T, ctx context.Context, url string) pagedBundle {
+func fetchPage(t *testing.T, ctx context.Context, api *hpipe.APIServer, url string) pagedBundle {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -256,13 +256,13 @@ func TestE2E_S2_EventsReplayBundleLink(t *testing.T) {
 			"endpoint": "https://example.org/wh",
 		},
 	})
-	id, err := hpipe.PostSubscription(ctx, api, http.DefaultClient, body)
+	id, err := hpipe.PostSubscription(ctx, api, api.Client(), body)
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
 
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, api.URL+"/Subscription/"+id.String()+"/$events", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("GET $events: %v", err)
 	}

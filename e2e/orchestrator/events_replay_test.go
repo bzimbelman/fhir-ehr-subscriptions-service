@@ -75,7 +75,7 @@ func TestScenario_events_replay(t *testing.T) {
 	// Now call $events.
 	url := fmt.Sprintf("%s/Subscription/%s/$events?eventsSinceNumber=0", fx.API().URL, subID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := fx.API().Client().Do(req)
 	if err != nil {
 		t.Fatalf("GET $events: %v", err)
 	}

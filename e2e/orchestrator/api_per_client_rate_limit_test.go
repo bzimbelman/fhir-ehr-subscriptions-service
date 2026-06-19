@@ -66,7 +66,7 @@ func TestE2E_S3_3_PerClientRateLimit_SubscriptionCreate(t *testing.T) {
 	send := func() (int, string) {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, api.URL+"/Subscription/", strings.NewReader(string(body)))
 		req.Header.Set("Content-Type", "application/fhir+json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := api.Client().Do(req)
 		if err != nil {
 			t.Fatalf("Do: %v", err)
 		}

@@ -63,7 +63,7 @@ func TestE2E_API_MalformedFHIRJSON_Returns400(t *testing.T) {
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 				api.URL+"/Subscription/", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", "application/fhir+json")
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := api.Client().Do(req)
 			if err != nil {
 				t.Fatalf("POST: %v", err)
 			}
@@ -118,7 +118,7 @@ func TestE2E_API_OversizedBody_NotPersisted(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, api.URL+"/Subscription/",
 		bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := api.Client().Do(req)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
