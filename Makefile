@@ -9,7 +9,7 @@ help:
 	@echo "  lint        — run golangci-lint"
 	@echo "  tidy        — run go mod tidy"
 	@echo "  docker      — build the container image as fhir-subs:dev"
-	@echo "  migrate-up  — apply the v0 schema (placeholder until the runner is wired)"
+	@echo "  migrate-up  — apply every embedded migration to \$$DATABASE_URL"
 
 build:
 	go build ./cmd/fhir-subs
@@ -31,7 +31,57 @@ docker:
 	docker build -t fhir-subs:dev .
 
 migrate-up:
-	@echo "TODO: wire the migration runner. For now: psql $$DATABASE_URL -f migrations/0001_init.sql"
+	@# OP #212: shell out to the binary's `migrate up` subcommand so
+	@# operators have a single canonical command. DATABASE_URL is
+	@# rendered into a minimal probe-only config that satisfies
+	@# Validate(); the migrate verb only consumes database.url so the
+	@# rest is filler.
+	@if [ -z "$$DATABASE_URL" ]; then \
+		echo "DATABASE_URL is required" >&2; exit 2; \
+	fi
+	@tmp_cfg=$$(mktemp /tmp/fhir-subs-migrate.XXXXXX.yaml); \
+	trap "rm -f $$tmp_cfg" EXIT; \
+	printf '%s\n' \
+		"deployment:" \
+		"  facility_id: migrate-cli" \
+		"  environment: ops" \
+		"  log_level: info" \
+		"  log_format: json" \
+		"  mode: probe-only" \
+		"adapter:" \
+		"  id: builtin-noop" \
+		"server:" \
+		"  http:" \
+		"    bind: 127.0.0.1:0" \
+		"    insecure: true" \
+		"lifecycle:" \
+		"  shutdown_grace_period: 5s" \
+		"database:" \
+		"  url: $$DATABASE_URL" \
+		"codec:" \
+		"  active_key_version: 1" \
+		"  keys:" \
+		"    - version: 1" \
+		"      material: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" \
+		"auth:" \
+		'  audience: ""' \
+		"  allow_dev_bypass: true" \
+		"pipeline:" \
+		"  hl7_processor:" \
+		"    claim_batch_size: 16" \
+		"    idle_poll_interval: 100ms" \
+		"  matcher:" \
+		"    claim_batch_size: 16" \
+		"    idle_poll_interval: 100ms" \
+		"  submatcher:" \
+		"    claim_batch_size: 16" \
+		"    idle_poll_interval: 100ms" \
+		"  scheduler:" \
+		"    claim_batch_size: 16" \
+		"    idle_poll_interval: 100ms" \
+		"  correlation_hold_window: 1s" \
+		> $$tmp_cfg; \
+	go run ./cmd/fhir-subs migrate up --config $$tmp_cfg
 
 e2e:
 	go test -race -tags e2e ./e2e/... -count=1
