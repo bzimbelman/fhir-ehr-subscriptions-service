@@ -5,11 +5,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -785,7 +788,10 @@ func (p *poolClientLookup) GetByID(ctx context.Context, id string) (*auth.Client
 	}, nil
 }
 
-// buildMLLPListener constructs the MLLP TCP listener from cfg.
+// buildMLLPListener constructs the MLLP TCP listener from cfg. Story #112
+// wires per-listener TLS / mTLS through to mllp.ListenerConfig.TLS and
+// promotes the previously hardcoded read-idle / inflight / on-persist-fail
+// tunables to operator-facing config knobs.
 func buildMLLPListener(cfg MLLPConfig, pool *pgxpool.Pool, hl7Q *repos.Hl7MessageQueueRepo, _ *slog.Logger) (*mllp.Listener, error) {
 	endpoints := make([]mllp.EndpointConfig, 0, len(cfg.Listeners))
 	for _, ep := range cfg.Listeners {
@@ -807,19 +813,87 @@ func buildMLLPListener(cfg MLLPConfig, pool *pgxpool.Pool, hl7Q *repos.Hl7Messag
 	if drain <= 0 {
 		drain = 10 * time.Second
 	}
+	frameAssembly := cfg.FrameAssemblyTimeout
+	if frameAssembly <= 0 {
+		frameAssembly = 30 * time.Second
+	}
+	readIdle := cfg.ReadIdleTimeout
+	if readIdle <= 0 {
+		readIdle = 60 * time.Second
+	}
+	nackDropAfter := cfg.NackThenDropAfter
+	if nackDropAfter <= 0 {
+		nackDropAfter = 5
+	}
+	inflightCap := cfg.InflightCapPerConn
+	if inflightCap <= 0 {
+		inflightCap = 64
+	}
+	onPersistFail := mllp.OnPersistFailNack
+	if cfg.OnPersistFail == "drop" {
+		onPersistFail = mllp.OnPersistFailDrop
+	}
+
+	// Build the listener-wide TLS config from the first endpoint that
+	// has a TLS block. Validate already enforced that every endpoint
+	// with a TLS block matches, so we can take any of them.
+	var tlsCfg *mllp.TLSConfig
+	for _, ep := range cfg.Listeners {
+		if ep.TLS == nil {
+			continue
+		}
+		built, terr := buildMLLPTLSConfig(ep.TLS)
+		if terr != nil {
+			return nil, fmt.Errorf("mllp tls (%s): %w", ep.Name, terr)
+		}
+		tlsCfg = built
+		break
+	}
+
 	listener := mllp.New(mllp.ListenerConfig{
-		Endpoints:           endpoints,
-		MaxMessageBytes:     maxBytes,
-		ReadIdleTimeout:     30 * time.Second,
-		PersistTimeout:      persistTimeout,
-		NackThenDropAfter:   5,
-		ShutdownDrainGrace:  drain,
-		InflightCapPerConn:  64,
-		OnPersistFail:       mllp.OnPersistFailNack,
-		MaxConnections:      cfg.MaxConnections,
-		MaxConnectionsPerIP: cfg.MaxConnectionsPerIP,
+		Endpoints:            endpoints,
+		MaxMessageBytes:      maxBytes,
+		ReadIdleTimeout:      readIdle,
+		PersistTimeout:       persistTimeout,
+		FrameAssemblyTimeout: frameAssembly,
+		NackThenDropAfter:    nackDropAfter,
+		ShutdownDrainGrace:   drain,
+		InflightCapPerConn:   inflightCap,
+		OnPersistFail:        onPersistFail,
+		MaxConnections:       cfg.MaxConnections,
+		MaxConnectionsPerIP:  cfg.MaxConnectionsPerIP,
+		TLS:                  tlsCfg,
 	}, &poolMLLPPersister{pool: pool, repo: hl7Q}, nil, nil)
 	return listener, nil
+}
+
+// buildMLLPTLSConfig loads the cert/key (and optional client CA) from
+// disk and returns a mllp.TLSConfig wrapping a *tls.Config. Real TLS
+// only — no fallbacks. Failures here mean the binary refuses to start.
+func buildMLLPTLSConfig(src *MLLPListenerTLSConfig) (*mllp.TLSConfig, error) {
+	cert, err := tls.LoadX509KeyPair(src.CertFile, src.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load cert/key: %w", err)
+	}
+	out := &mllp.TLSConfig{
+		Config: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+		RequireAndVerifyClientCert: src.RequireClientCert,
+	}
+	if src.ClientCAFile != "" {
+		body, rErr := os.ReadFile(src.ClientCAFile) //nolint:gosec // operator-supplied CA path
+		if rErr != nil {
+			return nil, fmt.Errorf("read client_ca_file: %w", rErr)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(body) {
+			return nil, fmt.Errorf("client_ca_file: no PEM certificates parsed from %s", src.ClientCAFile)
+		}
+		out.ClientCAs = pool
+	}
+	return out, nil
 }
 
 // poolMLLPPersister adapts the hl7_message_queue repo to the
