@@ -168,12 +168,12 @@ func (s *rsScenarioCtx) waitForRestHookNotifications(tag string, min int, timeou
 // capturedRequest mirrors the test-resthook-subscriber's ReceivedRequest
 // shape for easy decoding.
 type capturedRequest struct {
-	SubscriptionID string            `json:"subscription_id"`
-	ReceivedAt     time.Time         `json:"received_at"`
-	Method         string            `json:"method"`
-	Path           string            `json:"path"`
-	Header         http.Header       `json:"header"`
-	Body           string            `json:"body"`
+	SubscriptionID string      `json:"subscription_id"`
+	ReceivedAt     time.Time   `json:"received_at"`
+	Method         string      `json:"method"`
+	Path           string      `json:"path"`
+	Header         http.Header `json:"header"`
+	Body           string      `json:"body"`
 }
 
 // hapiPostResource creates a FHIR resource on the real HAPI FHIR server
