@@ -69,6 +69,48 @@ func (c *JTIReplayCache) Seen(jti string) bool {
 	return true
 }
 
+// CheckAndPut atomically checks whether jti is present (and unexpired)
+// and, if not, records it with the given expiration. It returns true if
+// jti was already in the cache (caller must reject the request as a
+// replay), false if jti was newly inserted (caller may proceed).
+//
+// This is the only safe way to perform replay-then-record under
+// concurrency: separate Seen + Put calls leave a TOCTOU window where
+// two requests with the same jti both pass the check before either
+// records it (B-?, OP #110).
+//
+// Empty jti returns true to fail closed — RFC 7523 §3 requires jti and
+// upstream code is expected to reject before reaching here, but we
+// don't trust that here.
+func (c *JTIReplayCache) CheckAndPut(jti string, exp time.Time) (alreadySeen bool) {
+	if jti == "" {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Mirror Seen's expired-sweep behavior.
+	if existingExp, ok := c.entries[jti]; ok {
+		if c.now().After(existingExp) {
+			c.removeLocked(jti)
+			// fall through to insert
+		} else {
+			return true
+		}
+	}
+
+	// Mirror Put's eviction-then-insert flow.
+	for len(c.entries) >= c.cap && len(c.order) > 0 {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+	c.entries[jti] = exp
+	c.order = append(c.order, jti)
+	c.maybeCompactLocked()
+	return false
+}
+
 // Put records jti with the given expiration. If the cache is full the
 // oldest live entry is evicted.
 func (c *JTIReplayCache) Put(jti string, exp time.Time) {

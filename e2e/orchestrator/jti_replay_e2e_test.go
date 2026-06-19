@@ -6,6 +6,7 @@
 package orchestrator
 
 import (
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -34,12 +35,25 @@ func TestE2E_TokenEndpoint_JTIReplay_OnlyOneSucceeds(t *testing.T) {
 	// We deliberately fire MORE than 2 concurrent POSTs to widen the
 	// TOCTOU window. The race spec says "fire N=2", but the window
 	// between Seen and Put is so tight in practice that 2 goroutines
-	// rarely interleave on a fast machine. Bumping to N=32 across
-	// many iterations reliably reproduces (multiple 200s for the
-	// same jti); we still assert exactly one 200 response and the
-	// rest 401, which is the security invariant.
-	const Iterations = 200
-	const N = 32
+	// rarely interleave on a fast machine. Bumping to N=16 across
+	// 25 iterations (4× redundancy vs the legacy implementation, which
+	// reliably loses on the very first iteration) reproduces the race
+	// without exhausting macOS ephemeral ports.
+	const Iterations = 25
+	const N = 16
+
+	// Reuse a single client with keep-alive across all POSTs in an
+	// iteration so we don't burn ~25k ephemeral ports on the loopback.
+	client := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConns:        N * 2,
+			MaxIdleConnsPerHost: N * 2,
+			MaxConnsPerHost:     N * 2,
+			IdleConnTimeout:     30 * time.Second,
+		},
+		Timeout: 10 * time.Second,
+	}
+	defer client.CloseIdleConnections()
 
 	clientID := "jti-race-client"
 	jwksSrv, kid, priv := newJWKSServer(t)
@@ -79,13 +93,19 @@ func TestE2E_TokenEndpoint_JTIReplay_OnlyOneSucceeds(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				resp, postErr := http.Post(srv.URL,
-					"application/x-www-form-urlencoded",
-					strings.NewReader(body))
+				req, reqErr := http.NewRequest(http.MethodPost,
+					srv.URL, strings.NewReader(body))
+				if reqErr != nil {
+					t.Errorf("NewRequest: %v", reqErr)
+					return
+				}
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				resp, postErr := client.Do(req)
 				if postErr != nil {
 					t.Errorf("POST: %v", postErr)
 					return
 				}
+				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
 				switch resp.StatusCode {
 				case http.StatusOK:
