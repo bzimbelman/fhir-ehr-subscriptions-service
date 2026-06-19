@@ -183,6 +183,26 @@ type Options struct {
 	// excerpt is a PHI exfiltration / log-injection vector (S-4). Set
 	// true only in dev / staging where the operator owns both ends.
 	IncludeResponseBodyExcerpt bool
+
+	// URLValidator, when non-nil, re-validates the subscriber endpoint
+	// at delivery time before any network I/O. This closes the DNS-
+	// rebinding window where a public-resolving hostname registered at
+	// subscription create time is flipped to a private / loopback /
+	// cloud-metadata IP before delivery (audit #112 sup2 / #129; OP
+	// #182). Validate failures are surfaced as PermanentFailure: a
+	// hostname that resolves to a blocked range will keep doing so
+	// until the operator fixes it, and the scheduler should not burn
+	// retry budget re-dialing.
+	URLValidator URLValidator
+}
+
+// URLValidator is the narrow interface the resthook channel uses to
+// re-check a subscriber's endpoint URL at delivery time. It is
+// satisfied by handlers.URLValidator without an import cycle (the
+// channel layer must not depend on the api/handlers package). Callers
+// pass the same instance the API layer used at create-time.
+type URLValidator interface {
+	Validate(rawURL string) error
 }
 
 // Channel implements the rest-hook delivery channel. Construct with New;
@@ -196,6 +216,7 @@ type Channel struct {
 	timeout            time.Duration
 	maxBundleBytes     int
 	includeBodyExcerpt bool
+	urlValidator       URLValidator
 }
 
 // New constructs a rest-hook Channel.
@@ -208,6 +229,7 @@ func New(opts Options) (*Channel, error) {
 		timeout:            opts.RequestTimeout,
 		maxBundleBytes:     opts.MaxBundleBytes,
 		includeBodyExcerpt: opts.IncludeResponseBodyExcerpt,
+		urlValidator:       opts.URLValidator,
 	}
 	if c.timeout <= 0 {
 		c.timeout = DefaultRequestTimeout
@@ -320,6 +342,22 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 		// retry is hopeless from the first attempt.
 		return channel.PermanentFailure(fmt.Sprintf("bundle too large: %d > %d",
 			len(env.BundleBytes), c.maxBundleBytes))
+	}
+
+	// Re-validate the endpoint URL against the SSRF policy at delivery
+	// time. The same validator vetted this URL at subscription create,
+	// but a hostile (or compromised) subscriber can flip DNS to a
+	// private / loopback / cloud-metadata IP between create and
+	// delivery (audit #112 sup2 / #129; OP #182). Without this check,
+	// the channel would dial whatever the resolver answers now, and
+	// the SSRF guarantee would only hold at create-time. Failures are
+	// permanent: the resolver will keep returning the blocked address
+	// until the operator fixes it, and burning retry budget re-dialing
+	// the same private IP is pointless.
+	if c.urlValidator != nil {
+		if vErr := c.urlValidator.Validate(env.SubscriptionEndpoint); vErr != nil {
+			return channel.PermanentFailure(fmt.Sprintf("ssrf policy: %v", vErr))
+		}
 	}
 
 	// Apply per-attempt deadline.

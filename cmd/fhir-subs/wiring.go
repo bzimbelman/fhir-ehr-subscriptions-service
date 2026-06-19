@@ -239,10 +239,19 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	rt.tokenSrv = tokenSrv
 
 	// --- 6. Channels: rest-hook (production default) --------------------
+	// Build the URL validator up front so the rest-hook channel can
+	// re-check the subscriber endpoint at delivery time (OP #182). The
+	// API layer at step 7 reuses the same instance for create-time
+	// validation, so a hostname's create-time approval and delivery-
+	// time re-check share one policy surface.
+	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
+		AllowHTTP: cfg.Auth.AllowInsecure, // dev convenience: if insecure JWKS allowed, allow http endpoints too
+	})
 	rhCh, err := chresthook.New(chresthook.Options{
 		UserAgent:      cfg.Channels.RestHook.UserAgent,
 		RequestTimeout: cfg.Channels.RestHook.RequestTimeout,
 		Logger:         logger.With("component", "channel.resthook"),
+		URLValidator:   urlValidator,
 	})
 	if err != nil {
 		rt.shutdown(context.Background())
@@ -315,9 +324,8 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	chReg.Register("message", msgCh)
 
 	// --- 7. API router (handlers.RegisterRoutes) ------------------------
-	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
-		AllowHTTP: cfg.Auth.AllowInsecure, // dev convenience: if insecure JWKS allowed, allow http endpoints too
-	})
+	// urlValidator is built at step 6 so the rest-hook channel and the
+	// API layer share one policy surface (OP #182).
 	// rest-hook gets a real activator that POSTs a synthetic FHIR R5
 	// handshake bundle to the subscriber endpoint and only flips status
 	// to active on a 2xx response (D-2). websocket and email continue to
