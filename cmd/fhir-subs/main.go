@@ -147,9 +147,13 @@ func realMain(args []string, stdout, stderr io.Writer) (rc int) {
 	}
 
 	// Subcommand dispatch (P2.5). The server takes flags only; subcommands
-	// are detected by a first positional arg. Today: "audit verify".
+	// are detected by a first positional arg. Today: "audit verify",
+	// "migrate up|status|down" (#212).
 	if len(args) > 0 && args[0] == "audit" {
 		return runAuditSubcommand(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "migrate" {
+		return runMigrateSubcommand(args[1:], stdout, stderr)
 	}
 
 	opts, err := parseFlags(args, stderr)
