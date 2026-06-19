@@ -173,6 +173,17 @@ type Config struct {
 	// STARTTLS. Tests use this to trust a self-signed certificate.
 	TLSConfig *tls.Config
 
+	// TLSMinVersion overrides the synthesized STARTTLS tls.Config's
+	// MinVersion when TLSConfig is nil. Zero falls back to
+	// tls.VersionTLS13 (matches rest-hook). Operators with a relay
+	// pinned to TLS 1.2 can downgrade explicitly.
+	TLSMinVersion uint16
+
+	// Now is the clock seam used for the MIME Date header. Zero falls
+	// back to time.Now. Tests inject a fixed clock so the produced
+	// MIME bytes are deterministic for the same input.
+	Now func() time.Time
+
 	// LocalName overrides the EHLO / HELO name sent to the relay.
 	// Empty defaults to "localhost".
 	LocalName string
@@ -205,6 +216,7 @@ type Channel struct {
 	cfg     Config
 	metrics channel.MetricsEmitter
 	logger  *slog.Logger
+	now     func() time.Time
 }
 
 // New constructs an email Channel. Returns an error when the
@@ -309,7 +321,29 @@ func New(cfg Config) (*Channel, error) {
 			slog.String("smtp_host", cfg.SMTPHost),
 			slog.Bool("allow_cleartext_auth", cfg.AllowCleartextAuth))
 	}
-	return &Channel{cfg: cfg, metrics: metrics, logger: logger}, nil
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Channel{cfg: cfg, metrics: metrics, logger: logger, now: now}, nil
+}
+
+// Close is a no-op for the email channel today: SMTP clients are dialed
+// and closed per Deliver() attempt, so there are no long-lived
+// connections to drain. Implemented to satisfy the channel.Channel SPI
+// contract that lets the lifecycle module fan-call Close on every
+// registered channel during graceful shutdown.
+func (c *Channel) Close() error { return nil }
+
+// clockNow returns the current time using the channel's injected clock
+// or wall-clock when none was set. The fallback path keeps tests that
+// construct a Channel{} directly (without New) from panicking on a nil
+// now func.
+func (c *Channel) clockNow() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 // Deliver assembles a MIME message carrying the envelope's bundle and
@@ -492,7 +526,7 @@ func (c *Channel) buildMIME(env channel.NotificationEnvelope, rcpt string) ([]by
 	writeHeader(&buf, "From", c.cfg.From)
 	writeHeader(&buf, "To", rcpt)
 	writeHeader(&buf, "Subject", mime.QEncoding.Encode("utf-8", subject))
-	writeHeader(&buf, "Date", time.Now().UTC().Format(time.RFC1123Z))
+	writeHeader(&buf, "Date", c.clockNow().UTC().Format(time.RFC1123Z))
 	writeHeader(&buf, "Message-ID", msgID)
 	writeHeader(&buf, "MIME-Version", "1.0")
 	writeHeader(&buf, "X-Mailer", c.cfg.UserAgent)
@@ -742,7 +776,14 @@ func (c *Channel) dial(ctx context.Context) (*smtp.Client, bool, error) {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			tc := c.cfg.TLSConfig
 			if tc == nil {
-				tc = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+				minTLS := c.cfg.TLSMinVersion
+				if minTLS == 0 {
+					// AC for #102: default to TLS 1.3 (matches
+					// rest-hook). Operators with a relay pinned to
+					// TLS 1.2 can downgrade via TLSMinVersion.
+					minTLS = tls.VersionTLS13
+				}
+				tc = &tls.Config{ServerName: host, MinVersion: minTLS} //nolint:gosec // configurable; defaults to TLS 1.3
 			} else if tc.ServerName == "" {
 				tc = tc.Clone()
 				tc.ServerName = host

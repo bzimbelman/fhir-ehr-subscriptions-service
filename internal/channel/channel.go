@@ -130,6 +130,13 @@ type Channel interface {
 	// failures classified by the channel return a DeliveryOutcome with
 	// nil error.
 	Deliver(ctx context.Context, env NotificationEnvelope) (DeliveryOutcome, error)
+
+	// Close releases channel-owned resources (HTTP transports, websocket
+	// sessions, SMTP pools). The lifecycle module calls Close on every
+	// registered channel during graceful shutdown so in-flight bind
+	// handshakes and pooled connections drain deterministically. Close
+	// MUST be idempotent — multiple calls return nil after the first.
+	Close() error
 }
 
 // MetricsEmitter is the metrics seam between channel modules and the host's

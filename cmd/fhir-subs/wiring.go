@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	defaultadapter "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/default"
@@ -26,7 +27,10 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	apimetrics "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
+	chemail "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/email"
+	chmessage "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/message"
 	chresthook "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/resthook"
+	chwebsocket "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/websocket"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/builder"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/scheduler"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/submatcher"
@@ -63,6 +67,21 @@ type productionRuntime struct {
 	topicsDir   string
 	pipelineWG  sync.WaitGroup
 	cancelLoops context.CancelFunc
+
+	// chReg is the scheduler-side ChannelRegistry. The runtime keeps a
+	// reference so the lifecycle "channels.close" hook can fan-call
+	// Close on every registered channel during graceful shutdown
+	// (stories #101, #102, #103).
+	chReg *scheduler.MapRegistry
+
+	// channels holds typed handles for the per-channel Close fan-out
+	// in the lifecycle hook. The MapRegistry stores them as
+	// channel.Channel; tests probe these directly to assert wiring
+	// surfaces.
+	wsChannel      *chwebsocket.Channel
+	emailChannel   *chemail.Channel
+	messageChannel *chmessage.Channel
+	rhChannel      *chresthook.Channel
 
 	// activationWG is joined during shutdown so in-flight subscription
 	// activation goroutines either finish, time out, or are cancelled
@@ -222,8 +241,71 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("channel resthook: %w", err)
 	}
+	rt.rhChannel = rhCh
 	chReg := scheduler.NewMapRegistry()
+	rt.chReg = chReg
 	chReg.Register("rest-hook", rhCh)
+
+	// --- 6a. WebSocket channel (story #101). Token consumer is the
+	// existing ws_binding_tokens repo wrapped in a small adapter.
+	// Replayer is the production no-op until the past-events store
+	// lands; until then a reconnecting subscriber gets bind-success
+	// and zero replay frames, which is the same observable behavior
+	// today (the replay path is opt-in via LastReceivedEventNumber).
+	wsCh, err := chwebsocket.New(chwebsocket.Options{
+		Tokens:                   wsTokenAdapter{pool: pool, repo: repos.NewWsBindingTokensRepo()},
+		Replayer:                 noopReplayer{},
+		Logger:                   logger.With("component", "channel.websocket"),
+		PingInterval:             cfg.Channels.WebSocket.PingInterval,
+		IdleTimeout:              cfg.Channels.WebSocket.IdleTimeout,
+		MaxFrameBytes:            cfg.Channels.WebSocket.MaxFrameBytes,
+		OriginPatterns:           cfg.Channels.WebSocket.OriginPatterns,
+		BindTimeout:              cfg.Channels.WebSocket.BindTimeout,
+		PingWriteTimeout:         cfg.Channels.WebSocket.PingWriteTimeout,
+		UpgradeReadHeaderTimeout: cfg.Channels.WebSocket.UpgradeReadHeaderTimeout,
+		MaxSessions:              cfg.Channels.WebSocket.MaxSessions,
+		MaxSessionsPerClient:     cfg.Channels.WebSocket.MaxSessionsPerClient,
+		MaxReplayEvents:          cfg.Channels.WebSocket.MaxReplayEvents,
+	})
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("channel websocket: %w", err)
+	}
+	rt.wsChannel = wsCh
+	chReg.Register("websocket", wsCh)
+
+	// --- 6b. Email channel (story #102). Wired only when SMTPHost is
+	// non-empty so the development binary (no SMTP relay) does not
+	// fail-closed at startup. When wired, From + SMTPPort must also
+	// be set; the constructor validates the rest.
+	if cfg.Channels.Email.SMTPHost != "" {
+		emailCh, eerr := chemail.New(buildEmailConfig(cfg.Channels.Email, logger))
+		if eerr != nil {
+			rt.shutdown(context.Background())
+			return nil, fmt.Errorf("channel email: %w", eerr)
+		}
+		rt.emailChannel = emailCh
+		chReg.Register("email", emailCh)
+	}
+
+	// --- 6c. Message channel (story #103). Always wired — the channel
+	// has no required-at-construction config knobs; ServerEndpoint is
+	// optional and falls back to omitting MessageHeader.source.endpoint.
+	msgCh, err := chmessage.New(chmessage.Options{
+		Logger:              logger.With("component", "channel.message"),
+		UserAgent:           cfg.Channels.Message.UserAgent,
+		RequestTimeout:      cfg.Channels.Message.RequestTimeout,
+		ServerEndpoint:      cfg.Channels.Message.ServerEndpoint,
+		MaxIdleConnsPerHost: cfg.Channels.Message.MaxIdleConnsPerHost,
+		MaxConnsPerHost:     cfg.Channels.Message.MaxConnsPerHost,
+		TLSMinVersion:       cfg.Channels.Message.TLSMinVersion,
+	})
+	if err != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("channel message: %w", err)
+	}
+	rt.messageChannel = msgCh
+	chReg.Register("message", msgCh)
 
 	// --- 7. API router (handlers.RegisterRoutes) ------------------------
 	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
@@ -245,6 +327,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		"rest-hook": rhActivator,
 		"websocket": defaultActivator{},
 		"email":     defaultActivator{},
+		"message":   defaultActivator{},
 	}
 	// Auth middleware: in production cfg.Auth.Audience is required, so
 	// verif is non-nil. Probe-only / dev-loopback fallback may have
@@ -589,6 +672,31 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 			},
 		})
 	}
+
+	// channels.close drains websocket sessions, rest-hook / message
+	// HTTP transports, and the email no-op. Registered in
+	// PhaseCloseConnections so in-flight Deliver calls (drained by
+	// pipeline.drain in the prior phase) have already returned before
+	// transports get torn down (stories #101/#102/#103).
+	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "channels.close",
+		Phase: lifecycle.PhaseCloseConnections,
+		Run: func(_ context.Context) error {
+			var errs []error
+			if r.chReg != nil {
+				for _, code := range []string{"rest-hook", "websocket", "email", "message"} {
+					ch, ok := r.chReg.Lookup(code)
+					if !ok || ch == nil {
+						continue
+					}
+					if cerr := ch.Close(); cerr != nil {
+						errs = append(errs, fmt.Errorf("close %s: %w", code, cerr))
+					}
+				}
+			}
+			return errors.Join(errs...)
+		},
+	})
 
 	// storage.drain stops the partition maintainer + retention sweeper
 	// goroutines so they don't block the database close in the next
@@ -948,6 +1056,81 @@ func nonZeroInt32(v, fallback int32) int32 {
 // scaffolding is still being written. The reference here goes away
 // once the e2e harness exercises every component.
 var _ channel.Channel = channel.Channel(nil)
+
+// wsTokenAdapter bridges the storage repos.WsBindingTokensRepo to the
+// websocket channel's TokenConsumer interface. The two packages declare
+// equivalent enum/result types to avoid a layering cycle; this adapter
+// translates row-level outcomes to the channel's enum.
+type wsTokenAdapter struct {
+	pool *pgxpool.Pool
+	repo *repos.WsBindingTokensRepo
+}
+
+// Consume satisfies websocket.TokenConsumer.
+func (a wsTokenAdapter) Consume(ctx context.Context, token string, now time.Time) (chwebsocket.ConsumeResult, error) {
+	out, err := a.repo.Consume(ctx, a.pool, token, now)
+	if err != nil {
+		return chwebsocket.ConsumeResult{}, err
+	}
+	res := chwebsocket.ConsumeResult{
+		SubscriptionID: out.SubscriptionID,
+		ClientID:       out.ClientID,
+	}
+	switch out.Outcome {
+	case repos.ConsumeOK:
+		res.Outcome = chwebsocket.ConsumeOK
+	case repos.ConsumeAlreadyUsed:
+		res.Outcome = chwebsocket.ConsumeAlreadyUsed
+	case repos.ConsumeExpired:
+		res.Outcome = chwebsocket.ConsumeExpired
+	default:
+		res.Outcome = chwebsocket.ConsumeNotFound
+	}
+	return res, nil
+}
+
+// noopReplayer is the production EventReplayer until the past-events
+// store lands. Returning an empty slice is the same observable
+// behavior the channel ships today: a reconnecting subscriber gets
+// bind-success and zero replay frames. Real replay arrives in a
+// follow-up story along with a per-subscription event archive.
+type noopReplayer struct{}
+
+// ReplaySince returns no past events. See the type comment for the
+// rationale and follow-up tracking.
+func (noopReplayer) ReplaySince(_ context.Context, _ uuid.UUID, _ uint64) ([]chwebsocket.PastEvent, error) {
+	return nil, nil
+}
+
+// buildEmailConfig copies the operator-supplied EmailChannelConfig YAML
+// shape into the channel-package Config that internal/channel/email.New
+// consumes. Empty strings / zero values fall through to the channel
+// package defaults; New surfaces validation errors loud.
+func buildEmailConfig(cfg EmailChannelConfig, logger *slog.Logger) chemail.Config {
+	out := chemail.Config{
+		From:                     cfg.From,
+		SubjectTemplate:          cfg.SubjectTemplate,
+		SMTPHost:                 cfg.SMTPHost,
+		SMTPPort:                 cfg.SMTPPort,
+		AllowCleartextAuth:       cfg.AllowCleartextAuth,
+		AttachmentThresholdBytes: cfg.AttachmentThresholdBytes,
+		RequestTimeout:           cfg.RequestTimeout,
+		LocalName:                cfg.LocalName,
+		UserAgent:                cfg.UserAgent,
+		TLSMinVersion:            cfg.TLSMinVersion,
+		Logger:                   logger.With("component", "channel.email"),
+		AuthUsername:             cfg.AuthUsername,
+		AuthPassword:             cfg.AuthPassword,
+		AuthIdentity:             cfg.AuthIdentity,
+	}
+	if cfg.STARTTLS != "" {
+		out.STARTTLS = chemail.STARTTLSPolicy(cfg.STARTTLS)
+	}
+	if cfg.AuthMechanism != "" {
+		out.AuthMechanism = chemail.AuthMechanism(cfg.AuthMechanism)
+	}
+	return out
+}
 
 // devPrincipalMiddleware reads the X-Client-Id header and, when
 // present, attaches a Principal to the request context with a

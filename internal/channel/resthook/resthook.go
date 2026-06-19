@@ -273,6 +273,16 @@ func (c *Channel) HTTPClientForTest() *http.Client { return c.http }
 // supplied an HTTPClient) so tests can assert pool / TLS configuration.
 func (c *Channel) TransportForTest() *http.Transport { return c.transport }
 
+// Close releases the channel-owned http.Transport's idle connections so
+// the lifecycle module can drain pooled keep-alive sockets at shutdown.
+// Idempotent: calling Close on an already-closed channel returns nil.
+func (c *Channel) Close() error {
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
+	return nil
+}
+
 // Deliver POSTs the envelope's bundle to the subscriber's endpoint and
 // classifies the response into a DeliveryOutcome.
 func (c *Channel) Deliver(ctx context.Context, env channel.NotificationEnvelope) (channel.DeliveryOutcome, error) {

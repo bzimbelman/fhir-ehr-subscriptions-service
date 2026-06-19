@@ -275,6 +275,16 @@ func (c *Channel) HTTPClientForTest() *http.Client { return c.http }
 // an HTTPClient).
 func (c *Channel) TransportForTest() *http.Transport { return c.transport }
 
+// Close releases the channel-owned http.Transport's idle connections so
+// the lifecycle module can drain pooled keep-alive sockets at shutdown.
+// Idempotent: a caller-supplied HTTPClient is left untouched.
+func (c *Channel) Close() error {
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
+	return nil
+}
+
 // ValidateContentType reports whether ct is acceptable on a Subscription
 // targeting this channel. The API layer SHOULD call this at create time
 // so non-fhir+json subscriptions fail-closed at the boundary rather than

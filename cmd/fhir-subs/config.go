@@ -296,6 +296,8 @@ type StageConfig struct {
 type ChannelsConfig struct {
 	RestHook  RestHookChannelConfig  `yaml:"rest_hook"`
 	WebSocket WebSocketChannelConfig `yaml:"websocket"`
+	Email     EmailChannelConfig     `yaml:"email"`
+	Message   MessageChannelConfig   `yaml:"message"`
 }
 
 // RestHookChannelConfig models channels.rest_hook.*.
@@ -304,11 +306,52 @@ type RestHookChannelConfig struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 }
 
-// WebSocketChannelConfig models channels.websocket.*.
+// WebSocketChannelConfig models channels.websocket.*. Every field
+// surfaces a websocket.Options knob so operators can tune the channel
+// purely through YAML / --set overrides.
 type WebSocketChannelConfig struct {
-	OriginPatterns []string      `yaml:"origin_patterns"`
-	IdleTimeout    time.Duration `yaml:"idle_timeout"`
-	PingInterval   time.Duration `yaml:"ping_interval"`
+	OriginPatterns           []string      `yaml:"origin_patterns"`
+	IdleTimeout              time.Duration `yaml:"idle_timeout"`
+	PingInterval             time.Duration `yaml:"ping_interval"`
+	BindTimeout              time.Duration `yaml:"bind_timeout"`
+	PingWriteTimeout         time.Duration `yaml:"ping_write_timeout"`
+	UpgradeReadHeaderTimeout time.Duration `yaml:"upgrade_read_header_timeout"`
+	MaxFrameBytes            int           `yaml:"max_frame_bytes"`
+	MaxSessions              int           `yaml:"max_sessions"`
+	MaxSessionsPerClient     int           `yaml:"max_sessions_per_client"`
+	MaxReplayEvents          int           `yaml:"max_replay_events"`
+}
+
+// EmailChannelConfig models channels.email.*. Mirrors the Config struct
+// in internal/channel/email field-for-field so the wiring helper is a
+// straight copy.
+type EmailChannelConfig struct {
+	From                     string        `yaml:"from"`
+	SubjectTemplate          string        `yaml:"subject_template"`
+	SMTPHost                 string        `yaml:"smtp_host"`
+	SMTPPort                 int           `yaml:"smtp_port"`
+	STARTTLS                 string        `yaml:"starttls"`
+	AuthMechanism            string        `yaml:"auth_mechanism"`
+	AuthUsername             string        `yaml:"auth_username"`
+	AuthPassword             string        `yaml:"auth_password"`
+	AuthIdentity             string        `yaml:"auth_identity"`
+	AllowCleartextAuth       bool          `yaml:"allow_cleartext_auth"`
+	AttachmentThresholdBytes int           `yaml:"attachment_threshold_bytes"`
+	RequestTimeout           time.Duration `yaml:"request_timeout"`
+	LocalName                string        `yaml:"local_name"`
+	UserAgent                string        `yaml:"user_agent"`
+	TLSMinVersion            uint16        `yaml:"tls_min_version"`
+}
+
+// MessageChannelConfig models channels.message.*. Mirrors the Options
+// struct in internal/channel/message.
+type MessageChannelConfig struct {
+	UserAgent           string        `yaml:"user_agent"`
+	RequestTimeout      time.Duration `yaml:"request_timeout"`
+	ServerEndpoint      string        `yaml:"server_endpoint"`
+	MaxIdleConnsPerHost int           `yaml:"max_idle_conns_per_host"`
+	MaxConnsPerHost     int           `yaml:"max_conns_per_host"`
+	TLSMinVersion       uint16        `yaml:"tls_min_version"`
 }
 
 // DeploymentConfig models deployment.* fields.
@@ -744,6 +787,146 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Auth.WSBindingTokenRateLimit.MaxKeys = n
+		case "channels.rest_hook.user_agent":
+			cfg.Channels.RestHook.UserAgent = val
+		case "channels.rest_hook.request_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.RestHook.RequestTimeout = d
+		case "channels.websocket.idle_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.IdleTimeout = d
+		case "channels.websocket.ping_interval":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.PingInterval = d
+		case "channels.websocket.bind_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.BindTimeout = d
+		case "channels.websocket.ping_write_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.PingWriteTimeout = d
+		case "channels.websocket.upgrade_read_header_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.UpgradeReadHeaderTimeout = d
+		case "channels.websocket.max_frame_bytes":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.MaxFrameBytes = n
+		case "channels.websocket.max_sessions":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.MaxSessions = n
+		case "channels.websocket.max_sessions_per_client":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.MaxSessionsPerClient = n
+		case "channels.websocket.max_replay_events":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.WebSocket.MaxReplayEvents = n
+		case "channels.email.from":
+			cfg.Channels.Email.From = val
+		case "channels.email.subject_template":
+			cfg.Channels.Email.SubjectTemplate = val
+		case "channels.email.smtp_host":
+			cfg.Channels.Email.SMTPHost = val
+		case "channels.email.smtp_port":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Email.SMTPPort = n
+		case "channels.email.starttls":
+			cfg.Channels.Email.STARTTLS = val
+		case "channels.email.auth_mechanism":
+			cfg.Channels.Email.AuthMechanism = val
+		case "channels.email.auth_username":
+			cfg.Channels.Email.AuthUsername = val
+		case "channels.email.auth_password":
+			cfg.Channels.Email.AuthPassword = val
+		case "channels.email.auth_identity":
+			cfg.Channels.Email.AuthIdentity = val
+		case "channels.email.allow_cleartext_auth":
+			b, err := parseBool(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Email.AllowCleartextAuth = b
+		case "channels.email.attachment_threshold_bytes":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Email.AttachmentThresholdBytes = n
+		case "channels.email.request_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Email.RequestTimeout = d
+		case "channels.email.local_name":
+			cfg.Channels.Email.LocalName = val
+		case "channels.email.user_agent":
+			cfg.Channels.Email.UserAgent = val
+		case "channels.email.tls_min_version":
+			n, err := strconv.ParseUint(val, 10, 16)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Email.TLSMinVersion = uint16(n)
+		case "channels.message.user_agent":
+			cfg.Channels.Message.UserAgent = val
+		case "channels.message.request_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Message.RequestTimeout = d
+		case "channels.message.server_endpoint":
+			cfg.Channels.Message.ServerEndpoint = val
+		case "channels.message.max_idle_conns_per_host":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Message.MaxIdleConnsPerHost = n
+		case "channels.message.max_conns_per_host":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Message.MaxConnsPerHost = n
+		case "channels.message.tls_min_version":
+			n, err := strconv.ParseUint(val, 10, 16)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.Message.TLSMinVersion = uint16(n)
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)
 		}
