@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,6 +42,7 @@ func TestHelmChart_ConfigMapParsesIntoConfig(t *testing.T) {
 		t.Fatalf("rendered ConfigMap has empty config.yaml; got:\n%s", rendered)
 	}
 
+	configYAML = stubInterpolationPlaceholders(t, configYAML)
 	tmp := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(tmp, []byte(configYAML), 0o600); err != nil {
 		t.Fatalf("write tmp config: %v", err)
@@ -118,6 +121,7 @@ func TestHelmChart_ProbePort_MatchesBinaryListener(t *testing.T) {
 	})
 	configYAML := extractConfigMapConfigYAML(t, rendered)
 
+	configYAML = stubInterpolationPlaceholders(t, configYAML)
 	tmp := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(tmp, []byte(configYAML), 0o600); err != nil {
 		t.Fatalf("write tmp config: %v", err)
@@ -225,4 +229,43 @@ func requireHelm(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart contract test")
 	}
+}
+
+// stubInterpolationPlaceholders satisfies story #119's interpolation
+// pass for chart-rendered config without changing the contract. Every
+// `${env:VAR}` referenced in the YAML is exported via t.Setenv to a
+// safe placeholder; every `${file:/abs/path}` is rewritten to point at
+// a real file in t.TempDir() so the loader can read it.
+//
+// The chart-contract tests assert struct shape only — they don't care
+// what the secret values are — so this is a real-resources pass-through
+// (no test doubles): real env vars, real files. Story #119.
+func stubInterpolationPlaceholders(t *testing.T, body string) string {
+	t.Helper()
+	envRE := regexp.MustCompile(`\$\{env:([^}]+)\}`)
+	for _, m := range envRE.FindAllStringSubmatch(body, -1) {
+		name := m[1]
+		// A non-empty placeholder satisfies any field the chart routes
+		// the variable into (database URL, codec material, smtp
+		// password). The chart tests assert struct shape, not value.
+		t.Setenv(name, "stub-value-for-"+name)
+	}
+	fileRE := regexp.MustCompile(`\$\{file:([^}]+)\}`)
+	dir := t.TempDir()
+	idx := 0
+	body = fileRE.ReplaceAllStringFunc(body, func(match string) string {
+		sub := fileRE.FindStringSubmatch(match)
+		_ = sub
+		stubPath := filepath.Join(dir, "stub-secret-"+strconv.Itoa(idx))
+		idx++
+		// 32-byte AES-256 key as base64 — works for codec material; any
+		// other field that flows through this helper just needs a
+		// non-empty value.
+		const stubB64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+		if err := os.WriteFile(stubPath, []byte(stubB64), 0o600); err != nil {
+			t.Fatalf("write stub secret: %v", err)
+		}
+		return "${file:" + stubPath + "}"
+	})
+	return body
 }
