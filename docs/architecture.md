@@ -1022,7 +1022,7 @@ Every aspect of how the server runs is configured at startup; nothing is hard-co
 
 1. **Command-line flags** (highest precedence — for ad-hoc overrides).
 2. **Environment variables** (preferred for secrets and per-environment overrides; well-suited to Kubernetes / Docker).
-3. **Config file** — YAML or TOML, mounted into the container (`/etc/fhir-subs/config.yaml` by default). Preferred for the bulk of structural config.
+3. **Config file** — YAML, mounted into the container (`/etc/fhir-subs/config.yaml` by default). Preferred for the bulk of structural config.
 4. **Built-in defaults** (lowest precedence — everything has a sensible default).
 
 There is no runtime admin API. Operational changes are made by editing the config file and signaling SIGHUP for the documented hot-reload subset, or by restarting the container for everything else. See [decisions/0008](high-level-design/decisions/0008-resolved-design-questions.md).
@@ -1034,188 +1034,257 @@ Secrets (DB passwords, SMTP credentials, signing keys, JWT signing keys, adapter
 The config model groups settings into domains. A representative YAML structure (final field names will be normalized in the implementation):
 
 ```yaml
-# Identity & runtime
+# Identity & runtime. deployment.mode selects the production posture
+# ("production" — default) vs. the probe-only smoke posture ("probe-only");
+# any other value is rejected by --check-config.
 deployment:
-  facility_id: "memorial-hospital-east"     # appears in logs and audit
-  environment: "production"                 # production | staging | dev
+  facility_id: "memorial-hospital-east"
+  environment: "production"
+  mode: "production"
   log_level: "info"
   log_format: "json"
 
-# Subscriptions API HTTP / WSS
+# Adapter — exactly one. The two fields below are all the binary's typed
+# Config exposes; vendor-specific keys (fhir_base_url, hl7v2.ack_mode,
+# vendor API URLs, etc.) belong to the adapter manifest, not to this
+# config file.
+adapter:
+  id: "epic"
+  version_pin: ">=2024.1"
+
+# Subscriptions API HTTP. The probe listener binds on a SEPARATE port so a
+# misconfigured auth chain can never 401 a kubelet probe.
 server:
   http:
-    bind: "0.0.0.0:8443"
+    bind: "0.0.0.0:8443"                    # main TLS listener for Management API + WSS
+    probe_bind: "0.0.0.0:8081"              # /healthz, /readyz, /startup; no auth wrapper
+    insecure: false
     tls:
       cert_file: "/etc/fhir-subs/tls.crt"
       key_file: "/etc/fhir-subs/tls.key"
-    probe_bind: null                        # null = probes share the main HTTP listener;
-                                            # set to "0.0.0.0:8081" to expose /healthz, /readyz,
-                                            # /startup on a separate port (recommended for
-                                            # Kubernetes deployments)
-  websocket:
-    enabled: true
-    max_connections: 10000
+      min_version: "1.3"                    # "1.2" or "1.3"
+    read_header_timeout: "5s"
+    read_timeout: "30s"
+    write_timeout: "30s"
+    idle_timeout: "120s"
+    max_header_bytes: 1048576
 
-# Lifecycle: probes and graceful shutdown
+# Lifecycle: graceful shutdown bound on SIGTERM drain.
 lifecycle:
-  shutdown_grace_period: "30s"              # max time to drain in-flight work on SIGTERM
-  postgres_probe_timeout: "2s"              # readiness SELECT 1 budget
+  shutdown_grace_period: "30s"
 
-# Storage (Postgres is the only supported backend)
+# Database (Postgres is the only supported backend). Reference a secret via
+# ${env:VAR} placeholder resolution.
+database:
+  url: "${env:DATABASE_URL}"
+
+# Storage tunables — partition maintainer + chunked retention sweeper.
+# Defaults from storage.Config.ApplyDefaults are sufficient for most
+# deployments; only override values you actually want different.
 storage:
-  postgres:
-    url: "${env:DATABASE_URL}"
-    pool_size: 16
-    statement_timeout: "30s"
-  encryption:
-    at_rest_key: "${env:STORAGE_ENCRYPTION_KEY}"
   retention:
-    hl7_message_queue: "7d"                  # processed rows only; unprocessed kept indefinitely
-    resource_changes: "30d"                 # vendor-neutral change log
-    ehr_events: "30d"                   # bounds $events replay window
+    hl7_message_queue: "7d"                 # processed rows only
     deliveries: "90d"
     dead_letters: "180d"
-    audit_log: "7y"
+    audit_log: "7y"                         # accepted but ignored: audit retention is partition-driven
+    run_interval: "1h"
+    batch_size: 1000
+    batch_pause: "100ms"
+    tick_timeout: "5m"
+  partitioning:
+    auto_drop: true
+    partition_lock_timeout: "30s"
+    run_interval: "24h"
+    tick_timeout: "10m"
+    resource_changes_retention: "30d"
+    ehr_events_retention: "30d"
 
-# Subscriptions API auth (subscriber-facing)
+# Codec — column-level encryption keys. All ciphertext is written under
+# active_key_version and decrypted via the version recorded on the row.
+codec:
+  active_key_version: 1
+  keys:
+    - version: 1
+      material: "${env:CODEC_KEY_V1}"       # base64-encoded 32-byte AES-256 key
+
+# Subscriptions API auth (subscriber-facing). audience + trusted_issuers
+# are required in production mode unless allow_dev_bypass is true (dev/e2e
+# only). subscription_create_rate_limit and ws_binding_token_rate_limit
+# are the per-client S-3.3 buckets.
 auth:
-  schemes: ["smart-backend-services"]
-  jwks:
-    cache_ttl: "1h"
-  trusted_issuers:                          # for OAuth2/JWT validation
+  audience: "https://fhir-subs.example.org"
+  token_url: "https://fhir-subs.example.org/oauth2/token"
+  issued_secret: "${env:AUTH_ISSUED_SECRET}"
+  issued_issuer: "https://fhir-subs.example.org"
+  access_token_ttl: "1h"
+  jwks_cache_ttl: "1h"
+  clock_skew: "30s"
+  allow_insecure_jwks: false                # dev-only escape hatch for plaintext JWKS hosts
+  allow_dev_bypass: false                   # MUST be false in production
+  jwks_allowed_hosts:
+    - "idp.example.org"
+  trusted_issuers:
     - issuer: "https://idp.example.org"
-      jwks_url: "https://idp.example.org/.well-known/jwks.json"
       audience: "https://fhir-subs.example.org"
-  client_registry:                          # config-managed; SIGHUP reloads
-    - id: "lab-results-consumer"
-      jwks_url: "https://lab.example.org/.well-known/jwks.json"
-      scopes: ["system/Subscription.cruds", "system/SubscriptionTopic.r"]
+      jwks_url: "https://idp.example.org/.well-known/jwks.json"
+  subscription_create_rate_limit:
+    burst: 100
+    refill_per_second: 10
+    max_keys: 65536
+  ws_binding_token_rate_limit:
+    burst: 60
+    refill_per_second: 1
+    max_keys: 65536
 
-# Topic catalog (additive to built-in topics)
-topics:
-  catalog_dir: "/etc/fhir-subs/topics"      # SubscriptionTopic resources loaded at startup
-  value_sets_dir: "/etc/fhir-subs/value-sets"  # ValueSet resources for `:in` matching
-
-# MLLP Listener — host-provided, vendor-neutral. One or more endpoints,
-# each independently bound. All endpoints write to hl7_message_queue
-# tagged with the endpoint name.
-mllp_listener:
-  endpoints:
-    - name: adt-feed
+# MLLP listener — vendor-neutral receive-only socket. Empty/missing
+# `listeners` means "do not start the listener"; deployments that only use
+# the FHIR scan path leave this empty. Endpoints with TLS blocks must all
+# share the same cert/key/CA paths (the listener owns one TLS config).
+mllp:
+  listeners:
+    - name: "adt-feed"
       bind: "0.0.0.0:2575"
-      tls: false                            # MLLP usually plain on trusted LAN
-      allowed_message_types: ["ADT"]        # optional whitelist; null = accept all
-    - name: orders-results-feed
-      bind: "0.0.0.0:2576"
-      tls: false
-      allowed_message_types: ["ORM", "ORU"]
+      proxy_protocol_v2: false
+      tls:
+        cert_file: "/etc/fhir-subs/mllp.crt"
+        key_file: "/etc/fhir-subs/mllp.key"
+        client_ca_file: "/etc/fhir-subs/mllp-clients.pem"
+        require_client_cert: true
+  max_message_bytes: 1048576
+  persist_timeout: "5s"
+  frame_assembly_timeout: "30s"
+  read_idle_timeout: "60s"
+  nack_then_drop_after: 5
+  inflight_cap_per_conn: 64
+  on_persist_fail: "nack"                   # "nack" or "drop"
+  max_connections: 1000
+  max_connections_per_ip: 50
+  shutdown_drain_grace: "30s"
 
-# Adapter — exactly one
-adapter:
-  id: "epic"                                # epic | meditech | oracle-health | default | <third-party>
-  version_pin: ">=2024.1"                   # constraint against manifest.supported_ehr_versions
-  config:                                   # schema validated against adapter manifest
-    fhir_base_url: "https://fhir.example-hospital.org/api/FHIR/R4"
-    fhir_auth:
-      kind: "smart-backend-services"
-      client_id: "${env:EPIC_CLIENT_ID}"
-      private_key_file: "/run/secrets/epic-key.pem"
-      token_url: "https://fhir.example-hospital.org/oauth2/token"
-    hl7v2:
-      ack_mode: "AL"                        # original-mode ACK
-    interconnect:
-      base_url: "https://interconnect.example-hospital.org"
-      api_key: "${env:EPIC_INTERCONNECT_KEY}"
+# Pipeline — per-stage claim-loop tunables for the four pipeline workers
+# (HL7 processor, matcher, submatcher, scheduler) plus the supervisor
+# bundle that wraps them.
+pipeline:
+  hl7_processor:
+    claim_batch_size: 100
+    idle_poll_interval: "1s"
+  matcher:
+    claim_batch_size: 100
+    idle_poll_interval: "1s"
+  submatcher:
+    claim_batch_size: 100
+    idle_poll_interval: "1s"
+  scheduler:
+    claim_batch_size: 100
+    idle_poll_interval: "1s"
+  correlation_hold_window: "30s"
 
-# Channels — built-in are always available; this section configures them
+# Topic catalog. Operator-supplied SubscriptionTopic JSON files; reloaded
+# on SIGHUP. Defaults to /etc/fhir-subs/topics; in production this should
+# point at a mounted ConfigMap or sidecar volume.
+topics:
+  catalog_dir: "/etc/fhir-subs/topics"
+
+# Channels. Each block is optional; an absent block uses package defaults.
+# Only the four built-in channels (rest-hook, websocket, email, message)
+# are wired into the binary today.
 channels:
   rest_hook:
     user_agent: "fhir-ehr-subscriptions-service/1.0"
     request_timeout: "30s"
-    max_retries: 8
-    backoff: "exponential"                  # 10s, 30s, 2m, 10m, 1h, ...
-
   websocket:
-    ping_interval: "30s"
+    origin_patterns: ["https://*.example.org"]
     idle_timeout: "5m"
-
+    ping_interval: "30s"
+    bind_timeout: "10s"
+    ping_write_timeout: "10s"
+    upgrade_read_header_timeout: "10s"
+    max_frame_bytes: 65536
+    max_sessions: 10000
+    max_sessions_per_client: 5
+    max_replay_events: 1000
   email:
-    # v1 ships plain SMTP / SMTPS only. S/MIME and Direct modes are documented
-    # for v2; the `mode` field accepts only "smtp" in v1.
-    # See [decisions/0010 #5](high-level-design/decisions/0010-implementation-defaults.md).
-    enabled: true
-    mode: "smtp"                            # v1: smtp only (smime | direct deferred to v2)
     from: "no-reply@example-hospital.org"
-    smtp:
-      host: "smtp.example-hospital.org"
-      port: 587
-      starttls: "required"                  # required | preferred | disabled
-      auth:
-        username: "${env:SMTP_USERNAME}"
-        password: "${env:SMTP_PASSWORD}"
-        mechanism: "PLAIN"                  # PLAIN | LOGIN | CRAM-MD5 | XOAUTH2
-      timeout: "30s"
-      pool_size: 4
-    # smime: and direct: configuration blocks are v2 — see
-    # low-level-design/channels.md for the v2 documentation of those modes.
-    body:
-      attachment_threshold_bytes: 65536     # bigger -> attach instead of inline
-
+    subject_template: "FHIR Subscription notification: {{topic}}"
+    smtp_host: "smtp.example-hospital.org"
+    smtp_port: 587
+    starttls: "required"                    # "required" | "preferred" | "disabled"
+    auth_mechanism: "PLAIN"                 # "PLAIN" | "LOGIN" | "CRAM-MD5" | "XOAUTH2"
+    auth_username: "${env:SMTP_USERNAME}"
+    auth_password: "${env:SMTP_PASSWORD}"
+    auth_identity: ""
+    allow_cleartext_auth: false
+    attachment_threshold_bytes: 65536
+    request_timeout: "30s"
+    local_name: "fhir-subs.example.org"
+    user_agent: "fhir-ehr-subscriptions-service/1.0"
+    tls_min_version: 771                    # crypto/tls.VersionTLS12 (771) or VersionTLS13 (772)
   message:
-    fhir_message_endpoint_default: null
+    user_agent: "fhir-ehr-subscriptions-service/1.0"
+    request_timeout: "30s"
+    server_endpoint: "https://messaging.example.org/fhir"
+    max_idle_conns_per_host: 4
+    max_conns_per_host: 16
+    tls_min_version: 772                    # 771 = TLS 1.2, 772 = TLS 1.3
 
-  custom:                                   # third-party channels declare themselves here
-    - id: "kafka"
-      module: "channels/kafka"
-      config:
-        brokers: ["kafka-1:9092", "kafka-2:9092"]
-        topic_prefix: "fhir-subs"
-        auth:
-          mechanism: "SASL_SSL"
-          username: "${env:KAFKA_USER}"
-          password: "${env:KAFKA_PASSWORD}"
+# Admin surface — read-only operator triage API. Empty token disables the
+# routes entirely (404). Token MUST be at least 32 bytes.
+admin:
+  token: "${env:ADMIN_TOKEN}"
+  path_prefix: "/admin"
+  rate_limit:
+    burst: 30
+    refill_per_second: 1
+    max_keys: 1024
 
-# Delivery scheduler
-delivery:
-  default_max_count: 1                      # subscription-level batching cap
-  max_batch_wait: "30s"                     # flush even if not full
-  retry:
-    max_attempts: 8
-    backoff:
-      kind: "exponential"
-      initial: "10s"
-      max: "1h"
-      jitter: 0.2
-  heartbeat:
-    default_period: "5m"
-    min_period: "1m"
-    max_period: "1h"
+# OpenTelemetry tracing. Empty otlp_endpoint disables tracing entirely
+# (no-op tracer). sample_rate must be in [0,1]; --check-config rejects
+# anything else.
+tracing:
+  otlp_endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
+  sample_rate: 0.1
+  exporter_timeout: "10s"
+  insecure: false
+  tls:
+    cert_file: "/etc/fhir-subs/otel-client.crt"
+    key_file: "/etc/fhir-subs/otel-client.key"
+    ca_file: "/etc/fhir-subs/otel-ca.pem"
+  headers:
+    "x-honeycomb-team": "${env:HONEYCOMB_API_KEY}"
 
-# Observability
-observability:
-  metrics:
-    bind: "0.0.0.0:9090"                    # /metrics for Prometheus
-  tracing:
-    otlp_endpoint: "${env:OTEL_EXPORTER_OTLP_ENDPOINT}"
-    sample_rate: 0.1
-  audit_log:
-    sink: "stdout"                          # stdout (default) | file | syslog | otlp
-    file_path: "/var/log/fhir-subs/audit.log"   # used only when sink: "file"
+# Prometheus metrics scrape endpoint.
+metrics:
+  bind: "0.0.0.0:9090"
+  path: "/metrics"
+
+# Audit log sink. "stdout" emits the audit chain on the binary's stdout;
+# "file" writes to file_path with the configured fsync/batch policy.
+audit:
+  sink: "stdout"                            # "stdout" | "file"
+  file_path: "/var/log/fhir-subs/audit.log"
+  file_sync_mode: "batch"                   # "every" | "batch"
+  file_batch_interval: "1s"
 ```
 
 ### What's required vs. optional
 
-Hard-required at startup (server refuses to start without these):
+Hard-required at startup in `deployment.mode: production` (boot fails fast at `--check-config`):
 - `deployment.facility_id`
-- `server.http.bind` (or `server.http.tls.*` if TLS is enabled — recommended)
-- `storage.postgres.url`
-- `adapter.id` and the adapter's required config (per its manifest schema)
-- At least one `auth.trusted_issuers` entry OR an authenticated `client_registry` (you cannot run with no auth)
+- `adapter.id`
+- `server.http.bind` and a separate `server.http.probe_bind`
+- `server.http.tls.cert_file` + `server.http.tls.key_file` (unless `server.http.insecure: true`)
+- `database.url`
+- `codec.keys` (at least one entry) and `codec.active_key_version`
+- `auth.audience` and at least one `auth.trusted_issuers` entry (unless `auth.allow_dev_bypass: true` — dev/e2e only)
+- `topics.catalog_dir`
+- `mllp.listeners` non-empty
 
 Optional with defaults:
-- All channel configs (built-in channels have safe defaults; email is opt-in via `channels.email.enabled`)
-- All delivery / heartbeat / retry tuning
-- Observability (metrics on `/metrics`, tracing optional via OTLP, audit log defaults to `stdout`)
+- All channel configs (built-in channels have safe defaults; the email channel is wired only when `channels.email.smtp_host` is set)
+- Pipeline stage tunables (defaults supplied by the supervisor framework)
+- Tracing (disabled when `tracing.otlp_endpoint` is empty), metrics, audit (defaults to `stdout`)
+
+`deployment.mode: probe-only` skips the database / codec / auth / topics / MLLP requirements above; only `/healthz`, `/readyz`, `/startup`, and `/metadata` are served. `mllp.listeners` is rejected in probe-only mode (no durable persistence path).
 
 ### Validation
 
@@ -1226,13 +1295,7 @@ Optional with defaults:
 
 ### Hot reload
 
-A subset of config is reloadable at runtime via `SIGHUP`:
-- Topic catalog (add/remove/update topics).
-- Subscription client registry.
-- Log level.
-- Delivery retry/backoff parameters.
-
-The rest (bind addresses, Postgres connection, adapter selection, channel set) requires a restart.
+`SIGHUP` reloads the operator topic catalog (`topics.catalog_dir` — add / remove / update topic JSON files). Every other config change — bind addresses, Postgres connection, adapter selection, channel set, auth material — requires a restart.
 
 ## FHIR Version Strategy
 
