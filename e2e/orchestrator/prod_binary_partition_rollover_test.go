@@ -31,7 +31,9 @@ import (
 // time.Now). That follow-on is captured in the runner-level
 // integration test
 // internal/infra/storage/integration_test.go::
-//   TestIntegrationPartitionRunnerCreatesPartitionAfterFourMonthAdvance
+//
+//	TestIntegrationPartitionRunnerCreatesPartitionAfterFourMonthAdvance
+//
 // which uses cfg.Partitioning.Now to advance 4 months in-process.
 // This e2e confirms the production binary path wires the runner so
 // that property carries over end-to-end.

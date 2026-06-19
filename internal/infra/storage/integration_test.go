@@ -437,7 +437,7 @@ func TestIntegrationPartitionRunnerCreatesPartitionAfterFourMonthAdvance(t *test
 		ActiveKey:   1,
 	}
 	cfg.Partitioning.AutoDrop = false
-	cfg.Partitioning.RunInterval = time.Hour     // far away so loop doesn't fire
+	cfg.Partitioning.RunInterval = time.Hour // far away so loop doesn't fire
 	cfg.Partitioning.Now = func() time.Time { return advanced }
 	cfg.Retention.RunInterval = time.Hour
 	cfg.Retention.Hl7MessageQueue = 0
