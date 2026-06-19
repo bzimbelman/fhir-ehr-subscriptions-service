@@ -278,6 +278,15 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		ActivationWaitGroup: &rt.activationWG,
 	}
 
+	// Story #104 (S-3.3): plug per-client token buckets into the chi
+	// middleware on POST /Subscription and on $get-ws-binding-token
+	// before RegisterRoutes mounts them. The middleware is nil-safe,
+	// so operators who omit the rate-limit blocks keep unbounded
+	// behavior — exactly the pattern story #92 used for Admin.
+	rateLimits := buildClientRateLimitersFromAuth(&cfg.Auth, nil)
+	deps.SubscriptionCreateRateLimit = rateLimits.SubscriptionCreate
+	deps.WSBindingTokenRateLimit = rateLimits.WSBindingToken
+
 	r := chi.NewRouter()
 	// Mount /metrics on the chi router so Prometheus scrapes against
 	// the same HTTP listener as the FHIR API (story #94 AC #3).

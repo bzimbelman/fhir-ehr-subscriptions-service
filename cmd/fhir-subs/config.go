@@ -594,6 +594,42 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Admin.RateLimit.MaxKeys = n
+		case "auth.subscription_create_rate_limit.burst":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.SubscriptionCreateRateLimit.Burst = n
+		case "auth.subscription_create_rate_limit.refill_per_second":
+			f, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.SubscriptionCreateRateLimit.RefillPerSecond = f
+		case "auth.subscription_create_rate_limit.max_keys":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.SubscriptionCreateRateLimit.MaxKeys = n
+		case "auth.ws_binding_token_rate_limit.burst":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.WSBindingTokenRateLimit.Burst = n
+		case "auth.ws_binding_token_rate_limit.refill_per_second":
+			f, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.WSBindingTokenRateLimit.RefillPerSecond = f
+		case "auth.ws_binding_token_rate_limit.max_keys":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.WSBindingTokenRateLimit.MaxKeys = n
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)
 		}
