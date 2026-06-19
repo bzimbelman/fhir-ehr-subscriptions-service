@@ -1,0 +1,50 @@
+# OTel Collector Contrib config for the H1 realstack harness.
+#
+# Receivers: OTLP/gRPC (4317) + OTLP/HTTP (4318) — the prod binary's
+# tracing exporter pushes here.
+#
+# Pipeline: receive -> file exporter (jsonl) -> stdout.
+#
+# Tests read /var/log/otel/spans.jsonl from the otel-spans named
+# volume to assert on captured spans.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 100ms
+
+exporters:
+  file:
+    path: /var/log/otel/spans.jsonl
+    rotation:
+      max_megabytes: 10
+      max_backups: 1
+  debug:
+    verbosity: basic
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]

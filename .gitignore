@@ -4,6 +4,10 @@
 /dist/
 /cmd/fhir-subs/fhir-subs
 /cmd/demo-subscriber/demo-subscriber
+/cmd/test-resthook-subscriber/test-resthook-subscriber
+/cmd/test-ws-subscriber/test-ws-subscriber
+/test-resthook-subscriber
+/test-ws-subscriber
 *.exe
 *.dll
 *.so

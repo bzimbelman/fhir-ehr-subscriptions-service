@@ -1,0 +1,238 @@
+# e2e/realstack/docker-compose.yml
+#
+# H1 RealStackHarness — the docker-compose stack for OpenProject story
+# #256. Every service is a real-software dependency the production
+# fhir-subs binary talks to. No service is a Go-language fake.
+#
+# Pinned image versions are deliberate: the harness binds the test
+# matrix to a single reproducible upstream. Bump pins via a separate MR
+# so a stack regression is bisectable.
+#
+# Each test boots its own copy of this stack with a unique compose
+# project name (passed via `docker compose -p <project>`). Per-test
+# project namespaces give isolated containers, networks, and volumes
+# even when 50+ tests run concurrently.
+#
+# All services bind on 0 (random ephemeral host port) — Boot reads the
+# rendered ports back via `docker compose port` so two concurrent stacks
+# never collide on a host port. The compose file uses ${...} env-var
+# substitution for image pins so the harness can override versions per
+# test if a future story needs a multi-version matrix.
+
+services:
+  # PostgreSQL 16 — the database. migrate.Up runs against this.
+  postgres:
+    image: ${REALSTACK_POSTGRES_IMAGE:-postgres:16-alpine}
+    environment:
+      POSTGRES_USER: fhirsubs
+      POSTGRES_PASSWORD: fhirsubs
+      POSTGRES_DB: fhirsubs
+    ports:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fhirsubs -d fhirsubs"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  # Keycloak 24 — real OIDC issuer. Exposes /realms/fhir-subs/protocol/
+  # openid-connect/{token,certs}. Replaces every in-process
+  # principalMiddleware and Bearer-test cheat in the legacy harness.
+  #
+  # `start-dev` is intentional: the test stack runs in dev mode for
+  # speed (no production cluster bootstrap). The realm is provisioned
+  # by the harness via Keycloak's REST API after the container reports
+  # ready (see boot.go).
+  keycloak:
+    image: ${REALSTACK_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:24.0}
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    ports:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /realms/master/.well-known/openid-configuration HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  # HAPI FHIR JPA Server — real R4/R4B/R5 reference FHIR server. The
+  # FHIR scan runner and vendor change-feed runner point at this for
+  # real Bundle hydration and resource lookup.
+  hapi-fhir:
+    image: ${REALSTACK_HAPI_IMAGE:-hapiproject/hapi:latest}
+    environment:
+      hapi.fhir.fhir_version: R4
+      hapi.fhir.allow_external_references: "true"
+      hapi.fhir.cors.allow_credentials: "false"
+      hapi.fhir.openapi_enabled: "false"
+      spring.main.allow-bean-definition-overriding: "true"
+    ports:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /fhir/metadata HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  # Mailpit — real SMTP relay with REST API for captured-message
+  # assertions. Replaces every in-process SMTP fake in the email
+  # channel test path.
+  mailpit:
+    image: ${REALSTACK_MAILPIT_IMAGE:-axllent/mailpit:latest}
+    ports:
+      - "1025"   # SMTP
+      - "8025"   # REST API + UI
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8025/api/v1/info >/dev/null || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  # CoreDNS — real DNS server. SSRF / DNS-rebinding scenarios load a
+  # per-test Corefile that returns different answers per query. The
+  # default Corefile here forwards everything upstream so the rest of
+  # the stack can resolve container hostnames.
+  coredns:
+    image: ${REALSTACK_COREDNS_IMAGE:-coredns/coredns:latest}
+    command: ["-conf", "/etc/coredns/Corefile"]
+    volumes:
+      - ./fixtures/coredns/Corefile:/etc/coredns/Corefile:ro
+    ports:
+      - "53/udp"
+      - "53/tcp"
+    healthcheck:
+      test: ["CMD", "/coredns", "-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # Prometheus — real metrics scraper. Scrapes the prod binary's
+  # /metrics endpoint and exposes the standard query API for promtool
+  # query instant assertions.
+  prometheus:
+    image: ${REALSTACK_PROMETHEUS_IMAGE:-prom/prometheus:latest}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=1h"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./fixtures/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # OTel Collector Contrib — real OTLP receiver. The binary's tracing
+  # exporter pushes traces here; the file-exporter pipeline writes
+  # captured spans to /tmp/spans.jsonl, mounted to a host volume so
+  # tests can read them.
+  otel-collector:
+    image: ${REALSTACK_OTEL_IMAGE:-otel/opentelemetry-collector-contrib:latest}
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./fixtures/otel/config.yaml:/etc/otel/config.yaml:ro
+      - otel-spans:/var/log/otel
+    ports:
+      - "4317"   # OTLP gRPC
+      - "4318"   # OTLP HTTP
+      - "13133"  # health check
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:13133/"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  # nginx — real reverse proxy for TLS-terminated topology tests. The
+  # default config forwards 8443 -> bridge:8443 so HTTP scenarios that
+  # don't need TLS termination get a passthrough; H5 (CertFixture)
+  # tests render their own CA + server cert into a per-test config and
+  # exercise the TLS-termination path.
+  nginx:
+    image: ${REALSTACK_NGINX_IMAGE:-nginx:stable-alpine}
+    volumes:
+      - ./fixtures/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8443"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8443/healthz >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  # mitmproxy — real STARTTLS-stripping MITM for finding #184. The
+  # script in fixtures/mitmproxy/strip_starttls.py strips the upgrade;
+  # this is the one item flagged in §5 #1 as a real-software fixture
+  # with a test-driven configuration. The script is part of the
+  # harness, not a Go-language fake.
+  mitmproxy:
+    image: ${REALSTACK_MITMPROXY_IMAGE:-mitmproxy/mitmproxy:latest}
+    command:
+      - "mitmdump"
+      - "-s"
+      - "/scripts/strip_starttls.py"
+      - "--mode"
+      - "reverse:smtp://mailpit:1025"
+      - "--listen-port"
+      - "2525"
+    volumes:
+      - ./fixtures/mitmproxy:/scripts:ro
+    ports:
+      - "2525"
+    depends_on:
+      mailpit:
+        condition: service_healthy
+
+  # Real test rest-hook subscriber binary — built from
+  # cmd/test-resthook-subscriber. Captures every notification request
+  # the binary's rest-hook channel sends and exposes a query API at
+  # /notifications for the test process. No in-process channel fake.
+  test-resthook-subscriber:
+    build:
+      context: ../..
+      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.resthook
+    image: fhir-subs-test-resthook-subscriber:dev
+    ports:
+      - "8090"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/test-resthook-subscriber-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+  # Real test websocket subscriber binary — built from
+  # cmd/test-ws-subscriber. Connects to the binary's WSS endpoint as a
+  # real client, captures every event, exposes a query API at /events
+  # for the test process. No in-process WS fake.
+  test-ws-subscriber:
+    build:
+      context: ../..
+      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.ws
+    image: fhir-subs-test-ws-subscriber:dev
+    ports:
+      - "8091"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/test-ws-subscriber-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  otel-spans:
