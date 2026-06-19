@@ -10,6 +10,13 @@ FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 
+# OP #210: VERSION and COMMIT are embedded into the binary via -ldflags
+# so the running container reports the build it was cut from. CI passes
+# these via --build-arg from the matching tag/SHA; an unset value
+# leaves the in-source default ("dev") in place.
+ARG VERSION=dev
+ARG COMMIT=dev
+
 RUN apk add --no-cache git ca-certificates
 
 WORKDIR /src
@@ -23,10 +30,12 @@ COPY . .
 
 # Static, stripped, reproducible-ish build. CGO_ENABLED=0 keeps the binary
 # distroless-static-compatible. GOOS/GOARCH come from the buildx target.
+# -X main.Version / -X main.Commit pin the runtime --version output to
+# the build args (#210).
 ENV CGO_ENABLED=0
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -trimpath \
-        -ldflags="-s -w" \
+        -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT}" \
         -o /out/fhir-subs \
         ./cmd/fhir-subs
 

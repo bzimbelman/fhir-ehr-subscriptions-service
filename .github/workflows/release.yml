@@ -44,15 +44,36 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
         run: |
-          out="fhir-subs-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
+          out="fhir-subs-${VERSION}-${GOOS}-${GOARCH}"
           mkdir -p dist
+          # OP #209: -X main.Version (capital V) matches the variable
+          # declared in cmd/fhir-subs/version.go. The previous lowercase
+          # form was a no-op so released binaries reported version=dev.
           go build \
             -trimpath \
-            -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
+            -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT}" \
             -o "dist/${out}" \
             ./cmd/fhir-subs
           (cd dist && sha256sum "${out}" > "${out}.sha256")
+      - name: assert --version reports the tag
+        # OP #209 AC: a CI check runs the built binary with --version
+        # and asserts the output matches the tag. Cross-compiled
+        # binaries can only execute on a runner that matches their
+        # target, so run this gate only on the linux/amd64 matrix
+        # entry (ubuntu-latest is amd64 today).
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          out="dist/fhir-subs-${VERSION}-linux-amd64"
+          got="$(${out} --version)"
+          case "${got}" in
+            *"${VERSION}"*) echo "ok: ${got}" ;;
+            *) echo "FAIL: expected ${VERSION} in --version output, got: ${got}" >&2; exit 1 ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
           name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -90,6 +111,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # OP #210: pass VERSION + COMMIT into the image build so the
+          # baked-in `main.Version` / `main.Commit` track the tag and
+          # SHA instead of the "dev" defaults.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true

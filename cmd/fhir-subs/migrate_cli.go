@@ -79,8 +79,10 @@ func parseMigrateFlags(args []string, stderr io.Writer) (*migrateOptions, error)
 // migrateOpenPool loads the binary's config and opens a pgx pool against
 // the configured database URL. It is shared by the up and status verbs
 // so they take the same code path through Validate + buildPoolConfig
-// the production server takes.
-func migrateOpenPool(ctx context.Context, configPath string, stderr io.Writer) (*pgxpool.Pool, int) {
+// the production server takes. The int return is an exit code: 0 on
+// success, non-zero when the caller should stop and exit with that
+// code (pool is nil; a diagnostic has already been written to stderr).
+func migrateOpenPool(ctx context.Context, configPath string, stderr io.Writer) (pool *pgxpool.Pool, exitCode int) {
 	cfg, err := loadConfig(configPath)
 	if err != nil {
 		fmt.Fprintln(stderr, "error: load config:", err)
@@ -95,7 +97,7 @@ func migrateOpenPool(ctx context.Context, configPath string, stderr io.Writer) (
 		fmt.Fprintln(stderr, "error:", err)
 		return nil, 1
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	pool, err = pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		fmt.Fprintln(stderr, "error: open pool:", err)
 		return nil, 1
