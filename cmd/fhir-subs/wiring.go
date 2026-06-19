@@ -97,6 +97,15 @@ type productionRuntime struct {
 	// during graceful shutdown (story #207).
 	rhActivator *restHookActivator
 
+	// httpServer is the public HTTP server. run.go sets it via
+	// setHTTPServer once the *http.Server is constructed; the
+	// PhaseStopAccepting hook registered in registerLifecycle reads it
+	// lazily so the hook contract is in place before the server exists
+	// (story #207). Nil-safe: if the binary never reaches the
+	// http-listening stage, the hook is a no-op.
+	httpServerMu sync.Mutex
+	httpServer   *http.Server
+
 	// activationWG is joined during shutdown so in-flight subscription
 	// activation goroutines either finish, time out, or are cancelled
 	// before the process exits (B-10).
@@ -771,6 +780,25 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 		})
 	}
 
+	// Story #207: http.listener.stop_accepting drives the public HTTP
+	// server's stop-accepting transition under the per-phase budget.
+	// The closure reads r.httpServer lazily because run.go constructs
+	// the *http.Server AFTER buildProductionRuntime returns; setHTTPServer
+	// publishes it before the sequencer can fire (the only path to
+	// shutdown is RequestShutdown, which run.go calls after the server
+	// is registered).
+	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "http.listener.stop_accepting",
+		Phase: lifecycle.PhaseStopAccepting,
+		Run: func(ctx context.Context) error {
+			srv := r.getHTTPServer()
+			if srv == nil {
+				return nil
+			}
+			return srv.Shutdown(ctx)
+		},
+	})
+
 	// Story #207: scheduler.stop_accepting flips the scheduler's claim
 	// loop into "no new work" mode. In-flight dispatches keep running
 	// and are awaited by pipeline.supervisors.drain in
@@ -916,6 +944,34 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 			},
 		})
 	}
+}
+
+// setHTTPServer publishes the public HTTP server so the
+// PhaseStopAccepting hook (registered in registerLifecycle) can call
+// srv.Shutdown when the lifecycle sequencer fires. Idempotent — runs
+// once during startup before MarkStartupComplete (story #207).
+func (r *productionRuntime) setHTTPServer(srv *http.Server) {
+	if r == nil {
+		return
+	}
+	r.httpServerMu.Lock()
+	r.httpServer = srv
+	r.httpServerMu.Unlock()
+}
+
+// getHTTPServer returns the registered HTTP server or nil. The
+// PhaseStopAccepting hook closure reads via this method so the
+// lock-protected read survives the data-race detector when run.go
+// publishes the server from the main goroutine and the sequencer
+// invokes the hook from its own goroutine.
+func (r *productionRuntime) getHTTPServer() *http.Server {
+	if r == nil {
+		return nil
+	}
+	r.httpServerMu.Lock()
+	srv := r.httpServer
+	r.httpServerMu.Unlock()
+	return srv
 }
 
 // shutdown performs an immediate teardown for the buildProductionRuntime

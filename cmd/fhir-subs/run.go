@@ -213,25 +213,15 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		hooks.onServerConfigured(srv)
 	}
 
-	// Story #207: register the HTTP server's stop-accepting transition
-	// against the lifecycle module's PhaseStopAccepting. This replaces
-	// the prior "srv.Shutdown after RequestShutdown returns" pattern
-	// further down: the sequencer now drives the listener tear-down
-	// inside the per-phase budget, the same way it drives MLLP.
-	// srv.Shutdown stops accepting new connections AND waits for
-	// in-flight requests to finish — close enough to "stop accepting"
-	// to satisfy the phase contract; the followup PhaseDrainInFlight
-	// covers pipeline-side drain.
-	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
-		Name:  "http.listener.stop_accepting",
-		Phase: lifecycle.PhaseStopAccepting,
-		Run: func(ctx context.Context) error {
-			if hooks.shutdownErr != nil {
-				return hooks.shutdownErr()
-			}
-			return srv.Shutdown(ctx)
-		},
-	})
+	// Story #207: publish the *http.Server to the production runtime so
+	// the http.listener.stop_accepting hook (registered in
+	// registerLifecycle) drives srv.Shutdown under the per-phase
+	// budget. The hook reads via getHTTPServer; setting it here happens
+	// before MarkStartupComplete and before the sequencer can fire, so
+	// no early-shutdown race.
+	if prod != nil {
+		prod.setHTTPServer(srv)
+	}
 
 	// Serve in a goroutine; the main goroutine waits on ctx.Done(). When
 	// TLS is configured we use ServeTLS; the cleartext path stays on
