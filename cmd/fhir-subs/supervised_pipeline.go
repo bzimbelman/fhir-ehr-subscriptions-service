@@ -115,6 +115,13 @@ type pipelineSupervisorDeps struct {
 	// other pipeline workers in /admin/supervisor/status.
 	FhirScanRunner supervisor.Worker
 
+	// VendorAPIClient is the optional vendor change-feed worker (story
+	// #97). Wired only when the loaded adapter declares
+	// Capabilities.VendorAPIClient=true; nil otherwise. Hosted under
+	// supervisor id "vendor-api-client" so it shows up alongside the
+	// other pipeline workers in /admin/supervisor/status.
+	VendorAPIClient supervisor.Worker
+
 	// Lifecycle is the lifecycle module the helper registers its
 	// shutdown hook against. Required.
 	Lifecycle *lifecycle.LifecycleModule
@@ -150,7 +157,7 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 	deps.Backoff.applyDefaults()
 
 	pl := &supervisedPipeline{
-		supervisors: make(map[string]*supervisorEntry, 5),
+		supervisors: make(map[string]*supervisorEntry, 6),
 		backoff:     deps.Backoff,
 		onHealth:    deps.OnHealth,
 	}
@@ -169,6 +176,12 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 			id     string
 			worker supervisor.Worker
 		}{"fhir-scan-runner", deps.FhirScanRunner})
+	}
+	if deps.VendorAPIClient != nil {
+		specs = append(specs, struct {
+			id     string
+			worker supervisor.Worker
+		}{"vendor-api-client", deps.VendorAPIClient})
 	}
 
 	for _, sp := range specs {

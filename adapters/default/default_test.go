@@ -43,8 +43,8 @@ func TestDefaultManifestShape(t *testing.T) {
 	if !m.Capabilities.HydrationService {
 		t.Error("default adapter should declare HydrationService capability")
 	}
-	if m.Capabilities.VendorAPIClient {
-		t.Error("default adapter has no vendor proprietary feed and should not declare VendorAPIClient")
+	if !m.Capabilities.VendorAPIClient {
+		t.Error("default adapter should declare VendorAPIClient capability (returns a quiescent change-feed client)")
 	}
 	if err := m.Validate(); err != nil {
 		t.Errorf("Manifest.Validate() = %v, want nil", err)
@@ -82,8 +82,8 @@ func TestDefaultBuildersHonorCapabilities(t *testing.T) {
 	if a.BuildHydrationService(ctx) == nil {
 		t.Error("BuildHydrationService returned nil despite HydrationService=true")
 	}
-	if a.BuildVendorAPIClient(ctx) != nil {
-		t.Error("BuildVendorAPIClient should be nil because VendorAPIClient=false")
+	if a.BuildVendorAPIClient(ctx) == nil {
+		t.Error("BuildVendorAPIClient returned nil despite VendorAPIClient=true")
 	}
 }
 

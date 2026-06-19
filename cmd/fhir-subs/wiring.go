@@ -24,6 +24,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/scanrunner"
 	adapterspi "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/vendorclient"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	apimetrics "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics"
@@ -567,6 +568,32 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		scanWorker = w
 	}
 
+	// VendorAPIClient worker (story #97). Built only when the loaded
+	// adapter declares Capabilities.VendorAPIClient=true; the registry
+	// already enforces (#65) that a true capability has a non-nil
+	// builder, so the BuildVendorAPIClient return is safe to use without
+	// a nil check. The worker is registered with the supervisedPipeline
+	// alongside the other pipeline workers so it gets the same restart +
+	// drain semantics for free.
+	var vendorWorker *vendorclient.Worker
+	if loadedAdapter.Manifest().Capabilities.VendorAPIClient {
+		vc := loadedAdapter.BuildVendorAPIClient(adapterspi.AdapterContext{
+			AdapterID: cfg.Adapter.ID,
+			Now:       time.Now,
+		})
+		w, err := vendorclient.New(vendorclient.Options{
+			AdapterID: cfg.Adapter.ID,
+			Client:    vc,
+			Sink:      vendorclient.NewRepoSink(rcs, pool),
+			Clock:     time.Now,
+		})
+		if err != nil {
+			rt.shutdown(context.Background())
+			return nil, fmt.Errorf("vendorclient: %w", err)
+		}
+		vendorWorker = w
+	}
+
 	// Build the supervised pipeline. This replaces the prior bare
 	// `go w.Run(loopCtx)` pattern (story #99): each worker now runs
 	// under an internal/adapter/supervisor.Supervisor that recovers
@@ -585,6 +612,10 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// interface that buildSupervisedPipeline would mistakenly host.
 	if scanWorker != nil {
 		supDeps.FhirScanRunner = scanWorker
+	}
+	// Same typed-nil guard for VendorAPIClient (story #97).
+	if vendorWorker != nil {
+		supDeps.VendorAPIClient = vendorWorker
 	}
 	pipeline, perr := buildSupervisedPipeline(supDeps)
 	if perr != nil {

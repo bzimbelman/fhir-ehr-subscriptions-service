@@ -49,12 +49,12 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
 		ID:                   "default",
 		Vendor:               "fhir-ehr-subscriptions-service",
-		Description:          "Reference adapter: passes HL7 v2 through unchanged; FHIR scan plan empty by default.",
+		Description:          "Reference adapter: passes HL7 v2 through unchanged; FHIR scan plan empty by default; vendor change-feed quiescent by default.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{
 			HL7Processor:     true,
 			FhirScanRunner:   true,
-			VendorAPIClient:  false,
+			VendorAPIClient:  true,
 			HydrationService: true,
 		},
 		ConfigSchema: []byte(`{"type":"object","additionalProperties":true}`),
@@ -78,10 +78,19 @@ func (a *Adapter) BuildFhirScanRunner(_ spi.AdapterContext) spi.FhirScanRunner {
 	return &scanRunner{}
 }
 
-// BuildVendorAPIClient returns nil: the default adapter declares no vendor
-// proprietary feed.
+// BuildVendorAPIClient returns a quiescent vendor change-feed client.
+// The default adapter has no vendor proprietary feed configured, so
+// Consume blocks until the host cancels the context — exactly mirroring
+// the empty-plan FhirScanRunner pattern. Operators who deploy the
+// default adapter against a real vendor API plug in a non-default
+// adapter or override this method on a subclass.
+//
+// The framework's vendorclient.Worker treats a Consume that returns
+// nil after ctx cancellation as the normal shutdown path; the worker
+// never advances any cursor, never invokes Translate, and never writes
+// to the resource_changes outbox while the change-feed is quiescent.
 func (a *Adapter) BuildVendorAPIClient(_ spi.AdapterContext) spi.VendorAPIClient {
-	return nil
+	return &vendorClient{}
 }
 
 // BuildHydrationService returns a hydration service stub. The default
@@ -138,6 +147,31 @@ type emptyScanIterator struct{}
 
 func (emptyScanIterator) Next(_ context.Context) (spi.FhirResource, bool, error) {
 	return spi.FhirResource{}, false, nil
+}
+
+// vendorClient is the default vendor change-feed client. It declares
+// no proprietary feed: Consume blocks until the host cancels the
+// context, then returns nil so the framework's vendorclient.Worker
+// treats the exit as a normal shutdown. Translate is unreachable
+// while the feed is quiescent and panics if called — operators who
+// configure a real vendor feed plug in a non-default adapter, and a
+// missed override surfaces as a loud panic rather than a silent
+// no-op resource_changes write.
+type vendorClient struct{}
+
+// Consume blocks until ctx is cancelled then returns nil. With no
+// vendor records ever pushed onto the sink, the worker's Translate
+// path is never exercised on the default adapter.
+func (vendorClient) Consume(ctx context.Context, _ spi.EventSink, _ []byte) error {
+	<-ctx.Done()
+	return nil
+}
+
+// Translate is unreachable on the default adapter (Consume never
+// pushes a record). Panic surfaces a programming error if a future
+// caller invokes it directly.
+func (vendorClient) Translate(_ spi.VendorRecord) (spi.ResourceChange, error) {
+	panic("default adapter: VendorAPIClient.Translate is unreachable while the change-feed is quiescent")
 }
 
 // hydrationService is a stub Fetch — vendor adapters must override for full
