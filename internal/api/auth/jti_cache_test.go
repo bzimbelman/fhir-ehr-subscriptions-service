@@ -10,6 +10,7 @@ package auth
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -103,6 +104,48 @@ func TestJTIReplayCache_SeenSweepsExpiredAndKeepsConsistent(t *testing.T) {
 	c.Put("new", t0.Add(5*time.Minute))
 	if !c.Seen("alive-1") {
 		t.Errorf("alive-1 was evicted despite available slots")
+	}
+}
+
+// TestJTIReplayCache_CheckAndPut_ExactlyOneWinner pins OP #110: the
+// Seen→Put pattern in the verifier and token endpoint has a TOCTOU
+// race — two concurrent goroutines with the same jti can BOTH observe
+// Seen=false, BOTH then call Put, and BOTH authenticate. The fix is a
+// single CheckAndPut method that does both under one lock acquisition.
+//
+// This test drives that API into existence: 1000 goroutines all call
+// CheckAndPut with the same jti; exactly one MUST report alreadySeen
+// == false (the winner). Any other count means the operation isn't
+// atomic.
+//
+// NOTE: This test references c.CheckAndPut(...) which does NOT exist
+// yet — that is the RED state. Phase B will add the method; do not
+// stub it to make this compile.
+func TestJTIReplayCache_CheckAndPut_ExactlyOneWinner(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	c := NewJTIReplayCache(64, func() time.Time { return now })
+	exp := now.Add(5 * time.Minute)
+
+	const N = 1000
+	var winners atomic.Int64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			<-start // release all goroutines as close to simultaneously as possible
+			if !c.CheckAndPut("same-jti", exp) {
+				winners.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := winners.Load(); got != 1 {
+		t.Fatalf("CheckAndPut winners = %d; want exactly 1 (atomic check-and-insert violated)", got)
 	}
 }
 

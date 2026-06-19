@@ -346,12 +346,14 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"assertion exp invalid", "malformed")
 		return
 	}
-	if te.jtiCache.Seen(jti) {
+	// Atomic replay-check + record. Separate Seen + Put across two lock
+	// acquisitions left a TOCTOU window where two concurrent /token
+	// POSTs with the same jti could both succeed (OP #110).
+	if te.jtiCache.CheckAndPut(jti, assertionExp) {
 		te.fail(w, http.StatusUnauthorized, "invalid_client",
 			"assertion jti replay", "replayed_jti")
 		return
 	}
-	te.jtiCache.Put(jti, assertionExp)
 
 	// Compute granted scopes — intersect requested with client.Scopes.
 	requested := splitScope(r.PostForm.Get("scope"))

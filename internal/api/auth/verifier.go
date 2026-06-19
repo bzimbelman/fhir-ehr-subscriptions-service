@@ -269,15 +269,24 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "missing jti"
 	}
-	if v.cfg.JTICache.Seen(jti) {
-		v.recordFailure("replayed_jti")
-		return nil, http.StatusUnauthorized, "token replay"
-	}
-
 	exp, err := claimToTime(verifiedClaims["exp"])
 	if err != nil {
 		v.recordFailure("malformed")
 		return nil, http.StatusUnauthorized, "missing exp"
+	}
+
+	// Atomic replay-check + record. Separate Seen + Put across two lock
+	// acquisitions left a TOCTOU window where two concurrent requests
+	// with the same jti could both authenticate (OP #110).
+	//
+	// Note: this records the jti before the scope check below. If the
+	// scope check fails (no authorized scopes → 403), a retry with the
+	// same JWT will surface as "token replay" instead of "no authorized
+	// scopes". That's acceptable: replaying a JWT is itself a protocol
+	// error, and both responses are unauthorized outcomes.
+	if v.cfg.JTICache.CheckAndPut(jti, exp) {
+		v.recordFailure("replayed_jti")
+		return nil, http.StatusUnauthorized, "token replay"
 	}
 
 	scope, _ := verifiedClaims["scope"].(string)
@@ -287,8 +296,6 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 		v.recordFailure("revoked")
 		return nil, http.StatusForbidden, "no authorized scopes"
 	}
-
-	v.cfg.JTICache.Put(jti, exp)
 
 	return &Principal{
 		ClientID: client.ID,
