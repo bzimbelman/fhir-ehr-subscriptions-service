@@ -117,6 +117,113 @@ func TestDeliver_RevalidatesURLAtDeliveryTime(t *testing.T) {
 	}
 }
 
+// TestDeliver_HTTPSchemeWithValidatorOptIn asserts that an http://
+// endpoint delivers when the operator opts in via a URLValidator built
+// with AllowHTTP=true and an AllowHosts entry for the subscriber. This
+// is the demo / dev path: the bridge accepts http:// at create-time and
+// at delivery-time the channel must defer scheme allowance to the same
+// validator instance, not re-impose a hardcoded https-only check on top.
+// OP #286 — the demo walkthrough fanned out events into deliveries,
+// then dead-lettered every one because the channel hard-required https
+// regardless of validator opt-in.
+func TestDeliver_HTTPSchemeWithValidatorOptIn(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Use the test server's host (a 127.0.0.1 loopback) and add it to
+	// AllowHosts so the SSRF policy lets it through. Without that entry
+	// the validator would block loopback at delivery time even with
+	// AllowHTTP=true.
+	srvURL := strings.TrimPrefix(srv.URL, "http://")
+	host := srvURL
+	if i := strings.IndexByte(srvURL, ':'); i >= 0 {
+		host = srvURL[:i]
+	}
+	validator := handlers.NewURLValidator(handlers.URLValidatorConfig{
+		AllowHTTP:  true,
+		AllowHosts: []string{host},
+	})
+
+	ch, err := resthook.New(resthook.Options{
+		HTTPClient:   srv.Client(),
+		Metrics:      newFakeMetrics(),
+		URLValidator: validator,
+	})
+	if err != nil {
+		t.Fatalf("resthook.New: %v", err)
+	}
+	t.Cleanup(func() { _ = ch.Close() })
+
+	out, err := ch.Deliver(context.Background(), newEnvelope(srv.URL))
+	if err != nil {
+		t.Fatalf("Deliver returned error: %v", err)
+	}
+	if out.Kind != channel.OutcomeDelivered {
+		t.Fatalf("expected OutcomeDelivered with AllowHTTP+AllowHosts opt-in, got %v reason=%q", out.Kind, out.Reason)
+	}
+}
+
+// TestDeliver_HTTPSchemeBlockedWhenNoValidator pins the safe default:
+// when the channel is constructed without a URLValidator, an http://
+// endpoint is rejected at delivery time. The hardcoded scheme check
+// remains the only defense in this configuration. OP #286 regression
+// guard.
+func TestDeliver_HTTPSchemeBlockedWhenNoValidator(t *testing.T) {
+	t.Parallel()
+
+	ch, err := resthook.New(resthook.Options{
+		Metrics: newFakeMetrics(),
+		// URLValidator deliberately omitted.
+	})
+	if err != nil {
+		t.Fatalf("resthook.New: %v", err)
+	}
+	t.Cleanup(func() { _ = ch.Close() })
+
+	out, err := ch.Deliver(context.Background(), newEnvelope("http://insecure.example/webhook"))
+	if err != nil {
+		t.Fatalf("Deliver returned error: %v", err)
+	}
+	if out.Kind != channel.OutcomePermanent {
+		t.Fatalf("expected OutcomePermanent for http:// without validator, got %v", out.Kind)
+	}
+	if !strings.Contains(strings.ToLower(out.Reason), "non-https") {
+		t.Fatalf("expected non-https reason, got %q", out.Reason)
+	}
+}
+
+// TestDeliver_HTTPSchemeBlockedWhenValidatorAllowHTTPFalse pins that an
+// operator who wires a URLValidator with AllowHTTP=false (the production
+// default) still rejects http:// endpoints at delivery time. This is the
+// production-deployment case. OP #286 regression guard.
+func TestDeliver_HTTPSchemeBlockedWhenValidatorAllowHTTPFalse(t *testing.T) {
+	t.Parallel()
+
+	validator := handlers.NewURLValidator(handlers.URLValidatorConfig{
+		AllowHTTP: false,
+	})
+	ch, err := resthook.New(resthook.Options{
+		Metrics:      newFakeMetrics(),
+		URLValidator: validator,
+	})
+	if err != nil {
+		t.Fatalf("resthook.New: %v", err)
+	}
+	t.Cleanup(func() { _ = ch.Close() })
+
+	out, err := ch.Deliver(context.Background(), newEnvelope("http://insecure.example/webhook"))
+	if err != nil {
+		t.Fatalf("Deliver returned error: %v", err)
+	}
+	if out.Kind != channel.OutcomePermanent {
+		t.Fatalf("expected OutcomePermanent for http:// with AllowHTTP=false validator, got %v", out.Kind)
+	}
+}
+
 // TestDeliver_RevalidatesURLAtDeliveryTime_DNSError covers the case
 // where the hostname stops resolving entirely between create and
 // delivery (NXDOMAIN). The channel must reject without dialing.
