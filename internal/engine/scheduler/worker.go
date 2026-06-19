@@ -17,11 +17,21 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	adapterspi "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/builder"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/hydration"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/correlation"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
 )
+
+// TopicLookup resolves a topic URL to its compiled Topic. The scheduler
+// uses it to read NotificationShape (the topic's _include /
+// _revinclude rules) when building full-resource notifications. Story #98:
+// without a topic lookup the scheduler has no way to know which
+// references the engine must hydrate for a given subscription.
+type TopicLookup func(url string) (*catalog.Topic, bool)
 
 // Config tunes the scheduler claim/dispatch loop.
 type Config struct {
@@ -149,6 +159,14 @@ type Worker struct {
 	logger   *slog.Logger
 	clock    func() time.Time
 	rng      RNG
+	// hydration is the include/revinclude expander wired in story #98.
+	// nil disables hydration (full-resource bundles emit only the focus
+	// body, matching legacy behavior).
+	hydration *hydration.Hydrator
+	// topics resolves a topic URL to its compiled NotificationShape so
+	// hydration knows which _include rules to expand. nil disables
+	// hydration (the lookup is a hard prerequisite).
+	topics TopicLookup
 	// inflight tracks each in-flight dispatchOne so Run can wait for
 	// them to finish before returning. Without this, a SIGTERM mid-tick
 	// would leave deliveries rows pinned in 'delivering' forever; the
@@ -171,6 +189,14 @@ type Options struct {
 	Logger  *slog.Logger
 	Clock   func() time.Time
 	RNG     RNG
+	// HydrationService is the adapter SPI service the scheduler calls
+	// to fetch include/revinclude resources for full-resource
+	// notifications (story #98). nil disables hydration.
+	HydrationService adapterspi.HydrationService
+	// Topics resolves a topic URL to its compiled NotificationShape.
+	// Required when HydrationService is non-nil; without it the
+	// scheduler has no include rules to expand.
+	Topics TopicLookup
 }
 
 // NewWorker constructs a Worker.
@@ -203,6 +229,10 @@ func NewWorker(
 		w.clock = opts.Clock
 	}
 	w.rng = opts.RNG
+	if opts.HydrationService != nil && opts.Topics != nil {
+		w.hydration = hydration.New(hydration.Config{Service: opts.HydrationService})
+		w.topics = opts.Topics
+	}
 	return w
 }
 
@@ -446,6 +476,27 @@ func (w *Worker) dispatchOne(ctx context.Context, row *repos.DeliveryRow) {
 		},
 		Attempt:               attemptsToUint32(row.Attempts),
 		CorrelationIDOverride: row.CorrelationID.String(),
+	}
+	// Story #98: for full-resource subscriptions, expand the topic's
+	// _include / _revinclude rules through the adapter HydrationService.
+	// The expanded resource bodies ride alongside the focus body in the
+	// notification Bundle. Hydration failures degrade per the
+	// hydration package contract — partial successes still flow, and
+	// the per-reference Warnings are logged.
+	if sub.Content == "full-resource" && w.hydration != nil && w.topics != nil {
+		if hydrated, herr := w.hydrateForJob(cctx, sub, ev); herr != nil {
+			// Hydration runtime error (e.g., HydrationService missing)
+			// is treated as a transient build error so the next retry
+			// re-attempts the fetch. The hydration package itself
+			// degrades per-reference fetch errors into Warnings, so
+			// reaching this branch implies a structural problem.
+			w.logger.WarnContext(cctx, "scheduler: hydration failed",
+				slog.String("subscription_id", sub.ID.String()),
+				slog.String("topic_url", sub.TopicURL),
+				slog.Any("err", herr))
+		} else {
+			job.Hydrated = hydrated
+		}
 	}
 	envelope, err := w.bldr.Build(cctx, job)
 	if err != nil {
@@ -726,6 +777,105 @@ func isPermanentBuildError(err error) bool {
 // caller can decide between transient retry and dead-letter.
 func (w *Worker) loadEhrEvent(ctx context.Context, id uuid.UUID) (*repos.EhrEventRow, error) {
 	return w.ehr.GetByID(ctx, w.pool, id)
+}
+
+// hydrateForJob walks the topic's _include rules and asks the adapter
+// HydrationService to fetch each one. Returns the resolved resource
+// bodies the builder will append to the Bundle. A topic that is
+// unknown or has no notificationShape returns (nil, nil) — the
+// resulting Bundle still carries the focus body, which matches legacy
+// behavior. Errors are reserved for structural problems (nil topic
+// lookup, hydrator misconfigured); per-reference fetch failures are
+// degraded into Warnings inside hydration.Hydrate and recorded but
+// not returned.
+func (w *Worker) hydrateForJob(ctx context.Context, sub *repos.SubscriptionRow, ev *repos.EhrEventRow) ([][]byte, error) {
+	if w.hydration == nil || w.topics == nil {
+		return nil, nil
+	}
+	topic, ok := w.topics(sub.TopicURL)
+	if !ok || topic == nil {
+		return nil, nil
+	}
+	rules := includeRulesForTopic(topic)
+	if len(rules) == 0 {
+		return nil, nil
+	}
+	match := adapterspi.FhirResource{
+		ResourceType: extractResourceTypeFromFocus(ev.Focus),
+		ID:           extractIDFromFocus(ev.Focus),
+		Body:         ev.Resource,
+	}
+	res, err := w.hydration.Hydrate(ctx, []adapterspi.FhirResource{match}, rules)
+	if err != nil {
+		return nil, err
+	}
+	for _, warning := range res.Warnings {
+		w.logger.InfoContext(ctx, "scheduler: hydration warning",
+			slog.String("subscription_id", sub.ID.String()),
+			slog.String("warning", warning))
+	}
+	if len(res.Include) == 0 {
+		return nil, nil
+	}
+	bodies := make([][]byte, 0, len(res.Include))
+	for _, inc := range res.Include {
+		if len(inc.Body) == 0 {
+			continue
+		}
+		bodies = append(bodies, inc.Body)
+	}
+	return bodies, nil
+}
+
+// includeRulesForTopic translates a compiled Topic's NotificationShape
+// into the hydration package's rule shape. The shape's Includes are
+// FHIR strings of the form "<resourceType>:<param>" (and optionally
+// ":<targetType>" suffix the v1 default extractor ignores). We split on
+// ':' to recover SourceType and Param.
+func includeRulesForTopic(topic *catalog.Topic) []hydration.IncludeRule {
+	if topic == nil {
+		return nil
+	}
+	rules := make([]hydration.IncludeRule, 0, len(topic.NotificationShape.Includes)+len(topic.NotificationShape.RevIncludes))
+	for _, inc := range topic.NotificationShape.Includes {
+		parts := strings.SplitN(inc, ":", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		rules = append(rules, hydration.IncludeRule{
+			SourceType: parts[0],
+			Param:      parts[1],
+			Reverse:    false,
+		})
+	}
+	for _, rev := range topic.NotificationShape.RevIncludes {
+		parts := strings.SplitN(rev, ":", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		rules = append(rules, hydration.IncludeRule{
+			SourceType: parts[0],
+			Param:      parts[1],
+			Reverse:    true,
+		})
+	}
+	return rules
+}
+
+// extractResourceTypeFromFocus parses "ResourceType/id" into the type.
+func extractResourceTypeFromFocus(focus string) string {
+	if i := strings.Index(focus, "/"); i > 0 {
+		return focus[:i]
+	}
+	return focus
+}
+
+// extractIDFromFocus parses "ResourceType/id" into the id.
+func extractIDFromFocus(focus string) string {
+	if i := strings.Index(focus, "/"); i > 0 {
+		return focus[i+1:]
+	}
+	return ""
 }
 
 func nextBackoff(cur, ceiling time.Duration) time.Duration {

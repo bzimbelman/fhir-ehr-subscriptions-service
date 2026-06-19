@@ -46,6 +46,16 @@ type AdapterContext struct {
 	// AdapterID is the manifest id; pre-applied to logger and metric labels
 	// by the host but exposed here for adapters that need it directly.
 	AdapterID string
+
+	// HydrationFhirBaseURL is the operator-supplied FHIR R5 base URL the
+	// HydrationService dials when fetching `_include` / `_revinclude`
+	// targets for full-resource subscriptions (story #98). Adapters that
+	// embed BaseHydrationService and override Fetch use this to construct
+	// real HTTP fetches against the EHR FHIR endpoint. Empty means the
+	// operator did not configure hydration; adapters MAY decline to build
+	// a HydrationService (return nil from BuildHydrationService) when
+	// this is empty.
+	HydrationFhirBaseURL string
 }
 
 // HTTPDoer is the minimal HTTP surface the SPI exposes. Concrete framework

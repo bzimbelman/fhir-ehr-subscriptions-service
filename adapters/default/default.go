@@ -16,6 +16,11 @@ package defaultadapter
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
@@ -93,12 +98,23 @@ func (a *Adapter) BuildVendorAPIClient(_ spi.AdapterContext) spi.VendorAPIClient
 	return &vendorClient{}
 }
 
-// BuildHydrationService returns a hydration service stub. The default
-// implementation returns ErrUnsupported on Fetch; deployments that need
-// full-resource subscriptions configure a vendor adapter or override the
-// hydration service.
-func (a *Adapter) BuildHydrationService(_ spi.AdapterContext) spi.HydrationService {
-	return &hydrationService{}
+// BuildHydrationService returns a hydration service. When the operator
+// configures hydration.fhir_base_url (plumbed through AdapterContext as
+// HydrationFhirBaseURL), the returned service dials that FHIR R5 endpoint
+// for real GET /Type/id requests — exactly the production wire-up for a
+// deployment that has a FHIR REST endpoint to fetch from. When the URL
+// is empty, the service falls back to the legacy stub Fetch returning
+// ErrHydrationUnsupported so the registry validation still sees a
+// non-nil builder result and the host doesn't NPE on a delivery
+// attempt.
+func (a *Adapter) BuildHydrationService(actx spi.AdapterContext) spi.HydrationService {
+	if actx.HydrationFhirBaseURL == "" {
+		return &hydrationService{}
+	}
+	return &realHTTPHydration{
+		base:   strings.TrimRight(actx.HydrationFhirBaseURL, "/"),
+		client: &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
 // hl7Processor is the default HL7 pipeline: pass raw bytes through, classify
@@ -182,6 +198,45 @@ type hydrationService struct {
 
 func (h *hydrationService) Fetch(_ context.Context, _ spi.FhirReference) (spi.FhirResource, error) {
 	return spi.FhirResource{}, ErrHydrationUnsupported
+}
+
+// realHTTPHydration is the default adapter's production HydrationService
+// when the operator configures hydration.fhir_base_url. It performs real
+// FHIR REST GETs against /<base>/<ResourceType>/<id> using the standard
+// FHIR JSON content type. Vendor adapters that need bespoke auth, query
+// parameters, or pagination override this with their own implementation;
+// the default's job is to prove the wire-up end-to-end on any plain
+// FHIR R5 server.
+type realHTTPHydration struct {
+	spi.BaseHydrationService
+	base   string
+	client *http.Client
+}
+
+func (r *realHTTPHydration) Fetch(ctx context.Context, ref spi.FhirReference) (spi.FhirResource, error) {
+	url := fmt.Sprintf("%s/%s/%s", r.base, ref.ResourceType, ref.ID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return spi.FhirResource{}, fmt.Errorf("default hydration: build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/fhir+json")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return spi.FhirResource{}, fmt.Errorf("default hydration: fetch %s/%s: %w", ref.ResourceType, ref.ID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return spi.FhirResource{}, fmt.Errorf("default hydration: fetch %s/%s: status %d", ref.ResourceType, ref.ID, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return spi.FhirResource{}, fmt.Errorf("default hydration: read %s/%s: %w", ref.ResourceType, ref.ID, err)
+	}
+	return spi.FhirResource{
+		ResourceType: ref.ResourceType,
+		ID:           ref.ID,
+		Body:         body,
+	}, nil
 }
 
 // ErrHydrationUnsupported is returned by the default hydration stub. The
