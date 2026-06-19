@@ -22,7 +22,6 @@ import (
 	chemail "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/email"
 	chmessage "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/message"
 	chwebsocket "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/websocket"
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/scheduler"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
 )
 
@@ -140,6 +139,7 @@ func integrationCfg(t *testing.T, dbURL string) *Config {
 		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 		Database:   DatabaseConfig{URL: dbURL},
+		Auth:       AuthConfig{AllowDevBypass: true},
 		Codec: CodecConfig{
 			ActiveKeyVersion: 1,
 			Keys: []CodecKeySpec{
@@ -192,26 +192,9 @@ func TestProductionRuntime_RegistersAllThreeChannels(t *testing.T) {
 	}
 	t.Cleanup(func() { rt.shutdown(context.Background()) })
 
-	// Probe the runtime via reflection — Phase B adds a `chReg` field
-	// (or equivalent) that exposes the registry to tests.
-	v := reflect.ValueOf(rt).Elem()
-	var reg scheduler.ChannelRegistry
-	for _, candidate := range []string{"chReg", "channels", "channelRegistry"} {
-		f := v.FieldByName(candidate)
-		if !f.IsValid() {
-			continue
-		}
-		if r, ok := f.Interface().(scheduler.ChannelRegistry); ok {
-			reg = r
-			break
-		}
-		if r, ok := f.Interface().(*scheduler.MapRegistry); ok {
-			reg = r
-			break
-		}
-	}
+	reg := rt.ChannelRegistry()
 	if reg == nil {
-		t.Fatalf("productionRuntime exposes no chReg-shaped field; Phase B must store the *scheduler.MapRegistry on the runtime so lifecycle and tests can reach it")
+		t.Fatalf("productionRuntime.ChannelRegistry() returned nil; the runtime must expose its scheduler.ChannelRegistry so lifecycle and tests can reach it")
 	}
 
 	for _, code := range []string{"rest-hook", "websocket", "email", "message"} {

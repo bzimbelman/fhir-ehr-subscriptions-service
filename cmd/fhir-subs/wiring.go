@@ -127,6 +127,20 @@ type productionRuntime struct {
 	logger *slog.Logger
 }
 
+// ChannelRegistry exposes the scheduler-side ChannelRegistry to callers
+// that need to inspect or interact with the registered delivery
+// channels (e.g. integration tests, lifecycle hooks). Returning the
+// interface, not the *MapRegistry, keeps the runtime free to swap the
+// implementation later without touching callers. Nil-safe: returns a
+// nil interface when the runtime hasn't reached the channels-wired
+// stage.
+func (r *productionRuntime) ChannelRegistry() scheduler.ChannelRegistry {
+	if r == nil || r.chReg == nil {
+		return nil
+	}
+	return r.chReg
+}
+
 // buildProductionRuntime constructs the full production stack from cfg.
 // It is invoked by runWithHooks when cfg.Database.URL is non-empty. On
 // any failure it tears down anything already opened so the caller can
