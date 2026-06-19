@@ -247,6 +247,13 @@ type PipelineConfig struct {
 	// CorrelationHoldWindow caps how long the HL7 processor will hold
 	// an unpaired half before reaping. Default 30s.
 	CorrelationHoldWindow time.Duration `yaml:"correlation_hold_window"`
+
+	// Supervisor is the operator-tunable bundle for the host-side
+	// adapter Supervisor framework that wraps every pipeline worker
+	// (story #99). Zero values are filled in with production defaults
+	// (100ms initial backoff, 30s max, 0.2 jitter, 30s health cadence,
+	// 5s stop grace).
+	Supervisor PipelineSupervisorConfig `yaml:"supervisor"`
 }
 
 // StageConfig is the per-stage pipeline tunables.

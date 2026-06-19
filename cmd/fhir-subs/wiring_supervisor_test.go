@@ -49,25 +49,6 @@ func (w *fakeWorker) Run(ctx context.Context) error {
 	return w.run(ctx, n)
 }
 
-// pipelineSupervisorTestDeps is the narrow contract the wiring helper
-// `buildSupervisedPipeline` (Phase B) is expected to consume. Phase B
-// MAY shape its actual signature differently, but at minimum the helper
-// must accept the four pipeline workers + the lifecycle module + a
-// supervisor options bundle so this test can wire fakes.
-//
-// The helper does not exist yet — these tests reference it as
-// `buildSupervisedPipeline` and fail at compile time until Phase B
-// introduces it.
-type pipelineSupervisorTestDeps struct {
-	HL7        supervisor.Worker
-	Matcher    supervisor.Worker
-	Submatcher supervisor.Worker
-	Scheduler  supervisor.Worker
-	Lifecycle  *lifecycle.LifecycleModule
-	Backoff    PipelineSupervisorConfig
-	OnHealth   func(name string, st supervisor.Status)
-}
-
 // TestPipelineSupervisor_RegistersDrainHookInPhaseDrainInFlight asserts
 // that buildSupervisedPipeline registers a single shutdown hook in
 // PhaseDrainInFlight whose name is greppable as a supervisor drain
@@ -85,9 +66,14 @@ func TestPipelineSupervisor_RegistersDrainHookInPhaseDrainInFlight(t *testing.T)
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
-	deps := pipelineSupervisorTestDeps{
+	deps := pipelineSupervisorDeps{
 		HL7:        &fakeWorker{},
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -104,7 +90,7 @@ func TestPipelineSupervisor_RegistersDrainHookInPhaseDrainInFlight(t *testing.T)
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	names := lcMod.RegisteredShutdownNames(lifecycle.PhaseDrainInFlight)
 	found := false
@@ -134,14 +120,19 @@ func TestPipelineSupervisor_OwnsWorkerGoroutines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
 	hl7 := &fakeWorker{}
 	matcher := &fakeWorker{}
 	submatcher := &fakeWorker{}
 	scheduler := &fakeWorker{}
 
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        hl7,
 		Matcher:    matcher,
 		Submatcher: submatcher,
@@ -155,7 +146,7 @@ func TestPipelineSupervisor_OwnsWorkerGoroutines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	// Workers run on supervisor-owned goroutines launched by the
 	// helper. Wait until each has been invoked at least once.
@@ -187,7 +178,12 @@ func TestPipelineSupervisor_RestartsOnPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
 	// HL7 worker panics on the first three Runs, then blocks on ctx.
 	hl7 := &fakeWorker{
@@ -199,7 +195,7 @@ func TestPipelineSupervisor_RestartsOnPanic(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        hl7,
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -213,7 +209,7 @@ func TestPipelineSupervisor_RestartsOnPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	// Wait for the supervisor to record at least 3 restarts on hl7.
 	deadline := time.Now().Add(2 * time.Second)
@@ -245,7 +241,12 @@ func TestPipelineSupervisor_StopKillsHungWorker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
 	// Hung worker: ignores ctx for `hangFor` to simulate a stuck claim
 	// loop. The supervisor must give up at the stop deadline rather than
@@ -257,7 +258,7 @@ func TestPipelineSupervisor_StopKillsHungWorker(t *testing.T) {
 			return errors.New("never observed cancel")
 		},
 	}
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        stuck,
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -307,7 +308,12 @@ func TestPipelineSupervisor_OnHealthTickFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
 	var (
 		mu    sync.Mutex
@@ -324,7 +330,7 @@ func TestPipelineSupervisor_OnHealthTickFires(t *testing.T) {
 		}
 	}
 
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        &fakeWorker{},
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -340,7 +346,7 @@ func TestPipelineSupervisor_OnHealthTickFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	// Wait for at least one tick from each of the four supervisors.
 	deadline := time.After(2 * time.Second)
@@ -379,7 +385,12 @@ func TestPipelineSupervisor_RestartCallableExposed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
 	hl7 := &fakeWorker{
 		run: func(ctx context.Context, _ int64) error {
@@ -387,7 +398,7 @@ func TestPipelineSupervisor_RestartCallableExposed(t *testing.T) {
 			return ctx.Err()
 		},
 	}
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        hl7,
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -401,7 +412,7 @@ func TestPipelineSupervisor_RestartCallableExposed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	// Wait for first Run.
 	deadline := time.Now().Add(time.Second)
@@ -442,9 +453,14 @@ func TestPipelineSupervisor_UnknownRestartReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        &fakeWorker{},
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -458,7 +474,7 @@ func TestPipelineSupervisor_UnknownRestartReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	if err := pl.Restart("does-not-exist"); err == nil {
 		t.Fatalf("Restart unknown adapter: expected error, got nil")
@@ -480,9 +496,14 @@ func TestPipelineSupervisor_StatusListsAllFour(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lifecycle start: %v", err)
 	}
-	defer func() { _ = lcMod.WaitForExit(context.Background()) }()
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
 
-	pl, err := buildSupervisedPipeline(pipelineSupervisorTestDeps{
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
 		HL7:        &fakeWorker{},
 		Matcher:    &fakeWorker{},
 		Submatcher: &fakeWorker{},
@@ -496,7 +517,7 @@ func TestPipelineSupervisor_StatusListsAllFour(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildSupervisedPipeline: %v", err)
 	}
-	defer pl.Stop(context.Background())
+	defer func() { _ = pl.Stop(context.Background()) }()
 
 	want := map[string]bool{
 		"hl7-processor": false,

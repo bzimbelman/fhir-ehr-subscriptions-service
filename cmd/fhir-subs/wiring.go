@@ -58,8 +58,13 @@ type productionRuntime struct {
 	scheduler   *scheduler.Worker
 	catalogProv *matcher.AtomicCatalogProvider
 	topicsDir   string
-	pipelineWG  sync.WaitGroup
-	cancelLoops context.CancelFunc
+
+	// pipeline owns the supervised goroutines for every adapter
+	// pipeline worker. Replaces the prior bare `go w.Run(loopCtx)`
+	// pattern (story #99): a panic in a worker now bubbles into the
+	// supervisor, gets logged + counted, and the worker is restarted
+	// with backoff. Status is exposed via /admin/supervisor/status.
+	pipeline *supervisedPipeline
 
 	// activationWG is joined during shutdown so in-flight subscription
 	// activation goroutines either finish, time out, or are cancelled
@@ -287,10 +292,10 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		r.Method(http.MethodPost, "/token", tokenSrv)
 	}
 
-	// Story #92: mount the read-only admin operator surface on the SAME
-	// chi router that backs the FHIR API. Token < MinAdminTokenBytes is
-	// a wire-up failure — the binary refuses to start rather than
-	// silently disabling /admin.
+	// Story #92: validate the admin shared secret meets the minimum
+	// length BEFORE we build the supervised pipeline. The router is
+	// mounted further down — once the pipeline is up — so the admin
+	// surface gets the SupervisorStatus reader (story #99).
 	if cfg.Admin.Token != "" && len(cfg.Admin.Token) < handlers.MinAdminTokenBytes {
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("admin: token must be at least %d bytes (got %d)",
@@ -304,8 +309,6 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		RefillPerSecond: cfg.Admin.RateLimit.RefillPerSecond,
 		MaxKeys:         cfg.Admin.RateLimit.MaxKeys,
 	}, nil)
-	handlers.RegisterAdminRoutes(r, deps)
-
 	rt.router = r
 
 	// --- 8. MLLP listener (optional) ------------------------------------
@@ -323,8 +326,10 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 
 	// --- 9. Pipeline workers --------------------------------------------
-	loopCtx, cancelLoops := context.WithCancel(context.Background())
-	rt.cancelLoops = cancelLoops
+	// Story #99: every adapter pipeline worker now runs under a
+	// supervisor.Supervisor so a panic in Run is recovered, counted,
+	// and the worker is restarted with backoff. The supervisedPipeline
+	// also exposes Status snapshots to /admin/supervisor/status.
 
 	// HL7 processor.
 	processorPoll := cfg.Pipeline.HL7Processor.IdlePollInterval
@@ -352,7 +357,6 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		Logger:     logger.With("component", "hl7processor"),
 	})
 	if err != nil {
-		cancelLoops()
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("hl7processor: %w", err)
 	}
@@ -366,13 +370,11 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	rt.topicsDir = cfg.Topics.CatalogDir
 	topicSources, err := loadTopicSources(rt.topicsDir)
 	if err != nil {
-		cancelLoops()
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("topics: load sources: %w", err)
 	}
 	initialCat, err := catalog.Load(topicSources)
 	if err != nil {
-		cancelLoops()
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("catalog: %w", err)
 	}
@@ -424,12 +426,31 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	)
 	rt.scheduler = schedulerWorker
 
-	// Launch the loops.
-	rt.pipelineWG.Add(4)
-	go func() { defer rt.pipelineWG.Done(); _ = proc.Run(loopCtx) }()
-	go func() { defer rt.pipelineWG.Done(); _ = matcherWorker.Run(loopCtx) }()
-	go func() { defer rt.pipelineWG.Done(); _ = submatcherWorker.Run(loopCtx) }()
-	go func() { defer rt.pipelineWG.Done(); _ = schedulerWorker.Run(loopCtx) }()
+	// Build the supervised pipeline. This replaces the prior bare
+	// `go w.Run(loopCtx)` pattern (story #99): each worker now runs
+	// under an internal/adapter/supervisor.Supervisor that recovers
+	// panics, restarts on exit with bounded exponential backoff, and
+	// exposes a Status snapshot to /admin/supervisor/status.
+	pipeline, perr := buildSupervisedPipeline(pipelineSupervisorDeps{
+		HL7:        proc,
+		Matcher:    matcherWorker,
+		Submatcher: submatcherWorker,
+		Scheduler:  schedulerWorker,
+		Lifecycle:  lcMod,
+		Backoff:    cfg.Pipeline.Supervisor,
+	})
+	if perr != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("pipeline supervisor: %w", perr)
+	}
+	rt.pipeline = pipeline
+	deps.SupervisorStatus = pipeline
+
+	// Mount the admin surface now that the supervisor reader is wired
+	// (story #92 + story #99). Token-length validation happened above;
+	// here we always call RegisterAdminRoutes — it is a no-op when the
+	// token is empty.
+	handlers.RegisterAdminRoutes(r, deps)
 
 	// --- 10. Lifecycle shutdown wiring ----------------------------------
 	rt.registerLifecycle(lcMod, cfg.Lifecycle.ShutdownGracePeriod)
@@ -523,26 +544,9 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 		})
 	}
 
-	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
-		Name:  "pipeline.drain",
-		Phase: lifecycle.PhaseDrainInFlight,
-		Run: func(ctx context.Context) error {
-			if r.cancelLoops != nil {
-				r.cancelLoops()
-			}
-			done := make(chan struct{})
-			go func() {
-				r.pipelineWG.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-				return nil
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		},
-	})
+	// The pipeline drain hook is registered inside buildSupervisedPipeline
+	// as `pipeline.supervisors.drain` so the supervisor framework owns
+	// the cancellation contract end-to-end (story #99).
 
 	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
 		Name:  "api.activations.drain",
@@ -604,8 +608,8 @@ func (r *productionRuntime) shutdown(ctx context.Context) {
 	if r == nil {
 		return
 	}
-	if r.cancelLoops != nil {
-		r.cancelLoops()
+	if r.pipeline != nil {
+		_ = r.pipeline.Stop(ctx)
 	}
 	if r.mllpListen != nil {
 		_ = r.mllpListen.Shutdown(ctx)
