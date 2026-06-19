@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -399,6 +400,23 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		authMiddleware = verif.Middleware
 	case cfg.Auth.AllowDevBypass:
 		authMiddleware = devPrincipalMiddleware()
+		// Seed an auth_clients row for each configured dev client id
+		// so the subscriptions.client_id FK passes when one of them
+		// POSTs a Subscription. Idempotent via ON CONFLICT.
+		for _, cid := range cfg.Auth.DevBypassClientIDs {
+			cid = strings.TrimSpace(cid)
+			if cid == "" {
+				continue
+			}
+			if _, serr := pool.Exec(ctx, `
+				INSERT INTO auth_clients (id, scopes, display_name)
+				VALUES ($1, ARRAY['system/Subscription.cruds']::text[], $1)
+				ON CONFLICT (id) DO NOTHING
+			`, cid); serr != nil {
+				rt.shutdown(context.Background())
+				return nil, fmt.Errorf("seed dev-bypass auth_clients %q: %w", cid, serr)
+			}
+		}
 	default:
 		// Validate guarantees we never reach this branch in
 		// production. The runtime guard exists so a future regression

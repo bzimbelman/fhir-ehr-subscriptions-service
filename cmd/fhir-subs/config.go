@@ -183,6 +183,13 @@ type AuthConfig struct {
 	// devPrincipalMiddleware that authorizes every caller.
 	AllowDevBypass bool `yaml:"allow_dev_bypass"`
 
+	// DevBypassClientIDs are the X-Client-Id values the dev-bypass
+	// middleware should accept. At startup the wiring upserts an
+	// auth_clients row for each one (with the scopes devPrincipalMiddleware
+	// grants) so the subscriptions.client_id FK passes when one of these
+	// clients POSTs a Subscription. Empty in production.
+	DevBypassClientIDs []string `yaml:"dev_bypass_client_ids"`
+
 	// SubscriptionCreateRateLimit configures the per-authenticated-client
 	// rate limit on POST /Subscription (S-3.3). Burst <= 0 disables.
 	SubscriptionCreateRateLimit RateLimitConfig `yaml:"subscription_create_rate_limit"`
