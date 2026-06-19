@@ -371,14 +371,18 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 // fanoutOne is the per-event fanout. Runs entirely inside the caller's
 // transaction (the outbox).
 //
-// Story #55: streams active subscriptions for the topic via
-// StreamActiveByTopic and applies per-row evaluation + side effects in
-// the same pgx.Rows iteration loop. The previous implementation
-// materialized every active subscription into a slice up-front; on a
-// hot topic that pinned the transaction open until the entire result
-// set was buffered, with peak memory O(N_active). The streaming path
-// keeps peak memory flat regardless of N: at any moment the loop
-// holds one SubscriptionRow plus the result of evaluating it.
+// Story #55: StreamActiveByTopic yields active subscriptions one at a
+// time so peak memory stays flat regardless of N_active. Inside the
+// stream callback we ONLY classify (Evaluate); side effects (auth
+// recheck, deliveries insert, cursor advance, AuthRevoked state update)
+// are buffered and applied AFTER the stream closes. This is required:
+// pgx connections cannot service a second query while the streaming
+// pgx.Rows is still active on the same tx — doing so trips a
+// `conn busy` error and rolls the whole fanout back. Buffering only
+// the SubscriptionRow keeps the streaming-memory contract: per-row
+// state held during iteration is O(1); the deferred-action slice is
+// O(N_match), which is bounded by the number of subscriptions that
+// actually fanned out (a NoMatch leaves nothing behind). OP #286.
 func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRow) error {
 	cctx := correlation.WithID(ctx, row.CorrelationID.String())
 
@@ -396,13 +400,85 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 		CreatedMonth:     row.CreatedMonth,
 	}
 
-	matched := 0
+	type pendingMatch struct {
+		sub repos.SubscriptionRow
+	}
+	type pendingRevoke struct {
+		sub repos.SubscriptionRow
+	}
+	matches := make([]pendingMatch, 0)
+	revokes := make([]pendingRevoke, 0)
+
+	// Reusable single-element slice fed to Evaluate so the pure
+	// evaluator's signature stays unchanged but we never grow a
+	// per-topic slab.
+	one := make([]repos.SubscriptionRow, 1)
+	if err := w.subs.StreamActiveByTopic(cctx, tx, row.TopicURL, func(sub repos.SubscriptionRow) error {
+		one[0] = sub
+		decisions := Evaluate(event, one)
+		if len(decisions) != 1 {
+			return fmt.Errorf("submatcher: evaluate produced %d decisions (want 1)", len(decisions))
+		}
+		d := decisions[0]
+		w.metrics.FanoutOutcome(row.TopicURL, d.Decision)
+		switch d.Decision {
+		case FanoutMatch:
+			matches = append(matches, pendingMatch{sub: d.Subscription})
+		case FanoutEvaluationError:
+			w.metrics.FilterRuntimeError(d.Subscription.ID)
+			w.logger.WarnContext(cctx, "submatcher: filterBy evaluation error",
+				slog.String("subscription_id", d.Subscription.ID.String()),
+				slog.String("topic_url", row.TopicURL),
+				slog.String("reason", d.SkipReason),
+			)
+			if w.cfg.FilterErrorIsTransient {
+				return fmt.Errorf("submatcher: filter runtime error (transient): %s", d.SkipReason)
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("submatcher: stream subs: %w", err)
+	}
+
+	// Phase 2: stream is closed; the connection is free for writes and
+	// further queries. Apply auth re-check, then issue the deliveries
+	// insert + cursor advance + AuthRevoked state update for each match.
+	// P2.7: delivery-time scope re-check. We layer this on top of
+	// Evaluate so the pure evaluator stays free of I/O. Only Match
+	// decisions need a re-check; other decisions are already
+	// short-circuiting the deliveries insert.
+	if w.authRecheck != nil {
+		surviving := matches[:0]
+		for i := range matches {
+			m := &matches[i]
+			active, err := w.authRecheck.Recheck(cctx, m.sub.ClientID, m.sub.ID.String())
+			switch {
+			case err != nil:
+				// Fail-open: a transient auth-store outage must not
+				// stop a healthy pipeline. We log and proceed with
+				// the original Match.
+				w.logger.WarnContext(cctx, "submatcher: auth recheck error (fail-open)",
+					slog.String("subscription_id", m.sub.ID.String()),
+					slog.String("client_id", m.sub.ClientID),
+					slog.String("err", err.Error()),
+				)
+				surviving = append(surviving, *m)
+			case !active:
+				w.metrics.FanoutOutcome(row.TopicURL, FanoutAuthRevoked)
+				revokes = append(revokes, pendingRevoke{sub: m.sub})
+			default:
+				surviving = append(surviving, *m)
+			}
+		}
+		matches = surviving
+	}
+
 	// Per-subscription cursor batch (story #56 — S-12.4). The pre-#56
 	// fanout issued one inline UPDATE of events_since_subscription_start
 	// per Match, so a topic with N hot subscriptions paid N UPDATE
 	// round-trips inside the fanout transaction. We accumulate
-	// (subscription_id, event_number) pairs while streaming and flush
-	// them via a single batched UPDATE keyed on
+	// (subscription_id, event_number) pairs while iterating matches and
+	// flush them via a single batched UPDATE keyed on
 	// `unnest($1::uuid[], $2::bigint[])`. The cap (CursorAdvanceBatchSize)
 	// keeps the per-flush UPDATE snappy and well under Postgres' 65535
 	// extended-protocol bind-parameter ceiling on truly hot topics.
@@ -420,110 +496,56 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 		cursorNums = cursorNums[:0]
 		return nil
 	}
-	// Reusable single-element slice fed to Evaluate so the pure
-	// evaluator's signature stays unchanged but we never grow a
-	// per-topic slab.
-	one := make([]repos.SubscriptionRow, 1)
-	if err := w.subs.StreamActiveByTopic(cctx, tx, row.TopicURL, func(sub repos.SubscriptionRow) error {
-		one[0] = sub
-		decisions := Evaluate(event, one)
-		if len(decisions) != 1 {
-			return fmt.Errorf("submatcher: evaluate produced %d decisions (want 1)", len(decisions))
+
+	matched := 0
+	for i := range matches {
+		m := &matches[i]
+		eventNum, err := nextEventNumber(cctx, tx, m.sub.ID)
+		if err != nil {
+			return fmt.Errorf("submatcher: next event number: %w", err)
 		}
-		d := decisions[0]
-		// P2.7: delivery-time scope re-check. We layer this on top of
-		// Evaluate so the pure evaluator stays free of I/O. Only Match
-		// decisions need a re-check; other decisions are already
-		// short-circuiting the deliveries insert.
-		if d.Decision == FanoutMatch && w.authRecheck != nil {
-			active, err := w.authRecheck.Recheck(cctx, d.Subscription.ClientID, d.Subscription.ID.String())
-			switch {
-			case err != nil:
-				// Fail-open: a transient auth-store outage must not
-				// stop a healthy pipeline. We log and proceed with
-				// the original Match.
-				w.logger.WarnContext(cctx, "submatcher: auth recheck error (fail-open)",
-					slog.String("subscription_id", d.Subscription.ID.String()),
-					slog.String("client_id", d.Subscription.ClientID),
-					slog.String("err", err.Error()),
-				)
-			case !active:
-				d.Decision = FanoutAuthRevoked
-				d.SkipReason = "auth_revoked"
+		if _, err := w.dlv.Insert(cctx, tx, repos.DeliveryRow{
+			SubscriptionID: m.sub.ID,
+			EhrEventID:     row.ID,
+			EventNumber:    eventNum,
+			Status:         repos.DeliveryPending,
+			Attempts:       0,
+			NextAttemptAt:  w.clock(),
+			CorrelationID:  row.CorrelationID,
+		}); err != nil {
+			return fmt.Errorf("submatcher: insert delivery: %w", err)
+		}
+		cursorIDs = append(cursorIDs, m.sub.ID)
+		cursorNums = append(cursorNums, eventNum)
+		if len(cursorIDs) >= batchCap {
+			if err := flushCursor(); err != nil {
+				return err
 			}
 		}
-		w.metrics.FanoutOutcome(row.TopicURL, d.Decision)
-		switch d.Decision {
-		case FanoutAuthRevoked:
-			// Suppress the fanout; flip the subscription to
-			// status='error' atomically with the absence of the
-			// deliveries row. The state-updater is optional so unit
-			// tests that don't construct the repos still get the
-			// metric and the suppression.
-			if w.stateUpdater != nil {
-				if err := w.stateUpdater.MarkErrorRevoked(cctx, tx, d.Subscription.ID, "auth_revoked"); err != nil {
-					return fmt.Errorf("submatcher: mark error revoked: %w", err)
-				}
-			}
-			w.logger.InfoContext(cctx, "submatcher: subscription auth revoked at delivery prep",
-				slog.String("subscription_id", d.Subscription.ID.String()),
-				slog.String("client_id", d.Subscription.ClientID),
-				slog.String("topic_url", row.TopicURL),
-			)
-		case FanoutMatch:
-			eventNum, err := nextEventNumber(cctx, tx, d.Subscription.ID)
-			if err != nil {
-				return fmt.Errorf("submatcher: next event number: %w", err)
-			}
-			if _, err := w.dlv.Insert(cctx, tx, repos.DeliveryRow{
-				SubscriptionID: d.Subscription.ID,
-				EhrEventID:     row.ID,
-				EventNumber:    eventNum,
-				Status:         repos.DeliveryPending,
-				Attempts:       0,
-				NextAttemptAt:  w.clock(),
-				CorrelationID:  row.CorrelationID,
-			}); err != nil {
-				return fmt.Errorf("submatcher: insert delivery: %w", err)
-			}
-			// Advance the subscription's per-subscriber cursor in the
-			// same transaction. Story #56 (S-12.4): we accumulate the
-			// (subscription_id, event_number) pair and flush in one
-			// batched UPDATE per CursorAdvanceBatchSize (or once at
-			// the end of streaming, whichever comes first). The
-			// cursor is the wire-visible eventsSinceSubscriptionStart
-			// and must equal MAX(event_number) for the subscription so
-			// the next fanout's GREATEST() compute stays correct even
-			// if the scheduler is behind on actual delivery. The
-			// batched form preserves the GREATEST semantics per row.
-			cursorIDs = append(cursorIDs, d.Subscription.ID)
-			cursorNums = append(cursorNums, eventNum)
-			if len(cursorIDs) >= batchCap {
-				if err := flushCursor(); err != nil {
-					return err
-				}
-			}
-			matched++
-		case FanoutEvaluationError:
-			w.metrics.FilterRuntimeError(d.Subscription.ID)
-			w.logger.WarnContext(cctx, "submatcher: filterBy evaluation error",
-				slog.String("subscription_id", d.Subscription.ID.String()),
-				slog.String("topic_url", row.TopicURL),
-				slog.String("reason", d.SkipReason),
-			)
-			if w.cfg.FilterErrorIsTransient {
-				return fmt.Errorf("submatcher: filter runtime error (transient): %s", d.SkipReason)
-			}
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("submatcher: stream subs: %w", err)
+		matched++
 	}
 
 	// Trailing flush of any pairs accumulated since the last cap-fill
 	// (or the only flush, when N <= cap).
 	if err := flushCursor(); err != nil {
 		return err
+	}
+
+	// Apply AuthRevoked state transitions after the deliveries inserts.
+	// The state-updater is optional so unit tests that don't construct
+	// the repos still get the metric and the suppression.
+	for i := range revokes {
+		rv := &revokes[i]
+		if w.stateUpdater != nil {
+			if err := w.stateUpdater.MarkErrorRevoked(cctx, tx, rv.sub.ID, "auth_revoked"); err != nil {
+				return fmt.Errorf("submatcher: mark error revoked: %w", err)
+			}
+		}
+		w.logger.InfoContext(cctx, "submatcher: subscription auth revoked at delivery prep",
+			slog.String("subscription_id", rv.sub.ID.String()),
+			slog.String("client_id", rv.sub.ClientID),
+			slog.String("topic_url", row.TopicURL),
+		)
 	}
 
 	if _, err := w.ehr.MarkProcessed(cctx, tx, row.ID, row.CreatedMonth); err != nil {
