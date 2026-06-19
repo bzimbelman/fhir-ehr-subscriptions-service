@@ -8,11 +8,28 @@ package orchestrator
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// hl7PassthroughTopicJSON mirrors the seedHL7Topic body so the
+// production binary's matcher catalog (loaded from --config topics
+// dir) and the API's subscription_topics row stay aligned.
+const hl7PassthroughTopicJSON = `{
+  "resourceType": "SubscriptionTopic",
+  "url": "http://example.org/topics/hl7-passthrough",
+  "version": "1.0.0",
+  "title": "HL7 passthrough",
+  "status": "active",
+  "resourceTrigger": [{
+    "resource": "Bundle",
+    "supportedInteraction": ["create", "update", "delete"]
+  }]
+}`
 
 // TestE2E_ProdBinary_ProcessesHL7Message proves the production binary
 // — not just the harness — runs the full pipeline end-to-end. A
@@ -39,37 +56,55 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 	defer cancel()
 
 	resetPipelineTables(t, ctx, h)
+	if err := seedHL7Topic(ctx, h.DB); err != nil {
+		t.Fatalf("seed topic: %v", err)
+	}
 
-	// 1. Seed an active subscription pointing at the harness
-	// mocksub rest-hook receiver.
+	// Stage a topic catalog directory so the production binary's
+	// in-memory matcher catalog matches the subscription_topics row.
+	topicsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(topicsDir, "hl7-passthrough.json"),
+		[]byte(hl7PassthroughTopicJSON), 0o600); err != nil {
+		t.Fatalf("write topic file: %v", err)
+	}
+
+	// 1. Start the production binary with an MLLP listener. The
+	// /Subscription endpoint must be reachable before we register,
+	// so binary start precedes RegisterSubscriber. (Story #150: the
+	// helper now POSTs to the API; no more raw-SQL bypass.)
+	mllpPort := freePort(t)
+	bin := startProdBinary(t, ctx, prodBinaryConfig{
+		DatabaseURL:      h.DBURL,
+		FacilityID:       "e2e-prod-hl7",
+		AdapterID:        "default",
+		MLLPBind:         "127.0.0.1:" + mllpPort,
+		Insecure:         true,
+		GracePeriod:      5 * time.Second,
+		TopicsCatalogDir: topicsDir,
+		// audience empty so the subscription can be created without
+		// the bearer middleware in the way; X-Client-Id flows through
+		// devPrincipalMiddleware instead.
+		AuthAudience: "",
+		// allow_insecure_jwks=true also makes the rest-hook URL
+		// validator accept http:// endpoints — required because we
+		// register against the harness's plaintext mocksub receiver.
+		AuthAllowInsecureJWKS: true,
+	})
+	defer bin.Stop(t, 10*time.Second)
+
+	// 2. Register an active subscription via the real /Subscription
+	// HTTP API. The helper polls until status=active, so once it
+	// returns the submatcher's "active subscriptions" filter sees the
+	// row — no SQL UPDATE bypass.
 	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
-		ClientID: "e2e-prod-hl7-client",
-		TopicURL: "http://example.org/topic/observation",
-		Endpoint: "http://" + h.MockSub.HTTPAddr + "/hook/e2e-prod-hl7-sub",
+		ClientID:   "e2e-prod-hl7-client",
+		TopicURL:   "http://example.org/topics/hl7-passthrough",
+		Endpoint:   "http://" + h.MockSub.HTTPAddr + "/hook/e2e-prod-hl7-sub",
+		APIBaseURL: bin.HTTPURL(),
 	})
 	if err != nil {
 		t.Fatalf("RegisterSubscriber: %v", err)
 	}
-	// RegisterSubscriber inserts requested status; flip to active so
-	// the submatcher's "active subscriptions" filter sees it.
-	if _, err := h.DB.Exec(ctx, `UPDATE subscriptions SET status='active' WHERE id=$1`, subID); err != nil {
-		t.Fatalf("activate sub: %v", err)
-	}
-
-	// 2. Start the production binary with an MLLP listener.
-	mllpPort := freePort(t)
-	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL: h.DBURL,
-		FacilityID:  "e2e-prod-hl7",
-		AdapterID:   "default",
-		MLLPBind:    "127.0.0.1:" + mllpPort,
-		Insecure:    true,
-		GracePeriod: 5 * time.Second,
-		// audience empty so the subscription can be created without
-		// the bearer middleware in the way.
-		AuthAudience: "",
-	})
-	defer bin.Stop(t, 10*time.Second)
 
 	// 3. Send an HL7 v2 message via the binary's MLLP listener.
 	sendHL7ToProdBinary(t, ctx, bin.MLLPAddr(), sampleHL7v2)

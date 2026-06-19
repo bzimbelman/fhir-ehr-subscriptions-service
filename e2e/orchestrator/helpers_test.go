@@ -9,12 +9,16 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	hpipe "github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/harness"
 )
 
 // Helper contracts pinned by these tests:
 //
-//   * RegisterSubscriber inserts auth_clients + subscriptions rows so a
-//     scenario has a known subscriber to fan out to.
+//   * RegisterSubscriber drives POST /Subscription on the running API
+//     and waits for the row to flip to status=active. After story #150
+//     the helper does NOT touch the DB: tests assert on the row that
+//     the API wrote.
 //   * WaitForNotification polls the rest-hook journal until a matching
 //     entry shows up, or returns an error on timeout.
 //   * AssertResourceChanges queries resource_changes by adapter+correlation
@@ -23,15 +27,31 @@ import (
 // These are exercise-the-helpers tests; they are not the scenario tests.
 // Scenario tests live in *_scenario_test.go.
 
-func TestHelpers_RegisterSubscriber_InsertsRows(t *testing.T) {
+func TestHelpers_RegisterSubscriber_DrivesAPIAndActivates(t *testing.T) {
 	h := requireHarness(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	resetPipelineTables(t, ctx, h)
+	if err := seedHL7Topic(ctx, h.DB); err != nil {
+		t.Fatalf("seed topic: %v", err)
+	}
+
+	const clientID = "test-client-helper-150"
+	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
+		Pool:     h.DB,
+		ClientID: clientID,
+	})
+	if err != nil {
+		t.Fatalf("api start: %v", err)
+	}
+	t.Cleanup(func() { _ = api.Close() })
+
 	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
-		ClientID: "test-client-1",
-		TopicURL: "http://example.org/topic/1",
-		Endpoint: "http://localhost/hook/test-client-1",
+		ClientID:   clientID,
+		TopicURL:   "http://example.org/topics/hl7-passthrough",
+		Endpoint:   "https://subscriber.example.com/hook/test-client-150",
+		APIBaseURL: api.URL,
 	})
 	if err != nil {
 		t.Fatalf("RegisterSubscriber: %v", err)
@@ -40,15 +60,24 @@ func TestHelpers_RegisterSubscriber_InsertsRows(t *testing.T) {
 		t.Fatalf("RegisterSubscriber returned empty id")
 	}
 
-	// Read it back.
-	var foundClient string
+	// Read the row back: the API wrote it (we did not).
+	var (
+		foundClient string
+		foundStatus string
+	)
 	err = h.DB.QueryRow(ctx,
-		`select client_id from subscriptions where id = $1`, subID).Scan(&foundClient)
+		`select client_id, status from subscriptions where id = $1`, subID).Scan(&foundClient, &foundStatus)
 	if err != nil {
 		t.Fatalf("scan back: %v", err)
 	}
-	if foundClient != "test-client-1" {
-		t.Fatalf("client_id: got %q want test-client-1", foundClient)
+	if foundClient != clientID {
+		t.Fatalf("client_id: got %q want %q", foundClient, clientID)
+	}
+	// The helper's contract is that it returns only after the row is
+	// active; assert on that explicitly so a regression to "return on
+	// 201" is caught.
+	if foundStatus != "active" {
+		t.Fatalf("status: got %q want active", foundStatus)
 	}
 }
 

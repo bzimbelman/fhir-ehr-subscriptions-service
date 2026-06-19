@@ -13,6 +13,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	hpipe "github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/harness"
 )
 
 // TestE2E_EventNumber_NoDuplicatesUnderConcurrency pins B-26.
@@ -179,15 +181,31 @@ func TestE2E_EventNumber_ContinuesAfterRetention(t *testing.T) {
 	}
 }
 
-// mustRegisterSubscription creates a fresh client+subscription and
-// returns the subscription id. Fails the test on error.
+// mustRegisterSubscription creates a fresh client+subscription via the
+// real /Subscription HTTP API (story #150 — no SQL bypass) and returns
+// the subscription id. Fails the test on error. Each call stands up a
+// throwaway harness API server so the helper does not require a
+// long-lived prod binary.
 func (h *Harness) mustRegisterSubscription(t *testing.T, ctx context.Context, clientID string) uuid.UUID {
 	t.Helper()
+	uniqueClient := clientID + "-" + uuid.NewString()[:8]
+	if err := seedHL7Topic(ctx, h.DB); err != nil {
+		t.Fatalf("seed topic: %v", err)
+	}
+	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
+		Pool:     h.DB,
+		ClientID: uniqueClient,
+	})
+	if err != nil {
+		t.Fatalf("start api: %v", err)
+	}
+	t.Cleanup(func() { _ = api.Close() })
 	id, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
-		ClientID:    clientID + "-" + uuid.NewString()[:8],
-		TopicURL:    "http://example.org/test-topic",
+		ClientID:    uniqueClient,
+		TopicURL:    "http://example.org/topics/hl7-passthrough",
 		ChannelType: "rest-hook",
 		Endpoint:    "https://sub.example.org/notif",
+		APIBaseURL:  api.URL,
 	})
 	if err != nil {
 		t.Fatalf("register subscriber: %v", err)
