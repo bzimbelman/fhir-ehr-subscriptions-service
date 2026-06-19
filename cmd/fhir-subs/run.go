@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -151,14 +152,32 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		IdleTimeout:       cfg.Server.HTTP.IdleTimeout,
 		MaxHeaderBytes:    cfg.Server.HTTP.MaxHeaderBytes,
 	}
+	// Story #111: when TLS is enabled, attach a tls.Config with the
+	// operator-selected MinVersion before ServeTLS runs. ServeTLS will
+	// add the cert pair on top of this base config.
+	if !cfg.Server.HTTP.Insecure {
+		srv.TLSConfig = &tls.Config{
+			MinVersion: parseTLSMinVersion(cfg.Server.HTTP.TLS.MinVersion),
+		}
+	}
 	if hooks.onServerConfigured != nil {
 		hooks.onServerConfigured(srv)
 	}
 
-	// Serve in a goroutine; the main goroutine waits on ctx.Done().
+	// Serve in a goroutine; the main goroutine waits on ctx.Done(). When
+	// TLS is configured we use ServeTLS; the cleartext path stays on
+	// Serve. There is no fallback — TLS misconfiguration is fatal, never
+	// silently downgraded.
 	serveErr := make(chan error, 1)
 	go func() {
-		err := srv.Serve(listener)
+		var err error
+		if cfg.Server.HTTP.Insecure {
+			err = srv.Serve(listener)
+		} else {
+			err = srv.ServeTLS(listener,
+				cfg.Server.HTTP.TLS.CertFile,
+				cfg.Server.HTTP.TLS.KeyFile)
+		}
 		// http.ErrServerClosed is the clean-shutdown sentinel.
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
@@ -296,6 +315,22 @@ func isWildcardBind(bind string) bool {
 		return false
 	}
 	return host == "" || host == "0.0.0.0" || host == "::"
+}
+
+// parseTLSMinVersion maps the operator-facing MinVersion string ("1.2"
+// or "1.3") to the matching tls.VersionTLS* constant. Empty string
+// (Validate normalizes this to "1.3" first) and unknown values both
+// fall back to TLS 1.3 — this function is a last-line defense, the real
+// rejection is in Validate.
+func parseTLSMinVersion(v string) uint16 {
+	switch v {
+	case "1.2":
+		return tls.VersionTLS12
+	case "1.3", "":
+		return tls.VersionTLS13
+	default:
+		return tls.VersionTLS13
+	}
 }
 
 func slogLevel(level string) slog.Level {

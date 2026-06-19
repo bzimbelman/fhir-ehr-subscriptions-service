@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -213,6 +214,18 @@ type MLLPConfig struct {
 	// FrameAssemblyTimeout bounds how long a single inter-marker frame
 	// may take to assemble (S-9.1). Default 30s.
 	FrameAssemblyTimeout time.Duration `yaml:"frame_assembly_timeout"`
+	// ReadIdleTimeout closes a connection that has been silent this
+	// long. Default 60s. Maps to mllp.ListenerConfig.ReadIdleTimeout.
+	ReadIdleTimeout time.Duration `yaml:"read_idle_timeout"`
+	// NackThenDropAfter is the consecutive-persist-failure threshold
+	// at which the listener drops the connection. Default 5.
+	NackThenDropAfter int `yaml:"nack_then_drop_after"`
+	// InflightCapPerConn caps per-connection unfinished persist calls.
+	// Default 64.
+	InflightCapPerConn int `yaml:"inflight_cap_per_conn"`
+	// OnPersistFail selects behavior on persist failure ("nack" or
+	// "drop"). Default "nack".
+	OnPersistFail string `yaml:"on_persist_fail"`
 	// MaxConnections caps total concurrent connections across all
 	// endpoints (B-19).
 	MaxConnections int `yaml:"max_connections"`
@@ -234,6 +247,29 @@ type MLLPListener struct {
 	// balancer; a peer that can reach the socket directly while this
 	// flag is on can spoof its source IP at will. Default false.
 	ProxyProtocolV2 bool `yaml:"proxy_protocol_v2"`
+	// TLS, when non-nil, enables TLS for this endpoint. HL7 carries PHI
+	// and on a hospital network MUST run encrypted (B-20).
+	//
+	// IMPLEMENTATION NOTE: the underlying mllp.Listener accepts a single
+	// TLS config that applies to every endpoint it owns. To keep the
+	// operator-facing YAML straightforward, we model TLS per endpoint;
+	// Validate enforces that every endpoint with a TLS block configures
+	// the SAME paths so the wiring layer can collapse them into one
+	// listener-wide TLS config without surprise. Endpoints with no TLS
+	// block run cleartext on the same listener — but a heterogeneous
+	// mix of TLS+cleartext is rejected at startup because the listener
+	// cannot run both shapes in parallel today.
+	TLS *MLLPListenerTLSConfig `yaml:"tls"`
+}
+
+// MLLPListenerTLSConfig models mllp.listeners[].tls.* fields. CertFile +
+// KeyFile are required when the block is present; ClientCAFile +
+// RequireClientCert toggle mTLS.
+type MLLPListenerTLSConfig struct {
+	CertFile          string `yaml:"cert_file"`
+	KeyFile           string `yaml:"key_file"`
+	ClientCAFile      string `yaml:"client_ca_file"`
+	RequireClientCert bool   `yaml:"require_client_cert"`
 }
 
 // PipelineConfig models pipeline.* fields. Each stage's claim loop has
@@ -316,10 +352,18 @@ type HTTPConfig struct {
 	MaxHeaderBytes int `yaml:"max_header_bytes"`
 }
 
-// TLSConfig models server.http.tls.* fields. Real TLS wiring lands later.
+// TLSConfig models server.http.tls.* fields. The HTTP listener wires
+// these into srv.ServeTLS at startup so the API surface speaks TLS only;
+// when server.http.insecure is false, CertFile + KeyFile are required and
+// MUST point at PEM-encoded files that exist at boot (Validate fail-fast).
+//
+// MinVersion selects the TLS floor — "1.2" or "1.3" (default "1.3").
+// Operators with legacy clients pin to "1.2"; everyone else gets the
+// stronger 1.3 default.
 type TLSConfig struct {
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	CertFile   string `yaml:"cert_file"`
+	KeyFile    string `yaml:"key_file"`
+	MinVersion string `yaml:"min_version"`
 }
 
 // TopicsConfig models topics.* fields. The CatalogDir points at a
@@ -454,7 +498,75 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.Server.HTTP.TLS.CertFile) == "" || strings.TrimSpace(c.Server.HTTP.TLS.KeyFile) == "" {
 			problems = append(problems,
 				"server.http.tls.cert_file and key_file are required when server.http.insecure is false")
+		} else {
+			// Fail-fast: the cert + key MUST exist and parse as PEM at
+			// startup. Discovering a typo on the first request is a
+			// production outage we should never ship.
+			if err := checkPEMFile(c.Server.HTTP.TLS.CertFile); err != nil {
+				problems = append(problems,
+					fmt.Sprintf("server.http.tls.cert_file: %s", err))
+			}
+			if err := checkPEMFile(c.Server.HTTP.TLS.KeyFile); err != nil {
+				problems = append(problems,
+					fmt.Sprintf("server.http.tls.key_file: %s", err))
+			}
 		}
+		// Normalize + validate min_version. Empty -> "1.3" (default).
+		switch c.Server.HTTP.TLS.MinVersion {
+		case "":
+			c.Server.HTTP.TLS.MinVersion = "1.3"
+		case "1.2", "1.3":
+			// ok
+		default:
+			problems = append(problems,
+				fmt.Sprintf("server.http.tls.min_version=%q: must be \"1.2\" or \"1.3\"",
+					c.Server.HTTP.TLS.MinVersion))
+		}
+	}
+	// MLLP listener TLS validation. Per-listener TLS blocks must be
+	// homogeneous — every endpoint with a TLS block must share the same
+	// cert/key/CA paths so the wiring layer can collapse them into a
+	// single mllp.ListenerConfig.TLS (the underlying listener does not
+	// support per-endpoint TLS today).
+	var firstTLS *MLLPListenerTLSConfig
+	for i, ep := range c.MLLP.Listeners {
+		if ep.TLS == nil {
+			continue
+		}
+		if strings.TrimSpace(ep.TLS.CertFile) == "" {
+			problems = append(problems,
+				fmt.Sprintf("mllp.listeners[%d].tls.cert_file is required", i))
+		}
+		if strings.TrimSpace(ep.TLS.KeyFile) == "" {
+			problems = append(problems,
+				fmt.Sprintf("mllp.listeners[%d].tls.key_file is required", i))
+		}
+		if ep.TLS.RequireClientCert && strings.TrimSpace(ep.TLS.ClientCAFile) == "" {
+			problems = append(problems,
+				fmt.Sprintf("mllp.listeners[%d].tls.client_ca_file is required when require_client_cert is true", i))
+		}
+		if firstTLS == nil {
+			firstTLS = ep.TLS
+		} else if *firstTLS != *ep.TLS {
+			problems = append(problems,
+				fmt.Sprintf("mllp.listeners[%d].tls: heterogeneous TLS configs across endpoints are not supported; every endpoint with a TLS block must share cert/key/CA paths", i))
+		}
+	}
+	// Reject the heterogeneous TLS+cleartext mix when at least one
+	// endpoint has TLS and at least one does not — the listener owns a
+	// single TLS config and cannot run both shapes simultaneously.
+	if firstTLS != nil {
+		for i, ep := range c.MLLP.Listeners {
+			if ep.TLS == nil {
+				problems = append(problems,
+					fmt.Sprintf("mllp.listeners[%d]: cleartext alongside TLS endpoints in the same listener is not supported", i))
+				break
+			}
+		}
+	}
+	if c.MLLP.OnPersistFail != "" && c.MLLP.OnPersistFail != "nack" && c.MLLP.OnPersistFail != "drop" {
+		problems = append(problems,
+			fmt.Sprintf("mllp.on_persist_fail=%q: must be \"nack\" or \"drop\"", c.MLLP.OnPersistFail))
 	}
 	if c.Lifecycle.ShutdownGracePeriod <= 0 {
 		problems = append(problems, "lifecycle.shutdown_grace_period must be positive")
@@ -512,6 +624,8 @@ func applySets(cfg *Config, sets []string) error {
 			cfg.Server.HTTP.TLS.CertFile = val
 		case "server.http.tls.key_file":
 			cfg.Server.HTTP.TLS.KeyFile = val
+		case "server.http.tls.min_version":
+			cfg.Server.HTTP.TLS.MinVersion = val
 		case "lifecycle.shutdown_grace_period":
 			d, err := time.ParseDuration(val)
 			if err != nil {
@@ -618,6 +732,35 @@ func parseBool(v string) (bool, error) {
 // errInvalidBool is the sentinel returned by parseBool on a bad value;
 // it intentionally carries no caller-supplied text (S-1.1).
 var errInvalidBool = errors.New("invalid bool")
+
+// checkPEMFile verifies that path exists, is readable, and that its body
+// contains at least one PEM block. The body is bounded to 1 MiB — typical
+// X.509 certs and PKCS#8 keys are a few KiB; a multi-megabyte file is
+// almost certainly an operator pointing at the wrong path.
+func checkPEMFile(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("file does not exist: %s", path)
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if st.Size() == 0 {
+		return fmt.Errorf("file is empty: %s", path)
+	}
+	if st.Size() > 1<<20 {
+		return fmt.Errorf("file too large to be a PEM cert/key: %s (%d bytes)", path, st.Size())
+	}
+	body, err := os.ReadFile(path) //nolint:gosec // operator-supplied TLS material path
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	block, _ := pem.Decode(body)
+	if block == nil {
+		return fmt.Errorf("not PEM-encoded: %s", path)
+	}
+	return nil
+}
 
 // setParseErr builds the operator-facing error for a malformed --set RHS
 // without echoing the value, which may be a secret (S-1.1). The

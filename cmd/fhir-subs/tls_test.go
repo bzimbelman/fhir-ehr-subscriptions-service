@@ -151,13 +151,23 @@ func TestRun_ServesTLS_WhenCertConfigured(t *testing.T) {
 		t.Fatalf("https status: %d body=%s", resp.StatusCode, body)
 	}
 
-	// Plain HTTP GET to the same address should fail (the server only
-	// speaks TLS now).
-	httpClient := &http.Client{Timeout: 1 * time.Second}
-	if _, err := httpClient.Get("http://" + addr + "/healthz"); err == nil {
-		cancel()
-		<-done
-		t.Fatalf("plain HTTP GET to TLS-only listener should fail")
+	// Plain HTTP GET to the same address must NOT be served by the
+	// healthz handler — Go's http.Server detects the plaintext request
+	// and replies with "Client sent an HTTP request to an HTTPS server"
+	// at status 400. Either an error or a non-2xx response proves the
+	// server is no longer accepting cleartext.
+	httpClient := &http.Client{Timeout: 2 * time.Second}
+	httpResp, httpErr := httpClient.Get("http://" + addr + "/healthz")
+	switch {
+	case httpErr != nil:
+		// Connection-level error is acceptable.
+	case httpResp != nil:
+		_ = httpResp.Body.Close()
+		if httpResp.StatusCode == http.StatusOK {
+			cancel()
+			<-done
+			t.Fatalf("plain HTTP GET to TLS-only listener served 200 OK; expected non-2xx or error")
+		}
 	}
 
 	cancel()
