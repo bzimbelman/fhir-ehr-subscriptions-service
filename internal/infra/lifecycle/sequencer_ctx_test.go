@@ -32,12 +32,16 @@ func (r *metricsRecorder) Inc(name string, _ map[string]string) {
 		r.forcedTotal.Add(1)
 	}
 }
-func (r *metricsRecorder) Set(_ string, _ float64, _ map[string]string)             {}
-func (r *metricsRecorder) Observe(_ string, _ float64, _ map[string]string)         {}
-func (r *metricsRecorder) Add(_ string, _ float64, _ map[string]string)             {}
-func (r *metricsRecorder) Counter(_ string, _ map[string]string) func(float64)      { return func(float64) {} }
-func (r *metricsRecorder) Histogram(_ string, _ map[string]string) func(float64)    { return func(float64) {} }
-func (r *metricsRecorder) Gauge(_ string, _ map[string]string) func(float64)        { return func(float64) {} }
+func (r *metricsRecorder) Set(_ string, _ float64, _ map[string]string)     {}
+func (r *metricsRecorder) Observe(_ string, _ float64, _ map[string]string) {}
+func (r *metricsRecorder) Add(_ string, _ float64, _ map[string]string)     {}
+func (r *metricsRecorder) Counter(_ string, _ map[string]string) func(float64) {
+	return func(float64) {}
+}
+func (r *metricsRecorder) Histogram(_ string, _ map[string]string) func(float64) {
+	return func(float64) {}
+}
+func (r *metricsRecorder) Gauge(_ string, _ map[string]string) func(float64) { return func(float64) {} }
 
 // TestSequencer_RequestShutdownCtxCancelAbortsPhase asserts that the
 // ctx supplied to RequestShutdown is honored by the sequencer — when
