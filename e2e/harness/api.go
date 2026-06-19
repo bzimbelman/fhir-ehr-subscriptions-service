@@ -21,18 +21,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
-
-// stubChannelActivator is the harness's no-op activator for the API's
-// channel registry. It always returns HandshakeSucceeded so the API
-// flips a freshly-created subscription from `requested` to `active` and
-// the submatcher's "active subscriptions" query starts seeing it.
-type stubChannelActivator struct{}
-
-func (stubChannelActivator) ActivateSubscription(_ context.Context, _ repos.SubscriptionRow) (handlers.HandshakeOutcome, error) {
-	return handlers.HandshakeSucceeded, nil
-}
 
 // principalMiddleware injects a fixed auth.Principal so handlers see a
 // caller without going through the SMART verifier. The principal
@@ -58,10 +47,29 @@ type APIServerConfig struct {
 	// CapabilityStatement and $get-ws-binding-token responses.
 	BaseURL   string
 	WSBaseURL string
-	// ExtraChannels supplements the default rest-hook + websocket
-	// stubChannelActivator entries. Tests that drive the auth
-	// revocation scenario register a 401-returning activator here.
+	// ExtraChannels overrides or supplements the default rest-hook,
+	// websocket, and email entries built from the *ProbeURL / SMTP*
+	// fields below. Tests that drive the auth revocation scenario
+	// register a 401-returning activator here. Keys present in
+	// ExtraChannels win over the defaults.
 	ExtraChannels handlers.ChannelRegistry
+
+	// RestHookProbeURL is the localhost test subscriber the rest-hook
+	// activator POSTs the FHIR R5 handshake Bundle to. Required when
+	// ExtraChannels does not override "rest-hook". OP #147 forbids the
+	// no-op stubChannelActivator that previously stood in here.
+	RestHookProbeURL string
+
+	// SMTPHost / SMTPPort point the email activator's RCPT-TO probe at
+	// a localhost SMTP fake. Required when ExtraChannels does not
+	// override "email". OP #147 forbids the no-op stub.
+	SMTPHost string
+	SMTPPort int
+
+	// WebsocketProbeURL is the ws:// URL of the harness's WS upgrade
+	// handler. Required when ExtraChannels does not override
+	// "websocket". OP #147 forbids the no-op stub.
+	WebsocketProbeURL string
 	// TLSCert, when non-nil, makes the server listen with TLS. The
 	// rest-hook channel demands HTTPS, so production-shaped scenarios
 	// always use this; the WSS scenario also needs TLS to talk to the
@@ -117,9 +125,12 @@ type APIServer struct {
 }
 
 // StartAPIServer brings up an http.Server bound to 127.0.0.1:0 with the
-// Subscriptions API routes registered, a stub principal middleware in
-// place, and the rest-hook + websocket channels' default stub activator
-// installed.
+// Subscriptions API routes registered, a fixed-principal middleware
+// installed, and the rest-hook + websocket + email channels each backed
+// by a real activator (cfg.RestHookProbeURL / cfg.SMTPHost+SMTPPort /
+// cfg.WebsocketProbeURL). When a probe target is empty the slot is
+// filled with a fail-closed activator that returns HandshakeFailed —
+// never the synthetic "succeeded" stub OP #147 banned.
 //
 // The harness inserts an auth_clients row for cfg.ClientID up front so
 // the API's foreign-key check on subscriptions.client_id passes.
@@ -148,13 +159,9 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		return nil, fmt.Errorf("harness: seed auth_clients: %w", err)
 	}
 
-	channels := handlers.ChannelRegistry{
-		"rest-hook": stubChannelActivator{},
-		"websocket": stubChannelActivator{},
-		"email":     stubChannelActivator{},
-	}
-	for k, v := range cfg.ExtraChannels {
-		channels[k] = v
+	channels, err := buildHarnessChannels(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	auditStore, err := audit.NewPgStore(cfg.Pool, audit.PgStoreOptions{})
