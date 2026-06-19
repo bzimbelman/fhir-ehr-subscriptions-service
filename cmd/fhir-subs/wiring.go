@@ -45,6 +45,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/matcher"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/mllp"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/topics/catalog"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/webhook"
 )
 
 // productionRuntime aggregates everything the production binary stands
@@ -404,6 +405,24 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		RefillPerSecond: cfg.Admin.RateLimit.RefillPerSecond,
 		MaxKeys:         cfg.Admin.RateLimit.MaxKeys,
 	}, nil)
+	// Story #100: webhook ingress (vendor-push). Mount the receiver on
+	// the SAME chi router that backs the FHIR API so vendors POST
+	// signed change events to /webhooks/{adapter}. The receiver is
+	// HMAC-only authenticated — the per-adapter shared secret is read
+	// fresh on every request from adapter_state(scope='webhook',
+	// key='secret') so operators rotate by upserting that row without
+	// a restart. The receiver MUST NOT sit behind the bearer
+	// middleware: webhook callers do not have OAuth tokens.
+	r.Route("/webhooks", func(sub chi.Router) {
+		webhook.NewHandler(webhook.Deps{
+			Resolver:     newPgWebhookSecretResolver(pool, store.AdapterState()),
+			Repo:         rcs,
+			Querier:      pool,
+			Clock:        func() time.Time { return time.Now().UTC() },
+			MaxClockSkew: 5 * time.Minute,
+		}).Mount(sub)
+	})
+
 	rt.router = r
 
 	// --- 8. MLLP listener (optional) ------------------------------------
@@ -1046,6 +1065,41 @@ type defaultActivator struct{}
 // why this is the production default today.
 func (defaultActivator) ActivateSubscription(_ context.Context, _ repos.SubscriptionRow) (handlers.HandshakeOutcome, error) {
 	return handlers.HandshakeSucceeded, nil
+}
+
+// pgWebhookSecretResolver adapts the adapter_state KV table to the
+// webhook.SecretResolver interface. Each call queries the table fresh
+// — operators rotate the per-adapter HMAC secret by upserting
+// (adapter_id, scope='webhook', key='secret', value=<plaintext>).
+// No in-process cache: rotation has to be observable on the next
+// request, and the per-request DB hit on a low-volume vendor-push
+// path is acceptable. If rotation cadence ever drives this hot,
+// add a TTL'd cache with explicit invalidation.
+type pgWebhookSecretResolver struct {
+	pool *pgxpool.Pool
+	repo *repos.AdapterStateRepo
+}
+
+func newPgWebhookSecretResolver(pool *pgxpool.Pool, repo *repos.AdapterStateRepo) *pgWebhookSecretResolver {
+	return &pgWebhookSecretResolver{pool: pool, repo: repo}
+}
+
+// WebhookSecret satisfies webhook.SecretResolver. Returns ("", false)
+// for an unknown adapter, on-error, or when the row exists but the
+// stored bytes are empty (operators must upsert a non-empty value).
+// Each call hits the DB so a rotation upsert is observed on the next
+// request — there is intentionally no in-process cache.
+func (p *pgWebhookSecretResolver) WebhookSecret(adapterID string) (string, bool) {
+	if p == nil || p.pool == nil || p.repo == nil {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	row, err := p.repo.Get(ctx, p.pool, adapterID, "webhook", "secret")
+	if err != nil || row == nil || len(row.Value) == 0 {
+		return "", false
+	}
+	return string(row.Value), true
 }
 
 // nonZeroInt32 returns v if v > 0, else fallback.

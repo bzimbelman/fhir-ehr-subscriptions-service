@@ -116,14 +116,14 @@ func TestProductionRuntime_WebhookSecretFromAdapterState(t *testing.T) {
 
 	const adapterID = "default"
 	const secret = "rotation-secret-v1"
-	if _, err := pool.Exec(context.Background(),
+	if _, seedErr := pool.Exec(context.Background(),
 		`INSERT INTO adapter_state (adapter_id, scope, key, value, key_version, updated_at)
 		 VALUES ($1, 'webhook', 'secret', $2, 1, now())
 		 ON CONFLICT (adapter_id, scope, key)
 		 DO UPDATE SET value = excluded.value, updated_at = now()`,
 		adapterID, []byte(secret),
-	); err != nil {
-		t.Fatalf("seed adapter_state: %v", err)
+	); seedErr != nil {
+		t.Fatalf("seed adapter_state: %v", seedErr)
 	}
 
 	cfg := &Config{
@@ -163,6 +163,7 @@ func TestProductionRuntime_WebhookSecretFromAdapterState(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/"+adapterID, bytes.NewReader(body))
 	req.Header.Set("X-Hub-Signature-256", sig)
+	req.Header.Set("X-Webhook-Timestamp", time.Now().UTC().Format(time.RFC3339))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	rt.router.ServeHTTP(rec, req)
@@ -196,23 +197,23 @@ func TestProductionRuntime_WebhookEnqueuesResourceChange(t *testing.T) {
 
 	const adapterID = "default"
 	const secret = "enqueue-test-secret"
-	if _, err := pool.Exec(context.Background(),
+	if _, seedErr := pool.Exec(context.Background(),
 		`INSERT INTO adapter_state (adapter_id, scope, key, value, key_version, updated_at)
 		 VALUES ($1, 'webhook', 'secret', $2, 1, now())
 		 ON CONFLICT (adapter_id, scope, key)
 		 DO UPDATE SET value = excluded.value, updated_at = now()`,
 		adapterID, []byte(secret),
-	); err != nil {
-		t.Fatalf("seed adapter_state: %v", err)
+	); seedErr != nil {
+		t.Fatalf("seed adapter_state: %v", seedErr)
 	}
 
 	// Snapshot the current resource_changes row count for this adapter
 	// so the assertion is delta-based and resilient to other tests.
 	var before int64
-	if err := pool.QueryRow(context.Background(),
+	if scanErr := pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM resource_changes WHERE adapter_id=$1`, adapterID,
-	).Scan(&before); err != nil {
-		t.Fatalf("count before: %v", err)
+	).Scan(&before); scanErr != nil {
+		t.Fatalf("count before: %v", scanErr)
 	}
 
 	cfg := &Config{
@@ -252,6 +253,7 @@ func TestProductionRuntime_WebhookEnqueuesResourceChange(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/"+adapterID, bytes.NewReader(body))
 	req.Header.Set("X-Hub-Signature-256", sig)
+	req.Header.Set("X-Webhook-Timestamp", time.Now().UTC().Format(time.RFC3339))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	rt.router.ServeHTTP(rec, req)
@@ -261,10 +263,10 @@ func TestProductionRuntime_WebhookEnqueuesResourceChange(t *testing.T) {
 	}
 
 	var after int64
-	if err := pool.QueryRow(context.Background(),
+	if scanErr := pool.QueryRow(context.Background(),
 		`SELECT count(*) FROM resource_changes WHERE adapter_id=$1 AND resource_type='Observation'`, adapterID,
-	).Scan(&after); err != nil {
-		t.Fatalf("count after: %v", err)
+	).Scan(&after); scanErr != nil {
+		t.Fatalf("count after: %v", scanErr)
 	}
 	if after <= before {
 		t.Fatalf("resource_changes row count did not grow: before=%d after=%d", before, after)
