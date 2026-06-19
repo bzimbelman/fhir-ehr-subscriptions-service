@@ -29,6 +29,12 @@ type runHooks struct {
 	// onListening fires after the HTTP server is bound and accepting traffic.
 	// addr is the actual bound address (matters when bind uses :0).
 	onListening func(addr string)
+	// onProbeListening fires after the probe listener (S-118) is bound.
+	// probeAddr is the actual bound address (matters when probe_bind
+	// uses :0). Tests that want to assert /healthz, /readyz, /startup
+	// behavior must hit probeAddr — probes no longer live on the main
+	// auth-protected mux.
+	onProbeListening func(probeAddr string)
 	// onShutdownStart fires after the registry is marked shutting_down but
 	// before the HTTP server begins draining.
 	onShutdownStart func(reg *lifecycleRegistry)
@@ -134,6 +140,43 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	}
 	addr := listener.Addr().String()
 
+	// Probe listener (S-118). Bound separately so /healthz, /readyz,
+	// /startup are reachable on a port that is NEVER wrapped in auth
+	// middleware — a buggy auth config can't 401 a kubelet probe and
+	// leave pods un-Ready forever. The helm chart's
+	// `port: probes -> 8081` lands on this socket.
+	probeListener, err := net.Listen("tcp", cfg.Server.HTTP.ProbeBind)
+	if err != nil {
+		_ = listener.Close()
+		if prod != nil {
+			prod.shutdown(context.Background())
+		}
+		return fmt.Errorf("listen probe %s: %w", cfg.Server.HTTP.ProbeBind, err)
+	}
+	probeAddr := probeListener.Addr().String()
+	probeMux := buildProbeMux(lcMod)
+	probeSrv := &http.Server{
+		Handler:           probeMux,
+		ReadHeaderTimeout: cfg.Server.HTTP.ReadHeaderTimeout,
+		ReadTimeout:       cfg.Server.HTTP.ReadTimeout,
+		WriteTimeout:      cfg.Server.HTTP.WriteTimeout,
+		IdleTimeout:       cfg.Server.HTTP.IdleTimeout,
+		MaxHeaderBytes:    cfg.Server.HTTP.MaxHeaderBytes,
+	}
+	probeServeErr := make(chan error, 1)
+	go func() {
+		err := probeSrv.Serve(probeListener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			probeServeErr <- err
+			return
+		}
+		probeServeErr <- nil
+	}()
+	logger.Info("probe listener listening", "addr", probeAddr)
+	if hooks.onProbeListening != nil {
+		hooks.onProbeListening(probeAddr)
+	}
+
 	mux := buildHTTPMux(lcMod, prod)
 	// Wrap the outer mux with the production tracer when observability
 	// is wired so probe endpoints (/healthz, /readyz, /startup) generate
@@ -210,17 +253,25 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		hooks.onStartupComplete()
 	}
 
-	// Wait for shutdown signal (caller cancels ctx) or for the server to die
-	// unexpectedly. The lifecycle module also installs SIGTERM/SIGINT
-	// handlers, so RequestShutdown can fire from either path.
+	// Wait for shutdown signal (caller cancels ctx) or for either the
+	// main or probe server to die unexpectedly.
 	select {
 	case err := <-serveErr:
 		// Pre-shutdown serve failure: ask lifecycle to wind down so any
 		// registered hooks still get called.
+		_ = probeSrv.Close()
 		lcMod.RequestShutdown(context.Background(), "http_serve_error")
 		_ = lcMod.WaitForExit(context.Background())
 		if err != nil {
 			return fmt.Errorf("http serve: %w", err)
+		}
+		return nil
+	case err := <-probeServeErr:
+		_ = srv.Close()
+		lcMod.RequestShutdown(context.Background(), "probe_serve_error")
+		_ = lcMod.WaitForExit(context.Background())
+		if err != nil {
+			return fmt.Errorf("probe serve: %w", err)
 		}
 		return nil
 	case <-ctx.Done():
@@ -238,9 +289,20 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Lifecycle.ShutdownGracePeriod)
 	defer cancel()
 
+	// Shut the probe listener down first so kubelet probes start
+	// failing while we drain the main listener; this matches Kubernetes
+	// preStop semantics (mark not-ready, then drain).
+	if perr := probeSrv.Shutdown(shutdownCtx); perr != nil {
+		logger.Warn("probe listener shutdown error", "err", perr.Error())
+	}
 	shutdownErr := srv.Shutdown(shutdownCtx)
 	if hooks.shutdownErr != nil {
 		shutdownErr = hooks.shutdownErr()
+	}
+	// Drain the probe serve goroutine.
+	select {
+	case <-probeServeErr:
+	case <-shutdownCtx.Done():
 	}
 	if shutdownErr != nil {
 		// On grace-period exhaustion srv.Shutdown returns context.DeadlineExceeded.
@@ -279,28 +341,32 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	return nil
 }
 
-// buildHTTPMux assembles the production HTTP handler. The lifecycle
-// probes (`/healthz`, `/readyz`, `/startup`) are always mounted on a
-// fixed mux. When the production runtime is configured (B-4 full
-// wiring), every other request is delegated to the runtime's router —
-// which serves the FHIR Subscription API behind auth + observability
-// middleware. Probe-only mode (no DB) keeps the legacy `/metadata`
+// buildHTTPMux assembles the production HTTP handler for the main
+// (auth-protected) listener. Probes are NOT mounted here; they live on
+// the dedicated probe listener (S-118) so a buggy auth wrap cannot 401
+// a kubelet probe. Probe-only mode (no DB) keeps the legacy `/metadata`
 // stub so the existing smoke tests continue to function.
-func buildHTTPMux(lcMod *lifecycle.LifecycleModule, prod *productionRuntime) http.Handler {
+func buildHTTPMux(_ *lifecycle.LifecycleModule, prod *productionRuntime) http.Handler {
 	mux := http.NewServeMux()
-	probes := lcMod.Probes()
-	mux.Handle("/healthz", probes.Healthz)
-	mux.Handle("/readyz", probes.Readyz)
-	mux.Handle("/startup", probes.Startup)
 
 	if prod == nil || prod.router == nil {
 		mux.HandleFunc("/metadata", makeMetadata())
 		return mux
 	}
-	// Mount the production router on every non-probe path. Using "/"
-	// as the catch-all means probe routes (registered above) win
-	// thanks to ServeMux's "longest match" rule.
+	// Mount the production router on every path.
 	mux.Handle("/", prod.router)
+	return mux
+}
+
+// buildProbeMux assembles the unauthenticated probe handler. It serves
+// /healthz, /readyz, /startup and nothing else — every other path
+// returns 404. The kubelet hits this on cfg.Server.HTTP.ProbeBind.
+func buildProbeMux(lcMod *lifecycle.LifecycleModule) http.Handler {
+	mux := http.NewServeMux()
+	probes := lcMod.Probes()
+	mux.Handle("/healthz", probes.Healthz)
+	mux.Handle("/readyz", probes.Readyz)
+	mux.Handle("/startup", probes.Startup)
 	return mux
 }
 

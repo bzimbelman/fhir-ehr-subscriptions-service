@@ -68,16 +68,27 @@ func TestHelmChart_TopicCatalogConfigMap_Renders(t *testing.T) {
 	requireHelm(t)
 
 	chartPath := chartDir(t)
-	rendered := helmTemplate(t, chartPath, []string{
-		"--set", "tls.enabled=false",
-		"--set", "probes.liveness.enabled=false",
-		"--set", "probes.readiness.enabled=false",
-		"--set", "probes.startup.enabled=false",
-		// topicCatalog.files is the operator-facing knob: a map of
-		// filename -> JSON body. The chart MUST render each entry as a
-		// key in a topics ConfigMap.
-		"--set-string", `topicCatalog.files.demo\.json={"resourceType":"SubscriptionTopic","status":"active","url":"http://example.org/topic/demo"}`,
-	})
+	// Write a values file so we can pass real JSON containing commas
+	// (helm --set treats `,` as a list separator, which mangles JSON).
+	valuesFile := filepath.Join(t.TempDir(), "topic-values.yaml")
+	valuesBody := `tls:
+  enabled: false
+probes:
+  liveness:
+    enabled: false
+  readiness:
+    enabled: false
+  startup:
+    enabled: false
+topicCatalog:
+  files:
+    demo.json: |
+      {"resourceType":"SubscriptionTopic","status":"active","url":"http://example.org/topic/demo"}
+`
+	if err := os.WriteFile(valuesFile, []byte(valuesBody), 0o600); err != nil {
+		t.Fatalf("write values: %v", err)
+	}
+	rendered := helmTemplate(t, chartPath, []string{"--values", valuesFile})
 
 	if !strings.Contains(rendered, "fhir-subs-topics") {
 		t.Fatalf("expected a topics ConfigMap (suffix 'fhir-subs-topics') in rendered chart; not found:\n%s", rendered)
