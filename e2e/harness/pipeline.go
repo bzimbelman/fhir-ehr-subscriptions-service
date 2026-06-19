@@ -266,6 +266,10 @@ func (p *Pipeline) Start(ctx context.Context) error {
 				IdlePollInterval: p.cfg.PollInterval,
 			},
 		)
+		// OP #272: per-client fan-out requires the SubscriptionsRepo
+		// so the worker can enumerate distinct active client_ids per
+		// matched topic.
+		w.SetSubscriptionsRepo(p.subs)
 		p.matcher = w
 		p.stopWG.Add(1)
 		go func() {

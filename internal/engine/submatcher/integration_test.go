@@ -115,11 +115,12 @@ func seedAuthClient(t *testing.T, s *storage.Storage, id string) {
 func seedEhrEvent(
 	t *testing.T,
 	s *storage.Storage,
-	topicURL, focus string,
+	clientID, topicURL, focus string,
 	resource []byte,
 ) (uuid.UUID, int64) {
 	t.Helper()
 	id, evNum, err := s.EhrEvents().Insert(context.Background(), s.Pool().Pgx(), repos.EhrEventRow{
+		ClientID:         clientID,
 		TopicURL:         topicURL,
 		Focus:            focus,
 		ChangeKind:       repos.ChangeCreate,
@@ -164,7 +165,7 @@ func TestIntegrationSubmatcherOneMatchOneDelivery(t *testing.T) {
 		t.Fatalf("insert sub: %v", err)
 	}
 
-	rcID, evNum := seedEhrEvent(t, s, "http://example.org/order-changed", "ServiceRequest/abc",
+	rcID, evNum := seedEhrEvent(t, s, "client-A", "http://example.org/order-changed", "ServiceRequest/abc",
 		[]byte(`{"resourceType":"ServiceRequest","id":"abc","subject":{"reference":"Patient/123"},"status":"active"}`),
 	)
 
@@ -244,7 +245,11 @@ func TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries(t *testing.T) {
 		FilterBy: filterByJSON(map[string]string{"filterParameter": "status", "value": "active"}),
 	})
 
-	rcID, _ := seedEhrEvent(t, s, "http://example.org/t", "X/1",
+	// The pre-272 ehr_events row was per-topic with no client; in
+	// the post-272 model the matcher fans out per-client. For this
+	// submatcher test we seed a single per-client row to keep the
+	// test focused on submatcher fan-out behavior.
+	rcID, _ := seedEhrEvent(t, s, "client-A", "http://example.org/t", "X/1",
 		[]byte(`{"resourceType":"X","id":"1","status":"active"}`))
 
 	w := submatcher.NewWorker(s.Pool().Pgx(), s.Subscriptions(), s.EhrEvents(), s.Deliveries(), submatcher.Config{ClaimBatchSize: 1})
@@ -294,7 +299,7 @@ func TestIntegrationSubmatcherFilterExcludes(t *testing.T) {
 		t.Fatalf("seed sub: %v", err)
 	}
 
-	rcID, _ := seedEhrEvent(t, s, "http://example.org/t", "X/1",
+	rcID, _ := seedEhrEvent(t, s, "client-A", "http://example.org/t", "X/1",
 		[]byte(`{"resourceType":"X","id":"1","subject":{"reference":"Patient/100"}}`))
 
 	w := submatcher.NewWorker(s.Pool().Pgx(), s.Subscriptions(), s.EhrEvents(), s.Deliveries(), submatcher.Config{ClaimBatchSize: 1})
@@ -344,7 +349,7 @@ func TestIntegrationSubmatcherTwoEventsPerSubAdvancesCursor(t *testing.T) {
 	})
 
 	for i := 0; i < 2; i++ {
-		seedEhrEvent(t, s, "http://example.org/t", fmt.Sprintf("X/%d", i),
+		seedEhrEvent(t, s, "client-A", "http://example.org/t", fmt.Sprintf("X/%d", i),
 			[]byte(`{"resourceType":"X","id":"x","status":"active"}`))
 	}
 

@@ -602,6 +602,10 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		ClaimBatchSize:   nonZeroInt32(cfg.Pipeline.Matcher.ClaimBatchSize, 16),
 		IdlePollInterval: matchPoll,
 	})
+	// OP #272: the matcher fans ehr_events out per (topic ×
+	// subscription.client_id). Without the SubscriptionsRepo it would
+	// error on every match.
+	matcherWorker.SetSubscriptionsRepo(subsRepo)
 	rt.matcher = matcherWorker
 
 	// Submatcher.

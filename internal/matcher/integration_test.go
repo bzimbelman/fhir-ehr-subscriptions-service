@@ -150,6 +150,29 @@ func TestIntegrationMatcherEndToEnd(t *testing.T) {
 	}
 	cat := rep.Catalog
 
+	// Register the recipient tenant + an active subscription on the
+	// matched topic so the matcher's per-client fan-out (OP #272) has
+	// someone to fan out to. Pre-#272 this was an implicit "any topic
+	// match emits a row regardless of subscribers"; post-#272 the
+	// matcher emits one row per (resource_change × topic ×
+	// subscription.client_id).
+	if err := s.AuthClients().Insert(ctx, s.Pool().Pgx(), repos.AuthClientRow{
+		ID: "client-end-to-end", DisplayName: "client-end-to-end",
+	}); err != nil {
+		t.Fatalf("auth_clients.Insert: %v", err)
+	}
+	if _, err := s.Subscriptions().Insert(ctx, s.Pool().Pgx(), repos.SubscriptionRow{
+		ClientID:    "client-end-to-end",
+		Status:      repos.SubscriptionStatus("active"),
+		TopicURL:    "http://example.org/topics/order-changed",
+		ChannelType: "rest-hook",
+		Endpoint:    "https://example.com/hook",
+		Content:     "id-only",
+		MaxCount:    1,
+	}); err != nil {
+		t.Fatalf("subscriptions.Insert: %v", err)
+	}
+
 	// Insert a matching resource_changes row.
 	plaintext := []byte(`{"resourceType":"ServiceRequest","id":"abc-123","status":"active"}`)
 	corr := uuid.New()
@@ -173,6 +196,7 @@ func TestIntegrationMatcherEndToEnd(t *testing.T) {
 		func() *catalog.Catalog { return cat },
 		matcher.Config{ClaimBatchSize: 1},
 	)
+	worker.SetSubscriptionsRepo(s.Subscriptions())
 	processed, err := worker.TickOnce(ctx)
 	if err != nil {
 		t.Fatalf("TickOnce: %v", err)
@@ -265,6 +289,7 @@ func TestIntegrationNoMatchStillFlipsProcessed(t *testing.T) {
 		func() *catalog.Catalog { return cat },
 		matcher.Config{ClaimBatchSize: 1},
 	)
+	worker.SetSubscriptionsRepo(s.Subscriptions())
 	processed, err := worker.TickOnce(ctx)
 	if err != nil {
 		t.Fatalf("TickOnce: %v", err)

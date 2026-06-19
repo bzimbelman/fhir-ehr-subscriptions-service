@@ -74,7 +74,7 @@ func TestIntegrationP27_RevokedSuppressesDeliveryAndMarksError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert sub: %v", err)
 	}
-	rcID, _ := seedEhrEvent(t, s, "http://example.org/order-changed", "ServiceRequest/abc",
+	rcID, _ := seedEhrEvent(t, s, "client-revoked", "http://example.org/order-changed", "ServiceRequest/abc",
 		[]byte(`{"resourceType":"ServiceRequest","id":"abc","subject":{"reference":"Patient/123"},"status":"active"}`),
 	)
 
@@ -141,7 +141,7 @@ func TestIntegrationP27_RecheckErrorFailsOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert sub: %v", err)
 	}
-	rcID, _ := seedEhrEvent(t, s, "http://example.org/order-changed", "ServiceRequest/abc",
+	rcID, _ := seedEhrEvent(t, s, "client-failopen", "http://example.org/order-changed", "ServiceRequest/abc",
 		[]byte(`{"resourceType":"ServiceRequest","id":"abc","subject":{"reference":"Patient/123"},"status":"active"}`),
 	)
 

@@ -29,8 +29,9 @@ func TestEhrEventsInsertReturnsID(t *testing.T) {
 	rcID := uuid.New()
 
 	pool.ExpectBegin()
+	// 11 args after #272: client_id added as the leading column.
 	pool.ExpectQuery("INSERT INTO ehr_events").
-		WithArgs(anyArgs(10)...).
+		WithArgs(anyArgs(11)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "event_number", "created_month"}).
 			AddRow(id, int64(7), time.Now()))
 	pool.ExpectCommit()
@@ -38,6 +39,7 @@ func TestEhrEventsInsertReturnsID(t *testing.T) {
 	tx, _ := pool.Begin(ctx)
 	repo := repos.NewEhrEventsRepo(newCodec(t))
 	got, _, err := repo.Insert(ctx, tx, repos.EhrEventRow{
+		ClientID:         "client-test",
 		TopicURL:         "http://example.org/order-changed",
 		ChangeKind:       repos.ChangeUpdate,
 		Focus:            "ServiceRequest/abc",

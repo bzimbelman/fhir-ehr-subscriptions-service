@@ -41,17 +41,17 @@ func (r *EhrEventsRepo) Insert(ctx context.Context, q Querier, row EhrEventRow) 
 	// partitions before BEFORE triggers fire on the parent.
 	const sql = `
 		INSERT INTO ehr_events
-			(topic_url, focus, change_kind, resource, previous_resource,
+			(client_id, topic_url, focus, change_kind, resource, previous_resource,
 			 key_version, correlation_id, occurred_at, notification_shape_hint,
 			 resource_change_id, created_month)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 		        date_trunc('month', now())::date)
 		RETURNING id, event_number, created_month`
 	var id uuid.UUID
 	var ev int64
 	var month any
 	if err := q.QueryRow(ctx, sql,
-		row.TopicURL, row.Focus, string(row.ChangeKind), enc, prev, kv,
+		row.ClientID, row.TopicURL, row.Focus, string(row.ChangeKind), enc, prev, kv,
 		row.CorrelationID, row.OccurredAt, row.NotificationShapeHint, row.ResourceChangeID,
 	).Scan(&id, &ev, &month); err != nil {
 		return uuid.Nil, 0, fmt.Errorf("ehr_events: insert: %w", err)
@@ -63,7 +63,7 @@ func (r *EhrEventsRepo) Insert(ctx context.Context, q Querier, row EhrEventRow) 
 // SKIP LOCKED.
 func (r *EhrEventsRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, limit int32) ([]EhrEventRow, error) {
 	const sql = `
-		SELECT id, event_number, topic_url, focus, change_kind, resource,
+		SELECT id, event_number, client_id, topic_url, focus, change_kind, resource,
 		       previous_resource, key_version, correlation_id, occurred_at,
 		       notification_shape_hint, resource_change_id, processed,
 		       processed_at, created_month, created_at
@@ -83,7 +83,7 @@ func (r *EhrEventsRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, limit i
 		var enc, prev []byte
 		var kind string
 		if err := rows.Scan(
-			&rec.ID, &rec.EventNumber, &rec.TopicURL, &rec.Focus, &kind, &enc,
+			&rec.ID, &rec.EventNumber, &rec.ClientID, &rec.TopicURL, &rec.Focus, &kind, &enc,
 			&prev, &rec.KeyVersion, &rec.CorrelationID, &rec.OccurredAt,
 			&rec.NotificationShapeHint, &rec.ResourceChangeID, &rec.Processed,
 			&rec.ProcessedAt, &rec.CreatedMonth, &rec.CreatedAt,
@@ -122,7 +122,7 @@ func (r *EhrEventsRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, limit i
 // data demands partition pruning.
 func (r *EhrEventsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID) (*EhrEventRow, error) {
 	const sql = `
-		SELECT id, event_number, topic_url, focus, change_kind, resource,
+		SELECT id, event_number, client_id, topic_url, focus, change_kind, resource,
 		       previous_resource, key_version, correlation_id, occurred_at,
 		       notification_shape_hint, resource_change_id, processed,
 		       processed_at, created_month, created_at
@@ -133,7 +133,7 @@ func (r *EhrEventsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID) (*
 	var kind string
 	row := q.QueryRow(ctx, sql, id)
 	if err := row.Scan(
-		&rec.ID, &rec.EventNumber, &rec.TopicURL, &rec.Focus, &kind, &enc,
+		&rec.ID, &rec.EventNumber, &rec.ClientID, &rec.TopicURL, &rec.Focus, &kind, &enc,
 		&prev, &rec.KeyVersion, &rec.CorrelationID, &rec.OccurredAt,
 		&rec.NotificationShapeHint, &rec.ResourceChangeID, &rec.Processed,
 		&rec.ProcessedAt, &rec.CreatedMonth, &rec.CreatedAt,

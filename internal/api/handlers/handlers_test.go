@@ -226,29 +226,21 @@ type memEvents struct {
 	rows []repos.EhrEventRow
 }
 
-func (m *memEvents) ListByTopicAndRange(_ context.Context, topicURL string, since, until int64) ([]repos.EhrEventRow, error) {
-	out := []repos.EhrEventRow{}
-	for _, r := range m.rows {
-		if r.TopicURL != topicURL {
-			continue
-		}
-		if since > 0 && r.EventNumber < since {
-			continue
-		}
-		if until > 0 && r.EventNumber > until {
-			continue
-		}
-		out = append(out, r)
-	}
-	return out, nil
-}
-
 // ListByTopicAndRangePage mirrors the Pg adapter: ordered by event_number
 // ASC and capped at limit. limit <= 0 means "no cap". (S-2.15)
-func (m *memEvents) ListByTopicAndRangePage(_ context.Context, topicURL string, since, until int64, limit int) ([]repos.EhrEventRow, error) {
+//
+// clientID is the OP #274 tenant predicate. Empty clientID returns no
+// rows so a missing principal cannot bypass tenant isolation.
+func (m *memEvents) ListByTopicAndRangePage(_ context.Context, topicURL, clientID string, since, until int64, limit int) ([]repos.EhrEventRow, error) {
 	matched := []repos.EhrEventRow{}
+	if clientID == "" {
+		return matched, nil
+	}
 	for _, r := range m.rows {
 		if r.TopicURL != topicURL {
+			continue
+		}
+		if r.ClientID != clientID {
 			continue
 		}
 		if since > 0 && r.EventNumber < since {
@@ -726,9 +718,9 @@ func TestEvents_Replay(t *testing.T) {
 	})
 	events := deps.Events.(*memEvents)
 	events.rows = []repos.EhrEventRow{
-		{EventNumber: 1, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/abc"},
-		{EventNumber: 2, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/def"},
-		{EventNumber: 3, TopicURL: "http://example.org/topics/other", Focus: "Encounter/x"},
+		{ClientID: "client-A", EventNumber: 1, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/abc"},
+		{ClientID: "client-A", EventNumber: 2, TopicURL: "http://example.org/topics/orders", Focus: "ServiceRequest/def"},
+		{ClientID: "client-A", EventNumber: 3, TopicURL: "http://example.org/topics/other", Focus: "Encounter/x"},
 	}
 	srv := newTestServer(t, defaultPrincipal(), deps)
 	resp, err := http.Get(srv.URL + "/Subscription/" + id.String() + "/$events?eventsSinceNumber=1&eventsUntilNumber=2")
