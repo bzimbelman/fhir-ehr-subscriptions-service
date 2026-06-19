@@ -22,6 +22,7 @@ import (
 
 	defaultadapter "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/default"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/scanrunner"
 	adapterspi "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
@@ -521,19 +522,52 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	)
 	rt.scheduler = schedulerWorker
 
+	// FhirScanRunner worker (story #96). Built only when the loaded
+	// adapter declares Capabilities.FhirScanRunner=true; the registry
+	// already enforces (#65) that a true capability has a non-nil
+	// builder, so the BuildFhirScanRunner return is safe to use without
+	// a nil check. The worker is registered with the supervisedPipeline
+	// alongside the other four workers so it gets the same restart +
+	// drain semantics for free.
+	var scanWorker *scanrunner.Worker
+	if loadedAdapter.Manifest().Capabilities.FhirScanRunner {
+		runner := loadedAdapter.BuildFhirScanRunner(adapterspi.AdapterContext{
+			AdapterID: cfg.Adapter.ID,
+			Now:       time.Now,
+		})
+		w, err := scanrunner.New(scanrunner.Options{
+			AdapterID: cfg.Adapter.ID,
+			Runner:    runner,
+			Sink:      scanrunner.NewRepoSink(rcs, pool),
+			Clock:     time.Now,
+		})
+		if err != nil {
+			rt.shutdown(context.Background())
+			return nil, fmt.Errorf("scanrunner: %w", err)
+		}
+		scanWorker = w
+	}
+
 	// Build the supervised pipeline. This replaces the prior bare
 	// `go w.Run(loopCtx)` pattern (story #99): each worker now runs
 	// under an internal/adapter/supervisor.Supervisor that recovers
 	// panics, restarts on exit with bounded exponential backoff, and
 	// exposes a Status snapshot to /admin/supervisor/status.
-	pipeline, perr := buildSupervisedPipeline(pipelineSupervisorDeps{
+	supDeps := pipelineSupervisorDeps{
 		HL7:        proc,
 		Matcher:    matcherWorker,
 		Submatcher: submatcherWorker,
 		Scheduler:  schedulerWorker,
 		Lifecycle:  lcMod,
 		Backoff:    cfg.Pipeline.Supervisor,
-	})
+	}
+	// Assign FhirScanRunner only when non-nil; assigning a typed-nil
+	// *scanrunner.Worker to an interface field would produce a non-nil
+	// interface that buildSupervisedPipeline would mistakenly host.
+	if scanWorker != nil {
+		supDeps.FhirScanRunner = scanWorker
+	}
+	pipeline, perr := buildSupervisedPipeline(supDeps)
 	if perr != nil {
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("pipeline supervisor: %w", perr)
