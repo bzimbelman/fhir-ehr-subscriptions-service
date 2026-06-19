@@ -128,6 +128,19 @@ type prodBinaryConfig struct {
 	// non-loopback exporters works in e2e. Ignored when
 	// TracingOTLPEndpoint is empty. Story #94.
 	TracingInsecure bool
+
+	// SubscriptionCreateRateLimitBurst, when > 0, renders an
+	// auth.subscription_create_rate_limit block into the binary's
+	// config. RefillPerSecond=0 pins the bucket at Burst (story #104
+	// AC #5: prove the wiring fires under real binary boot).
+	SubscriptionCreateRateLimitBurst           int
+	SubscriptionCreateRateLimitRefillPerSecond float64
+
+	// WSBindingTokenRateLimitBurst, when > 0, renders an
+	// auth.ws_binding_token_rate_limit block into the binary's config
+	// (story #104).
+	WSBindingTokenRateLimitBurst           int
+	WSBindingTokenRateLimitRefillPerSecond float64
 }
 
 // startProdBinary builds and launches cmd/fhir-subs against the
@@ -197,6 +210,18 @@ topics:
 	authInsecureLine := ""
 	if cfg.AuthAllowInsecureJWKS {
 		authInsecureLine = "\n  allow_insecure_jwks: true"
+	}
+
+	// Story #104: render the per-client rate-limit blocks into the
+	// auth section so the production binary's wiring constructs the
+	// chi middleware on POST /Subscription and on $get-ws-binding-token.
+	if cfg.SubscriptionCreateRateLimitBurst > 0 {
+		authInsecureLine += fmt.Sprintf("\n  subscription_create_rate_limit:\n    burst: %d\n    refill_per_second: %v",
+			cfg.SubscriptionCreateRateLimitBurst, cfg.SubscriptionCreateRateLimitRefillPerSecond)
+	}
+	if cfg.WSBindingTokenRateLimitBurst > 0 {
+		authInsecureLine += fmt.Sprintf("\n  ws_binding_token_rate_limit:\n    burst: %d\n    refill_per_second: %v",
+			cfg.WSBindingTokenRateLimitBurst, cfg.WSBindingTokenRateLimitRefillPerSecond)
 	}
 
 	tracingBlock := ""
