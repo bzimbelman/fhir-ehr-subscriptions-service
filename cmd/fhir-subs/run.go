@@ -213,6 +213,16 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		hooks.onServerConfigured(srv)
 	}
 
+	// Story #207: publish the *http.Server to the production runtime so
+	// the http.listener.stop_accepting hook (registered in
+	// registerLifecycle) drives srv.Shutdown under the per-phase
+	// budget. The hook reads via getHTTPServer; setting it here happens
+	// before MarkStartupComplete and before the sequencer can fire, so
+	// no early-shutdown race.
+	if prod != nil {
+		prod.setHTTPServer(srv)
+	}
+
 	// Serve in a goroutine; the main goroutine waits on ctx.Done(). When
 	// TLS is configured we use ServeTLS; the cleartext path stays on
 	// Serve. There is no fallback — TLS misconfiguration is fatal, never

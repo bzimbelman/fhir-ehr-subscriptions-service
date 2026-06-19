@@ -171,18 +171,37 @@ type LifecycleModule struct {
 	probes ProbeHandlers
 	server *http.Server
 
-	requestCh   chan string
+	// requestCh delivers (reason, ctx) to the sequencer. The ctx is the
+	// caller-supplied context whose cancellation aborts the in-flight
+	// shutdown (story #206). Capacity 1 — only the first request takes
+	// the slot.
+	requestCh   chan shutdownRequest
 	exitDone    chan struct{}
 	requestOnce sync.Once
 	closeOnce   sync.Once
 	reportMu    sync.Mutex
 	report      ShutdownReport
 
+	// forceCancelMu guards forceCancel. forceCancel is the cancel
+	// function of the in-flight runShutdown's parent ctx; WaitForExit's
+	// ctx-fire path invokes it so a stuck phase aborts at the next
+	// ctx.Done() check rather than running to the budget. Story #206.
+	forceCancelMu sync.Mutex
+	forceCancel   context.CancelFunc
+
 	// reloadHandlerMu guards reloadHandler. SIGHUP routes through the
 	// dispatcher to whatever handler the host has registered (typically
 	// config.Module.Reload). nil means SIGHUP is a no-op (B-35).
 	reloadHandlerMu sync.Mutex
 	reloadHandler   func(context.Context)
+}
+
+// shutdownRequest is what RequestShutdown sends through requestCh: the
+// reason string for logs/metrics plus the caller's ctx the sequencer
+// honors as the parent context for runShutdown.
+type shutdownRequest struct {
+	reason string
+	ctx    context.Context
 }
 
 // SetReloadHandler registers (or replaces) the SIGHUP-driven reload
@@ -254,32 +273,63 @@ func (m *LifecycleModule) MarkStartupComplete() {
 }
 
 // RequestShutdown begins the shutdown sequence. Idempotent — only the
-// first caller's reason is recorded; subsequent calls return without
-// effect. Safe under concurrent calls.
+// first caller's reason and ctx are recorded; subsequent calls return
+// without effect. Safe under concurrent calls.
 //
-// Note: the ctx parameter is currently advisory. The sequencer runs on a
-// dedicated context so a cancelled caller does not abandon the drain.
-// Callers that need to cap the entire sequence pass ShutdownGracePeriod
-// instead.
+// The ctx is passed through to the sequencer as the parent context for
+// every shutdown phase (story #206). When the caller cancels ctx
+// mid-shutdown, hooks blocked on ctx.Done() observe context.Canceled
+// at the next phase boundary and the sequencer increments the
+// shutdown_forced_total metric. Pass context.Background() to get the
+// previous "ignore caller cancellation" behavior.
 func (m *LifecycleModule) RequestShutdown(ctx context.Context, reason string) {
-	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.requestOnce.Do(func() {
 		// Buffered channel of size 1 — first send always succeeds.
-		m.requestCh <- reason
+		m.requestCh <- shutdownRequest{reason: reason, ctx: ctx}
 	})
 }
 
 // WaitForExit blocks until shutdown completes or until the parent ctx
 // fires. Returns the recorded ShutdownReport.
+//
+// When ctx fires before exitDone, WaitForExit invokes the in-flight
+// runShutdown's parent-cancel so the sequencer gives up at the next
+// phase boundary (story #206). Hooks blocked on ctx.Done() observe
+// context.Canceled and the shutdown is recorded as forced. WaitForExit
+// then waits a small slack window for the sequencer goroutine to land
+// before returning the partial report so the caller can read the
+// completed phases without racing the writer.
 func (m *LifecycleModule) WaitForExit(ctx context.Context) ShutdownReport {
 	select {
 	case <-m.exitDone:
 	case <-ctx.Done():
+		m.cancelInFlight()
+		// Give the sequencer a brief window to record its final report
+		// after the cancellation propagates. Without this, the caller
+		// would observe a stale ShutdownReport from before cancel.
+		select {
+		case <-m.exitDone:
+		case <-time.After(250 * time.Millisecond):
+		}
 	}
 	m.reportMu.Lock()
 	rep := m.report
 	m.reportMu.Unlock()
 	return rep
+}
+
+// cancelInFlight invokes the in-flight runShutdown's parent-cancel if
+// any. Safe under concurrent calls and after exitDone has closed.
+func (m *LifecycleModule) cancelInFlight() {
+	m.forceCancelMu.Lock()
+	fn := m.forceCancel
+	m.forceCancelMu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // Probes returns the ProbeHandlers bundle the host mounts when ProbeBind

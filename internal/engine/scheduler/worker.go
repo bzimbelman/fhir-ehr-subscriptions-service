@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -154,6 +155,14 @@ type Worker struct {
 	// recovery sweep would clean them up but the row would skip past
 	// its retry window meanwhile (audit B-31).
 	inflight sync.WaitGroup
+
+	// stopAccepting flips when the lifecycle module's
+	// PhaseStopAccepting hook fires (story #207). Once set, Run skips
+	// new claims and idles until ctx fires. In-flight dispatchOne calls
+	// from before the flip continue and are awaited under the
+	// PhaseDrainInFlight phase. atomic.Bool keeps the read on the hot
+	// claim path lock-free.
+	stopAccepting atomic.Bool
 }
 
 // Options configure a Worker.
@@ -197,6 +206,19 @@ func NewWorker(
 	return w
 }
 
+// StopAccepting flips the worker into "no new claims" mode. Run
+// continues to await in-flight dispatchOne calls, but its claim loop
+// no longer pulls new deliveries from the queue. The lifecycle
+// module's PhaseStopAccepting hook calls this so the five-phase
+// shutdown sequence has a real Phase 2 effect on the scheduler
+// (story #207). Idempotent.
+func (w *Worker) StopAccepting() {
+	if w == nil {
+		return
+	}
+	w.stopAccepting.Store(true)
+}
+
 // Run blocks until ctx is canceled.
 //
 // On shutdown, Run waits up to cfg.ShutdownGrace for any in-flight
@@ -218,6 +240,19 @@ func (w *Worker) Run(ctx context.Context) error {
 	for !stop {
 		if ctx.Err() != nil {
 			break
+		}
+		// Story #207: when the lifecycle module's PhaseStopAccepting
+		// hook has flipped stopAccepting, skip new claims and idle
+		// until ctx fires. In-flight dispatchOne calls (started before
+		// the flip) keep running and are awaited below under the
+		// PhaseDrainInFlight phase.
+		if w.stopAccepting.Load() {
+			select {
+			case <-ctx.Done():
+				stop = true
+			case <-time.After(w.cfg.IdlePollInterval):
+			}
+			continue
 		}
 		processed, err := w.tickOnce(ctx)
 		if err != nil {
