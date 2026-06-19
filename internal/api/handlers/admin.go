@@ -84,6 +84,9 @@ func RegisterAdminRoutes(r chi.Router, d Deps) {
 		r.Get("/topics", a.listTopics)
 		r.Get("/subscriptions", a.listSubscriptions)
 		r.Get("/dead_letters", a.listDeadLetters)
+		if d.SupervisorStatus != nil {
+			r.Get("/supervisor/status", a.listSupervisorStatus)
+		}
 	})
 }
 

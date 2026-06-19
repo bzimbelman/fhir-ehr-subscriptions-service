@@ -212,6 +212,13 @@ type Deps struct {
 	// surface needs. Nil disables /admin/dead_letters (returns 503).
 	DeadLetters DeadLettersListStore
 
+	// SupervisorStatus, when non-nil, enables GET /admin/supervisor/status
+	// — the operator-facing snapshot of every supervised adapter worker
+	// (HL7 processor, matcher, submatcher, scheduler). Nil disables the
+	// route entirely so a probe does not learn about a stack that is not
+	// present (story #99).
+	SupervisorStatus SupervisorStatusReader
+
 	// SearchPageSize is the default page size for GET /Subscription
 	// when the client does not pass `_count`. Zero means
 	// DefaultSearchPageSize. (S-2.8)
