@@ -97,9 +97,9 @@ func TestRun_ServesTLS_WhenCertConfigured(t *testing.T) {
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
-			Bind:     pickFreeAddr(t),
+			Bind:      pickFreeAddr(t),
 			ProbeBind: pickFreeAddr(t),
-			Insecure: false,
+			Insecure:  false,
 			TLS: TLSConfig{
 				CertFile:   certPath,
 				KeyFile:    keyPath,
@@ -195,9 +195,9 @@ func TestValidate_RejectsMissingCertFile(t *testing.T) {
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
-			Bind:     "0.0.0.0:8443",
+			Bind:      "0.0.0.0:8443",
 			ProbeBind: "0.0.0.0:8081",
-			Insecure: false,
+			Insecure:  false,
 			TLS: TLSConfig{
 				CertFile: "/nonexistent/cert.pem",
 				KeyFile:  "/nonexistent/key.pem",
@@ -234,9 +234,9 @@ func TestValidate_RejectsNonPEMCertFile(t *testing.T) {
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
-			Bind:     "0.0.0.0:8443",
+			Bind:      "0.0.0.0:8443",
 			ProbeBind: "0.0.0.0:8081",
-			Insecure: false,
+			Insecure:  false,
 			TLS: TLSConfig{
 				CertFile: certPath,
 				KeyFile:  keyPath,
@@ -265,9 +265,9 @@ func TestValidate_DefaultMinVersionIs1_3(t *testing.T) {
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
-			Bind:     "0.0.0.0:8443",
+			Bind:      "0.0.0.0:8443",
 			ProbeBind: "0.0.0.0:8081",
-			Insecure: false,
+			Insecure:  false,
 			TLS: TLSConfig{
 				CertFile: certPath,
 				KeyFile:  keyPath,
@@ -296,9 +296,9 @@ func TestValidate_RejectsInvalidMinVersion(t *testing.T) {
 		Deployment: DeploymentConfig{FacilityID: "f1", Mode: DeploymentModeProbeOnly},
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
-			Bind:     "0.0.0.0:8443",
+			Bind:      "0.0.0.0:8443",
 			ProbeBind: "0.0.0.0:8081",
-			Insecure: false,
+			Insecure:  false,
 			TLS: TLSConfig{
 				CertFile:   certPath,
 				KeyFile:    keyPath,
