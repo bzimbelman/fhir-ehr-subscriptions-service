@@ -100,30 +100,30 @@ func TestStorageConfigSixRetentionWindows(t *testing.T) {
 	}
 }
 
-// TestStorageExposesOutboxAndClaimAccessors asserts the Storage handle
-// exposes outbox.Run and claim.Unprocessed via methods, so the four
-// sub-packages (outbox, claim, partition, retention) are reachable from
-// production callers via the canonical storage handle. Story #95
-// acceptance criterion: "All four sub-packages MUST be reachable from a
-// single go list -deps ./cmd/fhir-subs."
+// TestStorageExposesOutboxAndClaimAccessors asserts the storage package
+// re-exports outbox.Run via a non-generic Storage method and re-exports
+// claim.Unprocessed via a generic package-level helper, so the four
+// sub-packages (outbox, claim, partition, retention) reach production
+// callers via a single import. Story #95 acceptance criterion: "All
+// four sub-packages MUST be reachable from a single
+// go list -deps ./cmd/fhir-subs."
 func TestStorageExposesOutboxAndClaimAccessors(t *testing.T) {
 	t.Parallel()
 
-	// Compile-time check: methods exist with the expected shapes. Runtime
-	// behavior is exercised by the integration suite where a real pool is
-	// available.
-	var s *storage.Storage
-	if s != nil {
-		// Outbox returns a value compatible with outbox.Run's Outcome.
-		_, _ = s.Outbox(context.Background(), func(_ context.Context, _ outbox.Tx) error { return nil })
+	// Compile-time check: Storage.Outbox is callable with an outbox.Tx
+	// closure (which forces the outbox package into the package's
+	// dependency graph). The runtime call site is exercised by the
+	// integration suite with a real pool. Wrapped in a func value so the
+	// closure is well-typed at compile time without ever being invoked.
+	_ = func(s *storage.Storage) (outbox.Outcome, error) {
+		return s.Outbox(context.Background(), func(_ context.Context, _ outbox.Tx) error { return nil })
 	}
 
-	// Confirm the type signatures via reflection-free checks: the
-	// methods must be addressable on a typed nil pointer receiver. This
-	// fails at compile time if Outbox/ClaimUnprocessed do not exist on
-	// *Storage.
-	_ = (*storage.Storage)(nil).Outbox
-	_ = (*storage.Storage)(nil).ClaimUnprocessed
+	// ClaimUnprocessed is a generic package-level re-export (Go does not
+	// allow generic methods on a concrete struct, so a package function
+	// is the canonical shape). Reference it to fail compilation if the
+	// symbol is removed.
+	_ = storage.ClaimUnprocessed[int]
 }
 
 func make32() []byte {

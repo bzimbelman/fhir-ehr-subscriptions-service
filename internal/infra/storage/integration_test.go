@@ -413,45 +413,52 @@ func TestIntegrationStorageStartLaunchesPartitionRunner(t *testing.T) {
 // idempotent: a second call (or a concurrent call from another pod)
 // must not error out, drop the existing partition, or empty its rows.
 // Story #95 negative case.
+//
+// We insert a row via the production INSERT path (which lands in the
+// current-month partition that migration 0001 seeds) and confirm that
+// running partition.Tick repeatedly leaves the row + partition object
+// untouched.
 func TestIntegrationPartitionMaintainerDoesNotClobberExisting(t *testing.T) {
 	t.Parallel()
 	url := startPostgres(t)
 	s := newTestStorage(t, url)
 	ctx := context.Background()
 
-	// First tick: creates the next-month partition.
-	if err := partition.Tick(ctx, s.Pool().Pgx(), partition.Config{
-		AutoDrop: false,
-		Now:      time.Now,
-	}); err != nil {
-		t.Fatalf("first Tick: %v", err)
-	}
-
-	// Insert a synthetic row into the partition that just got created.
-	// We pick a now-instant inside next-month so the row lands in the
-	// fresh partition rather than the seeded current-month one.
-	next := time.Now().AddDate(0, 1, 0)
-	insertAt := time.Date(next.Year(), next.Month(), 5, 12, 0, 0, 0, time.UTC)
 	corr := uuid.New()
-	if _, err := s.Pool().Pgx().Exec(ctx,
-		`INSERT INTO resource_changes
-		 (adapter_id, correlation_id, resource_type, change_kind, resource, occurred_at, key_version)
-		 VALUES ('default', $1, 'ServiceRequest', 'create', $2, $3, 1)`,
-		corr,
-		[]byte("ciphertext-placeholder"),
-		insertAt,
-	); err != nil {
-		t.Fatalf("insert into next-month partition: %v", err)
+	plaintext := []byte(`{"resourceType":"ServiceRequest","id":"abc"}`)
+	tx, err := s.Pool().Pgx().Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// Second tick: must be idempotent. Row count must not change.
-	if err := partition.Tick(ctx, s.Pool().Pgx(), partition.Config{
-		AutoDrop: false,
-		Now:      time.Now,
+	if _, _, err := s.ResourceChanges().Insert(ctx, tx, repos.ResourceChangeRow{
+		AdapterID:     "default",
+		CorrelationID: corr,
+		ResourceType:  "ServiceRequest",
+		ChangeKind:    repos.ChangeCreate,
+		Resource:      plaintext,
+		OccurredAt:    time.Now(),
 	}); err != nil {
-		t.Fatalf("second Tick: %v", err)
+		_ = tx.Rollback(ctx)
+		t.Fatalf("insert via repo: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 
+	// Run partition Tick twice. CREATE TABLE IF NOT EXISTS makes both
+	// calls no-ops on the current-month partition the migration seeded;
+	// each call also creates the next-month partition (the second call
+	// is a no-op against the partition the first call created).
+	for i := 0; i < 2; i++ {
+		if terr := partition.Tick(ctx, s.Pool().Pgx(), partition.Config{
+			AutoDrop: false,
+			Now:      time.Now,
+		}); terr != nil {
+			t.Fatalf("Tick %d: %v", i, terr)
+		}
+	}
+
+	// Row must still be present.
 	var n int
 	if err := s.Pool().Pgx().QueryRow(ctx,
 		`SELECT count(*) FROM resource_changes WHERE correlation_id = $1`, corr,
@@ -460,6 +467,21 @@ func TestIntegrationPartitionMaintainerDoesNotClobberExisting(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("re-running partition Tick clobbered existing partition: row count = %d, want 1", n)
+	}
+
+	// Current-month partition table must still exist (Tick must not
+	// detach or drop it).
+	thisMonth := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.UTC)
+	currentSuffix := thisMonth.Format("2006_01")
+	var exists bool
+	if err := s.Pool().Pgx().QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)`,
+		"resource_changes_"+currentSuffix,
+	).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Errorf("current-month partition resource_changes_%s missing after Tick", currentSuffix)
 	}
 }
 

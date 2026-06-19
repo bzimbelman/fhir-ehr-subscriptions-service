@@ -19,8 +19,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/claim"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/outbox"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/partition"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/pool"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
@@ -392,3 +394,29 @@ func (s *Storage) Pool() *pool.Pool { return s.pool }
 // to roll keys outside the normal write path can request the codec
 // directly.
 func (s *Storage) Codec() *codec.Codec { return s.cdc }
+
+// Outbox runs fn inside a transactional-outbox transaction on the
+// pool. Thin re-export of outbox.Run so callers reach the helper via
+// the canonical storage handle rather than importing
+// internal/infra/storage/outbox directly. Returns an error if the
+// storage handle is not initialized.
+func (s *Storage) Outbox(ctx context.Context, fn func(ctx context.Context, tx outbox.Tx) error) (outbox.Outcome, error) {
+	if s == nil || s.pool == nil {
+		return outbox.Outcome{}, errors.New("storage: not initialized")
+	}
+	return outbox.Run(ctx, s.pool.Pgx(), fn)
+}
+
+// ClaimUnprocessed is a generic package-level re-export of
+// claim.Unprocessed so the claim sub-package reaches production callers
+// via a single storage import. Go does not allow generic methods on
+// concrete types, so this is a function rather than a Storage method.
+func ClaimUnprocessed[T any](
+	ctx context.Context,
+	tx pgx.Tx,
+	decode func(claim.Scanner) (T, error),
+	sql string,
+	args ...any,
+) ([]T, error) {
+	return claim.Unprocessed(ctx, tx, decode, sql, args...)
+}
