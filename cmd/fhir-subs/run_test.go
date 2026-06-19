@@ -27,7 +27,7 @@ func TestRun_GracefulShutdown_OnContextCancel(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
@@ -41,7 +41,7 @@ func TestRun_GracefulShutdown_OnContextCancel(t *testing.T) {
 	)
 
 	hooks := runHooks{
-		onListening: func(addr string) {
+		onProbeListening: func(addr string) {
 			readyURL = "http://" + addr
 			close(started)
 		},
@@ -91,7 +91,7 @@ func TestRun_ReadyzReportsShuttingDown(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		// Wide grace period so we can reliably observe the shutting_down state.
 		Lifecycle: LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
@@ -107,7 +107,7 @@ func TestRun_ReadyzReportsShuttingDown(t *testing.T) {
 
 	startCh := make(chan struct{})
 	hooks := runHooks{
-		onListening: func(addr string) {
+		onProbeListening: func(addr string) {
 			mu.Lock()
 			seenAddr = addr
 			mu.Unlock()
@@ -169,7 +169,7 @@ func TestRun_RejectsTLSWithoutCertWhenNotInsecure(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", Insecure: false}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "127.0.0.1:0", ProbeBind: "127.0.0.1:0", Insecure: false}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: time.Second},
 	}
 
@@ -197,7 +197,7 @@ func TestRun_WarnsOnWildcardBindWithInsecure(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:0", Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: "0.0.0.0:0", ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
@@ -241,7 +241,7 @@ func TestRun_UsesObservabilityLogger(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1", LogLevel: "info"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
@@ -295,7 +295,7 @@ func TestRun_LogsCloseErrorAfterShutdownTimeout(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		// Microsecond grace so the shutdown ctx is already expired by the
 		// time we reach srv.Shutdown — that returns ctx.DeadlineExceeded
 		// which forces the Close() branch.

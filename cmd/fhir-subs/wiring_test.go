@@ -27,7 +27,7 @@ func TestRun_ReadyzReturns200WhenAllChecksPass(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
@@ -39,7 +39,7 @@ func TestRun_ReadyzReturns200WhenAllChecksPass(t *testing.T) {
 		started  = make(chan struct{})
 	)
 	hooks := runHooks{
-		onListening: func(addr string) {
+		onProbeListening: func(addr string) {
 			readyURL = "http://" + addr
 			close(started)
 		},
@@ -89,7 +89,7 @@ func TestRun_HealthzGatedOnLifecycleStart(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
@@ -103,7 +103,7 @@ func TestRun_HealthzGatedOnLifecycleStart(t *testing.T) {
 		startupOK = make(chan struct{})
 	)
 	hooks := runHooks{
-		onListening: func(addr string) {
+		onProbeListening: func(addr string) {
 			mu.Lock()
 			seenAddr = addr
 			mu.Unlock()
@@ -165,6 +165,7 @@ func TestServer_TimeoutsConfigured(t *testing.T) {
 		Adapter:    AdapterConfig{ID: "a1"},
 		Server: ServerConfig{HTTP: HTTPConfig{
 			Bind:              pickFreeAddr(t),
+			ProbeBind: pickFreeAddr(t),
 			Insecure:          true,
 			ReadHeaderTimeout: 2 * time.Second,
 			ReadTimeout:       3 * time.Second,
@@ -246,7 +247,7 @@ func TestServer_TimeoutDefaults(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
@@ -304,7 +305,7 @@ func TestRun_StartupCompleteFiresAfterLifecycleStart(t *testing.T) {
 	cfg := &Config{
 		Deployment: DeploymentConfig{FacilityID: "f1"},
 		Adapter:    AdapterConfig{ID: "a1"},
-		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), Insecure: true}},
+		Server:     ServerConfig{HTTP: HTTPConfig{Bind: pickFreeAddr(t), ProbeBind: pickFreeAddr(t), Insecure: true}},
 		Lifecycle:  LifecycleConfig{ShutdownGracePeriod: 5 * time.Second},
 	}
 
