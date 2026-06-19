@@ -387,7 +387,14 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 	if err != nil {
 		return channel.PermanentFailure(fmt.Sprintf("invalid endpoint url: %v", err))
 	}
-	if parsed.Scheme != "https" {
+	// Hard-require https when there is no URLValidator wired in.
+	// When a validator IS wired in, defer scheme allowance to it: the
+	// validator owns AllowHTTP (the dev/demo opt-in tied to
+	// auth.allow_insecure_jwks). The hardcoded check used to fire
+	// unconditionally and dead-letter every plaintext-endpoint
+	// subscription even after the operator opted in via the validator
+	// — exactly the gap the demo walkthrough hit (OP #286).
+	if c.urlValidator == nil && parsed.Scheme != "https" {
 		c.metrics.Inc(MetricNonHTTPSEndpointTotal, map[string]string{"channel": channelName})
 		return channel.PermanentFailure("non-https endpoint")
 	}

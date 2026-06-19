@@ -119,6 +119,73 @@ func TestEvaluateFilterByPatientNoMatch(t *testing.T) {
 	}
 }
 
+// TestEvaluateFilterByPatientBareIDMatch: per FHIR R5 search-parameter
+// semantics for type=reference (3.1.1.5.7), a bare logical id supplied as
+// the filter value matches `Type/id` references on the resource. This is
+// the form the documented demo subscriber posts (`patient=ABC123`); without
+// it the demo walkthrough delivers zero notifications even though the
+// matcher emits ehr_events rows for the topic. OP #286.
+func TestEvaluateFilterByPatientBareIDMatch(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID:       uuid.New(),
+		TopicURL: "http://demo.org/topics/lab-results",
+		Status:   repos.SubActive,
+		FilterBy: fb(map[string]string{
+			"filterParameter": "patient",
+			"value":           "ABC123",
+		}),
+	}
+	ev := submatcher.EhrEvent{
+		EventNumber:  201,
+		TopicURL:     "http://demo.org/topics/lab-results",
+		ResourceType: "Observation",
+		ChangeKind:   "create",
+		Resource:     mustResource(t, `{"resourceType":"Observation","id":"obs-1","status":"final","subject":{"reference":"Patient/ABC123"}}`),
+	}
+
+	out := submatcher.Evaluate(ev, []repos.SubscriptionRow{sub})
+	if len(out) != 1 {
+		t.Fatalf("want 1 decision, got %d", len(out))
+	}
+	if out[0].Decision != submatcher.FanoutMatch {
+		t.Fatalf("want Match for bare-id patient filter against Patient/ABC123 reference, got %v: %s",
+			out[0].Decision, out[0].SkipReason)
+	}
+}
+
+// TestEvaluateFilterByPatientBareIDNoMatch: bare-id semantics still reject
+// references for a different patient. Companion to the positive bare-id
+// case; pins that we did not flip the bug into a permissive false-positive.
+// OP #286.
+func TestEvaluateFilterByPatientBareIDNoMatch(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID:       uuid.New(),
+		TopicURL: "http://demo.org/topics/lab-results",
+		Status:   repos.SubActive,
+		FilterBy: fb(map[string]string{
+			"filterParameter": "patient",
+			"value":           "ABC123",
+		}),
+	}
+	ev := submatcher.EhrEvent{
+		EventNumber:  202,
+		TopicURL:     "http://demo.org/topics/lab-results",
+		ResourceType: "Observation",
+		ChangeKind:   "create",
+		Resource:     mustResource(t, `{"resourceType":"Observation","id":"obs-2","status":"final","subject":{"reference":"Patient/XYZ999"}}`),
+	}
+
+	out := submatcher.Evaluate(ev, []repos.SubscriptionRow{sub})
+	if len(out) != 1 {
+		t.Fatalf("want 1 decision, got %d", len(out))
+	}
+	if out[0].Decision != submatcher.FanoutNoMatch {
+		t.Fatalf("want NoMatch for bare-id ABC123 vs Patient/XYZ999, got %v", out[0].Decision)
+	}
+}
+
 // TestEvaluateMultipleClausesAND: multiple filterBy clauses AND together;
 // all must match for the subscription to fanout.
 func TestEvaluateMultipleClausesAND(t *testing.T) {

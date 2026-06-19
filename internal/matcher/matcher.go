@@ -452,12 +452,28 @@ func equalsToken(v any, value string) bool {
 
 func equalsReference(v any, value string) bool {
 	if s, ok := v.(string); ok {
-		return foldEqual(s, value)
+		return referenceEquals(s, value)
 	}
 	if m, ok := v.(map[string]any); ok {
 		if ref, ok := m["reference"].(string); ok {
-			return foldEqual(ref, value)
+			return referenceEquals(ref, value)
 		}
+	}
+	return false
+}
+
+// referenceEquals mirrors submatcher.referenceEquals so topic matching
+// and per-subscription fanout share one definition of reference equality.
+// See that helper for the FHIR R5 search-parameter rationale (OP #286).
+func referenceEquals(ref, value string) bool {
+	if foldEqual(ref, value) {
+		return true
+	}
+	if strings.Contains(value, "/") {
+		return false
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 && i < len(ref)-1 {
+		return foldEqual(ref[i+1:], value)
 	}
 	return false
 }

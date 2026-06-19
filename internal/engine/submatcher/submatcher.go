@@ -391,12 +391,43 @@ func equalsToken(v any, value string) bool {
 
 func equalsReference(v any, value string) bool {
 	if s, ok := v.(string); ok {
-		return foldEqual(s, value)
+		return referenceEquals(s, value)
 	}
 	if m, ok := v.(map[string]any); ok {
 		if ref, ok := m["reference"].(string); ok {
-			return foldEqual(ref, value)
+			return referenceEquals(ref, value)
 		}
+	}
+	return false
+}
+
+// referenceEquals compares a FHIR Reference.reference (always a relative
+// or absolute URL like "Patient/123" — or rarely an absolute URL with the
+// same shape on the tail) against a search-parameter value that may be
+// either the same form or a bare logical id ("123"). Per FHIR R5
+// §3.1.1.5.7 a search parameter of type=reference matches when the
+// supplied value is the bare id of a resource whose type matches the
+// reference. The submatcher does not know the search parameter's typed
+// resource (the SubscriptionTopic-level filterDefinition declares it but
+// the wire shape we receive in subscriptions.filter_by does not require
+// it), so we accept either form: full Type/id equality, or bare-id
+// equality against the segment after the final '/'. Both sides are
+// folded under the same ICU root-locale chain used everywhere else in
+// the engine.
+func referenceEquals(ref, value string) bool {
+	if foldEqual(ref, value) {
+		return true
+	}
+	// Bare-id form: the value has no '/'; compare it to the id segment
+	// of the reference (after the last '/'). We do not try the reverse
+	// (value=Type/id, ref=id) because resource references in FHIR are
+	// canonically Type/id; the bare-id form lives only in search
+	// parameters.
+	if strings.Contains(value, "/") {
+		return false
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 && i < len(ref)-1 {
+		return foldEqual(ref[i+1:], value)
 	}
 	return false
 }
