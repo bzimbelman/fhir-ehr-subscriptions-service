@@ -44,6 +44,7 @@ func TestHl7MessageQueueInsertReturnsID(t *testing.T) {
 
 	pool.ExpectQuery("INSERT INTO hl7_message_queue").
 		WithArgs(
+			pgxmock.AnyArg(), // id (app-generated for AAD binding)
 			pgxmock.AnyArg(), // listener_endpoint
 			pgxmock.AnyArg(), // peer_addr
 			pgxmock.AnyArg(), // mllp_message_id
@@ -86,16 +87,16 @@ func TestHl7MessageQueueClaimUnprocessed(t *testing.T) {
 	c := newCodec(t)
 	bodyA := []byte("MSH|hl7|a")
 	bodyB := []byte("MSH|hl7|b")
-	encA, _, err := c.Encrypt(bodyA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encB, _, err := c.Encrypt(bodyB)
-	if err != nil {
-		t.Fatal(err)
-	}
 	idA := uuid.New()
 	idB := uuid.New()
+	encA, _, err := c.Encrypt(bodyA, repos.AADHl7MessageQueue(idA, c.ActiveVersion()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encB, _, err := c.Encrypt(bodyB, repos.AADHl7MessageQueue(idB, c.ActiveVersion()))
+	if err != nil {
+		t.Fatal(err)
+	}
 	corrA := uuid.New()
 	corrB := uuid.New()
 	now := time.Now()

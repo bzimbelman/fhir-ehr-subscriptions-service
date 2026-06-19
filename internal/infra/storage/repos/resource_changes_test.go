@@ -29,7 +29,7 @@ func TestResourceChangesInsertReturnsID(t *testing.T) {
 
 	pool.ExpectBegin()
 	pool.ExpectQuery("INSERT INTO resource_changes").
-		WithArgs(anyArgs(9)...).
+		WithArgs(anyArgs(10)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "sequence", "created_month"}).
 			AddRow(id, int64(101), time.Now()))
 	pool.ExpectCommit()
@@ -70,8 +70,8 @@ func TestResourceChangesClaimUnprocessed(t *testing.T) {
 
 	c := newCodec(t)
 	body := []byte(`{"resourceType":"Observation"}`)
-	enc, _, _ := c.Encrypt(body)
 	id := uuid.New()
+	enc, _, _ := c.Encrypt(body, repos.AADResourceChanges(id, c.ActiveVersion(), "resource"))
 	corr := uuid.New()
 	now := time.Now()
 	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)

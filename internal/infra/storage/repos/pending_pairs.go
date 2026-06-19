@@ -27,7 +27,8 @@ func NewPendingPairsRepo(c *codec.Codec) *PendingPairsRepo {
 // with the codec's active key version, which is persisted alongside the
 // row so a future Decrypt can use the same key even after rotation.
 func (r *PendingPairsRepo) Insert(ctx context.Context, q Querier, row PendingPairRow) error {
-	enc, kv, err := r.codec.Encrypt(row.PendingResource)
+	kv := r.codec.ActiveVersion()
+	enc, kv, err := r.codec.Encrypt(row.PendingResource, AADPendingPairs(row.CorrelationKey, row.ListenerEndpoint, kv))
 	if err != nil {
 		return fmt.Errorf("pending_pairs: encrypt: %w", err)
 	}
@@ -85,7 +86,8 @@ func (r *PendingPairsRepo) ClaimExpired(ctx context.Context, tx pgx.Tx, limit in
 		); err != nil {
 			return nil, fmt.Errorf("pending_pairs: scan: %w", err)
 		}
-		body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+		body, err := r.codec.Decrypt(enc, rec.KeyVersion,
+			AADPendingPairs(rec.CorrelationKey, rec.ListenerEndpoint, rec.KeyVersion))
 		if err != nil {
 			return nil, fmt.Errorf("pending_pairs: decrypt: %w", err)
 		}

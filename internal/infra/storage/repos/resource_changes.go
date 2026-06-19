@@ -24,19 +24,27 @@ func NewResourceChangesRepo(c *codec.Codec) *ResourceChangesRepo {
 }
 
 // Insert persists one resource_changes row. Resource and PreviousResource
-// are encrypted under the codec's active key. Returns id and sequence.
+// are encrypted under the codec's active key with AAD bound to
+// (table, id, key_version, field). The row's id is generated app-side
+// so it can be bound into the AAD before Encrypt. Returns id and sequence.
 func (r *ResourceChangesRepo) Insert(ctx context.Context, q Querier, row ResourceChangeRow) (uuid.UUID, int64, error) {
-	enc, kv, err := r.codec.Encrypt(row.Resource)
+	id := row.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	kv := r.codec.ActiveVersion()
+	enc, kvOut, err := r.codec.Encrypt(row.Resource, AADResourceChanges(id, kv, "resource"))
 	if err != nil {
 		return uuid.Nil, 0, fmt.Errorf("resource_changes: encrypt resource: %w", err)
 	}
 	var prev []byte
 	if len(row.PreviousResource) > 0 {
-		prev, _, err = r.codec.Encrypt(row.PreviousResource)
+		prev, _, err = r.codec.Encrypt(row.PreviousResource, AADResourceChanges(id, kv, "previous_resource"))
 		if err != nil {
 			return uuid.Nil, 0, fmt.Errorf("resource_changes: encrypt previous: %w", err)
 		}
 	}
+	_ = kvOut
 
 	// created_month is set explicitly here (in addition to the BEFORE
 	// INSERT trigger in the v0 schema) so partition routing has a
@@ -45,24 +53,24 @@ func (r *ResourceChangesRepo) Insert(ctx context.Context, q Querier, row Resourc
 	// BEFORE triggers fire on the parent partitioned relation.
 	const sql = `
 		INSERT INTO resource_changes
-			(adapter_id, correlation_id, resource_type, change_kind,
+			(id, adapter_id, correlation_id, resource_type, change_kind,
 			 resource, previous_resource, key_version, occurred_at, event_code,
 			 created_month)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 		        date_trunc('month', now())::date)
 		ON CONFLICT (adapter_id, correlation_id, created_month) DO NOTHING
 		RETURNING id, sequence, created_month`
 
-	var id uuid.UUID
 	var seq int64
 	var month any
+	var got uuid.UUID
 	if err := q.QueryRow(ctx, sql,
-		row.AdapterID, row.CorrelationID, row.ResourceType, string(row.ChangeKind),
+		id, row.AdapterID, row.CorrelationID, row.ResourceType, string(row.ChangeKind),
 		enc, prev, kv, row.OccurredAt, row.EventCode,
-	).Scan(&id, &seq, &month); err != nil {
+	).Scan(&got, &seq, &month); err != nil {
 		return uuid.Nil, 0, fmt.Errorf("resource_changes: insert: %w", err)
 	}
-	return id, seq, nil
+	return got, seq, nil
 }
 
 // ClaimUnprocessed pulls up to limit unprocessed rows under FOR UPDATE
@@ -96,13 +104,13 @@ func (r *ResourceChangesRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, l
 			return nil, fmt.Errorf("resource_changes: scan: %w", err)
 		}
 		rec.ChangeKind = ChangeKind(kind)
-		body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+		body, err := r.codec.Decrypt(enc, rec.KeyVersion, AADResourceChanges(rec.ID, rec.KeyVersion, "resource"))
 		if err != nil {
 			return nil, fmt.Errorf("resource_changes: decrypt resource: %w", err)
 		}
 		rec.Resource = body
 		if len(prev) > 0 {
-			pb, err := r.codec.Decrypt(prev, rec.KeyVersion)
+			pb, err := r.codec.Decrypt(prev, rec.KeyVersion, AADResourceChanges(rec.ID, rec.KeyVersion, "previous_resource"))
 			if err != nil {
 				return nil, fmt.Errorf("resource_changes: decrypt previous: %w", err)
 			}

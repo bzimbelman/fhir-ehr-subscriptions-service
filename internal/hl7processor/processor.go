@@ -492,7 +492,7 @@ func (p *Processor) lockRow(ctx context.Context, tx pgx.Tx, id uuid.UUID) (repos
 	if err != nil {
 		return repos.Hl7MessageQueueRow{}, false, err
 	}
-	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion)
+	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion, repos.AADHl7MessageQueue(row.ID, row.KeyVersion))
 	if err != nil {
 		return repos.Hl7MessageQueueRow{}, false, fmt.Errorf("decrypt body: %w", err)
 	}
@@ -676,7 +676,8 @@ func (p *Processor) lockPending(ctx context.Context, tx pgx.Tx, key, endpoint st
 
 	// Decrypt with the row's persisted key_version so a key rotation
 	// after the half-pair was held still resolves to the correct cipher.
-	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion)
+	body, err := p.deps.Codec.Decrypt(enc, row.KeyVersion,
+		repos.AADPendingPairs(row.CorrelationKey, row.ListenerEndpoint, row.KeyVersion))
 	if err != nil {
 		return pendingFull{}, false, fmt.Errorf("decrypt pending: %w", err)
 	}

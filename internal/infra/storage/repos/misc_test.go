@@ -40,7 +40,7 @@ func TestDeadLettersReporterFires(t *testing.T) {
 	id := uuid.New()
 	srcID := uuid.New()
 	pool.ExpectQuery("INSERT INTO dead_letters").
-		WithArgs(anyArgs(8)...).
+		WithArgs(anyArgs(9)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 
 	var (
@@ -95,7 +95,7 @@ func TestDeadLettersInsert(t *testing.T) {
 	srcID := uuid.New()
 
 	pool.ExpectQuery("INSERT INTO dead_letters").
-		WithArgs(anyArgs(8)...).
+		WithArgs(anyArgs(9)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 
 	repo := repos.NewDeadLettersRepo(newCodec(t))

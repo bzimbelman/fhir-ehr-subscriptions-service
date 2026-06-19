@@ -23,15 +23,22 @@ func NewEhrEventsRepo(c *codec.Codec) *EhrEventsRepo {
 	return &EhrEventsRepo{codec: c}
 }
 
-// Insert persists one ehr_events row. Returns id and event_number.
+// Insert persists one ehr_events row. Returns id and event_number. The
+// row id is generated app-side so it can be bound into the AAD that
+// seals the resource and previous_resource ciphertexts.
 func (r *EhrEventsRepo) Insert(ctx context.Context, q Querier, row EhrEventRow) (uuid.UUID, int64, error) {
-	enc, kv, err := r.codec.Encrypt(row.Resource)
+	id := row.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	kv := r.codec.ActiveVersion()
+	enc, _, err := r.codec.Encrypt(row.Resource, AADEhrEvents(id, kv, "resource"))
 	if err != nil {
 		return uuid.Nil, 0, fmt.Errorf("ehr_events: encrypt resource: %w", err)
 	}
 	var prev []byte
 	if len(row.PreviousResource) > 0 {
-		prev, _, err = r.codec.Encrypt(row.PreviousResource)
+		prev, _, err = r.codec.Encrypt(row.PreviousResource, AADEhrEvents(id, kv, "previous_resource"))
 		if err != nil {
 			return uuid.Nil, 0, fmt.Errorf("ehr_events: encrypt previous: %w", err)
 		}
@@ -41,22 +48,22 @@ func (r *EhrEventsRepo) Insert(ctx context.Context, q Querier, row EhrEventRow) 
 	// partitions before BEFORE triggers fire on the parent.
 	const sql = `
 		INSERT INTO ehr_events
-			(client_id, topic_url, focus, change_kind, resource, previous_resource,
+			(id, client_id, topic_url, focus, change_kind, resource, previous_resource,
 			 key_version, correlation_id, occurred_at, notification_shape_hint,
 			 resource_change_id, created_month)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
 		        date_trunc('month', now())::date)
 		RETURNING id, event_number, created_month`
-	var id uuid.UUID
+	var got uuid.UUID
 	var ev int64
 	var month any
 	if err := q.QueryRow(ctx, sql,
-		row.ClientID, row.TopicURL, row.Focus, string(row.ChangeKind), enc, prev, kv,
+		id, row.ClientID, row.TopicURL, row.Focus, string(row.ChangeKind), enc, prev, kv,
 		row.CorrelationID, row.OccurredAt, row.NotificationShapeHint, row.ResourceChangeID,
-	).Scan(&id, &ev, &month); err != nil {
+	).Scan(&got, &ev, &month); err != nil {
 		return uuid.Nil, 0, fmt.Errorf("ehr_events: insert: %w", err)
 	}
-	return id, ev, nil
+	return got, ev, nil
 }
 
 // ClaimUnprocessed pulls up to limit unprocessed rows under FOR UPDATE
@@ -91,13 +98,13 @@ func (r *EhrEventsRepo) ClaimUnprocessed(ctx context.Context, tx pgx.Tx, limit i
 			return nil, fmt.Errorf("ehr_events: scan: %w", err)
 		}
 		rec.ChangeKind = ChangeKind(kind)
-		body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+		body, err := r.codec.Decrypt(enc, rec.KeyVersion, AADEhrEvents(rec.ID, rec.KeyVersion, "resource"))
 		if err != nil {
 			return nil, fmt.Errorf("ehr_events: decrypt resource: %w", err)
 		}
 		rec.Resource = body
 		if len(prev) > 0 {
-			pb, err := r.codec.Decrypt(prev, rec.KeyVersion)
+			pb, err := r.codec.Decrypt(prev, rec.KeyVersion, AADEhrEvents(rec.ID, rec.KeyVersion, "previous_resource"))
 			if err != nil {
 				return nil, fmt.Errorf("ehr_events: decrypt previous: %w", err)
 			}
@@ -144,13 +151,13 @@ func (r *EhrEventsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID) (*
 		return nil, fmt.Errorf("ehr_events: get: %w", err)
 	}
 	rec.ChangeKind = ChangeKind(kind)
-	body, err := r.codec.Decrypt(enc, rec.KeyVersion)
+	body, err := r.codec.Decrypt(enc, rec.KeyVersion, AADEhrEvents(rec.ID, rec.KeyVersion, "resource"))
 	if err != nil {
 		return nil, fmt.Errorf("ehr_events: decrypt resource: %w", err)
 	}
 	rec.Resource = body
 	if len(prev) > 0 {
-		pb, err := r.codec.Decrypt(prev, rec.KeyVersion)
+		pb, err := r.codec.Decrypt(prev, rec.KeyVersion, AADEhrEvents(rec.ID, rec.KeyVersion, "previous_resource"))
 		if err != nil {
 			return nil, fmt.Errorf("ehr_events: decrypt previous: %w", err)
 		}
