@@ -344,6 +344,29 @@ func TestIntegration_FullCRUD(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status=%d", resp.StatusCode)
 	}
+
+	// OP #148 AC #3: every audit-emitting integration test runs
+	// assertNonZeroHash on every row produced. The CRUD path emits
+	// create + update + delete (and possibly handshake.ok). A single
+	// regression to the legacy []byte{0} placeholder must light this
+	// test up red, not just the dedicated hash-bytes integration test.
+	store, err := audit.NewPgStore(i.pool, audit.PgStoreOptions{})
+	if err != nil {
+		t.Fatalf("audit.NewPgStore: %v", err)
+	}
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer auditCancel()
+	idx := 0
+	if err := store.IterateRows(auditCtx, func(r audit.Row) error {
+		assertNonZeroHash(t, idx, r)
+		idx++
+		return nil
+	}); err != nil {
+		t.Fatalf("audit IterateRows: %v", err)
+	}
+	if idx == 0 {
+		t.Fatalf("expected audit rows from CRUD flow; got 0")
+	}
 }
 
 func TestIntegration_AuthRejected(t *testing.T) {
