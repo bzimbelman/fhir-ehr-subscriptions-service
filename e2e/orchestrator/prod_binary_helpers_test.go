@@ -141,6 +141,26 @@ type prodBinaryConfig struct {
 	// (story #104).
 	WSBindingTokenRateLimitBurst           int
 	WSBindingTokenRateLimitRefillPerSecond float64
+
+	// AuthTokenURL, when non-empty, renders auth.token_url so the
+	// binary mounts the SMART Backend Services /token endpoint. The
+	// caller-supplied URL becomes the audience the binary expects on
+	// inbound client_assertion JWTs.
+	AuthTokenURL string
+
+	// AuthIssuedSecret is a base64-encoded ≥32-byte HMAC secret. When
+	// non-empty alongside AuthTokenURL, the binary signs access tokens
+	// with HS256 and the verifier accepts them.
+	AuthIssuedSecret string
+
+	// AuthIssuedIssuer is the iss claim baked into bearer JWTs minted
+	// by the binary's /token endpoint. Required when AuthTokenURL is
+	// set; ignored otherwise.
+	AuthIssuedIssuer string
+
+	// AuthAccessTokenTTL is the lifetime of bearer JWTs minted by the
+	// /token endpoint. Defaults to 5m in YAML rendering when zero.
+	AuthAccessTokenTTL time.Duration
 }
 
 // startProdBinary builds and launches cmd/fhir-subs against the
@@ -222,6 +242,19 @@ topics:
 	if cfg.WSBindingTokenRateLimitBurst > 0 {
 		authInsecureLine += fmt.Sprintf("\n  ws_binding_token_rate_limit:\n    burst: %d\n    refill_per_second: %v",
 			cfg.WSBindingTokenRateLimitBurst, cfg.WSBindingTokenRateLimitRefillPerSecond)
+	}
+
+	// Real-auth path: token endpoint config so the binary mounts /token
+	// and signs bearer JWTs with the supplied HS256 secret. Required
+	// when an e2e wants to drive POST /Subscription with a real
+	// authenticated principal.
+	if cfg.AuthTokenURL != "" {
+		ttl := cfg.AuthAccessTokenTTL
+		if ttl == 0 {
+			ttl = 5 * time.Minute
+		}
+		authInsecureLine += fmt.Sprintf("\n  token_url: %s\n  issued_secret: %s\n  issued_issuer: %s\n  access_token_ttl: %s",
+			cfg.AuthTokenURL, cfg.AuthIssuedSecret, cfg.AuthIssuedIssuer, ttl.String())
 	}
 
 	tracingBlock := ""
