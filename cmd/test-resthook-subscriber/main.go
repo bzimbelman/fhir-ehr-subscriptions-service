@@ -151,7 +151,12 @@ func main() {
 	})
 
 	log.Printf("test-resthook-subscriber listening on %s", *addr)
-	if err := http.ListenAndServe(*addr, mux); err != nil {
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("listen: %v", err)
 	}
 }

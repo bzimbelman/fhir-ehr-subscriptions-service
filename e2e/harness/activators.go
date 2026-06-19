@@ -341,7 +341,7 @@ func buildHarnessHandshakeBundle(row repos.SubscriptionRow) ([]byte, error) {
 		ResourceType: "Bundle",
 		Type:         "subscription-notification",
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
-		Entry: []entry{{FullURL: "urn:uuid:handshake", Resource: ss}},
+		Entry:        []entry{{FullURL: "urn:uuid:handshake", Resource: ss}},
 	}
 	return json.Marshal(&b)
 }
