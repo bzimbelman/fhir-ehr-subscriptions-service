@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -534,6 +535,22 @@ func loadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
 
+	// Story #119: ${env:VAR} and ${file:/path} interpolation runs on
+	// the raw bytes BEFORE yaml decode so quoted strings, nested keys,
+	// and "DSN with embedded secret" all work uniformly.
+	body, err = interpolatePlaceholders(body)
+	if err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
+	// A literal `${env:` or `${file:` that survived the substitution
+	// pass means the operator wrote a malformed placeholder (e.g. an
+	// unclosed brace). Fail loud rather than ship the literal bytes to
+	// the YAML decoder where it becomes a silent runtime config bug.
+	if loc := survivingPlaceholderRE.FindIndex(body); loc != nil {
+		return nil, fmt.Errorf("config %s: malformed placeholder %q (missing closing `}`?)",
+			path, string(body[loc[0]:min(loc[0]+40, len(body))]))
+	}
+
 	if strings.TrimSpace(string(body)) != "" {
 		// Use strict-ish parsing: malformed YAML is a startup error.
 		dec := yaml.NewDecoder(strings.NewReader(string(body)))
@@ -561,6 +578,68 @@ func loadConfig(path string) (*Config, error) {
 	cfg.Server.HTTP.applyTimeoutDefaults()
 
 	return cfg, nil
+}
+
+// placeholderRE matches `${env:NAME}` or `${file:/abs/path}` anywhere in
+// the raw config bytes. Group 1 is "env" or "file"; group 2 is the
+// argument (variable name or path). Names/paths are intentionally
+// permissive — `[^}]*` — so the loader can fail loud on an empty name
+// (`${env:}`) rather than silently treating it as no-match.
+var placeholderRE = regexp.MustCompile(`\$\{(env|file):([^}]*)\}`)
+
+// survivingPlaceholderRE catches any `${env:...}` or `${file:...}` that
+// somehow slipped past the interpolation pass. Validate() uses this to
+// fail loud on operator typos (e.g. `${ ENV:FOO}` or unmatched braces).
+var survivingPlaceholderRE = regexp.MustCompile(`\$\{(env|file):`)
+
+// interpolatePlaceholders replaces every `${env:VAR}` with os.Getenv("VAR")
+// and every `${file:/path}` with the file's contents (trimmed of a single
+// trailing newline). Any unset env or unreadable file is a startup error.
+//
+// The pass runs on raw bytes, before YAML decode, so a YAML-quoted
+// string like "postgres://app:${env:DB_PASS}@host" interpolates the
+// password segment without confusing the YAML parser.
+func interpolatePlaceholders(body []byte) ([]byte, error) {
+	var firstErr error
+	out := placeholderRE.ReplaceAllFunc(body, func(match []byte) []byte {
+		if firstErr != nil {
+			return match
+		}
+		sub := placeholderRE.FindSubmatch(match)
+		kind := string(sub[1])
+		arg := string(sub[2])
+		switch kind {
+		case "env":
+			if arg == "" {
+				firstErr = fmt.Errorf("interpolate %s: env variable name is empty", string(match))
+				return match
+			}
+			val, ok := os.LookupEnv(arg)
+			if !ok {
+				firstErr = fmt.Errorf("interpolate %s: env variable %q is not set", string(match), arg)
+				return match
+			}
+			return []byte(val)
+		case "file":
+			if arg == "" {
+				firstErr = fmt.Errorf("interpolate %s: file path is empty", string(match))
+				return match
+			}
+			data, err := os.ReadFile(arg) //nolint:gosec // operator-supplied secret path is intended.
+			if err != nil {
+				firstErr = fmt.Errorf("interpolate %s: read file %s: %w", string(match), arg, err)
+				return match
+			}
+			return []byte(strings.TrimRight(string(data), "\n"))
+		default:
+			firstErr = fmt.Errorf("interpolate %s: unknown placeholder kind %q", string(match), kind)
+			return match
+		}
+	})
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return out, nil
 }
 
 // applyTimeoutDefaults fills in safe HTTP server timeouts (audit B-2).
@@ -593,6 +672,19 @@ func (c *Config) Validate() error {
 	}
 
 	var problems []string
+
+	// Story #119: a literal `${env:...` or `${file:...` that survived
+	// the loader's interpolation pass means the operator wrote a
+	// malformed placeholder (e.g. unclosed brace, wrong case). Round-
+	// trip through YAML so every string field is scanned without
+	// hand-rolling field-by-field walking.
+	if blob, err := yaml.Marshal(c); err == nil {
+		if loc := survivingPlaceholderRE.FindIndex(blob); loc != nil {
+			problems = append(problems,
+				fmt.Sprintf("config contains a literal placeholder that did not interpolate: %q (missing closing `}`?)",
+					string(blob[loc[0]:min(loc[0]+40, len(blob))])))
+		}
+	}
 
 	if strings.TrimSpace(c.Deployment.FacilityID) == "" {
 		problems = append(problems, "deployment.facility_id is required")
