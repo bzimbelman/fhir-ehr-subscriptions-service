@@ -57,3 +57,25 @@ jobs:
       - run: go mod download
       - name: go test -race -tags e2e
         run: go test -race -tags e2e -count=1 ./e2e/...
+
+  # OP #154 AC #6: the documented `demo/README.md` walkthrough MUST be
+  # exercised on every PR. The demo-walkthrough test drives a real
+  # `docker compose up` against demo/docker-compose.yml + the real
+  # demo-publisher / demo-subscriber CLIs and asserts notifications
+  # arrive at the subscriber's /journal endpoint.
+  #
+  # Always-on (no label gate) — the test is the regression seal for
+  # the demo flow and is cheap relative to the full e2e harness (one
+  # compose stack, one publisher run, no testcontainers fan-out).
+  demo-walkthrough:
+    name: demo walkthrough
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go mod download
+      - name: go test -tags e2e ./e2e/demo/...
+        run: go test -tags e2e -count=1 -timeout 8m ./e2e/demo/...
