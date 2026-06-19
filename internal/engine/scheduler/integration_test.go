@@ -130,6 +130,10 @@ func (f *fakeChannel) callCount() int {
 	return len(f.calls)
 }
 
+// Close satisfies the channel.Channel SPI added by #101+#102+#103.
+// fakeChannel holds no resources to release.
+func (f *fakeChannel) Close() error { return nil }
+
 // seedAuthClient mirrors the helper in submatcher tests.
 func seedAuthClient(t *testing.T, s *storage.Storage, id string) {
 	t.Helper()
