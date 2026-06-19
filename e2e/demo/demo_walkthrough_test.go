@@ -118,7 +118,7 @@ func waitForHTTP(url string, deadline time.Time) error {
 	}
 }
 
-// fetchJournal GETs /journal off the demo-subscriber and decodes it.
+// fetchJournal GETs /received off the demo-subscriber and decodes it.
 // The endpoint is part of the bundled mocksub.RestHookReceiver and
 // returns the list of POSTs the subscriber has received from the
 // bridge.
@@ -182,12 +182,12 @@ func TestDemoWalkthroughDeliversNotifications(t *testing.T) {
 		t.Fatalf("bridge /readyz never became healthy: %v\nbridge logs:\n%s", err, string(logs))
 	}
 
-	// 3. Wait for the subscriber's `/journal` endpoint to come up.
+	// 3. Wait for the subscriber's `/received` endpoint to come up.
 	//    The compose stack publishes demo-subscriber on host port 9090.
 	subscriberURL := "http://localhost:9090"
-	if err := waitForHTTP(subscriberURL+"/journal", time.Now().Add(60*time.Second)); err != nil {
+	if err := waitForHTTP(subscriberURL+"/received", time.Now().Add(60*time.Second)); err != nil {
 		logs, _ := composeCmd(t, project, "logs", "demo-subscriber").CombinedOutput()
-		t.Fatalf("demo-subscriber /journal never became reachable: %v\nlogs:\n%s",
+		t.Fatalf("demo-subscriber /received never became reachable: %v\nlogs:\n%s",
 			err, string(logs))
 	}
 
@@ -207,7 +207,7 @@ func TestDemoWalkthroughDeliversNotifications(t *testing.T) {
 	deadline = time.Now().Add(60 * time.Second)
 	var lastJournal []map[string]any
 	for {
-		entries, err := fetchJournal(subscriberURL + "/journal")
+		entries, err := fetchJournal(subscriberURL + "/received")
 		if err != nil {
 			if time.Now().After(deadline) {
 				t.Fatalf("journal fetch failed: %v", err)
@@ -244,10 +244,20 @@ func TestDemoWalkthroughDeliversNotifications(t *testing.T) {
 // isNotification returns true when the journaled body looks like a
 // SubscriptionStatus notification Bundle (vs. a handshake). The bridge
 // activates the subscription with a synthetic handshake Bundle whose
-// type=="history" and which contains zero notificationEvent entries.
+// SubscriptionStatus.notificationEvent[] is empty; real notifications
+// have at least one entry there.
+//
+// /received returns a list whose `body` is the raw POST body as a JSON
+// string (mocksub.ReceivedNotification.MarshalJSON renders the bytes
+// as a UTF-8 string).  We re-parse that string to inspect the FHIR
+// Bundle.
 func isNotification(entry map[string]any) bool {
-	body, ok := entry["body"].(map[string]any)
-	if !ok {
+	bodyStr, ok := entry["body"].(string)
+	if !ok || bodyStr == "" {
+		return false
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(bodyStr), &body); err != nil {
 		return false
 	}
 	entries, ok := body["entry"].([]any)
