@@ -36,7 +36,7 @@ func newModule(cfg LifecycleConfig, lctx LifecycleContext, bindProbeListener boo
 		cfg:       cfg,
 		lctx:      lctx,
 		reg:       reg,
-		requestCh: make(chan string, 1),
+		requestCh: make(chan shutdownRequest, 1),
 		exitDone:  make(chan struct{}),
 	}
 	mod.probes = ProbeHandlers{
@@ -134,6 +134,11 @@ func (m *LifecycleModule) stopForTest() {
 // request arrives, runs the phases, and closes exitDone. Wrapped in a
 // recover so a panic inside the sequencer flips panic_signaled and still
 // unblocks WaitForExit.
+//
+// Story #206: the parent ctx for runShutdown is derived from the
+// caller's RequestShutdown ctx. The cancel function is published to
+// forceCancel so WaitForExit can abort the in-flight phases on a
+// caller-side cancellation.
 func (m *LifecycleModule) sequencerLoop() {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -141,12 +146,24 @@ func (m *LifecycleModule) sequencerLoop() {
 			m.lctx.Logger.Error("lifecycle sequencer panicked",
 				"recover", fmt.Sprint(rec))
 		}
+		// Clear forceCancel so post-exit WaitForExit calls cannot fire
+		// stale cancellations.
+		m.forceCancelMu.Lock()
+		m.forceCancel = nil
+		m.forceCancelMu.Unlock()
 		// Signal WaitForExit one way or another.
 		m.closeOnce.Do(func() { close(m.exitDone) })
 	}()
 
-	reason := <-m.requestCh
-	m.runShutdown(context.Background(), reason)
+	req := <-m.requestCh
+	parentCtx, parentCancel := context.WithCancel(req.ctx)
+	defer parentCancel()
+
+	m.forceCancelMu.Lock()
+	m.forceCancel = parentCancel
+	m.forceCancelMu.Unlock()
+
+	m.runShutdown(parentCtx, req.reason)
 }
 
 // runShutdown executes the five-phase sequence. It is exported only at

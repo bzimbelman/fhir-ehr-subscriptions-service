@@ -91,6 +91,12 @@ type productionRuntime struct {
 	messageChannel *chmessage.Channel
 	rhChannel      *chresthook.Channel
 
+	// rhActivator is the rest-hook handshake activator. The runtime
+	// keeps the typed handle so the lifecycle module's
+	// PhaseCloseConnections hook can release its idle HTTP connections
+	// during graceful shutdown (story #207).
+	rhActivator *restHookActivator
+
 	// activationWG is joined during shutdown so in-flight subscription
 	// activation goroutines either finish, time out, or are cancelled
 	// before the process exits (B-10).
@@ -342,6 +348,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		Timeout:   cfg.Channels.RestHook.RequestTimeout,
 		Logger:    logger.With("component", "channel.resthook.activator"),
 	})
+	rt.rhActivator = rhActivator
 	channels := handlers.ChannelRegistry{
 		"rest-hook": rhActivator,
 		"websocket": defaultActivator{},
@@ -740,9 +747,13 @@ func logCatalogDiagnostics(logger *slog.Logger, dir string, report catalog.Repor
 // registerLifecycle wires the runtime's components into the lifecycle
 // module's shutdown sequencer:
 //
-//   - PhaseStopAccepting: MLLP listener stops accepting (Phase 2).
-//   - PhaseDrainInFlight: pipeline workers drain (Phase 3, 70% budget).
-//   - PhaseCloseConnections: DB pool closes last (Phase 4).
+//   - PhaseStopAccepting: MLLP listener Close, scheduler stop-accepting
+//     (HTTP listener Close is registered from run.go since it owns the
+//     *http.Server). Phase 2 stops accepting new work.
+//   - PhaseDrainInFlight: pipeline workers drain, in-flight activations
+//     drain, storage runners drain (Phase 3, 70% budget).
+//   - PhaseCloseConnections: observability shutdown, channels close,
+//     rest-hook activator close, database pool close last (Phase 4).
 //
 // The grace argument is currently advisory — the lifecycle module
 // owns the per-phase budget — but is kept on the API so a future
@@ -756,6 +767,22 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 			Phase: lifecycle.PhaseStopAccepting,
 			Run: func(ctx context.Context) error {
 				return r.mllpListen.Shutdown(ctx)
+			},
+		})
+	}
+
+	// Story #207: scheduler.stop_accepting flips the scheduler's claim
+	// loop into "no new work" mode. In-flight dispatches keep running
+	// and are awaited by pipeline.supervisors.drain in
+	// PhaseDrainInFlight. The hook is non-blocking; the sequencer
+	// completes Phase 2 immediately while the scheduler idles.
+	if r.scheduler != nil {
+		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+			Name:  "scheduler.stop_accepting",
+			Phase: lifecycle.PhaseStopAccepting,
+			Run: func(_ context.Context) error {
+				r.scheduler.StopAccepting()
+				return nil
 			},
 		})
 	}
@@ -826,9 +853,11 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 	// storage.drain stops the partition maintainer + retention sweeper
 	// goroutines so they don't block the database close in the next
 	// phase. Storage owns those runners; calling Storage.Shutdown is the
-	// canonical way to drain them. This hook also closes the underlying
-	// pool (Storage.Shutdown wraps pool.Close), so a separate
-	// database.close hook is no longer needed (story #95).
+	// canonical way to drain them. Storage.Shutdown also closes the
+	// underlying pool, but it is idempotent — the database.pool.close
+	// hook in PhaseCloseConnections runs Pool.Close again as a no-op so
+	// the operator-visible phase contract (story #207) holds even when
+	// storage.drain has already done the work.
 	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
 		Name:  "storage.drain",
 		Phase: lifecycle.PhaseDrainInFlight,
@@ -839,6 +868,54 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 			return r.storage.Shutdown(ctx)
 		},
 	})
+
+	// Story #207: explicit database.pool.close hook in
+	// PhaseCloseConnections. storage.drain in the prior phase already
+	// closes the pool as a side effect (Storage.Shutdown wraps
+	// pool.Close); pool.Close is idempotent so a second call is a
+	// no-op. Registering the hook nonetheless gives operators the
+	// per-phase metric line (`fhir_subs_lifecycle_phase_duration_seconds
+	// {phase="close_connections"}` non-zero) and pins the contract that
+	// connection-tier teardown lives in Phase 4.
+	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "database.pool.close",
+		Phase: lifecycle.PhaseCloseConnections,
+		Run: func(_ context.Context) error {
+			if r.pool == nil {
+				return nil
+			}
+			// pgxpool.Pool.Close is synchronous and waits for in-flight
+			// queries; storage.drain already drained those. Bound it
+			// loosely via a goroutine so a stuck connection cannot pin
+			// the phase past its budget — pgxpool's own teardown takes
+			// over once the goroutine returns.
+			done := make(chan struct{})
+			go func() {
+				r.pool.Close()
+				close(done)
+			}()
+			select {
+			case <-done:
+				return nil
+			case <-time.After(2 * time.Second):
+				return nil // phase deadline owns the budget
+			}
+		},
+	})
+
+	// Story #207: rest-hook activator transport close. The activator's
+	// http.Transport keeps idle TCP/TLS sockets to subscriber endpoints
+	// for keep-alive reuse; PhaseCloseConnections releases them so the
+	// process exits without warm sockets.
+	if r.rhActivator != nil {
+		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+			Name:  "resthook.activator.close",
+			Phase: lifecycle.PhaseCloseConnections,
+			Run: func(_ context.Context) error {
+				return r.rhActivator.Close()
+			},
+		})
+	}
 }
 
 // shutdown performs an immediate teardown for the buildProductionRuntime

@@ -96,6 +96,21 @@ func newRestHookActivator(opts restHookActivatorOptions) *restHookActivator {
 	}
 }
 
+// Close releases the activator's idle HTTP connections. The lifecycle
+// module's PhaseCloseConnections hook calls this so the rest-hook
+// activator does not pin TCP/TLS sockets past process shutdown
+// (story #207). Idempotent — safe to call after an already-closed
+// transport.
+func (a *restHookActivator) Close() error {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	if tr, ok := a.client.Transport.(*http.Transport); ok && tr != nil {
+		tr.CloseIdleConnections()
+	}
+	return nil
+}
+
 // ActivateSubscription performs the FHIR R5 handshake against
 // row.Endpoint. A 2xx response is HandshakeSucceeded; everything else
 // (non-2xx, dial failure, timeout, scheme rejection) is HandshakeFailed.
