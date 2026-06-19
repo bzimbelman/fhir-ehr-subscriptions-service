@@ -62,18 +62,21 @@ func TestIntegration_VersionLDFlags(t *testing.T) {
 func TestIntegration_StartupProbe(t *testing.T) {
 	bin := buildBinary(t)
 	addr := freeAddr(t)
+	probeAddr := freeAddr(t)
 	yaml := fmt.Sprintf(`
 deployment:
   facility_id: hospital-a
+  mode: probe-only
 adapter:
   id: meditech-expanse-7
 server:
   http:
     bind: %s
+    probe_bind: %s
     insecure: true
 lifecycle:
   shutdown_grace_period: 5s
-`, addr)
+`, addr, probeAddr)
 	cfgPath := writeYAML(t, yaml)
 
 	cmd := exec.Command(bin, "--config", cfgPath)
@@ -89,12 +92,12 @@ lifecycle:
 		}
 	})
 
-	// Poll /startup. The lifecycle module's behavior:
+	// Poll /startup on the probe listener (S-118). The lifecycle module:
 	//   - before MarkStartupComplete: 503 status="starting"
 	//   - after MarkStartupComplete + zero registered checks: 200 status="ready"
-	// Our run.go calls MarkStartupComplete after the listener binds, so
-	// the steady state in this minimal config is 200/ready.
-	startupURL := "http://" + addr + "/startup"
+	// run.go calls MarkStartupComplete after the listener binds, so the
+	// steady state in this minimal config is 200/ready.
+	startupURL := "http://" + probeAddr + "/startup"
 	deadline := time.Now().Add(5 * time.Second)
 	var (
 		ok      bool
@@ -175,6 +178,7 @@ func TestIntegration_CheckConfigValidExits0(t *testing.T) {
 	yaml := `
 deployment:
   facility_id: hospital-a
+  mode: probe-only
 adapter:
   id: meditech-expanse-7
 server:
@@ -225,18 +229,21 @@ server:
 func TestIntegration_RunAndSIGTERM(t *testing.T) {
 	bin := buildBinary(t)
 	addr := freeAddr(t)
+	probeAddr := freeAddr(t)
 	yaml := fmt.Sprintf(`
 deployment:
   facility_id: hospital-a
+  mode: probe-only
 adapter:
   id: meditech-expanse-7
 server:
   http:
     bind: %s
+    probe_bind: %s
     insecure: true
 lifecycle:
   shutdown_grace_period: 5s
-`, addr)
+`, addr, probeAddr)
 	cfgPath := writeYAML(t, yaml)
 
 	cmd := exec.Command(bin, "--config", cfgPath)
@@ -251,8 +258,8 @@ lifecycle:
 		}
 	})
 
-	// Poll /healthz until the server is up (or fail after 5s).
-	healthURL := "http://" + addr + "/healthz"
+	// Poll /healthz on the probe listener (S-118).
+	healthURL := "http://" + probeAddr + "/healthz"
 	deadline := time.Now().Add(5 * time.Second)
 	var (
 		healthOK bool
@@ -285,7 +292,7 @@ lifecycle:
 	// storage/handler/pipeline wiring lands, those modules register
 	// per-component checks and 503/unready will reflect real failures.
 	{
-		resp, err := http.Get("http://" + addr + "/readyz")
+		resp, err := http.Get("http://" + probeAddr + "/readyz")
 		if err != nil {
 			t.Fatalf("readyz: %v", err)
 		}
