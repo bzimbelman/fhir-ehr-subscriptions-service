@@ -74,6 +74,16 @@ type supervisedPipeline struct {
 	// so tests and the admin endpoint surface a stable layout.
 	orderedIDs []string
 
+	// backoff is the resolved supervisor tunable bundle Restart re-uses
+	// when re-creating a supervisor. Keeping it on the pipeline avoids
+	// hardcoding a different (hidden) backoff for the operator-driven
+	// restart path.
+	backoff PipelineSupervisorConfig
+
+	// onHealth is the host-supplied health-tick callback Restart
+	// re-attaches to a re-created supervisor.
+	onHealth func(name string, st supervisor.Status)
+
 	stopOnce sync.Once
 	stopErr  error
 }
@@ -134,6 +144,8 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 
 	pl := &supervisedPipeline{
 		supervisors: make(map[string]*supervisorEntry, 4),
+		backoff:     deps.Backoff,
+		onHealth:    deps.OnHealth,
 	}
 
 	specs := []struct {
@@ -226,12 +238,22 @@ func (p *supervisedPipeline) Restart(adapterID string) error {
 
 	// Re-launch under a fresh ctx; the previous Supervisor instance has
 	// returned. We construct a new Supervisor wrapping the same Worker
-	// so Restart represents a true "host-side bounce."
+	// so Restart represents a true "host-side bounce." Reuse the
+	// operator-supplied backoff bundle so Restart honors the same
+	// production tunables as the initial wiring.
+	var onTick func(supervisor.Status)
+	if p.onHealth != nil {
+		id := entry.id
+		onTick = func(st supervisor.Status) { p.onHealth(id, st) }
+	}
 	sv, err := supervisor.New(supervisor.Options{
 		AdapterID:      entry.id,
 		Worker:         entry.worker,
-		BackoffInitial: 50 * time.Millisecond,
-		BackoffMax:     5 * time.Second,
+		BackoffInitial: p.backoff.BackoffInitial,
+		BackoffMax:     p.backoff.BackoffMax,
+		JitterMax:      p.backoff.JitterMax,
+		HealthInterval: p.backoff.HealthInterval,
+		OnHealthTick:   onTick,
 	})
 	if err != nil {
 		return fmt.Errorf("supervisor pipeline: re-create %s: %w", adapterID, err)
