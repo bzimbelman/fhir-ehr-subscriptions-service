@@ -58,8 +58,31 @@ type ExternalVerifierRow struct {
 // re-anchor; downstream rows after a tamper surface as additional
 // breaks).
 func VerifyChainExternal(rows []ExternalVerifierRow, genesisLiteral string) (firstBadIdx, breaks int) {
-	prior := GenesisHashFromLiteral(genesisLiteral)
+	bad := externalVerifierBadIndices(rows, genesisLiteral)
 	firstBadIdx = -1
+	if len(bad) > 0 {
+		firstBadIdx = bad[0]
+	}
+	return firstBadIdx, len(bad)
+}
+
+// VerifyChainExternalDetail is the per-row companion to VerifyChainExternal
+// for tooling that wants to enumerate every mismatch (e.g. cmd/audit-
+// chain-walker, OP #257 H2). Returns the zero-based indices of every
+// row whose recomputed chain_hash did not match the stored value, in
+// ascending order. Empty slice means a clean chain.
+//
+// The chain math is identical to VerifyChainExternal — the same
+// canonicalization, the same prior advance, the same no-re-anchor
+// guarantee — so a tooling caller never needs to re-derive the chain
+// rules.
+func VerifyChainExternalDetail(rows []ExternalVerifierRow, genesisLiteral string) []int {
+	return externalVerifierBadIndices(rows, genesisLiteral)
+}
+
+func externalVerifierBadIndices(rows []ExternalVerifierRow, genesisLiteral string) []int {
+	prior := GenesisHashFromLiteral(genesisLiteral)
+	var bad []int
 	for i, r := range rows {
 		obj := map[string]any{
 			"ts":             r.OccurredAt.UTC().Format(time.RFC3339Nano),
@@ -75,12 +98,8 @@ func VerifyChainExternal(rows []ExternalVerifierRow, genesisLiteral string) (fir
 		}
 		canon := canonicalJCSExternal(obj)
 		sum := sha256.Sum256(canon)
-		matched := equalBytes(sum[:], r.ChainHash)
-		if !matched {
-			breaks++
-			if firstBadIdx == -1 {
-				firstBadIdx = i
-			}
+		if !equalBytes(sum[:], r.ChainHash) {
+			bad = append(bad, i)
 		}
 		// Advance prior with the verifier-recomputed hash, NOT
 		// r.ChainHash. Re-anchoring on r.ChainHash would silently
@@ -88,7 +107,7 @@ func VerifyChainExternal(rows []ExternalVerifierRow, genesisLiteral string) (fir
 		// rows pass verification.
 		prior = sum[:]
 	}
-	return firstBadIdx, breaks
+	return bad
 }
 
 func canonicalJCSExternal(obj map[string]any) []byte {
