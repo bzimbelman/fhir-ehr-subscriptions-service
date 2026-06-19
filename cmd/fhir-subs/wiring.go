@@ -20,7 +20,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	defaultadapter "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/default"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/scanrunner"
 	adapterspi "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
@@ -134,8 +133,12 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	rt.codec = store.Codec()
 
 	// --- 3. Adapter registry --------------------------------------------
+	// Story #113 / OP epic #91: register every bundled vendor adapter so
+	// an operator config of `adapter.id: <vendor>` resolves at startup.
+	// Selection is decided at Load time by cfg.Adapter.ID; registration
+	// itself is unconditional.
 	adReg := registry.New()
-	if regErr := adReg.Register("default", func() adapterspi.EhrAdapter { return defaultadapter.New() }); regErr != nil {
+	if regErr := registerAllAdapters(adReg); regErr != nil {
 		rt.shutdown(context.Background())
 		return nil, fmt.Errorf("adapter registry: %w", regErr)
 	}
