@@ -265,6 +265,11 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// time re-check share one policy surface.
 	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		AllowHTTP: cfg.Auth.AllowInsecure, // dev convenience: if insecure JWKS allowed, allow http endpoints too
+		// OP #154: pipe operator-trusted internal hostnames through.
+		// The demo uses this to allow `demo-subscriber` (a sibling
+		// compose service on a private network) past the RFC1918
+		// SSRF gate. Empty in production.
+		AllowHosts: cfg.Auth.AllowSubscriberHosts,
 	})
 	rhCh, err := chresthook.New(chresthook.Options{
 		UserAgent:      cfg.Channels.RestHook.UserAgent,
