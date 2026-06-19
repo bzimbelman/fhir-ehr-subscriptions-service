@@ -111,6 +111,23 @@ type prodBinaryConfig struct {
 	// subscriber endpoints in e2e (D-2). Off by default — production is
 	// https-only.
 	AuthAllowInsecureJWKS bool
+
+	// TracingOTLPEndpoint, when non-empty, is rendered into a top-level
+	// `tracing:` block so the production binary configures the OTLP
+	// exporter. Empty means "do not emit a tracing block" (current
+	// default before story #94 ships). Story #94.
+	TracingOTLPEndpoint string
+
+	// TracingSampleRate is the head-sampling rate rendered alongside the
+	// endpoint. Ignored when TracingOTLPEndpoint is empty. Defaults to
+	// 1.0 in helper rendering (sample everything in tests) when zero.
+	// Story #94.
+	TracingSampleRate float64
+
+	// TracingInsecure renders tracing.insecure: true so plaintext to
+	// non-loopback exporters works in e2e. Ignored when
+	// TracingOTLPEndpoint is empty. Story #94.
+	TracingInsecure bool
 }
 
 // startProdBinary builds and launches cmd/fhir-subs against the
@@ -128,9 +145,12 @@ func startProdBinary(t *testing.T, ctx context.Context, cfg prodBinaryConfig) *p
 	if cfg.GracePeriod == 0 {
 		cfg.GracePeriod = 5 * time.Second
 	}
-	if cfg.AuthAudience == "" {
-		cfg.AuthAudience = "https://api.test.local"
-	}
+	// Empty AuthAudience means "do not configure auth" — buildAuthEndpoints
+	// returns (nil, nil, nil) in that case so the chi router runs with a
+	// no-op middleware. Tests that explicitly want bearer auth set
+	// AuthAudience to a non-empty string. (Story #94 audit test relies on
+	// this so the POST /Subscription request reaches the handler that
+	// writes the audit row.)
 
 	// Build the binary into a temp dir.
 	repoRoot, err := findRepoRoot()
@@ -179,6 +199,23 @@ topics:
 		authInsecureLine = "\n  allow_insecure_jwks: true"
 	}
 
+	tracingBlock := ""
+	if cfg.TracingOTLPEndpoint != "" {
+		sampleRate := cfg.TracingSampleRate
+		if sampleRate == 0 {
+			sampleRate = 1.0
+		}
+		insecureLine := ""
+		if cfg.TracingInsecure {
+			insecureLine = "\n  insecure: true"
+		}
+		tracingBlock = fmt.Sprintf(`
+tracing:
+  otlp_endpoint: %s
+  sample_rate: %v%s
+`, cfg.TracingOTLPEndpoint, sampleRate, insecureLine)
+	}
+
 	yamlBody := fmt.Sprintf(`deployment:
   facility_id: %s
   environment: e2e
@@ -215,11 +252,11 @@ pipeline:
     claim_batch_size: 16
     idle_poll_interval: 100ms
   correlation_hold_window: 1s
-%s%s
+%s%s%s
 `,
 		cfg.FacilityID, cfg.AdapterID, cfg.HTTPBind, cfg.Insecure,
 		cfg.GracePeriod.String(),
-		cfg.DatabaseURL, keyB64, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock,
+		cfg.DatabaseURL, keyB64, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock,
 	)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")

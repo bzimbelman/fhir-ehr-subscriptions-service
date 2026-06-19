@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/logging"
 )
@@ -133,8 +134,17 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	addr := listener.Addr().String()
 
 	mux := buildHTTPMux(lcMod, prod)
+	// Wrap the outer mux with the production tracer when observability
+	// is wired so probe endpoints (/healthz, /readyz, /startup) generate
+	// spans alongside the API surface (story #94 AC #2).
+	var rootHandler http.Handler = mux
+	if prod != nil && prod.obsModule != nil {
+		if tr := prod.obsModule.Tracer(); tr != nil {
+			rootHandler = handlers.TracingMiddleware(tr.Tracer())(mux)
+		}
+	}
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           rootHandler,
 		ReadHeaderTimeout: cfg.Server.HTTP.ReadHeaderTimeout,
 		ReadTimeout:       cfg.Server.HTTP.ReadTimeout,
 		WriteTimeout:      cfg.Server.HTTP.WriteTimeout,

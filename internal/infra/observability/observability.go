@@ -20,6 +20,8 @@ package observability
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -51,8 +53,22 @@ type MetricsConfig struct {
 
 // TracingConfig is the tracing-layer config block.
 type TracingConfig struct {
-	OTLPEndpoint string
-	SampleRate   float64
+	OTLPEndpoint    string
+	SampleRate      float64
+	ExporterTimeout time.Duration
+	Insecure        bool
+
+	// TLSCertFile / TLSKeyFile / TLSCAFile point at PEM files used to
+	// build the *tls.Config handed to the OTLP exporter. All three are
+	// optional; supplying CertFile + KeyFile enables mTLS, supplying
+	// CAFile pins a custom root pool. Story #94.
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSCAFile   string
+
+	// Headers carry static HTTP headers forwarded with every OTLP
+	// request (typically auth tokens). Story #94.
+	Headers map[string]string
 }
 
 // LoggingConfig is the logging-layer config block.
@@ -317,10 +333,18 @@ func Start(_ context.Context, cfg Config, octx Context) (*ObservabilityModule, H
 	})
 
 	// 2. Tracing.
+	tlsCfg, err := buildTracingTLSConfig(cfg.Tracing)
+	if err != nil {
+		return nil, Handles{}, fmt.Errorf("observability: tracing tls: %w", err)
+	}
 	tr, err := tracing.New(tracing.Options{
-		ServiceName:  "fhir-subs",
-		OTLPEndpoint: cfg.Tracing.OTLPEndpoint,
-		SampleRate:   cfg.Tracing.SampleRate,
+		ServiceName:     "fhir-subs",
+		OTLPEndpoint:    cfg.Tracing.OTLPEndpoint,
+		SampleRate:      cfg.Tracing.SampleRate,
+		ExporterTimeout: cfg.Tracing.ExporterTimeout,
+		Insecure:        cfg.Tracing.Insecure,
+		TLSConfig:       tlsCfg,
+		Headers:         cfg.Tracing.Headers,
 	})
 	if err != nil {
 		return nil, Handles{}, fmt.Errorf("observability: tracing: %w", err)
@@ -431,6 +455,69 @@ func (m *ObservabilityModule) PrometheusHandler() http.Handler {
 
 // Inventory returns the canonical startup metric set.
 func (m *ObservabilityModule) Inventory() *metrics.Inventory { return m.inventory }
+
+// Registry returns the underlying Prometheus registry. The host wires
+// this into modules (e.g. internal/api/metrics.New) that register their
+// own collectors so a single /metrics endpoint surfaces every series
+// (story #94 AC #4).
+func (m *ObservabilityModule) Registry() *prometheus.Registry { return m.registry }
+
+// Tracer returns the underlying tracer module so callers can wire
+// chi-friendly tracing middleware on their HTTP routers. Nil-safe.
+// Story #94.
+func (m *ObservabilityModule) Tracer() *tracing.Module {
+	if m == nil {
+		return nil
+	}
+	return m.tracer
+}
+
+// AuditWriter returns the underlying hash-chained audit.Writer so the
+// host wiring can hand the same writer to both the API audit adapter
+// (handlers.NewChainedAuditStore) and any sibling caller (e.g. boot
+// audit events). The Handles.Audit interface is the loose coupling for
+// pluggable consumers; this accessor is the tight coupling for the
+// production wiring that needs the concrete *audit.Writer to satisfy
+// handlers.NewChainedAuditStore (story #105 + #94 reconciliation).
+func (m *ObservabilityModule) AuditWriter() *audit.Writer {
+	if m == nil {
+		return nil
+	}
+	return m.audit
+}
+
+// buildTracingTLSConfig translates the file-path knobs on TracingConfig
+// into a *tls.Config for the OTLP HTTP exporter. Returns (nil, nil) when
+// no TLS material is configured — the caller treats that as "use the
+// transport defaults". Story #94.
+func buildTracingTLSConfig(cfg TracingConfig) (*tls.Config, error) {
+	if cfg.TLSCertFile == "" && cfg.TLSKeyFile == "" && cfg.TLSCAFile == "" {
+		return nil, nil
+	}
+	tc := &tls.Config{MinVersion: tls.VersionTLS12}
+	if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+		if cfg.TLSCertFile == "" || cfg.TLSKeyFile == "" {
+			return nil, errors.New("tracing tls: cert_file and key_file must both be set")
+		}
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load client keypair: %w", err)
+		}
+		tc.Certificates = []tls.Certificate{cert}
+	}
+	if cfg.TLSCAFile != "" {
+		caBytes, err := os.ReadFile(cfg.TLSCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read ca_file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caBytes) {
+			return nil, errors.New("tracing tls: ca_file contained no PEM certificates")
+		}
+		tc.RootCAs = pool
+	}
+	return tc, nil
+}
 
 func parseLevel(level string) slog.Level {
 	switch strings.ToLower(level) {
