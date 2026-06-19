@@ -248,6 +248,7 @@ func run(args []string, stdout *os.File) error {
 		Filter:        f.filter,
 		ChannelType:   f.channelType,
 		Endpoint:      endpoint,
+		ClientID:      f.clientID,
 	})
 	cancel()
 	if err != nil {

@@ -123,6 +123,13 @@ services:
       - "patient=ABC123"
       - "--token"
       - "demo-token"
+      # The bridge runs in dev-bypass auth mode (no audience set ->
+      # devPrincipalMiddleware mounted). That middleware only attaches
+      # a Principal when X-Client-Id is present; without it the
+      # subscribe POST is 401 unauthenticated. Pass a client-id so the
+      # demo-subscriber's request looks like an authorised client.
+      - "--client-id"
+      - "demo-subscriber"
       - "--pretty=false"
       # Wait up to 120s for bridge /readyz to flip to 2xx before
       # subscribing. The bridge boots Postgres + migrations + the
