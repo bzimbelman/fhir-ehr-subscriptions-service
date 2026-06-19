@@ -88,7 +88,7 @@ func assertNonZeroHash(t *testing.T, idx int, row audit.Row) {
 //     b. Genesis-anchored prior_hash on row 0 (default genesis literal).
 //     c. Each row's PriorHash equals the previous row's ChainHash.
 //     d. Each row's ChainHash == SHA-256(ChainInput) — the
-//        application-side chain_hash is bit-for-bit what's on disk.
+//     application-side chain_hash is bit-for-bit what's on disk.
 //  4. Calls audit.VerifyChain over the same store and asserts it
 //     returns nil — the third-party verifier reference impl that
 //     story #108 added is the canonical "byte-for-byte correct chain"
