@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"time"
@@ -468,93 +467,57 @@ func (s *PgWsBindingTokensStore) Insert(ctx context.Context, row repos.WsBinding
 	return nil
 }
 
-// PgAuditStore writes hash-chained rows to audit_log (S-2.16 / story #49).
+// ChainedAuditStore adapts an *audit.Writer to the handlers.AuditStore
+// contract. It is the production wiring slot for Deps.Audit (story #105):
+// every API handler call to Deps.Audit.Append flows into the same
+// audit.Writer that observability.Start manages, so the on-disk
+// audit_log chain is a single linear sequence and `fhir-subs audit
+// verify` can walk it end-to-end.
 //
-// Each Append serializes through the audit chain advisory lock so
-// concurrent appenders see a linear chain. Inside the lock, we read the
-// prior row's hash, compute hash[N] = SHA-256(prev_hash || canonical_form),
-// and INSERT under the same transaction so verify→insert is atomic. The
-// chain seeds from the audit module's genesis literal so the audit chain
-// verifier CLI (P2.5) validates against the same chain.
-type PgAuditStore struct {
-	Pool     *pgxpool.Pool
-	Repo     *repos.AuditLogRepo
-	Timeouts QueryTimeouts
+// The handler-side AuditStore signature carries (action, target,
+// outcome, correlationID, canonical-body bytes); the writer wants a
+// full audit.Event. The adapter assembles the Event from those args:
+// ActorKind defaults to "subscriber" because the API surfaces are
+// subscriber-driven (admin paths use a different audit emit), and the
+// canonical body becomes the Payload's "body" key so it lands in the
+// audit_log.payload JSONB column intact.
+type ChainedAuditStore struct {
+	w     *audit.Writer
+	now   func() time.Time
+	actor string
 }
 
-// NewPgAuditStore constructs the store with default timeouts.
-func NewPgAuditStore(pool *pgxpool.Pool) *PgAuditStore {
-	return NewPgAuditStoreWithTimeouts(pool, QueryTimeouts{})
+// NewChainedAuditStore wraps w. Subsequent Append calls flow through
+// the writer's Emit, picking up the chain advisory lock and the
+// canonical/chain-hash bookkeeping that the audit package owns.
+func NewChainedAuditStore(w *audit.Writer) *ChainedAuditStore {
+	return &ChainedAuditStore{w: w, now: time.Now, actor: "subscriber"}
 }
 
-// NewPgAuditStoreWithTimeouts lets the operator override per-query
-// deadlines.
-func NewPgAuditStoreWithTimeouts(pool *pgxpool.Pool, qt QueryTimeouts) *PgAuditStore {
-	qt.ApplyDefaults()
-	return &PgAuditStore{Pool: pool, Repo: repos.NewAuditLogRepo(), Timeouts: qt}
-}
-
-// Append writes a hash-chained audit row. The chain advisory lock plus
-// per-tx verify-then-insert keeps concurrent appenders linear; a panic,
-// rollback, or lost connection releases the lock automatically (xact-
-// scoped, matching audit/pgstore.AcquireChainLock's contract).
-func (s *PgAuditStore) Append(ctx context.Context, action, target, outcome string, correlationID *uuid.UUID, canonical []byte) error {
-	if len(canonical) == 0 {
-		canonical = []byte("{}")
+// Append assembles an audit.Event from the handler-side arguments and
+// forwards to the writer. A nil correlationID is forwarded as the zero
+// UUID; the chain reflects the handler's actual correlation state and
+// the pg-backed store persists it verbatim (story #107).
+func (s *ChainedAuditStore) Append(ctx context.Context, action, target, outcome string, correlationID *uuid.UUID, canonical []byte) error {
+	var cid uuid.UUID
+	if correlationID != nil {
+		cid = *correlationID
 	}
-	qctx, cancel := s.Timeouts.withWrite(ctx)
-	defer cancel()
-
-	tx, err := s.Pool.BeginTx(qctx, pgx.TxOptions{})
-	if err != nil {
-		return TranslateQueryErr(ctx, qctx, err, "audit: begin")
+	payload := map[string]any{}
+	if len(canonical) > 0 {
+		payload["body"] = string(canonical)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(context.Background())
-		}
-	}()
-
-	if _, err := tx.Exec(qctx, "SELECT pg_advisory_xact_lock($1)", audit.AuditChainAdvisoryLockID); err != nil {
-		return TranslateQueryErr(ctx, qctx, err, "audit: chain lock")
-	}
-
-	var prev []byte
-	switch err := tx.QueryRow(qctx, "SELECT hash FROM audit_log ORDER BY seq DESC LIMIT 1").Scan(&prev); {
-	case err == nil:
-		// prev populated.
-	case errors.Is(err, pgx.ErrNoRows):
-		prev = audit.GenesisHashFromLiteral("")
-	default:
-		return TranslateQueryErr(ctx, qctx, err, "audit: read prior hash")
-	}
-
-	h := sha256.New()
-	h.Write(prev)
-	h.Write(canonical)
-	hash := h.Sum(nil)
-
-	row := repos.AuditLogRow{
-		ActorKind:     "subscriber",
+	evt := audit.Event{
+		OccurredAt:    s.now().UTC(),
+		ActorKind:     s.actor,
 		Action:        action,
 		TargetKind:    "Subscription",
 		TargetID:      target,
 		Outcome:       outcome,
-		CorrelationID: correlationID,
-		CanonicalForm: canonical,
-		Hash:          hash,
-		PrevHash:      prev,
+		CorrelationID: cid,
+		Payload:       payload,
 	}
-	if _, err := s.Repo.Append(qctx, tx, row); err != nil {
-		return TranslateQueryErr(ctx, qctx, err, "audit: append")
-	}
-
-	if err := tx.Commit(qctx); err != nil {
-		return TranslateQueryErr(ctx, qctx, err, "audit: commit")
-	}
-	committed = true
-	return nil
+	return s.w.Emit(ctx, evt)
 }
 
 // AuthClientLookup wraps repos.AuthClientsRepo so the Verifier can

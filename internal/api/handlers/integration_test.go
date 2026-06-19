@@ -35,6 +35,7 @@ import (
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
@@ -196,6 +197,19 @@ func setupIntegration(t *testing.T) *integration {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 
+	auditStore, err := audit.NewPgStore(pool, audit.PgStoreOptions{})
+	if err != nil {
+		t.Fatalf("audit store: %v", err)
+	}
+	auditWriter, err := audit.NewWriter(audit.WriterOptions{
+		Store: auditStore,
+		Sink:  audit.NewStdoutSink(),
+		Clock: now,
+	})
+	if err != nil {
+		t.Fatalf("audit writer: %v", err)
+	}
+
 	deps := handlers.Deps{
 		Auth:          verifier.Middleware,
 		Subscriptions: handlers.NewPgSubscriptionsStore(pool),
@@ -203,7 +217,7 @@ func setupIntegration(t *testing.T) *integration {
 		Events:        handlers.NewPgEventsStore(pool),
 		Deliveries:    handlers.NewPgDeliveriesStore(pool),
 		WsTokens:      handlers.NewPgWsBindingTokensStore(pool),
-		Audit:         handlers.NewPgAuditStore(pool),
+		Audit:         handlers.NewChainedAuditStore(auditWriter),
 		Channels: handlers.ChannelRegistry{
 			"rest-hook": &fakeChannel{resp: handlers.HandshakeSucceeded},
 			"websocket": &fakeChannel{resp: handlers.HandshakeSucceeded},

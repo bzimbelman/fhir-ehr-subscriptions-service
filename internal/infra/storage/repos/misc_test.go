@@ -556,7 +556,7 @@ func TestAuditLogAppendChainedOK(t *testing.T) {
 	defer pool.Close()
 	ctx := context.Background()
 
-	pool.ExpectQuery("SELECT hash FROM audit_log").
+	pool.ExpectQuery("SELECT chain_hash FROM audit_log").
 		WillReturnRows(pgxmock.NewRows([]string{"hash"}).AddRow([]byte("prev")))
 	pool.ExpectQuery("INSERT INTO audit_log").
 		WithArgs(anyArgs(10)...).
@@ -594,7 +594,7 @@ func TestAuditLogAppendChainedMismatch(t *testing.T) {
 	defer pool.Close()
 	ctx := context.Background()
 
-	pool.ExpectQuery("SELECT hash FROM audit_log").
+	pool.ExpectQuery("SELECT chain_hash FROM audit_log").
 		WillReturnRows(pgxmock.NewRows([]string{"hash"}).AddRow([]byte("real-prev")))
 	// Note: NO ExpectQuery for INSERT — pgxmock fails the test if it ever runs.
 
@@ -627,7 +627,7 @@ func TestAuditLogAppendChainedGenesis(t *testing.T) {
 	defer pool.Close()
 	ctx := context.Background()
 
-	pool.ExpectQuery("SELECT hash FROM audit_log").
+	pool.ExpectQuery("SELECT chain_hash FROM audit_log").
 		WillReturnRows(pgxmock.NewRows([]string{"hash"}))
 	pool.ExpectQuery("INSERT INTO audit_log").
 		WithArgs(anyArgs(10)...).
@@ -665,7 +665,7 @@ func TestAuditLogAppendChainedGenesisMismatch(t *testing.T) {
 	defer pool.Close()
 	ctx := context.Background()
 
-	pool.ExpectQuery("SELECT hash FROM audit_log").
+	pool.ExpectQuery("SELECT chain_hash FROM audit_log").
 		WillReturnRows(pgxmock.NewRows([]string{"hash"}))
 
 	repo := repos.NewAuditLogRepo()

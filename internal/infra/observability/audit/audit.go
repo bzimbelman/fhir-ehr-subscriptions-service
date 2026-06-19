@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -297,6 +298,15 @@ func (w *Writer) Emit(ctx context.Context, evt Event) (retErr error) {
 // canonicalChainInput builds the JCS-canonical bytes that go into the
 // SHA-256 hash. The shape is the public, persisted-event view augmented
 // with prior_hash so a prior-row mutation breaks every subsequent hash.
+//
+// prior_hash is encoded as RFC 4648 standard base64 of the raw 32-byte
+// SHA-256 digest. The previous implementation used lowercase hex
+// (fmt.Sprintf("%x", prior)) which doubled the length on the wire and,
+// more importantly, defeated the LLD spec's "hash over raw bytes"
+// requirement — an external auditor reading the spec and feeding raw
+// bytes through their own canonicalizer would never reproduce our
+// chain_hash. Base64 round-trips back to the same 32 bytes; both sides
+// end up hashing the same logical value (story #108, finding #123).
 func canonicalChainInput(evt Event, prior []byte) ([]byte, error) {
 	obj := map[string]any{
 		"ts":             evt.OccurredAt.UTC().Format(time.RFC3339Nano),
@@ -308,7 +318,7 @@ func canonicalChainInput(evt Event, prior []byte) ([]byte, error) {
 		"outcome":        evt.Outcome,
 		"correlation_id": evt.CorrelationID.String(),
 		"payload":        evt.Payload,
-		"prior_hash":     fmt.Sprintf("%x", prior),
+		"prior_hash":     base64.StdEncoding.EncodeToString(prior),
 	}
 	enc, err := json.Marshal(obj)
 	if err != nil {
@@ -416,6 +426,15 @@ type VerifyOptions struct {
 // elided from the returned slice (but the chain is still walked to
 // completion, which is structurally required: each row's chain_hash
 // depends on every preceding row's chain_hash).
+//
+// The walker advances `prior` using the application-recomputed
+// chain_hash, NOT the on-disk row.ChainHash. This is the fix for story
+// #108 finding #122: the previous implementation re-anchored on the
+// stored chain_hash after a mismatch, which silently glued the walker
+// onto the corrupted row and let downstream rows pass verification
+// (they were correctly chained to a bad prior). With this change, a
+// single mid-chain corruption surfaces as a cascade of prior_hash
+// breaks — exactly the "every break" guarantee the docstring promises.
 func VerifyChainReport(ctx context.Context, store Store, opts VerifyOptions) (VerifyResult, error) {
 	prior := GenesisHashFromLiteral(opts.GenesisLiteral)
 	res := VerifyResult{}
@@ -425,27 +444,31 @@ func VerifyChainReport(ctx context.Context, store Store, opts VerifyOptions) (Ve
 		if !bytes.Equal(row.PriorHash, prior) {
 			breakKind = "prior_hash"
 			breakMsg = "prior_hash does not match preceding row's chain_hash"
-		} else {
-			evt := Event{
-				OccurredAt:    row.OccurredAt,
-				ActorKind:     row.ActorKind,
-				ActorID:       row.ActorID,
-				Action:        row.Action,
-				TargetKind:    row.TargetKind,
-				TargetID:      row.TargetID,
-				Outcome:       row.Outcome,
-				CorrelationID: row.CorrelationID,
-				Payload:       row.Payload,
-			}
-			expected, err := canonicalChainInput(evt, prior)
-			if err != nil {
-				return err
-			}
-			sum := sha256.Sum256(expected)
-			if !bytes.Equal(sum[:], row.ChainHash) {
-				breakKind = "chain_hash"
-				breakMsg = "recomputed chain_hash does not match stored chain_hash"
-			}
+		}
+		evt := Event{
+			OccurredAt:    row.OccurredAt,
+			ActorKind:     row.ActorKind,
+			ActorID:       row.ActorID,
+			Action:        row.Action,
+			TargetKind:    row.TargetKind,
+			TargetID:      row.TargetID,
+			Outcome:       row.Outcome,
+			CorrelationID: row.CorrelationID,
+			Payload:       row.Payload,
+		}
+		expected, err := canonicalChainInput(evt, prior)
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(expected)
+		// chain_hash check is independent of prior_hash check — both
+		// can fail on the same row (e.g. payload mutation cascades
+		// into chain_hash mismatch even if prior_hash happens to
+		// match). Prefer the prior_hash signal when both fire because
+		// it points at the upstream root cause.
+		if breakKind == "" && !bytes.Equal(sum[:], row.ChainHash) {
+			breakKind = "chain_hash"
+			breakMsg = "recomputed chain_hash does not match stored chain_hash"
 		}
 		if breakKind != "" && rowInWindow(row.OccurredAt, opts.From, opts.To) {
 			res.Breaks = append(res.Breaks, VerifyBreak{
@@ -455,12 +478,12 @@ func VerifyChainReport(ctx context.Context, store Store, opts VerifyOptions) (Ve
 				Message:    breakMsg,
 			})
 		}
-		// Even on a break, we keep walking so the head hash and total
-		// count are still useful for the report. We advance prior using
-		// the stored chain_hash (not the recomputed one) — a divergence
-		// means downstream rows were also written with the bad prior,
-		// so prior_hash checks below should re-anchor naturally.
-		prior = row.ChainHash
+		// Advance prior with the verifier-computed chain_hash. This is
+		// the canonical "what the prior should be" — using
+		// row.ChainHash here would re-anchor on a corrupted on-disk
+		// hash and downstream rows that were correctly chained to it
+		// would then incorrectly verify as clean.
+		prior = sum[:]
 		res.HeadHash = fmt.Sprintf("%x", row.ChainHash)
 		res.RowsSeen = idx + 1
 		idx++
