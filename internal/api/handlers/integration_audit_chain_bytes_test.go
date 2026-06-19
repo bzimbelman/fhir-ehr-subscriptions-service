@@ -161,8 +161,11 @@ func TestIntegration_AuditChain_HashBytes(t *testing.T) {
 	defer cancel()
 
 	var (
-		rows  []audit.Row
-		prior = audit.GenesisHash()
+		rows []audit.Row
+		// Empty literal selects the package-default genesis seed; this
+		// matches how integration's audit.NewWriter is constructed
+		// (no GenesisLiteral override).
+		prior = audit.GenesisHashFromLiteral("")
 	)
 	if err := store.IterateRows(ctx, func(r audit.Row) error {
 		idx := len(rows)
