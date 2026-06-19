@@ -80,7 +80,7 @@ The compose stack brings up:
 Wait for the bridge to report `/readyz` OK:
 
 ```sh
-curl -fsS http://localhost:8443/readyz
+curl -fsS http://localhost:8081/readyz
 ```
 
 ## Walk-through

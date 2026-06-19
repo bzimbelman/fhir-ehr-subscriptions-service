@@ -8,7 +8,7 @@ is a focused reference for the compose stack itself.
 
 ```sh
 cd demo && docker compose up -d
-curl -fsS --retry 30 --retry-delay 2 --retry-connrefused http://localhost:8443/readyz
+curl -fsS --retry 30 --retry-delay 2 --retry-connrefused http://localhost:8081/readyz
 ```
 
 `/readyz` returns 200 within ~60s (dominated by Postgres warm-up + bridge
