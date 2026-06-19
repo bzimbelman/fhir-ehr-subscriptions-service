@@ -15,9 +15,41 @@ deployment:
   log_format: text
 
 adapter:
-  # Bundled passthrough adapter. A demo-flavoured HL7→FHIR adapter is
-  # tracked separately as Demo gap-8 (OpenProject #84).
-  id: default
+  # OP #154: the demo adapter (adapters/demo/demo.go) is a tiny
+  # illustrative HL7-to-FHIR translator that produces a FHIR
+  # Observation from a minimal ORU^R01 message. The `lab-results`
+  # topic gates on resource=Observation; selecting the bundled
+  # `default` passthrough adapter — as the demo did before this
+  # change — produced a Bundle that never matched, so the walkthrough
+  # delivered zero notifications.
+  id: demo
+
+auth:
+  # OP #154: the demo subscriber lives on a private docker-compose
+  # network and advertises an http:// URL. Three things have to be
+  # true for the bridge to accept the rest-hook subscription:
+  #
+  #   1. AllowInsecure (allow_insecure_jwks) flips the URL validator's
+  #      AllowHTTP to true so http:// schemes pass at create time.
+  #   2. allow_subscriber_hosts whitelists the hostname so the
+  #      private-IP / loopback SSRF policy is bypassed for that host.
+  #   3. allow_dev_bypass installs the no-op principal middleware so
+  #      the bridge accepts unauthenticated POST /Subscription
+  #      (no audience -> no verifier -> story #117 made the bypass
+  #      an explicit opt-in).
+  #
+  # Security implications: setting allow_insecure_jwks=true allows
+  # JWKS over http and bypasses TLS verification on JWKS fetch. It is
+  # SAFE for the demo because the demo runs entirely on a single host
+  # (compose-internal network) with no real client identities. It is
+  # NEVER safe in production. allow_subscriber_hosts trusts internal
+  # hostnames; production deployments MUST leave it empty unless they
+  # have an explicit reason to trust an internal hostname. See
+  # demo/README-compose.md for the security model.
+  allow_insecure_jwks: true
+  allow_subscriber_hosts:
+    - demo-subscriber
+  allow_dev_bypass: true
 
 server:
   http:

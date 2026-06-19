@@ -175,6 +175,17 @@ type AuthConfig struct {
 	JWKSAllowed    []string       `yaml:"jwks_allowed_hosts"`
 	TrustedIssuers []TrustedIssue `yaml:"trusted_issuers"`
 
+	// AllowSubscriberHosts is the AllowHosts list piped through to the
+	// rest-hook URL validator (handlers.URLValidatorConfig.AllowHosts).
+	// Hostnames listed here bypass the loopback / RFC1918 / link-local
+	// SSRF policy at both create-time and delivery-time. Used only for
+	// operator-trusted internal hosts — for example, the demo's
+	// `demo-subscriber` compose service which lives on a private
+	// docker-compose network. Empty by default; production deployments
+	// MUST leave this empty unless they have an explicit reason to
+	// trust an internal hostname.
+	AllowSubscriberHosts []string `yaml:"allow_subscriber_hosts"`
+
 	// AllowDevBypass, when true, lets the binary run without
 	// auth.audience set — the dev / e2e path. Production deployments
 	// MUST leave this false. Story #117 made this an explicit opt-in

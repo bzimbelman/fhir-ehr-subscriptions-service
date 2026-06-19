@@ -39,6 +39,23 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
         -o /out/fhir-subs \
         ./cmd/fhir-subs
 
+# OP #154 AC #3: build the demo CLIs into the same image so the
+# documented walkthrough's `./demo-publisher` and `./demo-subscriber`
+# work without a host Go toolchain. The README claimed these were
+# baked in; before this change only fhir-subs was. The demo
+# docker-compose.yml runs both as one-shot / long-running services
+# with explicit entrypoint overrides.
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+        -trimpath \
+        -ldflags="-s -w" \
+        -o /out/demo-publisher \
+        ./cmd/demo-publisher
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+        -trimpath \
+        -ldflags="-s -w" \
+        -o /out/demo-subscriber \
+        ./cmd/demo-subscriber
+
 # ---- Runtime stage --------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
@@ -49,6 +66,11 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.vendor="fhir-ehr-subscriptions-service"
 
 COPY --from=build /out/fhir-subs /fhir-subs
+# OP #154 AC #3: ship the demo CLIs alongside the bridge so the
+# documented walkthrough works from the same image (no host toolchain
+# required). Production deployments do not invoke these.
+COPY --from=build /out/demo-publisher /demo-publisher
+COPY --from=build /out/demo-subscriber /demo-subscriber
 
 USER nonroot:nonroot
 
