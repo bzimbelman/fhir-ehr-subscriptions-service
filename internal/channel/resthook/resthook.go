@@ -52,6 +52,28 @@ const (
 	// historical hardcoded values; now exposed via Options (S-4).
 	DefaultMaxIdleConnsPerHost = 16
 	DefaultMaxConnsPerHost     = 64
+
+	// DefaultMaxRetryAfter caps the duration parsed from a subscriber's
+	// Retry-After header. A hostile or misconfigured subscriber returning
+	// Retry-After: 999999999 (≈31 years) — or a far-future HTTP-date —
+	// would otherwise pin the deliveries row at next_attempt_at far in
+	// the future, denying retries (OP #190). 24h is a generous ceiling:
+	// legitimate maintenance windows are minutes-to-hours; values past
+	// a day signal abuse or misconfiguration.
+	DefaultMaxRetryAfter = 24 * time.Hour
+
+	// DefaultMinRetryAfter floors the Retry-After hint at 1s so a
+	// subscriber asking for a tight retry loop ("Retry-After: 1ms")
+	// cannot burn through the scheduler's retry budget. 1s matches the
+	// scheduler's RetryConfig.Min default.
+	DefaultMinRetryAfter = time.Second
+
+	// retryNowSentinel is the positive value the channel returns when a
+	// subscriber explicitly says "retry now" (Retry-After: 0 or a past
+	// HTTP-date). Distinguishing this from a missing header (which
+	// returns 0) lets the scheduler honor the subscriber's signal
+	// instead of falling back to default backoff (OP #190).
+	retryNowSentinel = time.Nanosecond
 )
 
 // Metric names emitted by this channel. Wire form follows the
@@ -178,6 +200,22 @@ type Options struct {
 	// than this is permanently failed before any network I/O.
 	MaxBundleBytes int
 
+	// MaxRetryAfter caps the duration the channel will surface from a
+	// subscriber's Retry-After header. Subscriber-controlled retry-pin
+	// DoS guard (OP #190): a hostile subscriber returning a multi-year
+	// value would otherwise pin a deliveries row at far-future for
+	// years. Zero falls back to DefaultMaxRetryAfter (24h). The
+	// channel logs at WARN when clamping.
+	MaxRetryAfter time.Duration
+
+	// MinRetryAfter floors the Retry-After hint. Stops a subscriber
+	// requesting a tight retry loop from burning through the
+	// scheduler's retry budget. Zero falls back to DefaultMinRetryAfter
+	// (1s). Does not apply to the explicit "retry now" sentinel
+	// (Retry-After: 0 or past HTTP-date), which is preserved as a
+	// nanosecond-scale positive value.
+	MinRetryAfter time.Duration
+
 	// IncludeResponseBodyExcerpt controls whether subscriber 4xx response
 	// bytes are quoted into DeliveryOutcome.Reason. Default false — the
 	// excerpt is a PHI exfiltration / log-injection vector (S-4). Set
@@ -215,6 +253,8 @@ type Channel struct {
 	userAgent          string
 	timeout            time.Duration
 	maxBundleBytes     int
+	maxRetryAfter      time.Duration
+	minRetryAfter      time.Duration
 	includeBodyExcerpt bool
 	urlValidator       URLValidator
 }
@@ -228,6 +268,8 @@ func New(opts Options) (*Channel, error) {
 		userAgent:          opts.UserAgent,
 		timeout:            opts.RequestTimeout,
 		maxBundleBytes:     opts.MaxBundleBytes,
+		maxRetryAfter:      opts.MaxRetryAfter,
+		minRetryAfter:      opts.MinRetryAfter,
 		includeBodyExcerpt: opts.IncludeResponseBodyExcerpt,
 		urlValidator:       opts.URLValidator,
 	}
@@ -236,6 +278,19 @@ func New(opts Options) (*Channel, error) {
 	}
 	if c.maxBundleBytes <= 0 {
 		c.maxBundleBytes = DefaultMaxBundleBytes
+	}
+	if c.maxRetryAfter <= 0 {
+		c.maxRetryAfter = DefaultMaxRetryAfter
+	}
+	if c.minRetryAfter <= 0 {
+		c.minRetryAfter = DefaultMinRetryAfter
+	}
+	// Defensive: a misconfiguration where Min > Max would silently
+	// invert the clamp. Treat the cap as authoritative — operators set
+	// the cap to defend against hostile subscribers; raising the floor
+	// past the cap is incoherent.
+	if c.minRetryAfter > c.maxRetryAfter {
+		c.minRetryAfter = c.maxRetryAfter
 	}
 	if c.http == nil {
 		maxIdle := opts.MaxIdleConnsPerHost
@@ -493,14 +548,14 @@ func (c *Channel) classifyHTTPResponse(resp *http.Response) channel.DeliveryOutc
 		return channel.DeliveryOutcome{
 			Kind:       channel.OutcomeTransient,
 			Reason:     "429 Too Many Requests",
-			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+			RetryAfter: c.parseRetryAfter(resp.Header.Get("Retry-After")),
 			StatusCode: status,
 		}
 	case status >= 500 && status < 600:
 		return channel.DeliveryOutcome{
 			Kind:       channel.OutcomeTransient,
 			Reason:     fmt.Sprintf("%dxx %d", status/100, status),
-			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+			RetryAfter: c.parseRetryAfter(resp.Header.Get("Retry-After")),
 			StatusCode: status,
 		}
 	default:
@@ -564,24 +619,72 @@ func (c *Channel) classifyNetworkError(err error) channel.DeliveryOutcome {
 }
 
 // parseRetryAfter parses an RFC 7231 Retry-After header (delta-seconds
-// or HTTP-date). Returns zero if the value is missing or unparseable —
-// the scheduler treats zero as "no hint, use default backoff."
-func parseRetryAfter(v string) time.Duration {
+// or HTTP-date) and bounds the result to defend against subscriber-
+// controlled retry-pin DoS (OP #190).
+//
+// Return-value semantics — the scheduler treats these distinctly:
+//   - 0                  → header missing or unparseable; scheduler
+//     uses its default backoff curve.
+//   - retryNowSentinel   → subscriber explicitly said "retry now"
+//     (Retry-After: 0 or a past HTTP-date). A positive nanosecond-
+//     scale value beats the scheduler's >0 check so the hint is
+//     honored, but is small enough that the scheduler's own min floor
+//     dominates the actual wait.
+//   - [min, max]         → a sane subscriber hint, clamped to the
+//     channel's configured floor and ceiling.
+//
+// When clamping at the cap, the channel logs at WARN — operators
+// rely on this to spot misbehaving subscribers; silent clamping would
+// hide the abuse signal.
+func (c *Channel) parseRetryAfter(v string) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil {
-		d := time.Until(t)
-		if d < 0 {
+
+	var raw time.Duration
+	if secs, err := strconv.Atoi(v); err == nil {
+		// Explicit "retry now": preserve as a positive sentinel so the
+		// scheduler can distinguish from a missing header.
+		if secs == 0 {
+			return retryNowSentinel
+		}
+		// Negative delta-seconds is malformed per RFC 7231 — return 0
+		// to trigger default-backoff behavior rather than guess intent.
+		if secs < 0 {
 			return 0
 		}
-		return d
+		raw = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil {
+		d := time.Until(t)
+		if d <= 0 {
+			// Past or now → equivalent to Retry-After: 0.
+			return retryNowSentinel
+		}
+		raw = d
+	} else {
+		// Unparseable: treat as missing rather than guess.
+		return 0
 	}
-	return 0
+
+	// Clamp at the cap; log when we do so a hostile subscriber leaves
+	// an audit trail. We log before returning so the WARN is emitted
+	// even if a downstream caller drops the duration.
+	if raw > c.maxRetryAfter {
+		c.logger.Warn("rest-hook retry-after clamped at max",
+			slog.String("channel", channelName),
+			slog.Duration("retry_after_raw", raw),
+			slog.Duration("retry_after_clamped", c.maxRetryAfter),
+		)
+		return c.maxRetryAfter
+	}
+	// Floor: a subscriber asking for a sub-floor retry is treated as
+	// "retry at the floor" — not as "retry now", because they did
+	// give a (small) positive hint. Distinct from Retry-After: 0.
+	if raw < c.minRetryAfter {
+		return c.minRetryAfter
+	}
+	return raw
 }
 
 // formatTraceparent renders an envelope's correlation id as a W3C

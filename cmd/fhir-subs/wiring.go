@@ -251,6 +251,8 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	rhCh, err := chresthook.New(chresthook.Options{
 		UserAgent:      cfg.Channels.RestHook.UserAgent,
 		RequestTimeout: cfg.Channels.RestHook.RequestTimeout,
+		MaxRetryAfter:  cfg.Channels.RestHook.MaxRetryAfter,
+		MinRetryAfter:  cfg.Channels.RestHook.MinRetryAfter,
 		Logger:         logger.With("component", "channel.resthook"),
 		URLValidator:   urlValidator,
 	})

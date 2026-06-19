@@ -318,6 +318,16 @@ type ChannelsConfig struct {
 type RestHookChannelConfig struct {
 	UserAgent      string        `yaml:"user_agent"`
 	RequestTimeout time.Duration `yaml:"request_timeout"`
+	// MaxRetryAfter caps the duration parsed from a subscriber's
+	// Retry-After header (OP #190). Zero falls back to the channel
+	// package default (24h). Operators tighten this for short-window
+	// SLOs; never set above the scheduler's RetryConfig.Max.
+	MaxRetryAfter time.Duration `yaml:"max_retry_after"`
+	// MinRetryAfter floors a subscriber's Retry-After hint so a
+	// hostile subscriber requesting a tight retry loop cannot burn
+	// through the scheduler's retry budget. Zero falls back to the
+	// channel package default (1s).
+	MinRetryAfter time.Duration `yaml:"min_retry_after"`
 }
 
 // WebSocketChannelConfig models channels.websocket.*. Every field
@@ -915,6 +925,18 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Channels.RestHook.RequestTimeout = d
+		case "channels.rest_hook.max_retry_after":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.RestHook.MaxRetryAfter = d
+		case "channels.rest_hook.min_retry_after":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Channels.RestHook.MinRetryAfter = d
 		case "channels.websocket.idle_timeout":
 			d, err := time.ParseDuration(val)
 			if err != nil {
