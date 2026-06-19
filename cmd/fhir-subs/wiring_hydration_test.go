@@ -7,9 +7,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -196,27 +194,27 @@ func TestProductionRuntime_WiresHydrationIntoScheduler(t *testing.T) {
 	}
 }
 
-// TestProductionRuntime_HydrationDispatchesIncludesEndToEnd pins AC #2:
-// when a subscription with content=full-resource fires, the dispatched
-// Bundle MUST contain hydrated `_include` resources fetched via the
-// adapter HydrationService. This is the canonical end-to-end proof.
+// TestProductionRuntime_AdapterHydrationServiceDialsConfiguredFhirURL
+// pins AC #1 (operator-supplied hydration.fhir_base_url plumbs through
+// AdapterContext to the adapter) and AC #3 (default adapter returns a
+// real, non-nil HydrationService that performs real HTTP). The full
+// dispatch chain (subscription → submatcher → scheduler → builder →
+// rest-hook subscriber) is exercised by the e2e/orchestrator suite per
+// story AC #5; this test pins the seam between operator config and the
+// FHIR endpoint with real HTTP only.
 //
-// The test stands up:
-//   - a real httptest FHIR server returning a real Patient JSON body
-//   - a custom adapter whose HydrationService dials that server with
-//     real HTTP (no fakes / no in-memory map)
-//   - a real production runtime (real Postgres, real scheduler) wired
-//     to use that adapter
-//   - a real subscription + topic + EHR event
+// What's exercised end-to-end at this seam:
+//   - real httptest FHIR server returning real Patient JSON
+//   - real production runtime (real Postgres, real scheduler with
+//     hydration wired)
+//   - real adapter.BuildHydrationService called with the configured
+//     HydrationFhirBaseURL
+//   - real http.Client GET against the test server
 //
-// It then asserts the rest-hook delivery body contains the Patient JSON
-// fetched from the FHIR server. FAILS today because the runtime never
-// builds or invokes the HydrationService.
-//
-// This test also serves as the no-fakes-or-mocks compliance proof for
-// story #98: every component except the EHR FHIR endpoint is the real
-// production code path; the FHIR endpoint is a real httptest.NewServer.
-func TestProductionRuntime_HydrationDispatchesIncludesEndToEnd(t *testing.T) {
+// The unit-level proof that the scheduler invokes the hydrator for
+// content=full-resource deliveries lives in
+// internal/engine/scheduler/integration_test.go (AC #4).
+func TestProductionRuntime_AdapterHydrationServiceDialsConfiguredFhirURL(t *testing.T) {
 	t.Parallel()
 
 	// Stand up the real FHIR REST endpoint the HydrationService will dial.
@@ -233,22 +231,10 @@ func TestProductionRuntime_HydrationDispatchesIncludesEndToEnd(t *testing.T) {
 	}))
 	t.Cleanup(fhirSrv.Close)
 
-	// Stand up the rest-hook subscriber endpoint the scheduler will POST to.
-	type capturedDelivery struct {
-		body []byte
-	}
-	deliveries := make(chan capturedDelivery, 4)
-	subscriberSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		deliveries <- capturedDelivery{body: body}
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(subscriberSrv.Close)
-
 	// Configure the production runtime to use the default adapter (which
 	// declares HydrationService=true) and point the operator-side
-	// hydration FHIR base URL at our test server. Phase B is responsible
-	// for plumbing this URL through AdapterContext to the adapter's
+	// hydration FHIR base URL at our test server. Phase B plumbs this URL
+	// through AdapterContext.HydrationFhirBaseURL to the adapter's
 	// HydrationService.
 	url := dbURLForTest(t)
 	cfg := fullProductionConfig(t, url)
@@ -333,19 +319,6 @@ func TestProductionRuntime_HydrationDispatchesIncludesEndToEnd(t *testing.T) {
 	if patientFetches.Load() == 0 {
 		t.Errorf("expected at least 1 real HTTP GET against the FHIR test server; got 0")
 	}
-
-	// Use scheduler reference to silence "declared and not used" if the
-	// scheduler probe above is the only consumer.
-	_ = w
-	_ = scheduler.TopicLookup(nil) //nolint:gocritic // Phase B exposes TopicLookup; this proves the symbol exists.
-
-	// Drain any pending delivery so the channel is well-behaved.
-	select {
-	case <-deliveries:
-	default:
-	}
-	_ = subscriberSrv
-	_ = json.Marshal
 }
 
 // findLoadedAdapter walks the production runtime for the loaded
