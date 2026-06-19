@@ -238,6 +238,13 @@ type Deps struct {
 	// $get-ws-binding-token operation behind a per-client token bucket.
 	// Nil disables rate limiting on this endpoint. (S-3.3)
 	WSBindingTokenRateLimit *auth.ClientRateLimiter
+
+	// AdminRateLimit, when non-nil, gates every /admin/* request behind a
+	// per-token bucket so a runaway operator script (or a credential-stuffing
+	// probe that has guessed the shared secret) cannot pin the admin
+	// surface or amplify the audit-log write rate. Nil disables rate
+	// limiting on the admin surface (story #92).
+	AdminRateLimit *auth.ClientRateLimiter
 }
 
 // DefaultMaxBodyBytes is the default request-body cap.
