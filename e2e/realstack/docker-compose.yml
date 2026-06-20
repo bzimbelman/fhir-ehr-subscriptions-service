@@ -234,5 +234,28 @@ services:
       retries: 30
       start_period: 5s
 
+  # Real test JWT mint helper — built from cmd/test-token-mint.
+  # Generates a real RSA keypair at startup and exposes /jwks.json + a
+  # /mint control-plane API so adversarial-auth tests can sign tokens
+  # with arbitrary claim overrides without round-tripping through
+  # Keycloak. The realstack harness wires the JWKS URL into an
+  # auth_clients row so the prod fhir-subs binary trusts tokens this
+  # service mints. Only ever included in this docker-compose; never
+  # deployed to production. See cmd/test-token-mint/main.go for the
+  # safety model.
+  test-token-mint:
+    build:
+      context: ../..
+      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.tokenmint
+    image: fhir-subs-test-token-mint:dev
+    ports:
+      - "8092"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/test-token-mint-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
 volumes:
   otel-spans:
