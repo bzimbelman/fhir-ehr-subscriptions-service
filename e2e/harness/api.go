@@ -135,6 +135,13 @@ type APIServer struct {
 	// at. Closed in Close().
 	jwksSrv *httptest.Server
 
+	// restHookSrv is the localhost rest-hook probe sink the harness spins
+	// up when cfg.RestHookProbeURL is empty (OP #327). Without it the
+	// rest-hook channel falls through to failClosedActivator and every
+	// scenario that posts a Subscription lands in status=error. Closed in
+	// Close().
+	restHookSrv *httptest.Server
+
 	// signer is the RSA key the harness uses to mint bearer tokens.
 	signer *harnessSigner
 
@@ -242,15 +249,34 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		return nil, fmt.Errorf("harness: seed auth_clients: %w", seedErr)
 	}
 
+	// OP #327: when callers don't pass a rest-hook probe URL, spin up a
+	// localhost 200-OK sink so the rest-hook activator handshakes
+	// successfully. The previous behavior (failClosedActivator) made
+	// every scenario that posts a Subscription land in status=error
+	// "harness: rest-hook channel has no probe target configured".
+	var restHookSrv *httptest.Server
+	if cfg.RestHookProbeURL == "" && cfg.ExtraChannels["rest-hook"] == nil {
+		restHookSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		cfg.RestHookProbeURL = restHookSrv.URL
+	}
+	closeAux := func() {
+		if restHookSrv != nil {
+			restHookSrv.Close()
+		}
+		jwksSrv.Close()
+	}
+
 	channels, err := buildHarnessChannels(cfg)
 	if err != nil {
-		jwksSrv.Close()
+		closeAux()
 		return nil, err
 	}
 
 	auditStore, err := audit.NewPgStore(cfg.Pool, audit.PgStoreOptions{})
 	if err != nil {
-		jwksSrv.Close()
+		closeAux()
 		return nil, fmt.Errorf("harness: audit store: %w", err)
 	}
 	auditWriter, err := audit.NewWriter(audit.WriterOptions{
@@ -259,7 +285,7 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		Clock: time.Now,
 	})
 	if err != nil {
-		jwksSrv.Close()
+		closeAux()
 		return nil, fmt.Errorf("harness: audit writer: %w", err)
 	}
 
@@ -269,7 +295,7 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 		AllowInsecureJWKS: true,
 	})
 	if err != nil {
-		jwksSrv.Close()
+		closeAux()
 		return nil, fmt.Errorf("harness: NewVerifier: %w", err)
 	}
 
@@ -308,7 +334,7 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		jwksSrv.Close()
+		closeAux()
 		return nil, fmt.Errorf("harness: listen: %w", err)
 	}
 
@@ -335,14 +361,15 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	}()
 
 	return &APIServer{
-		URL:      fmt.Sprintf("%s://%s", scheme, ln.Addr().String()),
-		server:   srv,
-		ln:       ln,
-		IsHTTPS:  cfg.TLSCert != nil,
-		jwksSrv:  jwksSrv,
-		signer:   signer,
-		clientID: cfg.ClientID,
-		scopes:   scopes,
+		URL:         fmt.Sprintf("%s://%s", scheme, ln.Addr().String()),
+		server:      srv,
+		ln:          ln,
+		IsHTTPS:     cfg.TLSCert != nil,
+		jwksSrv:     jwksSrv,
+		restHookSrv: restHookSrv,
+		signer:      signer,
+		clientID:    cfg.ClientID,
+		scopes:      scopes,
 	}, nil
 }
 
@@ -353,6 +380,9 @@ func (s *APIServer) Close() error {
 	}
 	if s.jwksSrv != nil {
 		s.jwksSrv.Close()
+	}
+	if s.restHookSrv != nil {
+		s.restHookSrv.Close()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
