@@ -6,6 +6,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -43,12 +44,25 @@ func TestE2E_S9_10_ExtractMSHTimestamp(t *testing.T) {
 }
 
 // TestE2E_S9_4_FramerPendingBound — pending growth past 2x maxBody
-// surfaces Malformed{Oversized} so the connection is dropped (S-9.4).
+// surfaces oversized so the connection is dropped (S-9.4).
+//
+// Post-OP #227, Framer.Append rejects an oversized append eagerly with
+// ErrPendingExceeded; the connection loop treats that error identically
+// to a MalformedEvent{ReasonOversizedMessage} (both cause the peer to
+// be dropped). We accept either signal, matching the internal
+// counterpart in internal/mllp/should_fix_test.go.
 func TestE2E_S9_4_FramerPendingBound(t *testing.T) {
 	const maxBody = 256
 	f := mllp.NewFramer(maxBody)
 	noise := strings.Repeat("X", 4*maxBody)
-	f.Append([]byte(noise))
+	if err := f.Append([]byte(noise)); err != nil {
+		// Eager rejection path — accepted; both signals drop the peer.
+		if !errors.Is(err, mllp.ErrPendingExceeded) {
+			t.Fatalf("Append err=%v, want errors.Is(err, ErrPendingExceeded)=true", err)
+		}
+		return
+	}
+	// Legacy fallback: framer accepted but Next() must surface oversized.
 	ev := f.Next()
 	mal, ok := ev.(mllp.MalformedEvent)
 	if !ok {
