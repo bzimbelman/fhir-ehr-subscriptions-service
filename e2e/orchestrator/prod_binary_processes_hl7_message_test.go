@@ -114,16 +114,21 @@ func TestE2E_ProdBinary_ProcessesHL7Message_VendorAdapters(t *testing.T) {
 			skipReason:      "OP #169 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
+			// OP #170: Athena MapToFHIR shipped (unit-tested in
+			// adapters/athena/mapping_test.go). E2e blocked on the
+			// same content=full-resource harness work as cerner+epic.
 			adapterID:       "athena",
 			facilityPrefix:  "e2e-prod-hl7-athena",
 			bodyMustContain: []string{"PATID1234"},
-			skipReason:      "blocked on OP #170 (implement Athena MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+			skipReason:      "OP #170 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
+			// OP #171: NextGen MapToFHIR shipped (unit-tested in
+			// adapters/nextgen/mapping_test.go).
 			adapterID:       "nextgen",
 			facilityPrefix:  "e2e-prod-hl7-nextgen",
 			bodyMustContain: []string{"PATID1234"},
-			skipReason:      "blocked on OP #171 (implement NextGen MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+			skipReason:      "OP #171 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
 			adapterID:       "meditech",
