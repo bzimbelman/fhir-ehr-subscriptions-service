@@ -148,6 +148,7 @@ nav:
       - Dead-letters Runbook: operations/dead-letters-runbook.md
       - Horizontal Scale: operations/horizontal-scale.md
       - OTel Exporter Recipes: operations/otel-exporter-recipes.md
+      - SIGHUP Reload: operations/sighup-reload.md
       - Production Readiness Audit: production-readiness-audit.md
   - Adapters:
       - Authoring Guide: adapter-authoring-guide.md

@@ -181,6 +181,15 @@ func realMain(args []string, stdout, stderr io.Writer) (rc int) {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	// Stash the boot-time inputs so the reload subsystem can re-run
+	// loadConfig with the same precedence on SIGHUP / file_mtime
+	// (stories #151, #152). A copy of Sets isolates run() from later
+	// mutation of opts.
+	cfg.Source = &ConfigSource{
+		Path:             opts.ConfigPath,
+		Sets:             append([]string(nil), opts.Sets...),
+		LogLevelOverride: opts.LogLevel,
+	}
 
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintln(stderr, "error: invalid config:", err)

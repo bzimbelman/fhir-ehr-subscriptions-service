@@ -85,8 +85,15 @@ type Options struct {
 	// Sink is where the encoded log lines go. Defaults to os.Stdout when nil
 	// is passed to NewLogger; tests pass a buffer.
 	Sink io.Writer
-	// Level is the minimum slog level emitted.
+	// Level is the minimum slog level emitted. Ignored when LevelVar
+	// is non-nil; that takes precedence so callers who want live level
+	// changes can swap it under a SIGHUP-driven config reload (story
+	// #151).
 	Level slog.Level
+	// LevelVar, when non-nil, is the live level source; it implements
+	// slog.Leveler so the underlying handler reads the current value
+	// on every record. Story #151.
+	LevelVar *slog.LevelVar
 	// Format is "json" (default) or "text".
 	Format string
 	// DebugLogPayloads opts in to retaining PHI fields at debug. Default
@@ -126,7 +133,11 @@ func NewLogger(opts *Options) *slog.Logger {
 	if sink == nil {
 		sink = io.Discard
 	}
-	hopts := &slog.HandlerOptions{Level: opts.Level}
+	var leveler slog.Leveler = opts.Level
+	if opts.LevelVar != nil {
+		leveler = opts.LevelVar
+	}
+	hopts := &slog.HandlerOptions{Level: leveler}
 
 	var inner slog.Handler
 	if strings.EqualFold(opts.Format, "text") {

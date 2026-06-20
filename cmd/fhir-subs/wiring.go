@@ -62,6 +62,12 @@ type productionRuntime struct {
 	catalogProv *matcher.AtomicCatalogProvider
 	topicsDir   string
 
+	// reloadTopicCatalog is the topic-catalog hot-apply hook. The
+	// reload coordinator (run.go) invokes it after a successful whole-
+	// config reload (story #151). Nil-safe: empty when production
+	// mode is not active.
+	reloadTopicCatalog func()
+
 	// pipeline owns the supervised goroutines for every adapter
 	// pipeline worker. Replaces the prior bare `go w.Run(loopCtx)`
 	// pattern (story #99): a panic in a worker now bubbles into the
@@ -798,11 +804,13 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		return pool.Ping(pingCtx)
 	})
 
-	// --- 12. SIGHUP-driven topic catalog reload (D-1) -------------------
-	// A signal handler chains: if a future caller (config module) also
-	// wants SIGHUP, this becomes a multi-handler dispatch; today the
-	// catalog is the only consumer.
-	lcMod.SetReloadHandler(func(rctx context.Context) {
+	// --- 12. Topic-catalog reload registration -------------------------
+	// The actual SIGHUP signal is dispatched by the reload coordinator
+	// (run.go), which calls our hot-apply hook after re-reading the
+	// whole config. Registering here keeps the catalog reload colocated
+	// with the catalog wiring (D-1) without owning the SIGHUP seam
+	// itself (story #151).
+	rt.reloadTopicCatalog = func() {
 		newSources, srcErr := loadTopicSources(rt.topicsDir)
 		if srcErr != nil {
 			logger.Warn("topic reload: source walk failed; keeping previous catalog",
@@ -811,7 +819,6 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 			)
 			return
 		}
-		_ = rctx // catalog.Load is in-process and bounded; ctx is reserved for future
 		newCat, loadErr := catalog.Load(newSources)
 		if loadErr != nil {
 			logger.Warn("topic reload: catalog.Load failed; keeping previous catalog",
@@ -826,7 +833,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 			"topics", len(newCat.Catalog.All()),
 			"rejected", len(newCat.Rejected),
 		)
-	})
+	}
 
 	return rt, nil
 }

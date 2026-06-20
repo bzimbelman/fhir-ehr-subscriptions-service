@@ -43,6 +43,28 @@ type Config struct {
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
 	Extra map[string]any `yaml:",inline"`
+
+	// Source is non-yaml runtime metadata main.go fills in so the
+	// SIGHUP-driven and mtime-driven reload paths (stories #151, #152)
+	// can re-read the same file with the same --set overrides. A nil
+	// Source disables reload (tests that build a Config in code don't
+	// have a file to reload from, which is fine).
+	Source *ConfigSource `yaml:"-"`
+}
+
+// ConfigSource captures runtime metadata about where Config came from.
+// It is not yaml-serialized; main.go populates it after parsing CLI
+// args. The SIGHUP/mtime reload paths (stories #151, #152) consume
+// these fields to re-run loadConfig with the original inputs.
+type ConfigSource struct {
+	// Path is the operator-supplied --config flag value.
+	Path string
+	// Sets is the original --set KEY=VALUE list, applied in the same
+	// order on every reload so the post-merge view is reproducible.
+	Sets []string
+	// LogLevelOverride mirrors --log-level. Empty when the flag was
+	// not passed.
+	LogLevelOverride string
 }
 
 // HydrationConfig models hydration.* fields. Story #98: the FHIR base
@@ -413,6 +435,10 @@ type DeploymentConfig struct {
 	Environment string `yaml:"environment"`
 	LogLevel    string `yaml:"log_level"`
 	LogFormat   string `yaml:"log_format"`
+	// SecretFilePollInterval bounds the cadence at which the binary
+	// re-stats every ${file:...}-interpolated path looking for
+	// rotation. Zero defaults to 60s in production. Story #152.
+	SecretFilePollInterval time.Duration `yaml:"secret_file_poll_interval"`
 	// Mode is the deployment posture. "production" (default) requires
 	// the database / codec / auth / topics blocks to be populated and
 	// enforces auth on every FHIR API endpoint. "probe-only" boots

@@ -166,6 +166,33 @@ type prodBinaryConfig struct {
 	// AuthAccessTokenTTL is the lifetime of bearer JWTs minted by the
 	// /token endpoint. Defaults to 5m in YAML rendering when zero.
 	AuthAccessTokenTTL time.Duration
+
+	// LogFormat overrides deployment.log_format ("text" or "json").
+	// Empty defaults to "json" — preserving the prior helper default.
+	// Story #160 e2e exercises log_format: text.
+	LogFormat string
+
+	// LogLevel overrides deployment.log_level. Empty defaults to
+	// "info". Story #151 e2e flips this between info/debug across a
+	// SIGHUP reload.
+	LogLevel string
+
+	// ConfigPathSink, when non-nil, receives the rendered YAML config
+	// path so a test can rewrite the file in-place and drive a
+	// SIGHUP-triggered or mtime-triggered reload (stories #151, #152).
+	ConfigPathSink *string
+
+	// SecretFilePollInterval controls how aggressively the secret-file
+	// mtime watcher polls. Tests set this to a small value so a
+	// rotation is observed within the test deadline. Empty defaults to
+	// the production interval (60s) which would time out. Story #152.
+	SecretFilePollInterval time.Duration
+
+	// CodecKeyMaterialFile, when non-empty, renders
+	// codec.keys[0].material as ${file:<path>} so the binary
+	// interpolates the key from disk. The caller seeds the file. Story
+	// #152 e2e exercises rotation through this seam.
+	CodecKeyMaterialFile string
 }
 
 // startProdBinary builds and launches cmd/fhir-subs against the
@@ -213,6 +240,10 @@ func startProdBinary(t *testing.T, ctx context.Context, cfg prodBinaryConfig) *p
 		key[i] = byte(i + 1)
 	}
 	keyB64 := base64.StdEncoding.EncodeToString(key)
+	codecMaterialField := keyB64
+	if cfg.CodecKeyMaterialFile != "" {
+		codecMaterialField = "${file:" + cfg.CodecKeyMaterialFile + "}"
+	}
 
 	mllpBlock := ""
 	mllpAddrPlaceholder := ""
@@ -343,12 +374,26 @@ tracing:
 		deploymentMode = "production"
 	}
 
+	logFormat := cfg.LogFormat
+	if logFormat == "" {
+		logFormat = "json"
+	}
+	logLevel := cfg.LogLevel
+	if logLevel == "" {
+		logLevel = "info"
+	}
+
+	secretPollLine := ""
+	if cfg.SecretFilePollInterval > 0 {
+		secretPollLine = fmt.Sprintf("\n  secret_file_poll_interval: %s", cfg.SecretFilePollInterval.String())
+	}
+
 	yamlBody := fmt.Sprintf(`deployment:
   facility_id: %s
   environment: e2e
-  log_level: info
-  log_format: json
-  mode: %s
+  log_level: %s
+  log_format: %s
+  mode: %s%s
 adapter:
   id: %s
 server:
@@ -364,7 +409,7 @@ codec:
   active_key_version: 1
   keys:
     - version: 1
-      material: %s
+      material: "%s"
 auth:
   audience: %s%s
 pipeline:
@@ -383,14 +428,17 @@ pipeline:
   correlation_hold_window: 1s
 %s%s%s
 `,
-		cfg.FacilityID, deploymentMode, cfg.AdapterID, cfg.HTTPBind, probeBind, cfg.Insecure,
+		cfg.FacilityID, logLevel, logFormat, deploymentMode, secretPollLine, cfg.AdapterID, cfg.HTTPBind, probeBind, cfg.Insecure,
 		cfg.GracePeriod.String(),
-		cfg.DatabaseURL, keyB64, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock,
+		cfg.DatabaseURL, codecMaterialField, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock,
 	)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yamlBody), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+	if cfg.ConfigPathSink != nil {
+		*cfg.ConfigPathSink = cfgPath
 	}
 
 	binCtx, cancel := context.WithCancel(ctx)

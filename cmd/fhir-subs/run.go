@@ -81,12 +81,21 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	cfg.Server.HTTP.applyTimeoutDefaults()
 
 	// Use the observability/logging redacting handler so PHI fields are
-	// scrubbed at info+ regardless of caller carelessness (S-1.4). The
-	// JSON sink is preserved because container log shippers expect it.
+	// scrubbed at info+ regardless of caller carelessness (S-1.4). JSON
+	// is the documented production default (container log shippers
+	// expect it); operators who want human-readable text in local dev
+	// set deployment.log_format: text (story #160).
+	//
+	// Story #151: the level is fed via *slog.LevelVar so a
+	// SIGHUP-driven config reload can swap the threshold live without
+	// reconstructing the handler (which would lose every per-handler
+	// attribute attached upstream).
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slogLevel(cfg.Deployment.LogLevel))
 	logger := logging.NewLogger(&logging.Options{
-		Sink:   logOut,
-		Level:  slogLevel(cfg.Deployment.LogLevel),
-		Format: "json",
+		Sink:     logOut,
+		LevelVar: levelVar,
+		Format:   logFormatOrDefault(cfg.Deployment.LogFormat),
 	})
 	if hooks.onLoggerReady != nil {
 		hooks.onLoggerReady(logger)
@@ -259,6 +268,31 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		hooks.onListening(addr)
 	}
 
+	// Reload coordinator (stories #151, #152). Constructed only when
+	// the binary was launched with a real config-file source: tests
+	// that build a Config in code don't have a file to reload from
+	// (cfg.Source is nil), and skipping the coordinator there keeps
+	// every existing test path untouched.
+	var coord *reloadCoordinator
+	if cfg.Source != nil {
+		coord = newReloadCoordinator(cfg, logger, levelVar)
+		if prod != nil && prod.reloadTopicCatalog != nil {
+			coord.registerHotApply(func(_, _ *Config) { prod.reloadTopicCatalog() })
+		}
+		// Drive the SIGHUP seam: the lifecycle dispatcher fans the
+		// signal to whatever handler is currently registered. The
+		// coordinator owns the full reload — load + validate +
+		// immutable-rejection + hot-apply — and does not need ctx
+		// (loadConfig blocks on the operator's local disk).
+		lcMod.SetReloadHandler(func(_ context.Context) {
+			coord.reload(reloadTriggerSIGHUP)
+		})
+		// Watch ${file:...} secret paths for rotation. Vault Agent /
+		// cert-manager rotate without signaling rights into the pod —
+		// the watcher closes that gap (story #152).
+		coord.startSecretFileWatcher(ctx, cfg.Deployment.SecretFilePollInterval)
+	}
+
 	// Audit B-3: only flip startup_complete after every component (just
 	// the lifecycle module + listener for now) has come up cleanly. When
 	// B-4's storage/handlers/pipeline wiring lands, those modules also
@@ -417,6 +451,16 @@ func parseTLSMinVersion(v string) uint16 {
 	default:
 		return tls.VersionTLS13
 	}
+}
+
+// logFormatOrDefault preserves the documented JSON default when the
+// operator omits deployment.log_format. Story #160 AC: "Empty-format
+// MUST default to `json` (preserving today's default)."
+func logFormatOrDefault(format string) string {
+	if format == "" {
+		return "json"
+	}
+	return format
 }
 
 func slogLevel(level string) slog.Level {
