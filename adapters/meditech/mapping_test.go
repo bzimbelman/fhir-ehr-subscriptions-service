@@ -12,21 +12,22 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
-// TestMeditechMapToFHIRRoundTripsRealHL7 — see cerner/mapping_test.go for
-// the full rationale. Skipped until OP #172 (Meditech MapToFHIR
-// implementation) lands.
+// TestMeditechMapToFHIRRoundTripsRealHL7 covers OP #172: Meditech MapToFHIR
+// must use the parsed HL7 v2 input, not the hardcoded passthrough Bundle.
+// MEDITECH MAGIC builds emit a lowercase "msh" header in some
+// configurations; the exercised parser accepts both casings.
 func TestMeditechMapToFHIRRoundTripsRealHL7(t *testing.T) {
 	t.Parallel()
-	t.Skip("blocked on OP #172 (implement Meditech MapToFHIR HL7 v2 -> FHIR R4 mapping)")
 
 	cases := []struct {
 		name             string
 		hl7              string
 		wantResourceType string
+		wantContains     []string
 	}{
-		{"ADT_A01", sampleADTA01, "Bundle"},
-		{"ORU_R01", sampleORUR01, "Bundle"},
-		{"ORM_O01", sampleORMO01, "Bundle"},
+		{"ADT_A01", sampleADTA01, "Bundle", []string{"PATID1234", "Patient", "Encounter"}},
+		{"ORU_R01", sampleORUR01, "Bundle", []string{"PATID1234", "DiagnosticReport", "Observation", "Sodium"}},
+		{"ORM_O01", sampleORMO01, "Bundle", []string{"PATID1234", "ServiceRequest", "ORD-1"}},
 	}
 
 	p := meditechadapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
@@ -52,8 +53,67 @@ func TestMeditechMapToFHIRRoundTripsRealHL7(t *testing.T) {
 			if len(res.Body) == 0 {
 				t.Fatal("Body is empty; MapToFHIR produced no payload")
 			}
-			if !bytes.Contains(res.Body, []byte("PATID1234")) {
-				t.Errorf("Body missing patient identifier PATID1234 — MapToFHIR ignored its input.\n got: %s", res.Body)
+			for _, want := range tc.wantContains {
+				if !bytes.Contains(res.Body, []byte(want)) {
+					t.Errorf("Body missing %q.\n got: %s", want, res.Body)
+				}
+			}
+			if bytes.Equal(res.Body, []byte(`{"resourceType":"Bundle","type":"collection"}`)) {
+				t.Fatal("MapToFHIR returned the legacy hardcoded passthrough Bundle")
+			}
+		})
+	}
+}
+
+// TestMeditechAcceptsLowercaseMSH covers the MAGIC dialect quirk: some
+// MEDITECH MAGIC builds emit "msh" lowercase rather than the spec "MSH".
+// The shared parser handles either; this test pins the behaviour.
+func TestMeditechAcceptsLowercaseMSH(t *testing.T) {
+	t.Parallel()
+	lower := "msh|^~\\&|MEDITECH|MAGIC|REC|FAC|20260618120000||ADT^A01|M|P|2.5\r" +
+		"PID|1||PATID1234||LOWERCASE^MSH||19620320|F\r" +
+		"PV1|1|I|2000\r"
+	p := meditechadapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
+	parsed, err := p.Lex([]byte(lower))
+	if err != nil {
+		t.Fatalf("Lex lowercase msh: %v", err)
+	}
+	class, _ := p.Classify(parsed)
+	res, err := p.MapToFHIR(parsed, class)
+	if err != nil {
+		t.Fatalf("MapToFHIR: %v", err)
+	}
+	if !bytes.Contains(res.Body, []byte("PATID1234")) {
+		t.Errorf("body missing patient id under lowercase msh:\n%s", res.Body)
+	}
+}
+
+func TestMeditechClassifyMapsADTTriggers(t *testing.T) {
+	t.Parallel()
+	p := meditechadapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
+	cases := []struct {
+		name string
+		hl7  string
+		want spi.ChangeKind
+	}{
+		{"A01_create", sampleADTA01, spi.ChangeCreate},
+		{"A03_delete", "MSH|^~\\&|MEDITECH|FAC|REC|FAC|20260618120000||ADT^A03|M|P|2.5\rPID|1||PATID9999\r", spi.ChangeDelete},
+		{"A08_update", "MSH|^~\\&|MEDITECH|FAC|REC|FAC|20260618120000||ADT^A08|M|P|2.5\rPID|1||PATID9999\r", spi.ChangeUpdate},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := p.Lex([]byte(tc.hl7))
+			if err != nil {
+				t.Fatalf("Lex: %v", err)
+			}
+			c, err := p.Classify(parsed)
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if c.Kind != tc.want {
+				t.Errorf("Kind = %q, want %q", c.Kind, tc.want)
 			}
 		})
 	}

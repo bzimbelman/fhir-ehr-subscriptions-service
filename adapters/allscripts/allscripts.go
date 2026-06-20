@@ -1,18 +1,22 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package allscriptsadapter is the P3.2 SPI scaffold for Allscripts (Veradigm).
-// It declares an Allscripts-specific manifest and constructs a passthrough
-// Hl7MessageProcessor whose vendor mapping is still a TODO.
+// Package allscriptsadapter is the SPI implementation for Allscripts
+// (Veradigm). It declares an Allscripts-specific manifest and a
+// Hl7MessageProcessor that lexes HL7 v2 (including the lowercase "msh"
+// header that pre-2014 Allscripts builds emit) via the shared
+// internal/adapter/hl7v2 parser, and maps to FHIR R4 (Patient, Encounter,
+// Observation, DiagnosticReport, ServiceRequest) per the Veradigm
+// developer portal.
 //
-// Real Allscripts mapping needs HL7 v2 trigger-event handling per the
-// Allscripts/Veradigm "Unity API" / "Sunrise" interface specs (Z-segments
-// vary between Sunrise, TouchWorks, and Professional EHR product lines) and
-// FHIR R4 mapping per the Veradigm developer portal
-// (https://developer.veradigm.com/).
+// Sunrise vs TouchWorks vs Professional EHR Z-segment dispatch is out of
+// scope for this base implementation.
 package allscriptsadapter
 
 import (
+	"strings"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/hl7v2"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
@@ -35,7 +39,7 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
 		ID:                   "allscripts",
 		Vendor:               "Allscripts (Veradigm)",
-		Description:          "Scaffold adapter for Allscripts / Veradigm (P3.2). HL7 v2 Sunrise/TouchWorks/Pro Z-segments and Veradigm FHIR R4 mapping are TODO.",
+		Description:          "Adapter for Allscripts / Veradigm. HL7 v2 ADT/ORU/ORM (including pre-2014 lowercase msh) mapped to FHIR R4 per Veradigm developer portal.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{
 			HL7Processor:     true,
@@ -48,10 +52,6 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	}
 }
 
-// BuildHl7Processor returns a passthrough. TODO(allscripts): Sunrise vs
-// TouchWorks vs Professional emit divergent Z-segments; Lex must dispatch on
-// the Unity API source application before parsing. MapToFHIR targets Veradigm
-// FHIR R4 profiles per https://developer.veradigm.com/.
 func (a *Adapter) BuildHl7Processor(_ spi.AdapterContext) spi.Hl7MessageProcessor {
 	return &hl7Processor{}
 }
@@ -69,16 +69,45 @@ type hl7Processor struct {
 func (h *hl7Processor) Lex(raw []byte) (spi.ParsedHL7Message, error) {
 	cp := make([]byte, len(raw))
 	copy(cp, raw)
-	return spi.ParsedHL7Message{Raw: cp}, nil
+	parsed, err := hl7v2.Parse(cp)
+	if err != nil {
+		return spi.ParsedHL7Message{Raw: cp}, err
+	}
+	return spi.ParsedHL7Message{Raw: cp, Segments: parsed}, nil
 }
 
-func (h *hl7Processor) Classify(_ spi.ParsedHL7Message) (spi.Classification, error) {
-	return spi.Classification{Kind: spi.ChangeCreate}, nil
+func (h *hl7Processor) Classify(parsed spi.ParsedHL7Message) (spi.Classification, error) {
+	msg := messageFrom(parsed)
+	if msg == nil {
+		return spi.Classification{Kind: spi.ChangeCreate}, nil
+	}
+	trigger := strings.ToUpper(msg.TriggerEvent())
+	return spi.Classification{Kind: classifyTrigger(trigger), CorrelationKey: msg.PatientID()}, nil
 }
 
-func (h *hl7Processor) MapToFHIR(_ spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
-	return spi.FhirResource{
-		ResourceType: "Bundle",
-		Body:         []byte(`{"resourceType":"Bundle","type":"collection"}`),
-	}, nil
+func classifyTrigger(trigger string) spi.ChangeKind {
+	switch trigger {
+	case "A03", "A23", "A29":
+		return spi.ChangeDelete
+	case "A02", "A08", "A11", "A13":
+		return spi.ChangeUpdate
+	}
+	return spi.ChangeCreate
+}
+
+func (h *hl7Processor) MapToFHIR(parsed spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
+	msg := messageFrom(parsed)
+	if msg == nil {
+		var err error
+		msg, err = hl7v2.Parse(parsed.Raw)
+		if err != nil {
+			return spi.FhirResource{}, err
+		}
+	}
+	return hl7v2.MapToFHIR(msg)
+}
+
+func messageFrom(parsed spi.ParsedHL7Message) *hl7v2.Message {
+	m, _ := parsed.Segments.(*hl7v2.Message)
+	return m
 }
