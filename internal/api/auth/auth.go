@@ -14,4 +14,10 @@ package auth
 type MetricsRecorder interface {
 	RecordAuthFailure(reason string)
 	RecordTokenIssued()
+	// RecordJWKSSingleflightCollision is called once per concurrent
+	// JWKS fetch that joined an in-flight singleflight group instead
+	// of issuing its own HTTP request (OP #202). When 1000 concurrent
+	// first-time requests for the same URL arrive, exactly 1 fetch is
+	// issued and 999 collisions are recorded.
+	RecordJWKSSingleflightCollision()
 }

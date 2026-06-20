@@ -38,9 +38,10 @@ func (t tokenFormData) body() io.Reader {
 
 // recordingMetrics captures auth failure reasons in-memory for assertions.
 type recordingMetrics struct {
-	mu           sync.Mutex
-	failures     map[string]int
-	tokensIssued int
+	mu                       sync.Mutex
+	failures                 map[string]int
+	tokensIssued             int
+	jwksSingleflightCollides int
 }
 
 func newRecordingMetrics() *recordingMetrics {
@@ -57,6 +58,18 @@ func (r *recordingMetrics) RecordTokenIssued() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tokensIssued++
+}
+
+func (r *recordingMetrics) RecordJWKSSingleflightCollision() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.jwksSingleflightCollides++
+}
+
+func (r *recordingMetrics) jwksCollisionCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.jwksSingleflightCollides
 }
 
 func (r *recordingMetrics) failureCount(reason string) int {
