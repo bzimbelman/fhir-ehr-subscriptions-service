@@ -933,6 +933,15 @@ func (p *Processor) metrics() MetricsEmitter {
 // false) when MSH-7 is absent or unparseable. Used by processOne to
 // source `occurred` from the EHR's stamp rather than the framework's
 // wall clock (S-9.10).
+//
+// Robustness contracts (OP #194/#195/#196):
+//   - MSH segment id is matched case-insensitively. Vendor dialects
+//     (Allscripts pre-2014, MEDITECH MAGIC) emit lowercase "msh".
+//   - The field walker honors MSH-2's escape character: a byte
+//     following the escape char is skipped, so escaped separators
+//     inside a field do not drift the field count.
+//   - Timestamp parsing accepts sub-second fractions (".SSS") and
+//     timezone offsets ("+ZZZZ" / "-ZZZZ"), normalized to UTC.
 func messageDateTime(parsed spi.ParsedHL7Message) (time.Time, bool) {
 	if len(parsed.Raw) == 0 {
 		return time.Time{}, false
@@ -945,15 +954,33 @@ func messageDateTime(parsed spi.ParsedHL7Message) (time.Time, bool) {
 			break
 		}
 	}
-	if len(first) < 4 || first[0] != 'M' || first[1] != 'S' || first[2] != 'H' {
+	if len(first) < 4 {
+		return time.Time{}, false
+	}
+	if !(first[0] == 'M' || first[0] == 'm') ||
+		!(first[1] == 'S' || first[1] == 's') ||
+		!(first[2] == 'H' || first[2] == 'h') {
 		return time.Time{}, false
 	}
 	sep := first[3]
+	// MSH-2 carries component, repetition, escape, subcomponent in that
+	// order. Default escape is '\'. We need only the escape byte for
+	// field walking; if MSH is too short, fall back to the default.
+	esc := byte('\\')
+	if len(first) >= 8 {
+		esc = first[6]
+	}
 	rest := first[3:]
 	field := 0
 	start := 0
 	var msh7 string
 	for i := 0; i < len(rest); i++ {
+		// Honor MSH-2 escape: the escape char and the byte that
+		// follows it are opaque field content. Skip both.
+		if rest[i] == esc && i+1 < len(rest) {
+			i++
+			continue
+		}
 		if rest[i] == sep {
 			if field == 6 {
 				msh7 = string(rest[start:i])
@@ -966,9 +993,27 @@ func messageDateTime(parsed spi.ParsedHL7Message) (time.Time, bool) {
 	if msh7 == "" {
 		return time.Time{}, false
 	}
-	// HL7 v2 timestamp formats: YYYYMMDDHHMMSS or shorter prefixes.
-	// Try each layout in turn.
+	return parseHL7Timestamp(msh7)
+}
+
+// parseHL7Timestamp attempts every supported HL7 v2 TS layout in
+// most-precise-first order. Go's time.Parse rejects trailing data, so a
+// fractional+offset string will not silently match a shorter prefix
+// layout — but the explicit ordering makes the contract obvious.
+func parseHL7Timestamp(ts string) (time.Time, bool) {
 	layouts := []string{
+		// Sub-second + offset (most common real-world Epic/Cerner shape).
+		"20060102150405.000-0700",
+		"20060102150405.00-0700",
+		"20060102150405.0-0700",
+		// Sub-second alone.
+		"20060102150405.000",
+		"20060102150405.00",
+		"20060102150405.0",
+		// Whole-second + offset.
+		"20060102150405-0700",
+		"200601021504-0700",
+		// Whole-second / shorter prefixes.
 		"20060102150405",
 		"200601021504",
 		"2006010215",
@@ -977,7 +1022,7 @@ func messageDateTime(parsed spi.ParsedHL7Message) (time.Time, bool) {
 		"2006",
 	}
 	for _, layout := range layouts {
-		if t, err := time.Parse(layout, msh7); err == nil {
+		if t, err := time.Parse(layout, ts); err == nil {
 			return t.UTC(), true
 		}
 	}

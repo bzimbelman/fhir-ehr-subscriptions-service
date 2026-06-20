@@ -127,25 +127,50 @@ func safeSegmentID(line string) string {
 // parseSegment splits a single segment line into fields. For MSH the
 // field separator is itself part of MSH-1, so we splice it back in as
 // fields[1] to keep field-number indexing aligned with the HL7 spec.
+//
+// Field splitting honors MSH-2's escape character (default '\'): an
+// escape byte and the byte that follows it are opaque field content,
+// so an escaped separator (e.g. "FAC\|WITHPIPE") does not drift the
+// field count (OP #194).
 func parseSegment(line string, enc encodingChars) Segment {
 	id := safeSegmentID(line)
 	if id == "MSH" {
 		// "MSH|^~\\&|...." -> fields = [MSH, |, ^~\&, ...]
 		// HL7 spec: MSH-1 is the field separator, MSH-2 is the encoding chars.
-		// strings.Split would skip MSH-1, so reconstruct manually.
+		// splitEscaped would skip MSH-1, so reconstruct manually.
 		body := line[4:] // skip "MSH|"
-		parts := strings.Split(body, string(enc.field))
+		parts := splitEscaped(body, enc.field, enc.escape)
 		fields := make([]string, 0, len(parts)+2)
 		fields = append(fields, "MSH", string(enc.field))
 		fields = append(fields, parts...)
 		return Segment{ID: "MSH", fields: fields, enc: enc}
 	}
-	parts := strings.Split(line, string(enc.field))
+	parts := splitEscaped(line, enc.field, enc.escape)
 	// parts[0] is already the segment id.
 	if len(parts) > 0 {
 		parts[0] = strings.ToUpper(parts[0])
 	}
 	return Segment{ID: parts[0], fields: parts, enc: enc}
+}
+
+// splitEscaped splits s on sep, treating any byte preceded by esc as
+// opaque content (i.e. an escaped separator does not split). This
+// mirrors the field-walker contract for MSH-2 escape handling.
+func splitEscaped(s string, sep, esc byte) []string {
+	out := make([]string, 0, 8)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == esc && i+1 < len(s) {
+			i++
+			continue
+		}
+		if s[i] == sep {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, s[start:])
+	return out
 }
 
 // MessageType returns the MSH-9 value (e.g. "ADT^A01"). When the message

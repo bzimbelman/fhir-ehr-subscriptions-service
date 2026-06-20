@@ -55,14 +55,26 @@ func ExtractMSH(body []byte) (MSHFields, error) {
 		}
 	}
 
-	// Must begin with literal "MSH" plus a field separator byte at index 3.
+	// Must begin with "MSH" (case-insensitive — Allscripts pre-2014 and
+	// MEDITECH MAGIC emit lowercase "msh") plus a field separator byte
+	// at index 3.
 	if len(first) < 4 {
 		return MSHFields{}, fmt.Errorf("%w: first segment too short (%d bytes)", ErrMalformedMSH, len(first))
 	}
-	if first[0] != 'M' || first[1] != 'S' || first[2] != 'H' {
+	if !(first[0] == 'M' || first[0] == 'm') ||
+		!(first[1] == 'S' || first[1] == 's') ||
+		!(first[2] == 'H' || first[2] == 'h') {
 		return MSHFields{}, fmt.Errorf("%w: first segment is not MSH", ErrMalformedMSH)
 	}
 	sep := first[3]
+	// MSH-2 (the encoding-characters field) carries component, repetition,
+	// escape, subcomponent in that order. Default escape is '\'. The
+	// field walker honors the escape byte so that an escaped pipe inside
+	// e.g. MSH-4 ("FAC\|WITHPIPE") does not drift field counting (OP #194).
+	esc := byte('\\')
+	if len(first) >= 8 {
+		esc = first[6]
+	}
 
 	// Per HL7 v2, MSH-1 is the field separator itself. Tokenize from index 3
 	// (inclusive of the separator), so fieldSlice[0] is empty (between MSH and
@@ -75,6 +87,12 @@ func ExtractMSH(body []byte) (MSHFields, error) {
 	fields := make([][]byte, 0, maxFields)
 	start := 0
 	for i := 0; i < len(rest); i++ {
+		// Honor MSH-2 escape: an escape byte and the byte that follows
+		// it are opaque field content. Skip both.
+		if rest[i] == esc && i+1 < len(rest) {
+			i++
+			continue
+		}
 		if rest[i] == sep {
 			fields = append(fields, rest[start:i])
 			start = i + 1
