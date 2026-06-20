@@ -222,9 +222,16 @@ func TestIntegrationSubmatcherOneMatchOneDelivery(t *testing.T) {
 	_ = evNum
 }
 
-// TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries: one event,
+// TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries: same client,
 // two subscriptions with the same topic + matching filterBy → two
 // deliveries rows, both keyed (subscription_id, event_number=1).
+//
+// OP #232: post-fix the submatcher scopes the active-subscription
+// stream to the ehr_events row's client_id. Two subscriptions for the
+// SAME client both fan out from one event row (legitimate intra-tenant
+// fan-out — distinct endpoints / filterBy under one tenant). The
+// cross-tenant case is covered separately in
+// TestIntegrationSubmatcherCrossTenantScoped.
 func TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries(t *testing.T) {
 	t.Parallel()
 	url := startPostgres(t)
@@ -232,23 +239,18 @@ func TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries(t *testing.T) {
 	ctx := context.Background()
 
 	seedAuthClient(t, s, "client-A")
-	seedAuthClient(t, s, "client-B")
 	subA, _ := s.Subscriptions().Insert(ctx, s.Pool().Pgx(), repos.SubscriptionRow{
 		ClientID: "client-A", Status: repos.SubActive,
 		TopicURL: "http://example.org/t", ChannelType: "rest-hook",
 		Endpoint: "https://a/", Content: "id-only",
 	})
-	subB, _ := s.Subscriptions().Insert(ctx, s.Pool().Pgx(), repos.SubscriptionRow{
-		ClientID: "client-B", Status: repos.SubActive,
+	subA2, _ := s.Subscriptions().Insert(ctx, s.Pool().Pgx(), repos.SubscriptionRow{
+		ClientID: "client-A", Status: repos.SubActive,
 		TopicURL: "http://example.org/t", ChannelType: "rest-hook",
-		Endpoint: "https://b/", Content: "id-only",
+		Endpoint: "https://a-second/", Content: "id-only",
 		FilterBy: filterByJSON(map[string]string{"filterParameter": "status", "value": "active"}),
 	})
 
-	// The pre-272 ehr_events row was per-topic with no client; in
-	// the post-272 model the matcher fans out per-client. For this
-	// submatcher test we seed a single per-client row to keep the
-	// test focused on submatcher fan-out behavior.
 	rcID, _ := seedEhrEvent(t, s, "client-A", "http://example.org/t", "X/1",
 		[]byte(`{"resourceType":"X","id":"1","status":"active"}`))
 
@@ -267,7 +269,7 @@ func TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries(t *testing.T) {
 		t.Fatalf("want 2 deliveries, got %d", n)
 	}
 
-	for _, id := range []uuid.UUID{subA, subB} {
+	for _, id := range []uuid.UUID{subA, subA2} {
 		var ev int64
 		if err := s.Pool().Pgx().QueryRow(ctx,
 			`SELECT event_number FROM deliveries WHERE subscription_id=$1`, id,
@@ -277,6 +279,61 @@ func TestIntegrationSubmatcherTwoMatchingSubsTwoDeliveries(t *testing.T) {
 		if ev != 1 {
 			t.Fatalf("sub %s: want event_number=1, got %d", id, ev)
 		}
+	}
+}
+
+// OP #232 integration acceptance: an event row tagged for client-A
+// must NOT cause a delivery against client-B's subscription on the
+// same topic. Pre-#232 the submatcher streamed every active sub on
+// the topic regardless of tenant, so a single per-tenant event would
+// fan out across tenants — leaking subscriber endpoint, headers, and
+// filterBy across the boundary.
+func TestIntegrationSubmatcherCrossTenantScoped(t *testing.T) {
+	t.Parallel()
+	url := startPostgres(t)
+	s := newTestStorage(t, url)
+	ctx := context.Background()
+
+	seedAuthClient(t, s, "client-A")
+	seedAuthClient(t, s, "client-B")
+	subA, _ := s.Subscriptions().Insert(ctx, s.Pool().Pgx(), repos.SubscriptionRow{
+		ClientID: "client-A", Status: repos.SubActive,
+		TopicURL: "http://example.org/t", ChannelType: "rest-hook",
+		Endpoint: "https://a/", Content: "id-only",
+	})
+	subB, _ := s.Subscriptions().Insert(ctx, s.Pool().Pgx(), repos.SubscriptionRow{
+		ClientID: "client-B", Status: repos.SubActive,
+		TopicURL: "http://example.org/t", ChannelType: "rest-hook",
+		Endpoint: "https://b/", Content: "id-only",
+	})
+
+	// One ehr_events row addressed to client-A only.
+	rcID, _ := seedEhrEvent(t, s, "client-A", "http://example.org/t", "X/1",
+		[]byte(`{"resourceType":"X","id":"1","status":"active"}`))
+
+	w := submatcher.NewWorker(s.Pool().Pgx(), s.Subscriptions(), s.EhrEvents(), s.Deliveries(), submatcher.Config{ClaimBatchSize: 1})
+	if _, err := w.TickOnce(ctx); err != nil {
+		t.Fatalf("TickOnce: %v", err)
+	}
+
+	var n int
+	if err := s.Pool().Pgx().QueryRow(ctx,
+		`SELECT count(*) FROM deliveries WHERE ehr_event_id=$1`, rcID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 delivery (client-A only); got %d — cross-tenant fan-out", n)
+	}
+
+	var deliveredSub uuid.UUID
+	if err := s.Pool().Pgx().QueryRow(ctx,
+		`SELECT subscription_id FROM deliveries WHERE ehr_event_id=$1`, rcID,
+	).Scan(&deliveredSub); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if deliveredSub != subA {
+		t.Fatalf("delivery written for sub %s; want client-A's sub %s (client-B's %s must be untouched)", deliveredSub, subA, subB)
 	}
 }
 
