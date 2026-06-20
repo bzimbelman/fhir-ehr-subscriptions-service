@@ -46,27 +46,43 @@ func (r *ResourceChangesRepo) Insert(ctx context.Context, q Querier, row Resourc
 	}
 	_ = kvOut
 
-	// created_month is set explicitly here (in addition to the BEFORE
-	// INSERT trigger in the v0 schema) so partition routing has a
-	// non-null value to dispatch on. The trigger's behavior is identical;
-	// we belt-and-suspender it because Postgres routes partitions before
-	// BEFORE triggers fire on the parent partitioned relation.
+	// created_month MUST be derived from created_at, not now(), so a
+	// backfill / replay write with an explicit historical created_at
+	// lands in the partition for that month. OP #215 (finding #139):
+	// the prior expression `date_trunc('month', now())::date` silently
+	// re-stamped every backfill row to the current month, violating
+	// the schema invariant created_month = date_trunc('month', created_at).
+	//
+	// We compute both columns from the same source-of-truth value:
+	// when row.CreatedAt is zero (production hot-path fanout) we let
+	// Postgres' clock fill it via now(); when it's non-zero (backfill,
+	// tests) the supplied value flows through to created_month so the
+	// row routes to the historical partition.
+	//
+	// The COALESCE collapses both branches to a single SQL statement;
+	// the explicit-cast on created_month matches the trigger's
+	// definition and the partition column type (date).
 	const sql = `
 		INSERT INTO resource_changes
 			(id, adapter_id, correlation_id, resource_type, change_kind,
 			 resource, previous_resource, key_version, occurred_at, event_code,
-			 created_month)
+			 created_at, created_month)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-		        date_trunc('month', now())::date)
+		        COALESCE($11, now()),
+		        date_trunc('month', COALESCE($11, now()))::date)
 		ON CONFLICT (adapter_id, correlation_id, created_month) DO NOTHING
 		RETURNING id, sequence, created_month`
 
+	var createdAtArg any
+	if !row.CreatedAt.IsZero() {
+		createdAtArg = row.CreatedAt
+	}
 	var seq int64
 	var month any
 	var got uuid.UUID
 	if err := q.QueryRow(ctx, sql,
 		id, row.AdapterID, row.CorrelationID, row.ResourceType, string(row.ChangeKind),
-		enc, prev, kv, row.OccurredAt, row.EventCode,
+		enc, prev, kv, row.OccurredAt, row.EventCode, createdAtArg,
 	).Scan(&got, &seq, &month); err != nil {
 		return uuid.Nil, 0, fmt.Errorf("resource_changes: insert: %w", err)
 	}

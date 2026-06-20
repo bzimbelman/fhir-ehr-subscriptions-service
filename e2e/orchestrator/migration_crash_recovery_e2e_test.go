@@ -50,6 +50,7 @@ import (
 func TestE2E_Migrate_PartialApplyRecovers(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
+		// OP #214: env-gated skip — -short mode skips the testcontainers Postgres path.
 		t.Skip("short")
 	}
 

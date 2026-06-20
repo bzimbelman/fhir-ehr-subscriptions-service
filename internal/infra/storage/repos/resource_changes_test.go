@@ -29,7 +29,7 @@ func TestResourceChangesInsertReturnsID(t *testing.T) {
 
 	pool.ExpectBegin()
 	pool.ExpectQuery("INSERT INTO resource_changes").
-		WithArgs(anyArgs(10)...).
+		WithArgs(anyArgs(11)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "sequence", "created_month"}).
 			AddRow(id, int64(101), time.Now()))
 	pool.ExpectCommit()

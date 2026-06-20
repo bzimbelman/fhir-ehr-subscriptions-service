@@ -45,6 +45,7 @@ import (
 func TestE2E_PartitionTrigger_UsesNewCreatedAt(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
+		// OP #215: env-gated skip — -short mode skips the testcontainers Postgres path.
 		t.Skip("short")
 	}
 
@@ -135,32 +136,76 @@ func TestE2E_PartitionTrigger_UsesNewCreatedAt(t *testing.T) {
 		t.Fatalf("seed auth_clients: %v", err)
 	}
 
-	// resource_changes: insert one historical row.
+	// Insert via the same SQL shape the production repos use — the
+	// repos set created_at + created_month from a single source of
+	// truth (COALESCE($N, now())) so partition routing has the right
+	// value before the BEFORE-INSERT trigger fires. Postgres routes
+	// partitions BEFORE the parent's row-level BEFORE triggers fire
+	// (a documented limitation), so the application is responsible
+	// for supplying created_month; the trigger is belt-and-suspenders.
+	// OP #215's fix is two-part: (a) repo SQL must derive
+	// created_month from the row's created_at, (b) the trigger body
+	// (0015) must do the same so the suspenders don't re-stamp the
+	// row to the current month if someone INSERTs without supplying
+	// created_month.
 	rcID := uuid.New()
 	correlationID := uuid.New()
-	if _, err := pool.Exec(ctx,
+	var rcInsertedMonth time.Time
+	if err := pool.QueryRow(ctx,
 		`INSERT INTO resource_changes
 			(id, adapter_id, correlation_id, resource_type, change_kind,
-			 resource, occurred_at, created_at)
+			 resource, occurred_at, created_at, created_month)
 		 VALUES ($1, 'test-adapter', $2, 'Patient', 'create',
-			 '\x00'::bytea, $3, $3)`,
+			 '\x00'::bytea, $3, $3,
+			 date_trunc('month', $3::timestamptz)::date)
+		 RETURNING created_month`,
 		rcID, correlationID, histAnchor,
-	); err != nil {
-		t.Fatalf("insert resource_changes (historical): %v", err)
+	).Scan(&rcInsertedMonth); err != nil {
+		t.Fatalf("insert resource_changes (historical, anchor=%s, expected partition=%s): %v",
+			histAnchor.Format(time.RFC3339), suffix, err)
 	}
 
-	// ehr_events: insert one historical row.
 	eventID := uuid.New()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO ehr_events
 			(id, topic_url, focus, change_kind, resource,
 			 correlation_id, occurred_at, resource_change_id,
-			 created_at, client_id)
+			 created_at, client_id, created_month)
 		 VALUES ($1, 'http://example.org/topic', 'Patient/x', 'create',
-			 '\x00'::bytea, $2, $3, $4, $3, $5)`,
+			 '\x00'::bytea, $2, $3, $4, $3, $5,
+			 date_trunc('month', $3::timestamptz)::date)`,
 		eventID, correlationID, histAnchor, rcID, clientID,
 	); err != nil {
 		t.Fatalf("insert ehr_events (historical): %v", err)
+	}
+
+	// Independently exercise the trigger: insert with NULL
+	// created_month so the trigger MUST set it. This pins #215's
+	// trigger-body fix — pre-fix the trigger used now() and the row
+	// landed in the current-month partition; post-fix the trigger
+	// uses NEW.created_at and the row lands in the historical
+	// partition. The partition router runs BEFORE this trigger on
+	// the parent, so for this assertion to pass we must INSERT
+	// directly into the partition (bypassing the parent's routing)
+	// — the trigger fires there too because trigger inheritance
+	// cascades to attached partitions. If the trigger body is
+	// regressed to now(), the assertion below catches it.
+	rcID2 := uuid.New()
+	correlationID2 := uuid.New()
+	var rcTriggerMonth time.Time
+	insertDirect := "INSERT INTO resource_changes_" + suffix +
+		` (id, adapter_id, correlation_id, resource_type, change_kind,
+			 resource, occurred_at, created_at)
+		 VALUES ($1, 'test-adapter-trig', $2, 'Patient', 'create',
+			 '\x00'::bytea, $3, $3)
+		 RETURNING created_month`
+	if err := pool.QueryRow(ctx, insertDirect, rcID2, correlationID2, histAnchor).Scan(&rcTriggerMonth); err != nil {
+		t.Fatalf("insert into historical partition directly: %v", err)
+	}
+	wantTriggerMonth := time.Date(histAnchor.Year(), histAnchor.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if !rcTriggerMonth.Equal(wantTriggerMonth) {
+		t.Errorf("trigger-set created_month=%s, want %s — set_resource_changes_created_month appears to use now() instead of NEW.created_at",
+			rcTriggerMonth.Format("2006-01-02"), wantTriggerMonth.Format("2006-01-02"))
 	}
 
 	// Assertion 1: created_month must equal date_trunc('month', created_at).
@@ -183,19 +228,27 @@ func TestE2E_PartitionTrigger_UsesNewCreatedAt(t *testing.T) {
 		}
 	}
 
-	// Assertion 2: the row physically lives in the historical
+	// Assertion 2: every row physically lives in the historical
 	// partition, not the current-month one. A row routed to the
 	// wrong partition would not be returned by a query that targets
-	// the historical partition by name.
-	for _, parent := range []string{"resource_changes", "ehr_events"} {
+	// the historical partition by name. resource_changes has 2 rows
+	// (one routed via parent-INSERT, one inserted directly into the
+	// partition by the trigger-bypass test above); ehr_events has 1.
+	for _, tc := range []struct {
+		parent string
+		want   int
+	}{
+		{"resource_changes", 2},
+		{"ehr_events", 1},
+	} {
 		var n int
-		q := "SELECT count(*) FROM " + parent + "_" + suffix
+		q := "SELECT count(*) FROM " + tc.parent + "_" + suffix
 		if err := pool.QueryRow(ctx, q).Scan(&n); err != nil {
-			t.Fatalf("count %s_%s: %v", parent, suffix, err)
+			t.Fatalf("count %s_%s: %v", tc.parent, suffix, err)
 		}
-		if n != 1 {
-			t.Errorf("%s_%s rowcount=%d, want 1 (row landed in the wrong partition; trigger silently re-stamping created_month from now())",
-				parent, suffix, n)
+		if n != tc.want {
+			t.Errorf("%s_%s rowcount=%d, want %d (row landed in the wrong partition; created_month derived from now() instead of created_at)",
+				tc.parent, suffix, n, tc.want)
 		}
 	}
 }

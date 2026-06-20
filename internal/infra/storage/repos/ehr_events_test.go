@@ -29,9 +29,11 @@ func TestEhrEventsInsertReturnsID(t *testing.T) {
 	rcID := uuid.New()
 
 	pool.ExpectBegin()
-	// 12 args: id (app-generated for AAD #109) + client_id + 10 originals.
+	// 13 args: id (app-generated for AAD #109) + client_id + 10 originals
+	// + created_at (OP #215: derived created_month uses this column to
+	// keep backfill rows in their historical partitions).
 	pool.ExpectQuery("INSERT INTO ehr_events").
-		WithArgs(anyArgs(12)...).
+		WithArgs(anyArgs(13)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "event_number", "created_month"}).
 			AddRow(id, int64(7), time.Now()))
 	pool.ExpectCommit()
