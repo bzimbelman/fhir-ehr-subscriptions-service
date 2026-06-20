@@ -22,12 +22,31 @@ import (
 // dispatches get up to ShutdownGrace to commit. Without anything in
 // flight the loop returns immediately, but the recovery sweep tick
 // must also exit cleanly without leaking goroutines.
+//
+// OP #342: previously this test passed nil for every repo. The
+// orchestrator package shares one pgxpool across parallel tests, so
+// Run's claim loop could pick up a delivery row left over from a
+// sibling prod_binary test and crash on `w.dl.Insert(...)` because
+// dl was nil. The fix is to wire real repos so the dispatch path is
+// well-formed regardless of whether a sibling test happened to leak a
+// claimable row. Having proper repos here costs nothing — the test
+// only checks Run's shutdown contract — and matches the production
+// wiring shape.
 func TestE2E_Scheduler_RunDrainsThenReturns(t *testing.T) {
 	t.Parallel()
 	h := requireHarness(t)
 
+	cd, cerr := codec.New(codec.NewStaticKeyProvider(map[int32][]byte{1: harnessCodecKey()}, 1))
+	if cerr != nil {
+		t.Fatalf("codec: %v", cerr)
+	}
 	w := scheduler.NewWorker(
-		h.DB, nil, nil, nil, nil, nil, nil,
+		h.DB,
+		repos.NewSubscriptionsRepo(),
+		repos.NewEhrEventsRepo(cd),
+		repos.NewDeliveriesRepo(),
+		repos.NewDeadLettersRepo(cd),
+		nil, nil,
 		scheduler.Config{
 			ClaimBatchSize:   1,
 			IdlePollInterval: 50 * time.Millisecond,
@@ -38,9 +57,11 @@ func TestE2E_Scheduler_RunDrainsThenReturns(t *testing.T) {
 		scheduler.Options{},
 	)
 
-	// We can't usefully run tickOnce against a worker missing repos, so
-	// drive Run only long enough to confirm it starts and exits cleanly
-	// when ctx is canceled. The objective is the shutdown contract.
+	// Drive Run only long enough to confirm it starts and exits cleanly
+	// when ctx is canceled. The objective is the shutdown contract,
+	// not dispatch behavior. Sibling tests in the orchestrator package
+	// share this pgxpool — the repos above keep the dispatch path
+	// well-formed if Run happens to claim a row before ctx is canceled.
 	runCtx, runCancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- w.Run(runCtx) }()
