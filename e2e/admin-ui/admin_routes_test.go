@@ -207,6 +207,9 @@ func (mirrorSubs) UpdateResource(_ context.Context, _ uuid.UUID, _ repos.Subscri
 func (mirrorSubs) UpdateStatus(_ context.Context, _ uuid.UUID, _ repos.SubscriptionStatus, _ string) error {
 	return nil
 }
+func (mirrorSubs) HardDelete(_ context.Context, _ uuid.UUID) error {
+	return nil
+}
 
 // mirrorAudit absorbs audit writes; the in-process mirror only asserts
 // routing, not audit content.
