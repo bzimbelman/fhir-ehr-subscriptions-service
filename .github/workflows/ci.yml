@@ -59,10 +59,49 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
+      # Story #283: golangci-lint version pinned to the version used to
+      # generate the lint-debt inventory. Bumping requires re-running the
+      # inventory and either fixing or justifying any new findings.
       - uses: golangci/golangci-lint-action@v6
         with:
           version: v1.62.0
           args: --timeout=5m
+
+  nolint-explanation:
+    name: //nolint must have explanation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Story #283: every //nolint must justify itself, e.g.
+      #   //nolint:gosec // parseTLSMinVersion always returns >= TLS 1.2
+      # A bare //nolint or //nolint:rule with no trailing "// reason" fails CI.
+      - name: scan for unexplained //nolint directives
+        run: |
+          set -uo pipefail
+          # A valid //nolint directive must be followed by "// <non-empty reason>".
+          # Examples:
+          #   //nolint:gosec // parseTLSMinVersion always returns >= TLS 1.2  (valid)
+          #   //nolint:gosec                                                  (invalid: no reason)
+          #   //nolint:gosec //                                               (invalid: empty reason)
+          #
+          # Strategy: list every //nolint occurrence, then drop the ones that
+          # have a non-empty trailing "// ..." reason. Anything left is bad.
+          all_nolint=$(grep -REn --include='*.go' '//nolint' . || true)
+          if [ -z "$all_nolint" ]; then
+            echo "No //nolint directives in the tree."
+            exit 0
+          fi
+          # Reasoned: //nolint(:rules)?<whitespace>//<whitespace><at least one non-whitespace char>
+          # The trailing "[^[:space:]].*" demands at least one visible character after the slashes.
+          violations=$(printf '%s\n' "$all_nolint" \
+            | grep -Ev '//nolint(:[a-zA-Z0-9_,-]+)?[[:space:]]+//[[:space:]]*[^[:space:]].*$' \
+            || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Unexplained //nolint directives found. Add '// <reason>' after the directive."
+            printf '%s\n' "$violations"
+            exit 1
+          fi
+          echo "All //nolint directives carry an explanation."
 
   test:
     name: unit tests (race)
@@ -85,7 +124,7 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
-    needs: [gofmt, vet, lint, test]
+    needs: [gofmt, vet, lint, nolint-explanation, test]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -97,7 +136,7 @@ jobs:
   docker:
     name: docker build
     runs-on: ubuntu-latest
-    needs: [gofmt, vet, lint, test]
+    needs: [gofmt, vet, lint, nolint-explanation, test]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

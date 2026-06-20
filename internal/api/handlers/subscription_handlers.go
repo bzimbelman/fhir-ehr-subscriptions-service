@@ -430,7 +430,7 @@ func (s *server) matchingSubscriptions(ctx context.Context, clientID, criteria s
 
 // findActiveTopicByURL returns the active topic with the highest
 // version (lexicographic) for a given URL, or nil if none.
-func (s *server) findActiveTopicByURL(ctx context.Context, url string) (*repos.SubscriptionTopicRow, error) {
+func (s *server) findActiveTopicByURL(ctx context.Context, topicURL string) (*repos.SubscriptionTopicRow, error) {
 	rows, err := s.deps.Topics.ListActive(ctx)
 	if err != nil {
 		return nil, err
@@ -438,7 +438,7 @@ func (s *server) findActiveTopicByURL(ctx context.Context, url string) (*repos.S
 	var best *repos.SubscriptionTopicRow
 	for i := range rows {
 		row := &rows[i]
-		if row.URL != url {
+		if row.URL != topicURL {
 			continue
 		}
 		if best == nil || row.Version > best.Version {

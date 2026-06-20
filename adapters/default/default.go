@@ -215,7 +215,7 @@ type realHTTPHydration struct {
 
 func (r *realHTTPHydration) Fetch(ctx context.Context, ref spi.FhirReference) (spi.FhirResource, error) {
 	url := fmt.Sprintf("%s/%s/%s", r.base, ref.ResourceType, ref.ID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return spi.FhirResource{}, fmt.Errorf("default hydration: build request: %w", err)
 	}
