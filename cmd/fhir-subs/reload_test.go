@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -277,6 +278,26 @@ database:
 	}
 }
 
+// syncBuffer is a goroutine-safe in-memory log sink. Tests share it
+// between the watcher goroutine (writes) and the test goroutine
+// (reads); without the mutex, the race detector flags the contention.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // TestReloadCoordinator_FileMtimeWatcherFiresReload asserts the
 // coordinator's mtime poller observes a ${file:...}-backed rotation
 // and triggers reload(file_mtime) without any signal.
@@ -323,7 +344,7 @@ auth:
 
 	level := new(slog.LevelVar)
 	level.Set(slog.LevelInfo)
-	logs := &strings.Builder{}
+	logs := &syncBuffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: level}))
 
 	coord := newReloadCoordinator(cfg, logger, level)
