@@ -92,15 +92,15 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 	t.Cleanup(jwksSrv.Close)
 
 	clientID := "e2e-prod-hl7-" + uuid.New().String()[:8]
-	if _, err := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
+	if _, seedErr := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
 		VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)`,
-		clientID, jwksSrv.URL+"/jwks"); err != nil {
-		t.Fatalf("seed auth_clients: %v", err)
+		clientID, jwksSrv.URL+"/jwks"); seedErr != nil {
+		t.Fatalf("seed auth_clients: %v", seedErr)
 	}
 
 	secretBytes := make([]byte, 32)
-	if _, err := rand.Read(secretBytes); err != nil {
-		t.Fatalf("rand: %v", err)
+	if _, rndErr := rand.Read(secretBytes); rndErr != nil {
+		t.Fatalf("rand: %v", rndErr)
 	}
 	issuedSecret := base64.StdEncoding.EncodeToString(secretBytes)
 	audience := "https://e2e-prod-hl7/token"

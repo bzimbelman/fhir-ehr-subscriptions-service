@@ -62,9 +62,9 @@ func TestProdBinaryConfig_NoEmptyAuthAudience(t *testing.T) {
 		if filepath.Base(path) == "prod_binary_no_empty_authaudience_test.go" {
 			return nil
 		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
 		}
 		for i, line := range strings.Split(string(body), "\n") {
 			if bad.MatchString(line) {
