@@ -49,11 +49,23 @@ func decodeCodecKeys(cfg CodecConfig) (map[int32][]byte, error) {
 // storage.retention.* and storage.partitioning.* values pass through;
 // zero values fall back to storage.Config.ApplyDefaults inside
 // storage.Start.
+//
+// Story #216 (OP #34): cfg.Database pool tunables (MaxConns, MinConns,
+// MaxConnLifetime, MaxConnIdleTime, HealthCheckPeriod) are forwarded
+// to pool.Config so an operator can size the pgxpool from YAML without
+// recompiling. defaultConfig + loadConfig pin the documented defaults
+// (25/5/1h/30m/30s) so configs that omit the keys keep production
+// behavior.
 func buildStorageConfig(cfg *Config, keys map[int32][]byte) storage.Config {
 	return storage.Config{
 		PostgresURL: cfg.Database.URL,
 		Pool: pool.Config{
-			ApplicationName: "fhir-ehr-subscriptions-service",
+			ApplicationName:       "fhir-ehr-subscriptions-service",
+			MaxConnections:        cfg.Database.MaxConns,
+			MinConnections:        cfg.Database.MinConns,
+			MaxConnectionLifetime: cfg.Database.MaxConnLifetime,
+			IdleTimeout:           cfg.Database.MaxConnIdleTime,
+			HealthCheckInterval:   cfg.Database.HealthCheckPeriod,
 		},
 		KeyVersions: keys,
 		ActiveKey:   cfg.Codec.ActiveKeyVersion,

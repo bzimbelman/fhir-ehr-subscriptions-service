@@ -578,7 +578,10 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		ServerVersion:       GetVersion(),
 		URLValidator:        urlValidator,
 		LifecycleCtx:        ctx,
-		ActivationTimeout:   30 * time.Second,
+		// Story #217 (OP #42): activation timeout is now operator-tunable
+		// via auth.activation_timeout. defaultConfig + loadConfig pin a
+		// 30s default so configs that omit the key keep legacy behavior.
+		ActivationTimeout:   cfg.Auth.ActivationTimeout,
 		ActivationWaitGroup: &rt.activationWG,
 		// API tunables (story #178). Zero values fall back to the
 		// handlers package defaults via RegisterRoutes' applyDefaults,
@@ -690,7 +693,16 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// would otherwise fail with "Deps.Adapter is required" at boot.
 	var proc *hl7processor.Processor
 	if hl7Proc != nil {
+		// Story #217 (OP #44): HL7 processor poll cadence is now
+		// surfaced at pipeline.processor.idle_poll_interval. The
+		// per-stage hl7_processor.idle_poll_interval still wins when
+		// the operator sets it explicitly; defaultConfig pins a 200ms
+		// default on Pipeline.Processor.IdlePollInterval so configs
+		// that omit both keys keep legacy behavior.
 		processorPoll := cfg.Pipeline.HL7Processor.IdlePollInterval
+		if processorPoll == 0 {
+			processorPoll = cfg.Pipeline.Processor.IdlePollInterval
+		}
 		if processorPoll == 0 {
 			processorPoll = 200 * time.Millisecond
 		}
@@ -806,11 +818,16 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		scheduler.Config{
 			ClaimBatchSize:   nonZeroInt32(cfg.Pipeline.Scheduler.ClaimBatchSize, 16),
 			IdlePollInterval: schedPoll,
+			// Story #217 (OP #43): scheduler retry policy is now
+			// operator-tunable via pipeline.scheduler.retry.*.
+			// defaultConfig + loadConfig pin the previously-hardcoded
+			// 1s/30s/500ms/8 defaults so configs that omit the block
+			// keep legacy behavior.
 			Retry: scheduler.RetryConfig{
-				Initial:     1 * time.Second,
-				Max:         30 * time.Second,
-				Min:         500 * time.Millisecond,
-				MaxAttempts: 8,
+				Initial:     cfg.Pipeline.Scheduler.Retry.Initial,
+				Max:         cfg.Pipeline.Scheduler.Retry.Max,
+				Min:         cfg.Pipeline.Scheduler.Retry.Min,
+				MaxAttempts: cfg.Pipeline.Scheduler.Retry.MaxAttempts,
 			},
 			// Story #199: surface the operator-tunable knobs.
 			// Zero values fall through to scheduler.applyDefaults

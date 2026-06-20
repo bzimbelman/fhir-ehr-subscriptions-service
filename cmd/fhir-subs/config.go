@@ -200,8 +200,32 @@ type AuditConfig struct {
 }
 
 // DatabaseConfig models database.* fields.
+//
+// Story #216 (OP #34): every pgxpool tunable the operator needs to
+// size the connection pool for production load is surfaced here.
+// Defaults applied in defaultConfig: MaxConns=25, MinConns=5,
+// MaxConnLifetime=1h, MaxConnIdleTime=30m, HealthCheckPeriod=30s.
 type DatabaseConfig struct {
 	URL string `yaml:"url"`
+
+	// MaxConns is the upper bound on the pgxpool connection count
+	// (pgxpool.Config.MaxConns). Default 25.
+	MaxConns int32 `yaml:"max_conns"`
+	// MinConns is the warm-pool floor (pgxpool.Config.MinConns).
+	// Default 5.
+	MinConns int32 `yaml:"min_conns"`
+	// MaxConnLifetime caps a connection's total wall-clock lifetime
+	// before pgxpool recycles it (pgxpool.Config.MaxConnLifetime).
+	// Default 1h.
+	MaxConnLifetime time.Duration `yaml:"max_conn_lifetime"`
+	// MaxConnIdleTime caps how long an idle connection above
+	// MinConns stays in the pool before pgxpool evicts it
+	// (pgxpool.Config.MaxConnIdleTime). Default 30m.
+	MaxConnIdleTime time.Duration `yaml:"max_conn_idle_time"`
+	// HealthCheckPeriod is the cadence of pgxpool's background
+	// SELECT 1 liveness probe
+	// (pgxpool.Config.HealthCheckPeriod). Default 30s.
+	HealthCheckPeriod time.Duration `yaml:"health_check_period"`
 }
 
 // StorageConfig models storage.* fields used by the production binary
@@ -316,6 +340,12 @@ type AuthConfig struct {
 	// SubscriptionCreateRateLimit configures the per-authenticated-client
 	// rate limit on POST /Subscription (S-3.3). Burst <= 0 disables.
 	SubscriptionCreateRateLimit RateLimitConfig `yaml:"subscription_create_rate_limit"`
+
+	// ActivationTimeout caps how long the API spends waiting for a
+	// freshly-created Subscription's activation handshake to
+	// complete before returning to the caller. Wired into
+	// handlers.Deps via wiring.go. Story #217 (OP #42); default 30s.
+	ActivationTimeout time.Duration `yaml:"activation_timeout"`
 
 	// WSBindingTokenRateLimit configures the per-authenticated-client
 	// rate limit on the $get-ws-binding-token operation (S-3.3).
@@ -434,10 +464,17 @@ type MLLPListenerTLSConfig struct {
 // PipelineConfig models pipeline.* fields. Each stage's claim loop has
 // its own batch size and idle-poll cadence.
 type PipelineConfig struct {
-	HL7Processor StageConfig `yaml:"hl7_processor"`
-	Matcher      StageConfig `yaml:"matcher"`
-	Submatcher   StageConfig `yaml:"submatcher"`
-	Scheduler    StageConfig `yaml:"scheduler"`
+	HL7Processor StageConfig     `yaml:"hl7_processor"`
+	Matcher      StageConfig     `yaml:"matcher"`
+	Submatcher   StageConfig     `yaml:"submatcher"`
+	Scheduler    SchedulerConfig `yaml:"scheduler"`
+
+	// Processor surfaces the HL7 processor's tunable knobs that
+	// don't fit StageConfig. Story #217 (OP #44): IdlePollInterval
+	// is today hardcoded with a 200ms fallback in wiring.go;
+	// surface it so operators can tune the claim-loop cadence from
+	// YAML.
+	Processor ProcessorConfig `yaml:"processor"`
 
 	// CorrelationHoldWindow caps how long the HL7 processor will hold
 	// an unpaired half before reaping. Default 30s.
@@ -475,6 +512,47 @@ type StageConfig struct {
 	// run in parallel. Zero falls back to the scheduler's package
 	// default (1 = serial). Story #199.
 	DispatchConcurrency int `yaml:"dispatch_concurrency"`
+}
+
+// SchedulerConfig is the scheduler stage's tunables. Embeds
+// StageConfig so the operator-facing YAML still spells the per-stage
+// knobs at pipeline.scheduler.{claim_batch_size,idle_poll_interval,
+// recovery_interval,...} and adds the per-attempt retry policy
+// (story #217 / OP #43) the dispatch loop hands to scheduler.RetryConfig
+// at boot.
+type SchedulerConfig struct {
+	StageConfig `yaml:",inline"`
+
+	// Retry maps onto scheduler.RetryConfig. Defaults applied in
+	// defaultConfig: Initial=1s, Max=30s, Min=500ms, MaxAttempts=8 —
+	// matching the previously-hardcoded values in wiring.go.
+	Retry SchedulerRetryConfig `yaml:"retry"`
+}
+
+// SchedulerRetryConfig models pipeline.scheduler.retry.* — the
+// exponential-backoff policy the scheduler's dispatch loop uses on
+// transient delivery failures. Story #217 (OP #43): previously
+// hardcoded in cmd/fhir-subs/wiring.go.
+type SchedulerRetryConfig struct {
+	// Initial is the first backoff window after a failure. Default 1s.
+	Initial time.Duration `yaml:"initial"`
+	// Max caps the per-attempt backoff window. Default 30s.
+	Max time.Duration `yaml:"max"`
+	// Min floors the per-attempt backoff window. Default 500ms.
+	Min time.Duration `yaml:"min"`
+	// MaxAttempts is the total dispatch attempts before the row is
+	// dead-lettered. Default 8. Mirrors scheduler.RetryConfig.MaxAttempts
+	// (int32) so the wiring layer can copy without conversion.
+	MaxAttempts int32 `yaml:"max_attempts"`
+}
+
+// ProcessorConfig models pipeline.processor.* — knobs the HL7
+// processor consumes that don't fit StageConfig. Story #217 (OP #44).
+type ProcessorConfig struct {
+	// IdlePollInterval is the cadence at which the processor's
+	// claim-loop polls for new HL7 messages when the queue is idle.
+	// Default 200ms (preserves the previous wiring.go fallback).
+	IdlePollInterval time.Duration `yaml:"idle_poll_interval"`
 }
 
 // ChannelsConfig models channels.* fields. Each channel block is
@@ -693,6 +771,35 @@ func defaultConfig() *Config {
 		Topics: TopicsConfig{
 			CatalogDir: "/etc/fhir-subs/topics",
 		},
+		// Story #216 (OP #34): pgxpool tunables. Defaults from the
+		// story acceptance criteria.
+		Database: DatabaseConfig{
+			MaxConns:          25,
+			MinConns:          5,
+			MaxConnLifetime:   1 * time.Hour,
+			MaxConnIdleTime:   30 * time.Minute,
+			HealthCheckPeriod: 30 * time.Second,
+		},
+		// Story #217 (OP #42): activation handshake bound,
+		// previously hardcoded at 30s in wiring.go.
+		Auth: AuthConfig{
+			ActivationTimeout: 30 * time.Second,
+		},
+		// Story #217 (OP #43, #44): scheduler retry policy + HL7
+		// processor poll, previously hardcoded in wiring.go.
+		Pipeline: PipelineConfig{
+			Processor: ProcessorConfig{
+				IdlePollInterval: 200 * time.Millisecond,
+			},
+			Scheduler: SchedulerConfig{
+				Retry: SchedulerRetryConfig{
+					Initial:     1 * time.Second,
+					Max:         30 * time.Second,
+					Min:         500 * time.Millisecond,
+					MaxAttempts: int32(8),
+				},
+			},
+		},
 	}
 }
 
@@ -756,6 +863,46 @@ func loadConfig(path string) (*Config, error) {
 		cfg.Topics.CatalogDir = "/etc/fhir-subs/topics"
 	}
 	cfg.Server.HTTP.applyTimeoutDefaults()
+
+	// Story #216 / #217: re-apply defaults for the pool /
+	// activation / scheduler-retry / processor knobs after
+	// unmarshal so a YAML that omits the relevant keys keeps the
+	// documented production behavior. Each block uses zero as
+	// "operator did not set", which works because every default is
+	// positive.
+	if cfg.Database.MaxConns == 0 {
+		cfg.Database.MaxConns = 25
+	}
+	if cfg.Database.MinConns == 0 {
+		cfg.Database.MinConns = 5
+	}
+	if cfg.Database.MaxConnLifetime == 0 {
+		cfg.Database.MaxConnLifetime = 1 * time.Hour
+	}
+	if cfg.Database.MaxConnIdleTime == 0 {
+		cfg.Database.MaxConnIdleTime = 30 * time.Minute
+	}
+	if cfg.Database.HealthCheckPeriod == 0 {
+		cfg.Database.HealthCheckPeriod = 30 * time.Second
+	}
+	if cfg.Auth.ActivationTimeout == 0 {
+		cfg.Auth.ActivationTimeout = 30 * time.Second
+	}
+	if cfg.Pipeline.Processor.IdlePollInterval == 0 {
+		cfg.Pipeline.Processor.IdlePollInterval = 200 * time.Millisecond
+	}
+	if cfg.Pipeline.Scheduler.Retry.Initial == 0 {
+		cfg.Pipeline.Scheduler.Retry.Initial = 1 * time.Second
+	}
+	if cfg.Pipeline.Scheduler.Retry.Max == 0 {
+		cfg.Pipeline.Scheduler.Retry.Max = 30 * time.Second
+	}
+	if cfg.Pipeline.Scheduler.Retry.Min == 0 {
+		cfg.Pipeline.Scheduler.Retry.Min = 500 * time.Millisecond
+	}
+	if cfg.Pipeline.Scheduler.Retry.MaxAttempts == 0 {
+		cfg.Pipeline.Scheduler.Retry.MaxAttempts = int32(8)
+	}
 
 	return cfg, nil
 }
@@ -1109,6 +1256,37 @@ func applySets(cfg *Config, sets []string) error {
 			cfg.Server.HTTP.MaxHeaderBytes = n
 		case "database.url":
 			cfg.Database.URL = val
+		// Story #216 (OP #34): pgxpool tunables.
+		case "database.max_conns":
+			n, err := strconv.ParseInt(val, 10, 32)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Database.MaxConns = int32(n)
+		case "database.min_conns":
+			n, err := strconv.ParseInt(val, 10, 32)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Database.MinConns = int32(n)
+		case "database.max_conn_lifetime":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Database.MaxConnLifetime = d
+		case "database.max_conn_idle_time":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Database.MaxConnIdleTime = d
+		case "database.health_check_period":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Database.HealthCheckPeriod = d
 		case "auth.audience":
 			cfg.Auth.Audience = val
 		case "auth.token_url":
@@ -1141,6 +1319,13 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Auth.ClockSkew = d
+		// Story #217 (OP #42): activation handshake timeout.
+		case "auth.activation_timeout":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.ActivationTimeout = d
 		case "auth.jwks_allowed_hosts":
 			// Parsed as a YAML/JSON array literal. YAML accepts JSON
 			// (`["a","b"]`) AND a flow-style YAML (`[a, b]`); pick yaml
@@ -1461,6 +1646,40 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Pipeline.Scheduler.DispatchConcurrency = n
+
+		// Story #217 (OP #43): scheduler retry policy.
+		case "pipeline.scheduler.retry.initial":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.Retry.Initial = d
+		case "pipeline.scheduler.retry.max":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.Retry.Max = d
+		case "pipeline.scheduler.retry.min":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.Retry.Min = d
+		case "pipeline.scheduler.retry.max_attempts":
+			n, err := strconv.ParseInt(val, 10, 32)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.Retry.MaxAttempts = int32(n)
+
+		// Story #217 (OP #44): HL7 processor poll cadence.
+		case "pipeline.processor.idle_poll_interval":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Processor.IdlePollInterval = d
 
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)

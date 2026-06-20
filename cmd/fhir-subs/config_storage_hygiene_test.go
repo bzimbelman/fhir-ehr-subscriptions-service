@@ -176,7 +176,7 @@ pipeline:
 	if got, want := cfg.Pipeline.Scheduler.Retry.Min, 750*time.Millisecond; got != want {
 		t.Errorf("Pipeline.Scheduler.Retry.Min: got %v want %v", got, want)
 	}
-	if got, want := cfg.Pipeline.Scheduler.Retry.MaxAttempts, 12; got != want {
+	if got, want := cfg.Pipeline.Scheduler.Retry.MaxAttempts, int32(12); got != want {
 		t.Errorf("Pipeline.Scheduler.Retry.MaxAttempts: got %d want %d", got, want)
 	}
 }
@@ -226,7 +226,7 @@ func TestApplySets_StorageHygiene217_ActivationAndPipelineTunables(t *testing.T)
 			key:  "pipeline.scheduler.retry.max_attempts",
 			val:  "20",
 			got:  func(c *Config) any { return c.Pipeline.Scheduler.Retry.MaxAttempts },
-			want: 20,
+			want: int32(20),
 		},
 	}
 	for _, c := range cases {
@@ -286,7 +286,7 @@ func TestDefaultConfig_StorageHygiene217_SchedulerRetry(t *testing.T) {
 	if got, want := cfg.Pipeline.Scheduler.Retry.Min, 500*time.Millisecond; got != want {
 		t.Errorf("default Scheduler.Retry.Min: got %v want %v", got, want)
 	}
-	if got, want := cfg.Pipeline.Scheduler.Retry.MaxAttempts, 8; got != want {
+	if got, want := cfg.Pipeline.Scheduler.Retry.MaxAttempts, int32(8); got != want {
 		t.Errorf("default Scheduler.Retry.MaxAttempts: got %d want %d", got, want)
 	}
 }
