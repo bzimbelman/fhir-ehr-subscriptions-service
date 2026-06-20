@@ -219,15 +219,16 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 		} else {
 			query = `SELECT version, '' FROM schema_migrations`
 		}
-		rows, err := conn.Query(ctx, query)
+		var rows pgx.Rows
+		rows, err = conn.Query(ctx, query)
 		if err != nil {
 			return fmt.Errorf("migrate: select schema_migrations: %w", err)
 		}
 		for rows.Next() {
 			var v, c string
-			if err := rows.Scan(&v, &c); err != nil {
+			if scanErr := rows.Scan(&v, &c); scanErr != nil {
 				rows.Close()
-				return fmt.Errorf("migrate: scan: %w", err)
+				return fmt.Errorf("migrate: scan: %w", scanErr)
 			}
 			applied[v] = c
 		}
@@ -247,18 +248,18 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 			// already applied; backfill checksum if blank (and the
 			// column actually exists on this database).
 			if stored == "" && hasChecksum {
-				if _, err := conn.Exec(ctx,
+				if _, uerr := conn.Exec(ctx,
 					`UPDATE schema_migrations SET checksum=$2 WHERE version=$1`,
-					m.Version, m.Checksum); err != nil {
-					return fmt.Errorf("migrate: backfill checksum %s: %w", m.Version, err)
+					m.Version, m.Checksum); uerr != nil {
+					return fmt.Errorf("migrate: backfill checksum %s: %w", m.Version, uerr)
 				}
 			}
 			continue
 		}
 
 		if m.Concurrent {
-			if _, err := conn.Exec(ctx, m.Body); err != nil {
-				return fmt.Errorf("migrate: apply concurrent %s: %w", m.Version, err)
+			if _, cerr := conn.Exec(ctx, m.Body); cerr != nil {
+				return fmt.Errorf("migrate: apply concurrent %s: %w", m.Version, cerr)
 			}
 			// 0001 creates schema_migrations without checksum; 0011 adds
 			// the column. After every apply, re-probe so the next record
