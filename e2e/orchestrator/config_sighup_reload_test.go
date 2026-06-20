@@ -8,114 +8,130 @@ package orchestrator
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
-	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
-
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/config"
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
 )
 
-// TestB35_SIGHUPReloadsConfig (B-35) wires the lifecycle module's
-// SIGHUP handler to config.Module.Reload (the host's responsibility in
-// production, exercised here through SetReloadHandler) and verifies
-// that raising SIGHUP at the process invokes the reload path.
+// TestE2E_ProdBinary_SIGHUPRereadsConfig (story #151) asserts that on
+// SIGHUP the production binary re-reads the operator config file and
+// applies hot-reloadable subsets. Pre-fix, the SIGHUP handler in
+// wiring.go reloaded only the topic catalog — log_level, rate-limit
+// knobs, and every other field were ignored.
 //
-// We do not rely on the OS delivering a real SIGHUP — instead we drive
-// the dispatcher through the same SetReloadHandler seam that the host
-// uses in production. The test asserts the OnReload trigger label is
-// "sighup", proving the lifecycle->config wiring works end to end.
-func TestB35_SIGHUPReloadsConfig(t *testing.T) {
-	cfgPath := writeBootableConfig(t, nil)
+// Mechanic: boot with log_level: info, rewrite the file in-place to
+// log_level: debug, send SIGHUP, assert a "config reload applied"
+// line lands.
+//
+// This test replaces the prior B-35 self-installed handler. It now
+// exercises the full production wiring: real binary, real config
+// file, real SIGHUP signal.
+func TestE2E_ProdBinary_SIGHUPRereadsConfig(t *testing.T) {
+	h := requireHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
-	mod, _, err := config.Start(context.Background(), config.CliArgs{
-		ConfigPath: cfgPath,
-	}, config.Context{Clock: time.Now})
-	if err != nil {
-		t.Fatalf("config start: %v", err)
-	}
-	defer func() { _ = mod.Shutdown(context.Background()) }()
+	resetPipelineTables(t, ctx, h)
 
-	lf, err := lifecycle.Start(context.Background(), lifecycle.LifecycleConfig{
-		ShutdownGracePeriod: time.Second,
-		ProbeObserveWindow:  time.Millisecond,
-	}, lifecycle.LifecycleContext{})
-	if err != nil {
-		t.Fatalf("lifecycle start: %v", err)
-	}
-
-	// Wire SIGHUP -> config reload. This is the production path: the
-	// host registers the handler at boot.
-	lf.SetReloadHandler(func(ctx context.Context) {
-		mod.Reload(ctx, config.TriggerSIGHUP)
+	var cfgPath string
+	bin := startProdBinary(t, ctx, prodBinaryConfig{
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-sighup-cfg",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
+		LogLevel:              "info",
+		ConfigPathSink:        &cfgPath,
 	})
+	defer bin.Stop(t, 5*time.Second)
 
-	var sighupCount atomic.Int64
-	mod.OnReload(func(trigger string) {
-		if trigger == "sighup" {
-			sighupCount.Add(1)
-		}
-	})
-
-	// Simulate signal delivery: send SIGHUP to ourselves. The
-	// lifecycle's signal.Notify subscription receives it and routes
-	// through the dispatcher to our reload handler.
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
-		t.Fatalf("send SIGHUP: %v", err)
+	if cfgPath == "" {
+		t.Fatalf("ConfigPathSink not populated")
+	}
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read cfg: %v", err)
+	}
+	mutated := strings.Replace(string(body), "log_level: info", "log_level: debug", 1)
+	if mutated == string(body) {
+		t.Fatalf("config did not contain log_level: info")
+	}
+	if err := os.WriteFile(cfgPath, []byte(mutated), 0o600); err != nil {
+		t.Fatalf("rewrite cfg: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	bin.SignalHUP(t)
+
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if sighupCount.Load() >= 1 {
-			break
+		if bin.Stderr().ContainsLine("config reload applied") &&
+			bin.Stderr().ContainsLine("sighup") {
+			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
-	if got := sighupCount.Load(); got < 1 {
-		t.Fatalf("SIGHUP did not trigger reload; sighup count = %d", got)
+	for _, l := range bin.Stderr().Lines() {
+		t.Logf("captured: %s", l)
 	}
+	t.Fatalf("SIGHUP did not produce a 'config reload applied' line with trigger=sighup — production wiring still ignores whole-config reloads")
 }
 
-// writeBootableConfig copies the canonical architecture_example.yaml
-// fixture into a tempdir, optionally rewriting one ${env:...} into
-// ${file:...} so the mtime-watcher test has a path to poll.
-func writeBootableConfig(t *testing.T, fileSecretPath *string) string {
-	t.Helper()
-	dir := t.TempDir()
-	src, err := os.ReadFile("../../internal/infra/config/testdata/architecture_example.yaml")
+// TestE2E_ProdBinary_SIGHUPWarnsOnImmutableField (story #151 AC) asserts
+// that when the operator mutates a non-hot-reloadable field
+// (database URL) and SIGHUPs the binary, the reload handler emits a
+// WARN naming the rejected path and keeps the prior value live (i.e.
+// no crash, no silent acceptance).
+//
+// AC: "Non-hot-reloadable fields (DB URL, MLLP listeners, TLS) MUST
+// log a WARN if the user attempts to change them on reload."
+func TestE2E_ProdBinary_SIGHUPWarnsOnImmutableField(t *testing.T) {
+	h := requireHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	resetPipelineTables(t, ctx, h)
+
+	var cfgPath string
+	bin := startProdBinary(t, ctx, prodBinaryConfig{
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-sighup-immut",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
+		ConfigPathSink:        &cfgPath,
+	})
+	defer bin.Stop(t, 5*time.Second)
+
+	body, err := os.ReadFile(cfgPath)
 	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+		t.Fatalf("read cfg: %v", err)
 	}
-	rewritten := string(src)
-	if fileSecretPath != nil {
-		// Seed the secret file so config Start succeeds.
-		if err := os.WriteFile(*fileSecretPath, []byte("01234567890abcdef01234567890abcdef"), 0o600); err != nil {
-			t.Fatalf("seed secret: %v", err)
+	mutated := strings.Replace(string(body),
+		"url: "+h.DBURL,
+		"url: postgres://operator-tried-to-rotate@localhost:5432/other",
+		1)
+	if mutated == string(body) {
+		t.Fatalf("config did not contain expected database URL substring")
+	}
+	if err := os.WriteFile(cfgPath, []byte(mutated), 0o600); err != nil {
+		t.Fatalf("rewrite cfg: %v", err)
+	}
+
+	bin.SignalHUP(t)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if bin.Stderr().ContainsLine("config reload rejected") {
+			return
 		}
-		rewritten = strings.Replace(rewritten,
-			"at_rest_key: \"${env:STORAGE_ENCRYPTION_KEY}\"",
-			"at_rest_key: \"${file:"+*fileSecretPath+"}\"",
-			1)
+		time.Sleep(100 * time.Millisecond)
 	}
-	cfgPath := filepath.Join(dir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(rewritten), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
+	for _, l := range bin.Stderr().Lines() {
+		t.Logf("captured: %s", l)
 	}
-	for k, v := range map[string]string{
-		"DATABASE_URL":                "postgres://example.org/db",
-		"STORAGE_ENCRYPTION_KEY":      "01234567890abcdef01234567890abcdef",
-		"EPIC_CLIENT_ID":              "epic-client-id-x",
-		"EPIC_INTERCONNECT_KEY":       "epic-interconnect-key-x",
-		"SMTP_USERNAME":               "smtp-user",
-		"SMTP_PASSWORD":               "smtp-pass",
-		"KAFKA_USER":                  "kafka-user",
-		"KAFKA_PASSWORD":              "kafka-pass",
-		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel.example/v1/traces",
-	} {
-		t.Setenv(k, v)
-	}
-	return cfgPath
+	t.Fatalf("SIGHUP after database URL change did not emit a 'config reload rejected' line — operator silently rotated an immutable field")
 }
