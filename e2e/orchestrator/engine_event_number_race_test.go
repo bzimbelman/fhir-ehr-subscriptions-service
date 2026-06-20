@@ -192,9 +192,11 @@ func (h *Harness) mustRegisterSubscription(t *testing.T, ctx context.Context, cl
 	if err := seedHL7Topic(ctx, h.DB); err != nil {
 		t.Fatalf("seed topic: %v", err)
 	}
+	probeURL := "http://" + h.MockSub.HTTPAddr
 	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
-		Pool:     h.DB,
-		ClientID: uniqueClient,
+		Pool:             h.DB,
+		ClientID:         uniqueClient,
+		RestHookProbeURL: probeURL,
 	})
 	if err != nil {
 		t.Fatalf("start api: %v", err)
@@ -204,7 +206,7 @@ func (h *Harness) mustRegisterSubscription(t *testing.T, ctx context.Context, cl
 		ClientID:        uniqueClient,
 		TopicURL:        "http://example.org/topics/hl7-passthrough",
 		ChannelType:     "rest-hook",
-		Endpoint:        "https://sub.example.org/notif",
+		Endpoint:        probeURL + "/hook/" + uniqueClient,
 		APIBaseURL:      api.URL,
 		BearerTokenFunc: api.Bearer,
 	})
