@@ -45,6 +45,44 @@ func TestEvaluateFHIRPathUnknownExpressionFailsClosed(t *testing.T) {
 	}
 }
 
+// OP #240: reporter regression. The "unknown expression" path used to
+// fall through to a no-op when the unrecognized expression *happened*
+// to end in `.exists()` — the fail-closed default returned false but
+// the reporter was never invoked. Now `Patient.name.where(...).exists()`
+// must both not match AND fire the reporter so the wiring layer's
+// metric counts it.
+func TestEvaluateFHIRPathUnknownExpression_ReporterFiresOnWherePredicate(t *testing.T) {
+	cat := loadCatalog(t, fhirpathFailClosedTopic)
+
+	var calls atomic.Int64
+	var mu sync.Mutex
+	var lastExpr string
+	matcher.SetUnknownFHIRPathReporter(func(expr string) {
+		calls.Add(1)
+		mu.Lock()
+		lastExpr = expr
+		mu.Unlock()
+	})
+	t.Cleanup(func() { matcher.SetUnknownFHIRPathReporter(nil) })
+
+	row := matcher.ResourceChange{
+		ResourceType: "Patient",
+		ChangeKind:   "create",
+		Resource:     []byte(`{"resourceType":"Patient","id":"p1","active":true}`),
+	}
+	if got := matcher.Evaluate(cat, row); len(got) != 0 {
+		t.Errorf("unknown FHIRPath must fail-CLOSED; got %d matches", len(got))
+	}
+	if calls.Load() == 0 {
+		t.Fatalf("reporter never called for unrecognized expression with .where() predicate")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastExpr != "Patient.name.where(use = 'official').exists()" {
+		t.Errorf("reporter received wrong expression: %q", lastExpr)
+	}
+}
+
 // P1.2: .empty() is now recognized — a topic whose criterion is
 // `<Resource>.<field>.empty()` fires when the field is absent and does
 // NOT fire when it's present.

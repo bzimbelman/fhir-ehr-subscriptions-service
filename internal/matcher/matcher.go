@@ -642,16 +642,23 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 		reportMalformedResource("fhirpath", err)
 		return false
 	}
+	// MVP shapes are bare path-segments only — no function calls, no
+	// brackets/predicates beyond the trailing .exists()/.empty(). Any
+	// `(` inside the prefix means the expression uses syntax outside
+	// the recognized subset (#240) and must take the fail-CLOSED path.
+	containsCallOrPredicate := func(s string) bool {
+		return strings.ContainsAny(s, "()[]")
+	}
 	if strings.HasSuffix(expr, ".exists()") {
 		prefix := strings.TrimSuffix(expr, ".exists()")
-		if i := strings.LastIndex(prefix, "."); i > 0 {
+		if i := strings.LastIndex(prefix, "."); i > 0 && !containsCallOrPredicate(prefix) {
 			field := prefix[i+1:]
 			return fieldHasValue(body, field)
 		}
 	}
 	if strings.HasSuffix(expr, ".empty()") {
 		prefix := strings.TrimSuffix(expr, ".empty()")
-		if i := strings.LastIndex(prefix, "."); i > 0 {
+		if i := strings.LastIndex(prefix, "."); i > 0 && !containsCallOrPredicate(prefix) {
 			field := prefix[i+1:]
 			return !fieldHasValue(body, field)
 		}
@@ -660,15 +667,18 @@ func runFHIRPath(expr string, resource, _ []byte) bool {
 		// Find the field name (the segment between the LAST '.' before the
 		// equality marker and the marker itself). This recognizes
 		// `<Resource>.<field> = '<value>'` for any top-level field.
-		dot := strings.LastIndex(expr[:eq], ".")
-		if dot > 0 {
-			field := expr[dot+1 : eq]
-			open := eq + len(" = '")
-			end := strings.Index(expr[open:], "'")
-			if end >= 0 && field != "" {
-				want := expr[open : open+end]
-				got, _ := body[field].(string)
-				return got == want
+		head := expr[:eq]
+		if !containsCallOrPredicate(head) {
+			dot := strings.LastIndex(head, ".")
+			if dot > 0 {
+				field := head[dot+1:]
+				open := eq + len(" = '")
+				end := strings.Index(expr[open:], "'")
+				if end >= 0 && field != "" {
+					want := expr[open : open+end]
+					got, _ := body[field].(string)
+					return got == want
+				}
 			}
 		}
 	}
@@ -706,26 +716,30 @@ func IsRecognizedFHIRPath(expr string) bool {
 	if expr == "" {
 		return true
 	}
+	containsCallOrPredicate := func(s string) bool {
+		return strings.ContainsAny(s, "()[]")
+	}
 	if strings.HasSuffix(expr, ".exists()") {
 		prefix := strings.TrimSuffix(expr, ".exists()")
-		if i := strings.LastIndex(prefix, "."); i > 0 {
-			_ = i
+		if i := strings.LastIndex(prefix, "."); i > 0 && !containsCallOrPredicate(prefix) {
 			return true
 		}
 	}
 	if strings.HasSuffix(expr, ".empty()") {
 		prefix := strings.TrimSuffix(expr, ".empty()")
-		if i := strings.LastIndex(prefix, "."); i > 0 {
-			_ = i
+		if i := strings.LastIndex(prefix, "."); i > 0 && !containsCallOrPredicate(prefix) {
 			return true
 		}
 	}
 	if eq := strings.Index(expr, " = '"); eq > 0 {
-		dot := strings.LastIndex(expr[:eq], ".")
-		if dot > 0 {
-			open := eq + len(" = '")
-			if end := strings.Index(expr[open:], "'"); end >= 0 {
-				return true
+		head := expr[:eq]
+		if !containsCallOrPredicate(head) {
+			dot := strings.LastIndex(head, ".")
+			if dot > 0 {
+				open := eq + len(" = '")
+				if end := strings.Index(expr[open:], "'"); end >= 0 {
+					return true
+				}
 			}
 		}
 	}
