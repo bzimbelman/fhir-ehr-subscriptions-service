@@ -76,7 +76,10 @@ codec:
   # AES-GCM at-rest encryption for sensitive columns.
   #
   # OP #155: the key material is loaded from a runtime file via the
-  # bridge's ${file:/path} interpolation (cmd/fhir-subs/config.go).
+  # bridge's file-path interpolation (cmd/fhir-subs/config.go — see
+  # placeholderRE there). Do not write the placeholder syntax in
+  # comments: the interpolation pass scans raw bytes including
+  # comments and would try to read the comment's literal path.
   # The previous version checked a literal 32-byte base64 key into
   # this file, so anyone copying demo/config.yaml as a template
   # encrypted PHI under a public key. Run
