@@ -317,6 +317,22 @@ func (s *PgSubscriptionsStore) UpdateStatus(ctx context.Context, id uuid.UUID, s
 	return nil
 }
 
+// HardDelete removes the subscription row entirely. The DELETE
+// handler calls this to honor the FHIR R5 §3.4.4 DELETE contract:
+// after a successful DELETE the resource MUST be gone (404 on
+// re-read), not merely flipped to status=off. The audit_log row
+// the handler writes is retained — its retention is governed by
+// storage policy.
+func (s *PgSubscriptionsStore) HardDelete(ctx context.Context, id uuid.UUID) error {
+	const sql = `DELETE FROM subscriptions WHERE id = $1`
+	qctx, cancel := s.Timeouts.withWrite(ctx)
+	defer cancel()
+	if _, err := s.Pool.Exec(qctx, sql, id); err != nil {
+		return TranslateQueryErr(ctx, qctx, err, "subscriptions: hard-delete")
+	}
+	return nil
+}
+
 // PgTopicsStore wraps repos.SubscriptionTopicsRepo for ListActive.
 type PgTopicsStore struct {
 	Pool     *pgxpool.Pool

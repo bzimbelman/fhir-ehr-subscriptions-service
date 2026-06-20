@@ -89,6 +89,20 @@ func (r *SubscriptionsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID
 	return &rec, nil
 }
 
+// HardDelete removes the subscription row entirely. Used by DELETE
+// /Subscription/{id} so the FHIR DELETE contract (R5 §3.4.4) holds:
+// the row is gone after the operation; subsequent reads MUST 404.
+// The audit_log row written by the API layer is retained — its
+// retention is governed by storage policy, not by the row's
+// existence here.
+func (r *SubscriptionsRepo) HardDelete(ctx context.Context, q Querier, id uuid.UUID) error {
+	const sql = `DELETE FROM subscriptions WHERE id = $1`
+	if _, err := q.Exec(ctx, sql, id); err != nil {
+		return fmt.Errorf("subscriptions: hard-delete: %w", err)
+	}
+	return nil
+}
+
 // ListActiveByTopic returns all active subscriptions for a topic.
 //
 // Memory: this returns every active subscription for the topic in a

@@ -802,7 +802,12 @@ func (s *server) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 			"no such subscription")
 		return
 	}
-	if err := s.deps.Subscriptions.UpdateStatus(r.Context(), id, repos.SubOff, ""); err != nil {
+	// OP #191: hard-delete the row so the FHIR R5 §3.4.4 DELETE
+	// contract holds — a subsequent GET MUST 404. Soft-delete
+	// (UpdateStatus -> SubOff) leaves the encrypted contact info
+	// readable on /Subscription/{id} read indefinitely. The audit_log
+	// row Append writes is retained on its own retention schedule.
+	if err := s.deps.Subscriptions.HardDelete(r.Context(), id); err != nil {
 		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException, "delete failed")
 		return
 	}
@@ -1258,6 +1263,24 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 		versionExt = append(versionExt, map[string]any{"valueCode": v})
 	}
 
+	// OP #192: when interaction:search-type is declared, FHIR R5
+	// §5.1.5.1 requires searchParam[] entries for every parameter the
+	// handler accepts. searchSubscriptions accepts _count and _cursor.
+	// SubscriptionTopic search-type ignores all query parameters
+	// (handler returns the full active catalog), so we drop the
+	// search-type interaction rather than advertise an empty surface.
+	subscriptionSearchParams := []any{
+		map[string]any{
+			"name":          "_count",
+			"type":          "number",
+			"documentation": "Maximum number of resources per page (capped at the server's configured page-size ceiling).",
+		},
+		map[string]any{
+			"name":          "_cursor",
+			"type":          "string",
+			"documentation": "Opaque keyset cursor returned in Bundle.link.relation=next; carries forward navigation state.",
+		},
+	}
 	return map[string]any{
 		"resourceType": "CapabilityStatement",
 		"status":       "active",
@@ -1280,6 +1303,7 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 					map[string]any{
 						"type":        "Subscription",
 						"interaction": []any{map[string]any{"code": "create"}, map[string]any{"code": "read"}, map[string]any{"code": "update"}, map[string]any{"code": "delete"}, map[string]any{"code": "search-type"}},
+						"searchParam": subscriptionSearchParams,
 						"operation": []any{
 							map[string]any{"name": "status", "definition": "http://hl7.org/fhir/OperationDefinition/Subscription-status"},
 							map[string]any{"name": "events", "definition": "http://hl7.org/fhir/OperationDefinition/Subscription-events"},
@@ -1288,17 +1312,21 @@ func (s *server) buildCapabilityStatement(ctx context.Context) map[string]any {
 					},
 					map[string]any{
 						"type":        "SubscriptionTopic",
-						"interaction": []any{map[string]any{"code": "read"}, map[string]any{"code": "search-type"}},
+						"interaction": []any{map[string]any{"code": "read"}},
 					},
 				},
 				"security": security,
 			},
 		},
+		// OP #193: Element.extension.url MUST be an absolute URI per
+		// FHIR R5 (HAPI/Inferno reject bare strings). The bare names
+		// below were FHIR-spec-illegal; rewrite to project-canonical
+		// absolute URIs anchored on bzimbelman/fhir-ehr-subscriptions-service.
 		"extension": []any{
-			map[string]any{"url": "supported-channels", "valueString": strings.Join(channelTypeCSV, ",")},
-			map[string]any{"url": "supported-topics", "extension": topicURLs},
-			map[string]any{"url": "supported-channel-set", "extension": channelCodes},
-			map[string]any{"url": "supported-fhir-versions", "extension": versionExt},
+			map[string]any{"url": "https://github.com/bzimbelman/fhir-ehr-subscriptions-service/StructureDefinition/supported-channels", "valueString": strings.Join(channelTypeCSV, ",")},
+			map[string]any{"url": "https://github.com/bzimbelman/fhir-ehr-subscriptions-service/StructureDefinition/supported-topics", "extension": topicURLs},
+			map[string]any{"url": "https://github.com/bzimbelman/fhir-ehr-subscriptions-service/StructureDefinition/supported-channel-set", "extension": channelCodes},
+			map[string]any{"url": "https://github.com/bzimbelman/fhir-ehr-subscriptions-service/StructureDefinition/supported-fhir-versions", "extension": versionExt},
 		},
 	}
 }
