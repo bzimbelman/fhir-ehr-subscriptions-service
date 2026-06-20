@@ -217,10 +217,10 @@ func TestE2E_ProdBinary_OTLPExporterSendsSpan(t *testing.T) {
 
 // TestE2E_ProdBinary_AuditWriterIsHashChained asserts every audit_log
 // row written by the production binary is part of a real hash chain:
-//   - hash is non-zero (32 bytes)
-//   - prev_hash either matches the chain genesis seed or the previous
-//     row's hash
-//   - canonical_form (the chain input) is non-empty
+//   - chain_hash is non-zero (32 bytes)
+//   - prior_hash either matches the chain genesis seed or the previous
+//     row's chain_hash
+//   - chain_input is non-empty
 //
 // (AC #5)
 //
@@ -324,35 +324,35 @@ func TestE2E_ProdBinary_AuditWriterIsHashChained(t *testing.T) {
 		t.Fatalf("no audit_log rows after 5s — audit pipeline is not wired")
 	}
 
-	// Inspect the most recent row: hash MUST be 32 bytes non-zero,
-	// canonical_form MUST be non-empty.
+	// Inspect the most recent row: chain_hash MUST be 32 bytes non-zero,
+	// chain_input MUST be non-empty.
 	var (
-		hash          []byte
-		prevHash      []byte
-		canonicalForm []byte
+		chainHash  []byte
+		priorHash  []byte
+		chainInput []byte
 	)
 	if err := h.DB.QueryRow(ctx,
-		`SELECT hash, prev_hash, canonical_form
+		`SELECT chain_hash, prior_hash, chain_input
 		   FROM audit_log
 		  ORDER BY seq DESC LIMIT 1`,
-	).Scan(&hash, &prevHash, &canonicalForm); err != nil {
+	).Scan(&chainHash, &priorHash, &chainInput); err != nil {
 		t.Fatalf("read audit_log row: %v", err)
 	}
 
-	if len(hash) != 32 {
-		t.Errorf("audit_log.hash has length %d, want 32 (sha256)", len(hash))
+	if len(chainHash) != 32 {
+		t.Errorf("audit_log.chain_hash has length %d, want 32 (sha256)", len(chainHash))
 	}
-	if isAllZeroE2E(hash) {
-		t.Errorf("audit_log.hash is all-zero — chain is a placeholder, not a real hash")
+	if isAllZeroE2E(chainHash) {
+		t.Errorf("audit_log.chain_hash is all-zero — chain is a placeholder, not a real hash")
 	}
-	if len(canonicalForm) == 0 {
-		t.Errorf("audit_log.canonical_form is empty — chain input was not persisted")
+	if len(chainInput) == 0 {
+		t.Errorf("audit_log.chain_input is empty — chain input was not persisted")
 	}
-	// prev_hash for the first row may be nil OR the genesis seed; both
+	// prior_hash for the first row may be nil OR the genesis seed; both
 	// are valid. For all subsequent rows it must be 32 bytes. We don't
 	// know which row this is without seq, so accept either.
-	if len(prevHash) != 0 && len(prevHash) != 32 {
-		t.Errorf("audit_log.prev_hash has length %d, want 0 or 32", len(prevHash))
+	if len(priorHash) != 0 && len(priorHash) != 32 {
+		t.Errorf("audit_log.prior_hash has length %d, want 0 or 32", len(priorHash))
 	}
 }
 
