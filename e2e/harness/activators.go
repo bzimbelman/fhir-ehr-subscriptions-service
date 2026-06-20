@@ -29,11 +29,26 @@ import (
 // scenario brings up.
 type channelsConfig struct {
 	// RestHookProbeURL is the base URL of the localhost test subscriber
-	// the rest-hook activator POSTs the FHIR R5 handshake Bundle to.
-	// When empty, defaultChannels returns an error — the harness must
-	// stand up a real subscriber. Schemes http and https are both
-	// accepted (the harness generally uses http for speed).
+	// the rest-hook activator POSTs the FHIR R5 handshake Bundle to
+	// when RestHookProbeOnlyHandshake is true OR when row.Endpoint is
+	// empty. When empty, defaultChannels returns an error — the
+	// harness must stand up a real subscriber. Schemes http and https
+	// are both accepted (the harness generally uses http for speed).
 	RestHookProbeURL string
+
+	// RestHookProbeOnlyHandshake selects the rest-hook activator's
+	// handshake target policy. See harnessRestHookActivator for the
+	// full contract; the short version is:
+	//
+	//   - false (default): handshake against row.Endpoint when set,
+	//     fall back to RestHookProbeURL. This matches production
+	//     cmd/fhir-subs.restHookActivator behavior and is what most
+	//     e2e tests want.
+	//   - true: ALWAYS handshake against RestHookProbeURL, ignoring
+	//     row.Endpoint. Scenarios that need handshake POSTs to land
+	//     somewhere other than the subscriber path (so the mocksub
+	//     journal stays clean for filter-drop assertions) opt in here.
+	RestHookProbeOnlyHandshake bool
 
 	// SMTPHost / SMTPPort point the email activator at the harness's
 	// localhost SMTP fake. When SMTPHost is empty defaultChannels
@@ -56,7 +71,7 @@ type channelsConfig struct {
 func defaultChannels(cfg channelsConfig) (handlers.ChannelRegistry, error) {
 	rh := handlers.ChannelActivator(failClosedActivator{name: "rest-hook"})
 	if cfg.RestHookProbeURL != "" {
-		rh = newHarnessRestHookActivator(cfg.RestHookProbeURL)
+		rh = newHarnessRestHookActivator(cfg.RestHookProbeURL, cfg.RestHookProbeOnlyHandshake)
 	}
 
 	em := handlers.ChannelActivator(failClosedActivator{name: "email"})
@@ -92,10 +107,11 @@ func defaultChannels(cfg channelsConfig) (handlers.ChannelRegistry, error) {
 // that need a special activator (e.g., panic, 401) can swap one in.
 func buildHarnessChannels(cfg APIServerConfig) (handlers.ChannelRegistry, error) {
 	reg, err := defaultChannels(channelsConfig{
-		RestHookProbeURL:  cfg.RestHookProbeURL,
-		SMTPHost:          cfg.SMTPHost,
-		SMTPPort:          cfg.SMTPPort,
-		WebsocketProbeURL: cfg.WebsocketProbeURL,
+		RestHookProbeURL:           cfg.RestHookProbeURL,
+		RestHookProbeOnlyHandshake: cfg.RestHookProbeOnlyHandshake,
+		SMTPHost:                   cfg.SMTPHost,
+		SMTPPort:                   cfg.SMTPPort,
+		WebsocketProbeURL:          cfg.WebsocketProbeURL,
 	})
 	if err != nil {
 		return nil, err
@@ -137,14 +153,35 @@ func (a failClosedActivator) ActivateSubscription(_ context.Context, _ repos.Sub
 // the production type is package-private to cmd/fhir-subs so the
 // harness can't import it. The behavior is the same: 2xx is success,
 // everything else (transport error, non-2xx) is HandshakeFailed.
+//
+// Handshake target selection (OP #327, #334):
+//
+//   - probeOnlyHandshake=false (default): handshake against row.Endpoint
+//     when set, otherwise probeURL. Mirrors production
+//     cmd/fhir-subs.restHookActivator. Tests that point row.Endpoint at
+//     a localhost subscriber (e.g. probeURL+"/hook/<id>") rely on this
+//     so the handshake reaches the same path as later notifications.
+//   - probeOnlyHandshake=true: handshake against probeURL ALWAYS,
+//     ignoring row.Endpoint. Scenarios that need handshake POSTs
+//     diverted from the subscriber path opt in to keep the mocksub
+//     journal clean (e.g. TestScenario_subscription_filter_drop, which
+//     asserts the journal is empty for filtered-out subscriptions —
+//     handshake hits would otherwise land in the same per-tag bucket
+//     and break the assertion).
+//
+// The flag is opt-in so existing tests that pre-date OP #327 keep
+// their pre-PR-#84 row.Endpoint preference and the contract is obvious
+// from the call site instead of a surprise behavior change.
 type harnessRestHookActivator struct {
-	probeURL string
-	client   *http.Client
+	probeURL           string
+	probeOnlyHandshake bool
+	client             *http.Client
 }
 
-func newHarnessRestHookActivator(probeURL string) *harnessRestHookActivator {
+func newHarnessRestHookActivator(probeURL string, probeOnlyHandshake bool) *harnessRestHookActivator {
 	return &harnessRestHookActivator{
-		probeURL: probeURL,
+		probeURL:           probeURL,
+		probeOnlyHandshake: probeOnlyHandshake,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -164,16 +201,16 @@ func (a *harnessRestHookActivator) ActivateSubscription(ctx context.Context, row
 	if a == nil || a.probeURL == "" {
 		return handlers.HandshakeFailed, errors.New("harness rest-hook activator: empty probe url")
 	}
-	// OP #327: always handshake against the configured probe URL, never
-	// the row's endpoint. The probe URL is a dedicated localhost 200-OK
-	// sink owned by the harness; routing handshakes there keeps them
-	// out of the mocksub journal so scenarios like
-	// TestScenario_subscription_filter_drop can assert the journal is
-	// empty for filtered-out subscriptions. (Production
-	// cmd/fhir-subs.restHookActivator handshakes against row.Endpoint —
-	// the harness deliberately diverges so harness scenarios can
-	// distinguish handshake POSTs from notification POSTs.)
+	// Pick the handshake target per the policy described on the type:
+	// probeOnlyHandshake=true forces probeURL even when row.Endpoint is
+	// set; the default (false) prefers row.Endpoint and falls back to
+	// probeURL when the row has none. The branch is explicit so a
+	// reader of either ActivateSubscription or the type doc sees the
+	// same contract.
 	target := a.probeURL
+	if !a.probeOnlyHandshake && row.Endpoint != "" {
+		target = row.Endpoint
+	}
 	parsed, err := url.Parse(target)
 	if err != nil || parsed == nil || parsed.Host == "" {
 		return handlers.HandshakeFailed, nil
