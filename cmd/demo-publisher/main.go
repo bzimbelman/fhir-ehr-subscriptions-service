@@ -36,7 +36,12 @@ func main() {
 func mainE(argv []string, stdout, stderr *os.File) error {
 	fs := flag.NewFlagSet("demo-publisher", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	addr := fs.String("addr", "127.0.0.1:6000", "MLLP listener address (host:port)")
+	// OP #156: default to the demo's MLLP listener bind (`:2575`).
+	// The previous default of 127.0.0.1:6000 did not match anything
+	// the demo actually exposed, so an operator running
+	// `demo-publisher --catalog ...` against the bundled compose
+	// stack got "connection refused" until they supplied --addr.
+	addr := fs.String("addr", "127.0.0.1:2575", "MLLP listener address (host:port). Default matches demo/docker-compose.yml MLLP bind (:2575).")
 	catalogPath := fs.String("catalog", "", "path to YAML catalog (required)")
 	noColor := fs.Bool("no-color", false, "disable ANSI color output (kept for backward compat; prefer NO_COLOR env)")
 	pretty := fs.Bool("pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")

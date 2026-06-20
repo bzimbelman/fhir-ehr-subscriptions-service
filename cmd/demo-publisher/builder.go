@@ -6,23 +6,25 @@ package main
 import (
 	"fmt"
 
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mockehr"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/demosupport/hl7"
 )
 
 // buildMessage turns a catalog entry into an HL7 v2 wire body using the
-// e2e/mockehr builders. ctrlID is MSH-10 — the publisher mints a unique
-// id per emission so the audience can correlate "→ send" with "← ACK".
+// internal/demosupport/hl7 builders. ctrlID is MSH-10 — the publisher
+// mints a unique id per emission so the audience can correlate
+// "→ send" with "← ACK".
 //
-// Returns the raw HL7 string, the control id used, and an error if the
-// template is unknown (catalog validation should prevent that path).
+// OP #158: this binary is operator-facing and intentionally avoids
+// importing e2e/* packages so a future build tag on test scaffolding
+// does not break the demo CLI build.
 func buildMessage(e MessageEntry, ctrlID string) (body, ctrl string, err error) {
 	patientID := e.Fields["patient_id"]
 	switch e.Template {
 	case "oru-r01":
-		body = mockehr.BuildORU(mockehr.ORUOptions{
+		body = hl7.BuildORU(hl7.ORUOptions{
 			MessageID: ctrlID,
 			PatientID: patientID,
-			Result: mockehr.ORUResult{
+			Result: hl7.ORUResult{
 				ObservationID: e.Fields["observation_code"],
 				Value:         e.Fields["value"],
 				Unit:          e.Fields["unit"],
@@ -32,7 +34,7 @@ func buildMessage(e MessageEntry, ctrlID string) (body, ctrl string, err error) 
 		})
 		return body, ctrlID, nil
 	case "adt-a01":
-		body = mockehr.BuildADT(mockehr.ADTOptions{
+		body = hl7.BuildADT(hl7.ADTOptions{
 			TriggerEvent:  "A01",
 			MessageID:     ctrlID,
 			PatientID:     patientID,

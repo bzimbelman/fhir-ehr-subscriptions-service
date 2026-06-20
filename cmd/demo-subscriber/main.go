@@ -80,6 +80,10 @@ type cliFlags struct {
 	noColor     bool
 	pretty      bool
 	subscribeTO time.Duration
+	// OP #161: configurable cap on every outbound HTTP call this CLI
+	// makes (token mint + Subscription create). Defaults to 30s
+	// (defaultHTTPTimeout); operators can shorten or lengthen it.
+	httpTimeout time.Duration
 
 	// waitForReadyz, when non-zero, polls a readyz URL before
 	// subscribing. Lets the demo subscriber survive a slow bridge
@@ -98,7 +102,12 @@ func parseFlags(args []string) (cliFlags, error) {
 	fs := flag.NewFlagSet("demo-subscriber", flag.ContinueOnError)
 	var f cliFlags
 	fs.StringVar(&f.bridge, "bridge", "", "bridge base URL (e.g. http://localhost:8080)")
-	fs.StringVar(&f.listen, "listen", "127.0.0.1:0", "host:port to bind the local rest-hook listener")
+	// OP #156: bind a routable interface on a fixed port. The
+	// previous "127.0.0.1:0" default was loopback + ephemeral, so
+	// when the demo runs under docker-compose the bridge cannot
+	// reach the advertised URL across the compose bridge network.
+	// 0.0.0.0:9090 matches demo/docker-compose.yml's port mapping.
+	fs.StringVar(&f.listen, "listen", "0.0.0.0:9090", "host:port to bind the local rest-hook listener. Default 0.0.0.0:9090 matches demo/docker-compose.yml.")
 	fs.StringVar(&f.advertise, "advertise", "", "URL the bridge should POST to (defaults to http://<listen>); useful when listening on 0.0.0.0")
 	fs.StringVar(&f.topic, "topic", "", "Subscription topic URL")
 	fs.StringVar(&f.filter, "filter", "", "filter in name=value form (e.g. patient=ABC123)")
@@ -112,6 +121,7 @@ func parseFlags(args []string) (cliFlags, error) {
 	fs.BoolVar(&f.noColor, "no-color", false, "disable ANSI color (kept for backward compat; prefer NO_COLOR env)")
 	fs.BoolVar(&f.pretty, "pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")
 	fs.DurationVar(&f.subscribeTO, "subscribe-timeout", 10*time.Second, "timeout for the POST /Subscription request")
+	fs.DurationVar(&f.httpTimeout, "http-timeout", 30*time.Second, "OP #161: per-request HTTP timeout for token mint and Subscription create; never use http.DefaultClient (zero timeout)")
 	fs.DurationVar(&f.waitForReadyz, "wait-for-readyz", 0, "if >0, poll the readyz URL until 2xx or this duration elapses before subscribing (default 0 = no wait)")
 	fs.StringVar(&f.readyzURL, "readyz-url", "", "URL to poll for readiness (default <bridge>/readyz). Override when probes are served on a different port than the FHIR API.")
 
@@ -164,6 +174,14 @@ func run(args []string, stdout *os.File) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// OP #161: thread the operator-supplied --http-timeout through to
+	// the package-level default so postSubscription / mintToken use a
+	// bounded client when SubscribeConfig / MintConfig do not pass
+	// their own HTTPClient.
+	if f.httpTimeout > 0 {
+		defaultHTTPTimeout = f.httpTimeout
+	}
 
 	rcv := newReceiver(stdout, f.pretty, f.noColor)
 	logger := rcv.printer

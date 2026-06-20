@@ -20,6 +20,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// defaultHTTPTimeout is the per-request timeout the demo CLIs apply
+// when the caller does not pass an HTTPClient. It is a package-level
+// var so tests can shorten it; production runs leave the 30s default
+// alone (overridable via --http-timeout).
+//
+// OP #161: never fall back to http.DefaultClient (zero timeout) — a
+// stalled bridge or token endpoint would otherwise block the demo
+// forever, and copy-pasters would inherit the same hazard.
+var defaultHTTPTimeout = 30 * time.Second
+
 // SubscribeConfig parameterizes postSubscription.
 type SubscribeConfig struct {
 	BridgeBaseURL string
@@ -70,6 +80,16 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 		channelType = "rest-hook"
 	}
 
+	// OP #157: emit the R5 channel shape only.
+	// FHIR R5 SubscriptionResource encodes the channel as a top-level
+	// `channelType` Coding plus a top-level `endpoint` URL. The
+	// pre-R5 (R4B / DSTU draft) shape used a nested
+	// `channel: {type, endpoint}` block. Carrying both at once made
+	// the resource pass present-day permissive validators but
+	// brittle against any future stricter validator, and was already
+	// inconsistent with the bridge's R5-supported path. Pick one —
+	// R5 — and document the choice so future copy-pasters do not
+	// reintroduce the legacy block.
 	body := map[string]any{
 		"resourceType": "Subscription",
 		"status":       "requested",
@@ -77,10 +97,6 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 		"channelType":  map[string]any{"code": channelType},
 		"endpoint":     cfg.Endpoint,
 		"content":      "full-resource",
-		"channel": map[string]any{
-			"type":     channelType,
-			"endpoint": cfg.Endpoint,
-		},
 	}
 	if len(filters) > 0 {
 		filterBy := make([]any, 0, len(filters))
@@ -114,7 +130,10 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 
 	client := cfg.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		// OP #161: bounded-timeout default so a stalled bridge does
+		// not block the demo forever. http.DefaultClient is zero-
+		// timeout and unsafe to copy into operator code.
+		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -169,7 +188,9 @@ func mintToken(ctx context.Context, cfg MintConfig) (string, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		// OP #161: bounded-timeout default. See note on
+		// defaultHTTPTimeout — http.DefaultClient is unsafe here.
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 
 	t := now()

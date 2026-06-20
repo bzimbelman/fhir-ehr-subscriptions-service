@@ -74,15 +74,17 @@ func TestPostSubscription_BuildsRestHookBody(t *testing.T) {
 	if sub["endpoint"] != "http://127.0.0.1:9000/hook/sub-1" {
 		t.Errorf("endpoint: got %v", sub["endpoint"])
 	}
-	channel, ok := sub["channel"].(map[string]any)
+	// OP #157: the body now emits the R5 shape only — top-level
+	// channelType + endpoint, no nested R4B `channel` block.
+	if _, present := sub["channel"]; present {
+		t.Errorf("OP #157: legacy R4B `channel` block must not be emitted; got %v", sub["channel"])
+	}
+	channelType, ok := sub["channelType"].(map[string]any)
 	if !ok {
-		t.Fatalf("channel missing or wrong type: %v", sub["channel"])
+		t.Fatalf("channelType missing or wrong type: %v", sub["channelType"])
 	}
-	if channel["type"] != "rest-hook" {
-		t.Errorf("channel.type: got %v want rest-hook", channel["type"])
-	}
-	if channel["endpoint"] != "http://127.0.0.1:9000/hook/sub-1" {
-		t.Errorf("channel.endpoint: got %v", channel["endpoint"])
+	if channelType["code"] != "rest-hook" {
+		t.Errorf("channelType.code: got %v want rest-hook", channelType["code"])
 	}
 	// Filter is preserved in filterBy[].value with name=patient.
 	filterBy, ok := sub["filterBy"].([]any)

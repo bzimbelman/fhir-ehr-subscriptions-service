@@ -8,8 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"go/parser"
 	"go/token"
 	"net"
@@ -34,10 +32,12 @@ func TestDemoSubscriber_DefaultListenIsRoutableFromCompose(t *testing.T) {
 		t.Fatalf("read main.go: %v", err)
 	}
 	body := string(data)
-	if strings.Contains(body, `"127.0.0.1:0"`) {
-		t.Fatalf(`OP #156: demo-subscriber must not default to "127.0.0.1:0" (ephemeral loopback unreachable from compose)`)
+	// Match the actual flag default, not stray comment text. The
+	// flag declaration is `fs.StringVar(&f.listen, "listen", "<value>", ...)`.
+	if strings.Contains(body, `fs.StringVar(&f.listen, "listen", "127.0.0.1:0"`) {
+		t.Fatalf(`OP #156: demo-subscriber default --listen must not be "127.0.0.1:0" (ephemeral loopback unreachable from compose)`)
 	}
-	if !strings.Contains(body, `"0.0.0.0:9090"`) {
+	if !strings.Contains(body, `fs.StringVar(&f.listen, "listen", "0.0.0.0:9090"`) {
 		t.Fatalf(`OP #156: demo-subscriber default --listen must be 0.0.0.0:9090; got:
 %s`, body)
 	}
@@ -122,13 +122,15 @@ func TestPostSubscription_PicksR5OnlyChannelShape(t *testing.T) {
 	}
 }
 
-// stallingHandler blocks until ctx is cancelled. It models a stalled
-// bridge that never replies, so callers can verify their HTTP client
-// has a timeout.
+// stallingHandler blocks until ctx is cancelled OR the request's own
+// context is cancelled (httptest.Server tears down by closing the
+// connection, which cancels r.Context).
 func stallingHandler(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		<-ctx.Done()
-		// connection closed when the test exits.
+		select {
+		case <-ctx.Done():
+		case <-r.Context().Done():
+		}
 	}
 }
 
@@ -140,9 +142,14 @@ func TestPostSubscription_HonoursDefaultTimeout(t *testing.T) {
 	t.Parallel()
 
 	stallCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	srv := httptest.NewServer(stallingHandler(stallCtx))
-	defer srv.Close()
+	t.Cleanup(func() {
+		// Release the handler before tearing down the server so
+		// httptest's connection-tracking WaitGroup completes.
+		cancel()
+		srv.CloseClientConnections()
+		srv.Close()
+	})
 
 	// Run postSubscription with HTTPClient nil and a tiny override
 	// of the package-level default timeout. The test plumbs the
@@ -176,9 +183,12 @@ func TestMintToken_HonoursDefaultTimeout(t *testing.T) {
 	t.Parallel()
 
 	stallCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	srv := httptest.NewServer(stallingHandler(stallCtx))
-	defer srv.Close()
+	t.Cleanup(func() {
+		cancel()
+		srv.CloseClientConnections()
+		srv.Close()
+	})
 
 	prev := defaultHTTPTimeout
 	defaultHTTPTimeout = 250 * time.Millisecond
@@ -233,7 +243,3 @@ func TestSubscribeFlow_BindsListenerOn0000(t *testing.T) {
 		t.Fatalf("OP #156: listener resolved to port 0 (%v)", addr)
 	}
 }
-
-// guard: keep the imports tidy when we wire the timeout test.
-var _ = errors.New
-var _ = fmt.Sprintf

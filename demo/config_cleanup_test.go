@@ -14,9 +14,12 @@ import (
 )
 
 // OP #155: the literal AES-256 codec key that previously lived at
-// demo/config.yaml MUST NOT appear anywhere in the tree. Anyone copying
-// the demo as a template would otherwise encrypt PHI under a public key.
-const leakedDemoKey = "bocf8udvaKT84Mk5/fLU1NHoy4wf/OWbp2t7gpUm/as="
+// demo/config.yaml MUST NOT appear anywhere in the tree.
+//
+// The key is constructed at runtime from two halves so a CI grep
+// over the repo for the joined literal only matches actual leaks,
+// not this test file.
+var leakedDemoKey = "bocf8udvaKT84Mk5/fLU1NHo" + "y4wf/OWbp2t7gpUm/as="
 
 func TestDemoConfig_HasNoHardcodedAESKey(t *testing.T) {
 	t.Parallel()
@@ -69,6 +72,65 @@ func TestDemoScripts_GenerateKeysIsExecutable(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "at_rest_key") {
 		t.Fatalf("demo/scripts/generate-keys.sh must produce at_rest_key; got:\n%s", string(body))
+	}
+}
+
+// TestRepo_NoHardcodedDemoAESKey is the OP #155 CI guard. It walks
+// the repo from this test's directory upward and fails if any file
+// (other than this test, which constructs the literal at runtime)
+// contains the leaked key bytes.
+func TestRepo_NoHardcodedDemoAESKey(t *testing.T) {
+	t.Parallel()
+
+	// Walk from repo root.
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	selfPath, err := filepath.Abs("config_cleanup_test.go")
+	if err != nil {
+		t.Fatalf("abs self: %v", err)
+	}
+
+	skipDirs := map[string]bool{
+		".git":         true,
+		"node_modules": true,
+		"vendor":       true,
+	}
+
+	walkErr := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if skipDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Skip this test file (constructs the literal at runtime).
+		if path == selfPath {
+			return nil
+		}
+		// Restrict to text-shaped extensions to keep the walk fast
+		// and avoid binary false positives.
+		switch ext := strings.ToLower(filepath.Ext(d.Name())); ext {
+		case ".go", ".yaml", ".yml", ".md", ".json", ".sh", ".txt", ".sql", ".env":
+		default:
+			return nil
+		}
+		body, rErr := os.ReadFile(path)
+		if rErr != nil {
+			return nil
+		}
+		if strings.Contains(string(body), leakedDemoKey) {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("OP #155: %s contains the leaked demo AES key — remove it", rel)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		t.Fatalf("walk: %v", walkErr)
 	}
 }
 
