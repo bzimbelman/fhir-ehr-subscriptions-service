@@ -129,6 +129,23 @@ jobs:
         run: go run ./tools/prod-stub-lint
         continue-on-error: true
 
+  docs-lint:
+    name: docs-lint (CLI / metric / port / nav coverage)
+    runs-on: ubuntu-latest
+    # OP #219: enumerates every docs/**/*.md and asserts each has a
+    # nav: entry in mkdocs.yml (or an explicit ignore-nav sentinel).
+    # Also enforces docs cite real CLI verbs, real metrics, and real
+    # listener ports. Hard gate: a doc that isn't navigable cannot
+    # ship.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: go run ./tools/docs-lint
+        run: go run ./tools/docs-lint
+
   test:
     name: unit tests (race)
     runs-on: ubuntu-latest

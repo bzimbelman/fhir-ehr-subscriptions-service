@@ -49,15 +49,6 @@ import (
 // table. See LLD §8.1.
 const genesisLiteral = "fhir-ehr-subscriptions-service audit chain genesis"
 
-// GenesisHash returns the SHA-256 of the default genesis literal.
-//
-// Deprecated: callers should prefer GenesisHashFromLiteral so the
-// genesis is part of the store's typed configuration rather than a
-// package-level constant.
-func GenesisHash() []byte {
-	return GenesisHashFromLiteral(genesisLiteral)
-}
-
 // GenesisHashFromLiteral returns SHA-256 of the supplied genesis
 // literal. Empty literal falls back to the default.
 func GenesisHashFromLiteral(literal string) []byte {

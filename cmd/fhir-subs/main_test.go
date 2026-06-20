@@ -43,14 +43,11 @@ func TestParseFlags_Version(t *testing.T) {
 }
 
 // TestVersionString asserts the formatted version output. It mutates the
-// package-level Version/Commit globals so it cannot run in parallel with
-// any other test that reads them.
+// package-level Version/Commit globals via the test-only setter (OP #211)
+// so the race detector does not fire if another goroutine reads them.
 func TestVersionString(t *testing.T) {
-	prevV, prevC := Version, Commit
-	t.Cleanup(func() { Version, Commit = prevV, prevC })
-
-	Version = "1.2.3"
-	Commit = "abc1234"
+	restore := SetBuildInfoForTest("1.2.3", "abc1234")
+	t.Cleanup(restore)
 
 	got := versionString()
 	if !strings.Contains(got, "fhir-subs") {
@@ -151,12 +148,11 @@ func TestRealMain_RecoversTopLevelPanic(t *testing.T) {
 }
 
 // TestBannerContains asserts the startup banner mentions the load-bearing
-// identifiers. It mutates Version/Commit so cannot run in parallel.
+// identifiers. It mutates Version/Commit through the test-only setter so
+// the race detector stays quiet if a concurrent reader is in flight.
 func TestBannerContains(t *testing.T) {
-	prevV, prevC := Version, Commit
-	t.Cleanup(func() { Version, Commit = prevV, prevC })
-	Version = "9.9.9"
-	Commit = "deadbee"
+	restore := SetBuildInfoForTest("9.9.9", "deadbee")
+	t.Cleanup(restore)
 
 	b := banner("facility-x", "adapter-y")
 	for _, want := range []string{"fhir-subs", "9.9.9", "deadbee", "facility-x", "adapter-y"} {

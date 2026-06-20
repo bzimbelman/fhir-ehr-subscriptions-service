@@ -22,7 +22,6 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	apimetrics "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics"
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 	chemail "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/email"
 	chmessage "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/message"
 	chresthook "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/resthook"
@@ -313,7 +312,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 			"facility":    cfg.Deployment.FacilityID,
 			"adapter_id":  cfg.Adapter.ID,
 			"environment": cfg.Deployment.Environment,
-			"version":     Version,
+			"version":     GetVersion(),
 		},
 	}); bootErr != nil {
 		// Boot audit failures are loud — if the chain cannot extend on
@@ -548,7 +547,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		WSBindingTTL:        wsBindingTTL,
 		BaseURL:             baseURL,
 		WSBaseURL:           wsBaseURL,
-		ServerVersion:       Version,
+		ServerVersion:       GetVersion(),
 		URLValidator:        urlValidator,
 		LifecycleCtx:        ctx,
 		ActivationTimeout:   30 * time.Second,
@@ -995,8 +994,3 @@ func nonZeroInt32(v, fallback int32) int32 {
 	}
 	return fallback
 }
-
-// silence the unused-import diagnostic emitted while the package
-// scaffolding is still being written. The reference here goes away
-// once the e2e harness exercises every component.
-var _ channel.Channel = channel.Channel(nil)

@@ -1,0 +1,21 @@
+# OP #137 + OP #229: human-edited input for pip-compile.
+#
+# Top-level pins live here; pip-compile resolves the transitive pin set
+# into requirements-docs.txt. Re-run when bumping mkdocs or
+# mkdocs-material:
+#
+#   python3 -m pip install --user pip-tools
+#   pip-compile --output-file=requirements-docs.txt requirements-docs.in
+#
+# Pin cadence is documented in CONTRIBUTING.md ("Documentation
+# dependencies"): bump on a quarterly cadence and whenever pip-audit
+# (CI) flags a CVE.
+mkdocs==1.6.1
+mkdocs-material==9.5.39
+
+# Transitive pins for CVE-driven floors (OP #229, surfaced by
+# pip-audit):
+# - requests CVE-2026-25645 — fixed in 2.33.0
+# - urllib3 PYSEC-2026-141, PYSEC-2026-142 — fixed in 2.7.0
+requests>=2.33.0
+urllib3>=2.7.0
