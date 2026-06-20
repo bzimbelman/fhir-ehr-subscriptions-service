@@ -60,6 +60,7 @@ const bootTimeout = 3 * time.Minute
 func requireDocker(t *testing.T) {
 	t.Helper()
 	if err := realstack.CheckDocker(); err != nil {
+		// OP #258: env-gated skip — H3 LoadDriver requires docker for the real stack.
 		t.Skipf("docker unavailable: %v", err)
 	}
 }
@@ -71,6 +72,7 @@ func requireDocker(t *testing.T) {
 func requireVegeta(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("vegeta"); err != nil {
+		// OP #258: env-gated skip — H3 LoadDriver requires the real vegeta CLI; no in-process substitute.
 		t.Skipf("vegeta CLI not on PATH (install from https://github.com/tsenart/vegeta): %v", err)
 	}
 }

@@ -153,6 +153,7 @@ type prodBinaryHL7Case struct {
 func runProdBinaryHL7E2E(t *testing.T, tc prodBinaryHL7Case) {
 	t.Helper()
 	if tc.skipReason != "" {
+		// OP #149: skipReason cites per-vendor follow-up OP id (#168-#173).
 		t.Skip(tc.skipReason)
 	}
 
