@@ -85,20 +85,19 @@ func (r *DeadLettersRepo) ListRecent(ctx context.Context, q Querier, limit int) 
 }
 
 // Insert appends a dead-letter row. payload_redacted is encrypted at rest
-// with AAD bound to (table, id, key_version, key_version_for_payload).
-// dead_letters lacks a key_version column on the table itself; the
-// codec's active version at insert time is captured into the AAD via
-// the codec.BuildAAD parameter and recovered from the envelope's format
-// header at decrypt time. The id is generated app-side so it can be
-// bound into the AAD before Encrypt.
+// with AAD bound to (table, id, key_version). The codec's active version
+// at insert time is captured both in the AAD and persisted in the row's
+// key_version column (OP #138) so the payload still decrypts after a
+// later key rotation flips the codec's active version. The id is
+// generated app-side so it can be bound into the AAD before Encrypt.
 func (r *DeadLettersRepo) Insert(ctx context.Context, q Querier, row DeadLetterRow) (uuid.UUID, error) {
 	id := row.ID
 	if id == uuid.Nil {
 		id = uuid.New()
 	}
 	var enc []byte
+	kv := r.codec.ActiveVersion()
 	if len(row.PayloadRedacted) > 0 {
-		kv := r.codec.ActiveVersion()
 		var err error
 		enc, _, err = r.codec.Encrypt(row.PayloadRedacted, AADDeadLetters(id, kv))
 		if err != nil {
@@ -109,13 +108,13 @@ func (r *DeadLettersRepo) Insert(ctx context.Context, q Querier, row DeadLetterR
 	const sql = `
 		INSERT INTO dead_letters
 			(id, kind, source_table, source_id, subscription_id, reason,
-			 error_detail, payload_redacted, correlation_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			 error_detail, payload_redacted, key_version, correlation_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id`
 	var got uuid.UUID
 	if err := q.QueryRow(ctx, sql,
 		id, row.Kind, row.SourceTable, row.SourceID, row.SubscriptionID,
-		row.Reason, row.ErrorDetail, enc, row.CorrelationID,
+		row.Reason, row.ErrorDetail, enc, kv, row.CorrelationID,
 	).Scan(&got); err != nil {
 		return uuid.Nil, fmt.Errorf("dead_letters: insert: %w", err)
 	}

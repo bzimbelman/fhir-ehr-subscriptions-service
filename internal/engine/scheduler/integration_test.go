@@ -190,6 +190,15 @@ func seedFanout(t *testing.T, s *storage.Storage, channelType string) (uuid.UUID
 	if err != nil {
 		t.Fatalf("insert deliveries: %v", err)
 	}
+	// In real flow the submatcher would have advanced next_event_number
+	// before writing the delivery; mirror that so the OP #144
+	// `next_event_number >= events_since_subscription_start` CHECK
+	// holds when MarkDelivered later bumps the wire counter.
+	if _, err := s.Pool().Pgx().Exec(ctx,
+		`UPDATE subscriptions SET next_event_number = GREATEST(next_event_number, 1) WHERE id=$1`,
+		subID); err != nil {
+		t.Fatalf("seed next_event_number: %v", err)
+	}
 	return subID, delID, ehrID
 }
 
@@ -377,6 +386,15 @@ func TestIntegrationSchedulerConcurrentSkipLocked(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("insert deliveries: %v", err)
 			}
+		}
+		// Mirror the submatcher: by the time these deliveries exist with
+		// event_numbers 1..perSub, next_event_number must be at least
+		// perSub. OP #144 CHECK constraint enforces the invariant when
+		// MarkDelivered later advances events_since_subscription_start.
+		if _, err := s.Pool().Pgx().Exec(ctx,
+			`UPDATE subscriptions SET next_event_number = GREATEST(next_event_number, $2) WHERE id=$1`,
+			subID, int64(perSub)); err != nil {
+			t.Fatalf("seed next_event_number: %v", err)
 		}
 	}
 

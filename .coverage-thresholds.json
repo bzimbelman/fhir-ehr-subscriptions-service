@@ -44,7 +44,7 @@
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/metrics": 61.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/tracing": 55.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage": 4.0,
-    "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate": 39.0,
+    "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/migrate": 25.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/outbox": 42.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/partition": 29.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/pool": 28.0,

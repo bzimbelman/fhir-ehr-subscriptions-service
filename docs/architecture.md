@@ -1467,6 +1467,15 @@ Topics are versioned canonical URLs. The storage layer keeps every published ver
 - **Idempotency on outbound delivery.** Each `(subscription_id, eventNumber)` is a unique key on `deliveries`. Retries against an at-least-once channel with idempotent receivers won't double-fire matching events.
 - **Per-subscription ordering.** The spec's `eventsSinceSubscriptionStart` is monotonic. The delivery scheduler delivers events in event-number order *per subscription*. Across subscriptions there is no global ordering guarantee.
 
+#### Subscription event cursors
+
+Two columns on `subscriptions` jointly track per-subscription event progress, written by independent code paths:
+
+- `next_event_number` — the **issuance cursor**. The submatcher takes a row-level `SELECT FOR UPDATE` and advances this column at fanout time before writing each `(subscription_id, event_number)` pair into `deliveries` and `ehr_events` (see `internal/engine/submatcher/worker.go: nextEventNumber`). Migration 0004 introduced the column to fix the prior `MAX(deliveries.event_number) + 1` race and the retention-deletes-low-numbers regression (audit B-26 / B-27).
+- `events_since_subscription_start` — the **wire-visible counter** the matcher folds in batches once events are recorded for delivery (story #56 / S-12.4). Subscribers see this on the `SubscriptionStatus` heartbeat and use it to detect missed events.
+
+The invariant is `next_event_number >= events_since_subscription_start`. A number must be issued before a subscriber can see it; the wire counter can lag the issuance cursor (the gap is the in-flight batch) but can never run ahead of it. Migration 0014 enforces the invariant with a database CHECK constraint so a code regression in either write path becomes a write-time error rather than a wire-time mystery (OP #144).
+
 ### Subscription update semantics
 
 When a client updates an existing `Subscription`:

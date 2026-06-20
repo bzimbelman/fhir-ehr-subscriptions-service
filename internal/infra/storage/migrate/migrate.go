@@ -196,24 +196,39 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 	if err != nil {
 		return fmt.Errorf("migrate: probe schema_migrations: %w", err)
 	}
+
+	// Probe whether schema_migrations already has the checksum column.
+	// 0001_init.sql creates the table without it; the column is added by
+	// 0011_schema_migrations_checksum.sql once that migration runs. The
+	// runner adapts its INSERT/SELECT shape to whichever state it finds
+	// the table in, so this no longer requires an inline ALTER (OP #140).
+	hasChecksum := false
 	if exists {
-		// Some bootstrap deployments (e.g., 0001_init.sql) created
-		// schema_migrations without a checksum column. Add it if missing.
-		_, _ = conn.Exec(ctx, `ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`)
+		hasChecksum, err = schemaMigrationsHasChecksum(ctx, conn.Conn())
+		if err != nil {
+			return fmt.Errorf("migrate: probe schema_migrations.checksum: %w", err)
+		}
 	}
 
 	// 2. Pull applied set (or treat as empty when the table doesn't yet exist).
 	applied := map[string]string{}
 	if exists {
-		rows, err := conn.Query(ctx, `SELECT version, COALESCE(checksum, '') FROM schema_migrations`)
+		var query string
+		if hasChecksum {
+			query = `SELECT version, COALESCE(checksum, '') FROM schema_migrations`
+		} else {
+			query = `SELECT version, '' FROM schema_migrations`
+		}
+		var rows pgx.Rows
+		rows, err = conn.Query(ctx, query)
 		if err != nil {
 			return fmt.Errorf("migrate: select schema_migrations: %w", err)
 		}
 		for rows.Next() {
 			var v, c string
-			if err := rows.Scan(&v, &c); err != nil {
+			if scanErr := rows.Scan(&v, &c); scanErr != nil {
 				rows.Close()
-				return fmt.Errorf("migrate: scan: %w", err)
+				return fmt.Errorf("migrate: scan: %w", scanErr)
 			}
 			applied[v] = c
 		}
@@ -230,32 +245,32 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 				return fmt.Errorf("%w: version=%s stored=%s embedded=%s",
 					ErrChecksumMismatch, m.Version, stored, m.Checksum)
 			}
-			// already applied; backfill checksum if blank
-			if stored == "" {
-				if _, err := conn.Exec(ctx,
+			// already applied; backfill checksum if blank (and the
+			// column actually exists on this database).
+			if stored == "" && hasChecksum {
+				if _, uerr := conn.Exec(ctx,
 					`UPDATE schema_migrations SET checksum=$2 WHERE version=$1`,
-					m.Version, m.Checksum); err != nil {
-					return fmt.Errorf("migrate: backfill checksum %s: %w", m.Version, err)
+					m.Version, m.Checksum); uerr != nil {
+					return fmt.Errorf("migrate: backfill checksum %s: %w", m.Version, uerr)
 				}
 			}
 			continue
 		}
 
 		if m.Concurrent {
-			if _, err := conn.Exec(ctx, m.Body); err != nil {
-				return fmt.Errorf("migrate: apply concurrent %s: %w", m.Version, err)
+			if _, cerr := conn.Exec(ctx, m.Body); cerr != nil {
+				return fmt.Errorf("migrate: apply concurrent %s: %w", m.Version, cerr)
 			}
-			// Ensure schema_migrations has a checksum column. Bootstrap
-			// migrations (e.g., 0001_init.sql) may have created the table
-			// without one.
-			if _, err := conn.Exec(ctx,
-				`ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
-				return fmt.Errorf("migrate: ensure checksum column: %w", err)
+			// 0001 creates schema_migrations without checksum; 0011 adds
+			// the column. After every apply, re-probe so the next record
+			// statement matches the table's current shape.
+			if !hasChecksum {
+				hasChecksum, err = schemaMigrationsHasChecksum(ctx, conn.Conn())
+				if err != nil {
+					return fmt.Errorf("migrate: probe schema_migrations.checksum: %w", err)
+				}
 			}
-			if _, err := conn.Exec(ctx,
-				`INSERT INTO schema_migrations(version, applied_at, checksum) VALUES ($1, now(), $2)
-				 ON CONFLICT (version) DO UPDATE SET checksum = excluded.checksum`,
-				m.Version, m.Checksum); err != nil {
+			if err := recordApplied(ctx, conn.Conn(), m, hasChecksum); err != nil {
 				return fmt.Errorf("migrate: record %s: %w", m.Version, err)
 			}
 			continue
@@ -265,25 +280,61 @@ func applyAll(ctx context.Context, pool *pgxpool.Pool, migs []Migration) error {
 			if _, err := tx.Exec(ctx, m.Body); err != nil {
 				return fmt.Errorf("apply: %w", err)
 			}
-			// Ensure schema_migrations has a checksum column. The bootstrap
-			// migration may have created the table without one; subsequent
-			// migrations are safe with the IF NOT EXISTS guard.
-			if _, err := tx.Exec(ctx,
-				`ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT`); err != nil {
-				return fmt.Errorf("ensure checksum column: %w", err)
+			// Re-probe after applying inside the same transaction: a
+			// migration body that adds the checksum column is visible to
+			// the same tx, so we record with the right shape immediately.
+			localHasChecksum := hasChecksum
+			if !localHasChecksum {
+				probed, perr := txSchemaMigrationsHasChecksum(ctx, tx)
+				if perr != nil {
+					return fmt.Errorf("probe schema_migrations.checksum: %w", perr)
+				}
+				localHasChecksum = probed
 			}
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO schema_migrations(version, applied_at, checksum) VALUES ($1, now(), $2)
-				 ON CONFLICT (version) DO UPDATE SET checksum = excluded.checksum`,
-				m.Version, m.Checksum); err != nil {
+			if err := recordAppliedTx(ctx, tx, m, localHasChecksum); err != nil {
 				return fmt.Errorf("record: %w", err)
 			}
+			// If this tx flipped the column-exists state, persist that
+			// for subsequent iterations.
+			hasChecksum = localHasChecksum
 			return nil
 		}); err != nil {
 			return fmt.Errorf("migrate: %s: %w", m.Version, err)
 		}
 	}
 	return nil
+}
+
+// recordApplied inserts (or upserts) an applied-row outside any tx,
+// branching on whether the schema_migrations table has a checksum
+// column at this point in the apply pass.
+func recordApplied(ctx context.Context, conn *pgx.Conn, m Migration, hasChecksum bool) error {
+	if hasChecksum {
+		_, err := conn.Exec(ctx,
+			`INSERT INTO schema_migrations(version, applied_at, checksum) VALUES ($1, now(), $2)
+			 ON CONFLICT (version) DO UPDATE SET checksum = excluded.checksum`,
+			m.Version, m.Checksum)
+		return err
+	}
+	_, err := conn.Exec(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES ($1, now())
+		 ON CONFLICT (version) DO NOTHING`, m.Version)
+	return err
+}
+
+// recordAppliedTx is recordApplied but bound to a transaction.
+func recordAppliedTx(ctx context.Context, tx pgx.Tx, m Migration, hasChecksum bool) error {
+	if hasChecksum {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO schema_migrations(version, applied_at, checksum) VALUES ($1, now(), $2)
+			 ON CONFLICT (version) DO UPDATE SET checksum = excluded.checksum`,
+			m.Version, m.Checksum)
+		return err
+	}
+	_, err := tx.Exec(ctx,
+		`INSERT INTO schema_migrations(version, applied_at) VALUES ($1, now())
+		 ON CONFLICT (version) DO NOTHING`, m.Version)
+	return err
 }
 
 // withTx is a small helper. Defined here to avoid a dependency on the
@@ -298,6 +349,43 @@ func withTx(ctx context.Context, conn *pgx.Conn, fn func(pgx.Tx) error) error {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// schemaMigrationsHasChecksum returns true if schema_migrations has a
+// `checksum` column. 0001_init.sql creates the table without it; 0011
+// adds it. The runner adapts its INSERT shape to whichever state it
+// finds (OP #140).
+func schemaMigrationsHasChecksum(ctx context.Context, conn *pgx.Conn) (bool, error) {
+	const sql = `SELECT EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_name = 'schema_migrations'
+		  AND column_name = 'checksum'
+		  AND table_schema = ANY (current_schemas(false))
+	)`
+	var has bool
+	if err := conn.QueryRow(ctx, sql).Scan(&has); err != nil {
+		return false, err
+	}
+	return has, nil
+}
+
+// txSchemaMigrationsHasChecksum is schemaMigrationsHasChecksum bound to
+// a transaction so a migration body that adds the column can record
+// itself with the right shape inside the same tx.
+func txSchemaMigrationsHasChecksum(ctx context.Context, tx pgx.Tx) (bool, error) {
+	const sql = `SELECT EXISTS (
+		SELECT 1
+		FROM information_schema.columns
+		WHERE table_name = 'schema_migrations'
+		  AND column_name = 'checksum'
+		  AND table_schema = ANY (current_schemas(false))
+	)`
+	var has bool
+	if err := tx.QueryRow(ctx, sql).Scan(&has); err != nil {
+		return false, err
+	}
+	return has, nil
 }
 
 // schemaMigrationsExists returns true if the schema_migrations relation

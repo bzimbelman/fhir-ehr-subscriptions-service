@@ -131,7 +131,6 @@ type DeliveryRow struct {
 	Attempts       int32
 	NextAttemptAt  time.Time
 	LastError      string
-	Bundle         []byte
 	KeyVersion     int32
 	CorrelationID  uuid.UUID
 	CreatedAt      time.Time
@@ -148,6 +147,7 @@ type DeadLetterRow struct {
 	Reason          string
 	ErrorDetail     []byte
 	PayloadRedacted []byte
+	KeyVersion      int32
 	CorrelationID   *uuid.UUID
 	CreatedAt       time.Time
 }
@@ -175,6 +175,14 @@ type AdapterStateRow struct {
 }
 
 // SubscriptionRow mirrors subscriptions.
+//
+// NextEventNumber is the per-subscription monotonic event_number cursor
+// the submatcher advances under SELECT FOR UPDATE at fanout time
+// (migration 0004). EventsSinceSubscriptionStart is the wire-visible
+// counter the matcher folds in batches once events are delivered. The
+// invariant is `next_event_number >= events_since_subscription_start`
+// (enforced by the CHECK constraint added in migration 0014); see
+// docs/architecture.md "Subscription event cursors".
 type SubscriptionRow struct {
 	ID                           uuid.UUID
 	ClientID                     string
@@ -189,6 +197,7 @@ type SubscriptionRow struct {
 	Timeout                      *time.Duration
 	MaxCount                     int32
 	EventsSinceSubscriptionStart int64
+	NextEventNumber              int64
 	Reason                       string
 	EndTime                      *time.Time
 	Error                        string
@@ -211,7 +220,6 @@ type SubscriptionTopicRow struct {
 	Body         []byte
 	CompiledForm []byte
 	CreatedAt    time.Time
-	RetiredAt    *time.Time
 }
 
 // AuthClientRow mirrors auth_clients.

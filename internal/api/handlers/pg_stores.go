@@ -173,7 +173,8 @@ func (s *PgSubscriptionsStore) ListByClient(ctx context.Context, clientID string
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
-		       events_since_subscription_start, COALESCE(reason, ''),
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
@@ -194,7 +195,8 @@ func (s *PgSubscriptionsStore) ListByClient(ctx context.Context, clientID string
 			&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
 			&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
 			&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
-			&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+			&rec.EventsSinceSubscriptionStart, &rec.NextEventNumber,
+			&rec.Reason, &rec.EndTime,
 			&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
 			&rec.CreatedAt, &rec.UpdatedAt,
 		); err != nil {
@@ -221,7 +223,8 @@ func (s *PgSubscriptionsStore) FindByClientAndCriteria(ctx context.Context, clie
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
-		       events_since_subscription_start, COALESCE(reason, ''),
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
@@ -246,7 +249,8 @@ func (s *PgSubscriptionsStore) FindByClientAndCriteria(ctx context.Context, clie
 			&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
 			&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
 			&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
-			&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+			&rec.EventsSinceSubscriptionStart, &rec.NextEventNumber,
+			&rec.Reason, &rec.EndTime,
 			&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
 			&rec.CreatedAt, &rec.UpdatedAt,
 		); err != nil {
@@ -571,7 +575,8 @@ func (s *PgSubscriptionsStore) ListByClientPage(ctx context.Context, clientID st
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
-		       events_since_subscription_start, COALESCE(reason, ''),
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
@@ -604,7 +609,8 @@ func (s *PgSubscriptionsStore) ListByClientPage(ctx context.Context, clientID st
 			&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
 			&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
 			&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
-			&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+			&rec.EventsSinceSubscriptionStart, &rec.NextEventNumber,
+			&rec.Reason, &rec.EndTime,
 			&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
 			&rec.CreatedAt, &rec.UpdatedAt,
 		); err != nil {
