@@ -189,7 +189,7 @@ Note: per the cardinality validator (S-2.20) `topic_url` is forbidden as a metri
 **What's still missing:**
 
 - Operator runbook (`docs/operations/dead-letters-runbook.md`): how to inspect dead_letters, how to requeue, how to mark resolved, by `reason` value
-- Optional CLI subcommand on `fhir-subs` (e.g., `fhir-subs dead-letters list|replay|forget`) — admin operations are scope-bounded per ADR 0008 and are tracked under P1.6
+- ~~Optional CLI subcommand on `fhir-subs` (e.g., a `dead-letters` admin verb)~~ — explicitly out-of-scope for v1 per OP #166. The runbook commits to the SQL surface; revisit only if production lived experience surfaces concrete pain points the SQL does not address.
 - Top-level `fhir_subs_dead_letters_total{reason}` rollup counter wired through `repos.SetDeadLetterReporter` and `metrics.Inventory` (the hl7processor-scoped metric exists; the cross-pipeline rollup with bounded `reason` labels is not yet registered)
 
 **Why this is P1:** the metric alone lets operators alert on dead_letter rate, but without a runbook on-call has no procedure to drain or triage rows when the alert fires.

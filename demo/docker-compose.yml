@@ -30,8 +30,14 @@
 #   docker compose down -v
 #
 # Apple Silicon + amd64: the upstream postgres:16-alpine image is multi-arch
-# and the bridge image is built from source via ../Dockerfile, so it picks
-# up the host platform without a `platform:` override.
+# and the bridge image is built from source via ../Dockerfile, so for a
+# single-host demo run no `platform:` override is needed.
+#
+# `docker compose build` only produces a multi-arch image when buildx is
+# the active builder. To publish a manifest list that resolves on both
+# linux/amd64 and linux/arm64, use `demo/scripts/build-multi-arch.sh`
+# (it bootstraps a buildx builder and runs `docker buildx build` for the
+# requested platforms, with optional PUSH=1 to ship to a registry).
 
 services:
   postgres:

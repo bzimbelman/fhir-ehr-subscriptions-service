@@ -1,10 +1,16 @@
-<!-- docs-lint:ignore-cli=dead-letters -->
-
 # Dead-Letter Runbook
 
 The `dead_letters` table accumulates rows whenever the pipeline can't make
 progress on a unit of work and no retry will succeed. This runbook covers
 inspection, requeue, and forget for an on-call operator.
+
+> **Operator surface = SQL.** The `fhir-subs` binary today exposes only the
+> `audit` and `migrate` subcommands. Dead-letter inspection, requeue, and
+> forget below are intentionally written as `psql` / `SELECT` recipes the
+> operator runs against the production database. OP #166 settled the open
+> question of whether to ship a `dead-letters` admin verb by committing to
+> the SQL surface in v1 — see ["Why no CLI"](#why-no-cli) at the bottom of
+> this runbook for the rationale.
 
 ## What gets dead-lettered
 
@@ -104,8 +110,7 @@ channel. Before any requeue, confirm:
 
 ## Requeue
 
-There is no admin CLI in v1 (deferred — see future-work P1.6). Manual
-requeue procedure:
+Requeue procedure (SQL — see the note at the top of this runbook):
 
 ### `hl7_unparseable` / `hl7_invalid_fhir`
 
@@ -196,8 +201,24 @@ psql -c "SELECT DISTINCT ON (kind) kind, source_id, reason, error_detail, create
 curl -s "http://${FHIR_SUBS_HOST}:${FHIR_SUBS_PORT}/metrics" | grep fhir_subs_dead_letters_total
 ```
 
-## Future improvements
+## Why no CLI
 
-A `fhir-subs dead-letters list|replay|forget` admin CLI is deferred
-(see [future-work.md](../future-work.md) P1.6). Until then, the SQL
-above is the operator surface.
+A `dead-letters list | replay | forget` admin verb on the `fhir-subs`
+binary was scoped during design (`docs/future-work.md` P1.6) but
+**deliberately not shipped in v1**.
+The reasoning, settled by OP #166:
+
+- The SQL recipes above are the same operations the CLI would issue —
+  the runbook does not need a CLI to be operationally complete.
+- A CLI that reads / mutates `dead_letters`, `deliveries`, and
+  `hl7_message_queue` would need to construct the application's
+  Postgres pool with the configured at-rest codec just to decrypt
+  `payload_redacted` for `list`, and a separate audit-write path for
+  every mutation. Both of those are non-trivial bets to lock in before
+  the surface settles.
+- Pre-filling a CLI command an operator cannot run is worse than no
+  affordance — it's a confidence trap. (See OP #166 finding.)
+
+If the SQL surface starts to feel painful in production, file a follow-up
+referencing this section so the next iteration captures the actual lived
+pain points instead of speculative ones.
