@@ -12,3 +12,10 @@
 # (CI) flags a CVE.
 mkdocs==1.6.1
 mkdocs-material==9.5.39
+
+# Transitive pins for CVE-driven floors (OP #229, surfaced by
+# pip-audit):
+# - requests CVE-2026-25645 — fixed in 2.33.0
+# - urllib3 PYSEC-2026-141, PYSEC-2026-142 — fixed in 2.7.0
+requests>=2.33.0
+urllib3>=2.7.0
