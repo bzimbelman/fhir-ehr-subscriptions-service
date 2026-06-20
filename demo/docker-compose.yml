@@ -102,10 +102,19 @@ services:
       - "8081:8081"
       # MLLP listener — demo-publisher (Demo gap-3) targets this port.
       - "2575:2575"
-    # No in-container healthcheck: the bridge runs on
+    # OP #230: in-container healthcheck. The bridge runs on
     # gcr.io/distroless/static-debian12:nonroot, which has no shell, no
-    # curl, and no wget. Operators verify readiness from the host with
-    # `curl http://localhost:8081/readyz` — see README-compose.md.
+    # curl, and no wget — so we exec the bridge binary's built-in
+    # `healthcheck` subcommand (cmd/fhir-subs/healthcheck_cli.go), which
+    # performs an HTTP GET against the local probe listener and exits 0
+    # on a 2xx response. Operators can still curl from the host
+    # (`curl http://localhost:8081/readyz`) — see README-compose.md.
+    healthcheck:
+      test: ["CMD", "/fhir-subs", "healthcheck", "--url", "http://127.0.0.1:8081/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
     restart: unless-stopped
 
   # demo-subscriber — long-running rest-hook receiver. Reuses the same
@@ -120,8 +129,11 @@ services:
     image: fhir-subs:demo
     container_name: fhir-subs-demo-subscriber
     depends_on:
+      # OP #230: now that the bridge declares a healthcheck, gate
+      # demo-subscriber on service_healthy so the subscribe POST does
+      # not fire until the bridge's /readyz has actually flipped to 200.
       bridge:
-        condition: service_started
+        condition: service_healthy
     entrypoint: ["/demo-subscriber"]
     command:
       - "--bridge"

@@ -155,6 +155,9 @@ func realMain(args []string, stdout, stderr io.Writer) (rc int) {
 	if len(args) > 0 && args[0] == "migrate" {
 		return runMigrateSubcommand(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "healthcheck" {
+		return runHealthcheckSubcommand(args[1:], stdout, stderr)
+	}
 
 	opts, err := parseFlags(args, stderr)
 	switch {

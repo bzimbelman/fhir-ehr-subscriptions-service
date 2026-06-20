@@ -67,6 +67,20 @@ type Options struct {
 	// token bucket on the $get-ws-binding-token operation. Burst <= 0
 	// (the default) leaves the limit disabled.
 	WSBindingTokenRateLimit RateLimit
+
+	// URLValidatorAllowHTTP, when true, sets url_validator.allow_http
+	// in the rendered binary config so the activator can dial plain
+	// http:// rest-hook endpoints. Production keeps this false. Story
+	// #236 e2e tests opt in because the test-resthook-subscriber
+	// publishes on plain http://127.0.0.1:<port>.
+	URLValidatorAllowHTTP bool
+
+	// URLValidatorAllowHosts seeds url_validator.allow_hosts in the
+	// rendered binary config. Hosts in this list bypass the binary's
+	// SSRF private-IP rejection (handlers.URLValidatorConfig.AllowHosts).
+	// Story #236 e2e tests pass "127.0.0.1" so the activator can reach
+	// the test-resthook-subscriber's host-published port.
+	URLValidatorAllowHosts []string
 }
 
 // Stack is the handle Boot returns. Field naming mirrors the docker
@@ -522,6 +536,7 @@ tracing:
 	keyB64 := base64.StdEncoding.EncodeToString(codecKey)
 
 	rateLimitBlock := renderRateLimitBlock(opts.SubscriptionCreateRateLimit, opts.WSBindingTokenRateLimit)
+	urlValidatorBlock := renderURLValidatorBlock(opts.URLValidatorAllowHTTP, opts.URLValidatorAllowHosts)
 
 	cfgYAML := fmt.Sprintf(`
 deployment:
@@ -556,13 +571,13 @@ auth:
       jwks_url: %s
     - issuer: %s
       audience: fhir-subs-test
-      jwks_url: %s%s
+      jwks_url: %s%s%s
 %s%s
 `, httpAddr, s.Postgres.URL, keyB64,
 		s.Keycloak.IssuerURL, s.Keycloak.JWKSURL,
 		s.Keycloak.IssuerURL, s.Keycloak.JWKSURL,
 		s.TokenMint.Issuer, s.TokenMint.JWKSURL,
-		rateLimitBlock, tracingBlock, mllpBlock)
+		rateLimitBlock, urlValidatorBlock, tracingBlock, mllpBlock)
 
 	configFile := filepath.Join(binDir, "config.yaml")
 	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
@@ -809,6 +824,33 @@ func isConflict(err error) bool {
 // binary's config.go reads. An all-zero RateLimit emits nothing for
 // that surface — the binary then leaves the limit nil-disabled,
 // matching the operator-facing default.
+// renderURLValidatorBlock emits the url_validator YAML fragment when
+// the test opts in to non-default SSRF policy. Production deployments
+// keep both knobs at their secure defaults (https-only, no
+// private-IP allow-listed hosts); story #236 e2e tests need
+// http://127.0.0.1:<port> to reach the test-resthook-subscriber's
+// host-published port.
+//
+// Empty string when both inputs are zero-valued so the binary's
+// defaults survive (see cmd/fhir-subs/config.go URLValidatorSettings).
+func renderURLValidatorBlock(allowHTTP bool, allowHosts []string) string {
+	if !allowHTTP && len(allowHosts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\nurl_validator:\n")
+	if allowHTTP {
+		b.WriteString("  allow_http: true\n")
+	}
+	if len(allowHosts) > 0 {
+		b.WriteString("  allow_hosts:\n")
+		for _, h := range allowHosts {
+			fmt.Fprintf(&b, "    - %q\n", h)
+		}
+	}
+	return b.String()
+}
+
 func renderRateLimitBlock(create, wsToken RateLimit) string {
 	var b strings.Builder
 	if create.Burst > 0 {
