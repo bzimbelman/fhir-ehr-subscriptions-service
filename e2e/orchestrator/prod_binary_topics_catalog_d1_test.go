@@ -38,13 +38,14 @@ func TestE2E_ProdBinary_D1_TopicsLoadedFromCatalogDir(t *testing.T) {
 	}
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:      h.DBURL,
-		FacilityID:       "e2e-prod-d1",
-		AdapterID:        "default",
-		Insecure:         true,
-		GracePeriod:      5 * time.Second,
-		AuthAudience:     "",
-		TopicsCatalogDir: topicsDir,
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-d1",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
+		TopicsCatalogDir:      topicsDir,
 	})
 	defer bin.Stop(t, 5*time.Second)
 
@@ -78,13 +79,14 @@ func TestE2E_ProdBinary_D1_SIGHUPReloadsCatalog(t *testing.T) {
 	topicsDir := t.TempDir()
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:      h.DBURL,
-		FacilityID:       "e2e-prod-d1-hup",
-		AdapterID:        "default",
-		Insecure:         true,
-		GracePeriod:      5 * time.Second,
-		AuthAudience:     "",
-		TopicsCatalogDir: topicsDir,
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-d1-hup",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
+		TopicsCatalogDir:      topicsDir,
 	})
 	defer bin.Stop(t, 5*time.Second)
 

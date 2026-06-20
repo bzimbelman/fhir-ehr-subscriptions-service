@@ -7,13 +7,20 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Phase A (RED) e2e tests for OpenProject story #94: production binary
@@ -46,12 +53,13 @@ func TestE2E_ProdBinary_MetricsEndpointServesPrometheus(t *testing.T) {
 	resetPipelineTables(t, ctx, h)
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:  h.DBURL,
-		FacilityID:   "e2e-prod-94-metrics",
-		AdapterID:    "default",
-		Insecure:     true,
-		GracePeriod:  5 * time.Second,
-		AuthAudience: "",
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-94-metrics",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
 	})
 	defer bin.Stop(t, 5*time.Second)
 
@@ -92,12 +100,13 @@ func TestE2E_ProdBinary_DeadLetterReporterRegistersCounter(t *testing.T) {
 	resetPipelineTables(t, ctx, h)
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:  h.DBURL,
-		FacilityID:   "e2e-prod-94-dlr",
-		AdapterID:    "default",
-		Insecure:     true,
-		GracePeriod:  5 * time.Second,
-		AuthAudience: "",
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-94-dlr",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
 	})
 	defer bin.Stop(t, 5*time.Second)
 
@@ -166,15 +175,16 @@ func TestE2E_ProdBinary_OTLPExporterSendsSpan(t *testing.T) {
 	otlpURL := "http://" + otlpL.Addr().String() + "/v1/traces"
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:         h.DBURL,
-		FacilityID:          "e2e-prod-94-otlp",
-		AdapterID:           "default",
-		Insecure:            true,
-		GracePeriod:         5 * time.Second,
-		AuthAudience:        "",
-		TracingOTLPEndpoint: otlpURL,
-		TracingSampleRate:   1.0,
-		TracingInsecure:     true,
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-94-otlp",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
+		TracingOTLPEndpoint:   otlpURL,
+		TracingSampleRate:     1.0,
+		TracingInsecure:       true,
 	})
 	defer bin.Stop(t, 5*time.Second)
 
@@ -219,28 +229,59 @@ func TestE2E_ProdBinary_OTLPExporterSendsSpan(t *testing.T) {
 // This test pins the contract so any future regression is caught.
 func TestE2E_ProdBinary_AuditWriterIsHashChained(t *testing.T) {
 	h := requireHarness(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	resetPipelineTables(t, ctx, h)
 
-	// Seed a client so the create attempt isn't rejected upstream of audit.
-	if _, err := h.DB.Exec(ctx,
-		`INSERT INTO auth_clients (id, scopes, display_name)
-		 VALUES ($1, ARRAY['system/Subscription.cruds']::text[], $1)`,
-		"e2e-prod-94-audit-client"); err != nil {
+	// Real RSA key + httptest JWKS server (same scaffolding as the
+	// #146 401/200 path test). The audit row this test inspects is
+	// only written when the POST reaches the real handler, so the
+	// bearer middleware MUST accept the request — that's the whole
+	// point of the dev-bypass cleanup in #292.
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	kid := uuid.NewString()
+	jwksMux := http.NewServeMux()
+	jwksMux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jwksDocFromPublic(&priv.PublicKey, kid))
+	})
+	jwksSrv := httptest.NewServer(jwksMux)
+	t.Cleanup(jwksSrv.Close)
+
+	clientID := "e2e-prod-94-audit-" + uuid.New().String()[:8]
+	if _, err := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
+		VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)`,
+		clientID, jwksSrv.URL+"/jwks"); err != nil {
 		t.Fatalf("seed auth_clients: %v", err)
 	}
 
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	issuedSecret := base64.StdEncoding.EncodeToString(secretBytes)
+	audience := "https://e2e-prod-94-audit/token"
+
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:  h.DBURL,
-		FacilityID:   "e2e-prod-94-audit",
-		AdapterID:    "default",
-		Insecure:     true,
-		GracePeriod:  5 * time.Second,
-		AuthAudience: "", // skip bearer middleware — audit is what we care about
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-94-audit",
+		AdapterID:             "default",
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          audience,
+		AuthAllowInsecureJWKS: true,
+		AuthTokenURL:          audience,
+		AuthIssuedSecret:      issuedSecret,
+		AuthIssuedIssuer:      "e2e-prod-94-audit-issuer",
+		AuthAccessTokenTTL:    5 * time.Minute,
 	})
 	defer bin.Stop(t, 5*time.Second)
+
+	bearer := mintRealBearer(t, ctx, bin.HTTPURL(), audience, clientID, kid, priv)
 
 	subBody := `{
 		"resourceType": "Subscription",
@@ -257,7 +298,7 @@ func TestE2E_ProdBinary_AuditWriterIsHashChained(t *testing.T) {
 		t.Fatalf("build POST: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/fhir+json")
-	req.Header.Set("X-Client-Id", "e2e-prod-94-audit-client")
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST /Subscription: %v", err)

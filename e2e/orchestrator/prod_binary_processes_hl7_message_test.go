@@ -7,7 +7,13 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,39 +74,74 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 		t.Fatalf("write topic file: %v", err)
 	}
 
-	// 1. Start the production binary with an MLLP listener. The
-	// /Subscription endpoint must be reachable before we register,
-	// so binary start precedes RegisterSubscriber. (Story #150: the
-	// helper now POSTs to the API; no more raw-SQL bypass.)
+	// 1. Real RSA key + httptest JWKS server (same scaffolding as the
+	//    #146 401/200 path test). Story #292: no more dev-bypass for
+	//    prod-binary e2e — the binary boots in production posture and
+	//    /Subscription POSTs MUST carry a real bearer.
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	kid := uuid.NewString()
+	jwksMux := http.NewServeMux()
+	jwksMux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jwksDocFromPublic(&priv.PublicKey, kid))
+	})
+	jwksSrv := httptest.NewServer(jwksMux)
+	t.Cleanup(jwksSrv.Close)
+
+	clientID := "e2e-prod-hl7-" + uuid.New().String()[:8]
+	if _, err := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
+		VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)`,
+		clientID, jwksSrv.URL+"/jwks"); err != nil {
+		t.Fatalf("seed auth_clients: %v", err)
+	}
+
+	secretBytes := make([]byte, 32)
+	if _, err := rand.Read(secretBytes); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	issuedSecret := base64.StdEncoding.EncodeToString(secretBytes)
+	audience := "https://e2e-prod-hl7/token"
+
+	// 2. Start the production binary with an MLLP listener AND real
+	//    bearer-auth wired up. allow_insecure_jwks=true also makes the
+	//    rest-hook URL validator accept http:// endpoints — required
+	//    because we register against the harness's plaintext mocksub
+	//    receiver.
 	mllpPort := freePort(t)
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:      h.DBURL,
-		FacilityID:       "e2e-prod-hl7",
-		AdapterID:        "default",
-		MLLPBind:         "127.0.0.1:" + mllpPort,
-		Insecure:         true,
-		GracePeriod:      5 * time.Second,
-		TopicsCatalogDir: topicsDir,
-		// audience empty so the subscription can be created without
-		// the bearer middleware in the way; X-Client-Id flows through
-		// devPrincipalMiddleware instead.
-		AuthAudience: "",
-		// allow_insecure_jwks=true also makes the rest-hook URL
-		// validator accept http:// endpoints — required because we
-		// register against the harness's plaintext mocksub receiver.
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-hl7",
+		AdapterID:             "default",
+		MLLPBind:              "127.0.0.1:" + mllpPort,
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		TopicsCatalogDir:      topicsDir,
+		AuthAudience:          audience,
 		AuthAllowInsecureJWKS: true,
+		AuthTokenURL:          audience,
+		AuthIssuedSecret:      issuedSecret,
+		AuthIssuedIssuer:      "e2e-prod-hl7-issuer",
+		AuthAccessTokenTTL:    5 * time.Minute,
 	})
 	defer bin.Stop(t, 10*time.Second)
 
-	// 2. Register an active subscription via the real /Subscription
-	// HTTP API. The helper polls until status=active, so once it
-	// returns the submatcher's "active subscriptions" filter sees the
-	// row — no SQL UPDATE bypass.
+	// 3. Register an active subscription via the real /Subscription
+	//    HTTP API. The helper polls until status=active, so once it
+	//    returns the submatcher's "active subscriptions" filter sees
+	//    the row — no SQL UPDATE bypass. Bearer is freshly minted on
+	//    every helper request to avoid the JTI replay cache.
+	bearerFn := func() string {
+		return mintRealBearer(t, ctx, bin.HTTPURL(), audience, clientID, kid, priv)
+	}
 	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
-		ClientID:   "e2e-prod-hl7-client",
-		TopicURL:   "http://example.org/topics/hl7-passthrough",
-		Endpoint:   "http://" + h.MockSub.HTTPAddr + "/hook/e2e-prod-hl7-sub",
-		APIBaseURL: bin.HTTPURL(),
+		ClientID:        clientID,
+		TopicURL:        "http://example.org/topics/hl7-passthrough",
+		Endpoint:        "http://" + h.MockSub.HTTPAddr + "/hook/e2e-prod-hl7-sub",
+		APIBaseURL:      bin.HTTPURL(),
+		BearerTokenFunc: bearerFn,
 	})
 	if err != nil {
 		t.Fatalf("RegisterSubscriber: %v", err)
