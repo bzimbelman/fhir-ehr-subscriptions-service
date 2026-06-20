@@ -60,7 +60,10 @@ func TestPHIRedaction_DebugDefaultStillRedacts(t *testing.T) {
 	}
 }
 
-// LLD §6.2: query strings on endpoint and url fields are redacted.
+// OP #204: `endpoint` is now a fully-redacted PHI field — the
+// previous query-only strip leaked PHI embedded in path segments
+// (e.g. /api/webhooks/<patient-uuid>/inbound). Generic `url` keeps
+// the scheme://host but strips path segments AND query.
 func TestQueryStringRedaction_EndpointURL(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
@@ -82,8 +85,17 @@ func TestQueryStringRedaction_EndpointURL(t *testing.T) {
 	if !strings.Contains(line, "[redacted]") {
 		t.Fatalf("expected [redacted] marker; got: %s", line)
 	}
-	if !strings.Contains(line, "https://example.com/webhook") {
-		t.Fatalf("expected scheme/host/path retained: %s", line)
+	// `endpoint` must be a literal "[redacted]" — no host, no path.
+	if !strings.Contains(line, `"endpoint":"[redacted]"`) {
+		t.Fatalf("expected endpoint full-redacted (OP #204); got: %s", line)
+	}
+	// `url` retains scheme://host so operators see which subscriber
+	// the deployment was reaching, but the path is gone.
+	if !strings.Contains(line, "https://other.example.com") {
+		t.Fatalf("expected url scheme/host retained: %s", line)
+	}
+	if strings.Contains(line, `"url":"https://other.example.com/path`) {
+		t.Fatalf("url path leaked (OP #204 requires path-segment stripping): %s", line)
 	}
 }
 

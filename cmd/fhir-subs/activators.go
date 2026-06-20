@@ -39,6 +39,14 @@ type restHookActivatorOptions struct {
 	// slog.Default().
 	Logger *slog.Logger
 
+	// TLSMinVersion is the floor the activator's TLS handshake will
+	// negotiate (OP #203). Zero falls back to tls.VersionTLS13 — the
+	// same default rest-hook delivery, MLLP TLS, and the HTTP server
+	// listener use, so the rest-hook activator path is no longer the
+	// odd one out at TLS 1.2. Operators with legacy subscribers pin
+	// to tls.VersionTLS12 explicitly.
+	TLSMinVersion uint16
+
 	// httpClient is a test seam. Production constructs a fresh client
 	// from Timeout; tests can substitute a transport that records the
 	// outbound request.
@@ -71,6 +79,15 @@ func newRestHookActivator(opts restHookActivatorOptions) *restHookActivator {
 	}
 	client := opts.httpClient
 	if client == nil {
+		// OP #203: unify the TLS floor with rest-hook delivery, MLLP
+		// TLS, email STARTTLS, and the HTTP server listener. The
+		// activator was the last path stuck at TLS 1.2; default to
+		// 1.3 unless the operator pins a per-channel override. The
+		// gosec lint is suppressed because the value is configurable.
+		minTLS := opts.TLSMinVersion
+		if minTLS == 0 {
+			minTLS = tls.VersionTLS13
+		}
 		client = &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -84,7 +101,7 @@ func newRestHookActivator(opts restHookActivatorOptions) *restHookActivator {
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
 				ForceAttemptHTTP2:     true,
-				TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12}, //nolint:gosec // 1.2 floor; subscribers vary.
+				TLSClientConfig:       &tls.Config{MinVersion: minTLS}, //nolint:gosec // configurable; defaults to TLS 1.3
 			},
 		}
 	}

@@ -45,6 +45,11 @@ type Metrics struct {
 	WSBindingTokenIssued prometheus.Counter
 	ActivatePanicTotal   prometheus.Counter
 	RandFailuresTotal    prometheus.Counter
+	// JWKSSingleflightCollisions counts followers that joined an
+	// in-flight JWKS fetch under singleflight (OP #202). N concurrent
+	// first-time requests for the same JWKS URL produce 1 leader fetch
+	// and N-1 collisions on this counter.
+	JWKSSingleflightCollisions prometheus.Counter
 }
 
 // New constructs the API metric set and registers it with reg. If reg
@@ -100,6 +105,10 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 			Name: "fhir_subs_api_rand_failures_total",
 			Help: "crypto/rand.Read failures in token-mint paths (N-1).",
 		}),
+		JWKSSingleflightCollisions: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "fhir_subs_jwks_singleflight_collisions_total",
+			Help: "JWKS fetch followers that joined an in-flight singleflight group (OP #202).",
+		}),
 	}
 
 	collectors := []prometheus.Collector{
@@ -114,6 +123,7 @@ func New(reg prometheus.Registerer) (*Metrics, error) {
 		m.WSBindingTokenIssued,
 		m.ActivatePanicTotal,
 		m.RandFailuresTotal,
+		m.JWKSSingleflightCollisions,
 	}
 
 	for _, c := range collectors {
@@ -191,6 +201,16 @@ func (m *Metrics) RecordTokenIssued() {
 		return
 	}
 	m.TokenIssued.Inc()
+}
+
+// RecordJWKSSingleflightCollision increments the singleflight-collision
+// counter (OP #202). Called by Verifier.keyfuncFor whenever a follower
+// joins an in-flight JWKS fetch instead of issuing its own HTTP request.
+func (m *Metrics) RecordJWKSSingleflightCollision() {
+	if m == nil || m.JWKSSingleflightCollisions == nil {
+		return
+	}
+	m.JWKSSingleflightCollisions.Inc()
 }
 
 // RecordWSBindingTokenIssued increments the ws_binding_token_issued counter.

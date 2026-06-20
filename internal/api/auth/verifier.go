@@ -16,6 +16,7 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/singleflight"
 )
 
 // ClientRecord is the registered client view returned by ClientLookup.
@@ -95,6 +96,12 @@ type Verifier struct {
 	jwksMu    sync.Mutex
 	jwksCache map[string]jwksEntry
 	jwksPolicy
+
+	// jwksFetchGroup deduplicates concurrent first-time JWKS fetches
+	// per-URL (OP #202). Without it, N concurrent requests for the
+	// same uncached jwksURL stamp N HTTP fetches at the IdP — a
+	// request-stampede the verifier should not generate.
+	jwksFetchGroup singleflight.Group
 }
 
 type jwksEntry struct {
@@ -336,34 +343,67 @@ func (v *Verifier) keyfuncFor(ctx context.Context, jwksURL string) (keyfunc.Keyf
 		return entry.keyfunc, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, http.NoBody)
+	// OP #202: deduplicate concurrent first-time fetches. singleflight
+	// guarantees that for N concurrent Do calls keyed on the same
+	// jwksURL exactly one fn body runs; the rest block on its result.
+	// We mark this caller as "leader" iff its Do call ran the fn body
+	// (the only goroutine that flips leader=true). All other callers
+	// joined the in-flight group → record one collision per follower.
+	leader := false
+	result, err, _ := v.jwksFetchGroup.Do(jwksURL, func() (any, error) {
+		leader = true
+		// Recheck the cache under the singleflight: a previous group
+		// may have populated it in the wall-clock window between this
+		// goroutine's pre-Do read above and the singleflight admitting
+		// us as leader.
+		v.jwksMu.Lock()
+		fresh, freshOK := v.jwksCache[jwksURL]
+		v.jwksMu.Unlock()
+		if freshOK && v.cfg.Now().Before(fresh.expires) {
+			return fresh.keyfunc, nil
+		}
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, http.NoBody)
+		if rerr != nil {
+			return nil, fmt.Errorf("auth: build jwks request: %w", rerr)
+		}
+		resp, rerr := v.cfg.HTTPClient.Do(req)
+		if rerr != nil {
+			return nil, fmt.Errorf("auth: fetch jwks: %w", rerr)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("auth: jwks status %d", resp.StatusCode)
+		}
+		body, rerr := io.ReadAll(io.LimitReader(resp.Body, MaxJWKSBodyBytes))
+		if rerr != nil {
+			return nil, fmt.Errorf("auth: read jwks body: %w", rerr)
+		}
+		kf, rerr := keyfunc.NewJWKSetJSON(body)
+		if rerr != nil {
+			return nil, fmt.Errorf("auth: parse jwks: %w", rerr)
+		}
+		v.jwksMu.Lock()
+		v.jwksCache[jwksURL] = jwksEntry{
+			keyfunc: kf,
+			expires: v.cfg.Now().Add(v.cfg.JWKSCacheTTL),
+		}
+		v.jwksMu.Unlock()
+		return kf, nil
+	})
+	if !leader && v.cfg.Metrics != nil {
+		// Followers joined an in-flight fetch instead of issuing their
+		// own HTTP request. For N concurrent first-time callers exactly
+		// 1 leader runs and N-1 followers record a collision — the
+		// stampede-counting semantic the AC names.
+		v.cfg.Metrics.RecordJWKSSingleflightCollision()
+	}
 	if err != nil {
-		return nil, fmt.Errorf("auth: build jwks request: %w", err)
+		return nil, err
 	}
-	resp, err := v.cfg.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("auth: fetch jwks: %w", err)
+	kf, ok := result.(keyfunc.Keyfunc)
+	if !ok {
+		return nil, fmt.Errorf("auth: jwks fetch returned %T; want keyfunc.Keyfunc", result)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("auth: jwks status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxJWKSBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("auth: read jwks body: %w", err)
-	}
-
-	kf, err := keyfunc.NewJWKSetJSON(body)
-	if err != nil {
-		return nil, fmt.Errorf("auth: parse jwks: %w", err)
-	}
-
-	v.jwksMu.Lock()
-	v.jwksCache[jwksURL] = jwksEntry{
-		keyfunc: kf,
-		expires: v.cfg.Now().Add(v.cfg.JWKSCacheTTL),
-	}
-	v.jwksMu.Unlock()
 	return kf, nil
 }
 

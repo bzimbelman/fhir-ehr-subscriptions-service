@@ -57,6 +57,13 @@ type SubscriptionsStore interface {
 	FindByClientAndCriteria(ctx context.Context, clientID string, criteria SubscriptionMatchCriteria) ([]repos.SubscriptionRow, error)
 	UpdateResource(ctx context.Context, id uuid.UUID, row repos.SubscriptionRow) error
 	UpdateStatus(ctx context.Context, id uuid.UUID, status repos.SubscriptionStatus, errMsg string) error
+	// HardDelete removes the subscription row entirely so that a
+	// subsequent GET /Subscription/{id} returns 404 (FHIR R5 §3.4.4
+	// allows 410 Gone after DELETE; 404 is also conformant once the row
+	// is gone). The audit_log row written by the DELETE handler is
+	// retained — audit retention is governed by storage policy, not by
+	// the row's existence in `subscriptions`.
+	HardDelete(ctx context.Context, id uuid.UUID) error
 }
 
 // SubscriptionMatchCriteria carries the LLD §4.1 search parameters that

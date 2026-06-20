@@ -192,6 +192,16 @@ func (m *memSubs) UpdateResource(_ context.Context, id uuid.UUID, row repos.Subs
 	return nil
 }
 
+func (m *memSubs) HardDelete(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.rows[id]; !ok {
+		return nil
+	}
+	delete(m.rows, id)
+	return nil
+}
+
 func (m *memSubs) UpdateStatus(_ context.Context, id uuid.UUID, status repos.SubscriptionStatus, errMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -664,9 +674,22 @@ func TestDeleteSubscription_Owned_204(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Errorf("status = %d", resp.StatusCode)
 	}
+	// OP #191: DELETE is a hard-delete. The row MUST be gone so a
+	// subsequent GET /Subscription/{id} returns 404 — soft-delete
+	// (status=off) leaves the encrypted contact info readable
+	// indefinitely.
 	row, _ := subs.GetByID(context.Background(), id)
-	if row.Status != repos.SubOff {
-		t.Errorf("status after delete = %s; want off", row.Status)
+	if row != nil {
+		t.Fatalf("subscription row still present after DELETE; OP #191 requires hard-delete (got status=%s)", row.Status)
+	}
+	resp2, err := http.Get(srv.URL + "/Subscription/" + id.String())
+	if err != nil {
+		t.Fatalf("GET-after-DELETE: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp2.Body)
+		t.Errorf("GET-after-DELETE status = %d; want 404 (FHIR R5 §3.4.4); body=%s", resp2.StatusCode, body)
 	}
 }
 
