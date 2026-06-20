@@ -299,6 +299,7 @@ func StartAPIServer(ctx context.Context, cfg APIServerConfig) (*APIServer, error
 	}
 
 	r := chi.NewRouter()
+	handlers.RegisterPublicRoutes(r, deps)
 	handlers.RegisterRoutes(r, deps)
 
 	if cfg.WSHandler != nil {
