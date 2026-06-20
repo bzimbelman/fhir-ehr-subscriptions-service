@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v3"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
@@ -376,6 +377,77 @@ func TestWsBindingTokensInsert(t *testing.T) {
 	if err := pool.ExpectationsWereMet(); err != nil {
 		t.Errorf("expectations: %v", err)
 	}
+}
+
+// TestWsBindingTokensFindUnexpiredBySubscriptionAndClient covers
+// the OP #241 reuse-lookup path. We run two paths against pgxmock:
+// a row-found case (returns the row pointer with the on-disk fields)
+// and a no-rows case (returns nil, nil) so the handler-side
+// short-circuit code knows to fall through.
+func TestWsBindingTokensFindUnexpiredBySubscriptionAndClient(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	repo := repos.NewWsBindingTokensRepo()
+	subID := uuid.New()
+
+	t.Run("found", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+
+		expires := now.Add(5 * time.Minute)
+		created := now.Add(-30 * time.Second)
+		pool.ExpectQuery("SELECT token").
+			WithArgs(subID, "client-a", now).
+			WillReturnRows(pgxmock.NewRows([]string{
+				"token", "subscription_id", "client_id", "expires_at", "created_at",
+			}).AddRow("hashed-token", subID, "client-a", expires, created))
+
+		got, err := repo.FindUnexpiredBySubscriptionAndClient(context.Background(), pool, subID, "client-a", now)
+		if err != nil {
+			t.Fatalf("find: %v", err)
+		}
+		if got == nil {
+			t.Fatalf("expected row, got nil")
+		}
+		if got.SubscriptionID != subID || got.ClientID != "client-a" {
+			t.Errorf("scope mismatch: %+v", got)
+		}
+		if !got.ExpiresAt.Equal(expires) {
+			t.Errorf("expires = %v; want %v", got.ExpiresAt, expires)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	})
+
+	t.Run("not_found", func(t *testing.T) {
+		t.Parallel()
+		pool, err := pgxmock.NewPool()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+
+		pool.ExpectQuery("SELECT token").
+			WithArgs(subID, "client-a", now).
+			WillReturnError(pgx.ErrNoRows)
+
+		got, err := repo.FindUnexpiredBySubscriptionAndClient(context.Background(), pool, subID, "client-a", now)
+		if err != nil {
+			t.Fatalf("find: %v", err)
+		}
+		if got != nil {
+			t.Errorf("expected nil row; got %+v", got)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Errorf("expectations: %v", err)
+		}
+	})
 }
 
 // TestWsBindingTokensConsume drives the four documented Consume outcomes
