@@ -62,7 +62,7 @@ jobs:
       # Story #283: golangci-lint version pinned to the version used to
       # generate the lint-debt inventory. Bumping requires re-running the
       # inventory and either fixing or justifying any new findings.
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v1.62.0
           args: --timeout=5m
