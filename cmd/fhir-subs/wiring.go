@@ -671,7 +671,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		if correlHold == 0 {
 			correlHold = 30 * time.Second
 		}
-		p, err := hl7processor.New(hl7processor.Config{
+		p, perr := hl7processor.New(hl7processor.Config{
 			AdapterID:             cfg.Adapter.ID,
 			ClaimBatchSize:        nonZeroInt32(cfg.Pipeline.HL7Processor.ClaimBatchSize, 16),
 			ClaimIdlePollInterval: processorPoll,
@@ -687,9 +687,9 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 			Adapter:    hl7Proc,
 			Logger:     logger.With("component", "hl7processor"),
 		})
-		if err != nil {
+		if perr != nil {
 			rt.shutdown(context.Background())
-			return nil, fmt.Errorf("hl7processor: %w", err)
+			return nil, fmt.Errorf("hl7processor: %w", perr)
 		}
 		proc = p
 		rt.processor = proc
