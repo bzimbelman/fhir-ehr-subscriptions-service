@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +25,26 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+// observationTopicForServesAPI is a SubscriptionTopic the binary loads
+// at startup so the POST /Subscription with topic
+// http://example.org/topic/observation passes the "topic in catalog"
+// gate. Matches anything (no queryCriteria) — the test pins the
+// route + auth wiring, not topic semantics.
+const observationTopicForServesAPI = `{
+  "resourceType": "SubscriptionTopic",
+  "url": "http://example.org/topic/observation",
+  "version": "1.0.0",
+  "title": "Observation (OP #341 e2e — serves API)",
+  "status": "active",
+  "resourceTrigger": [{
+    "resource": "Observation",
+    "supportedInteraction": ["create", "update"]
+  }],
+  "notificationShape": [{
+    "resource": "Observation"
+  }]
+}`
 
 // TestE2E_ProdBinary_ServesSubscriptionAPI proves the production binary
 // — built from cmd/fhir-subs and started with `run --config <file>` —
@@ -68,9 +90,18 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 
 	// Seed auth_clients with a row pointing the binary's verifier at the
 	// httptest JWKS server. Real Postgres write.
+	//
+	// OP #341 / #290: subscription handlers gate on the literal
+	// per-letter scopes (system/Subscription.c / .r / .u / .d). The
+	// /token endpoint intersects requested-scopes with
+	// auth_clients.scopes, so seeding only "cruds" leaves the bearer
+	// without `.c` and POST /Subscription returns 403 "insufficient
+	// scope". Seed the composite alias AND every per-letter scope so the
+	// bearer minted via /token carries the granted set the handlers
+	// actually check.
 	clientID := "e2e-prod-serves-" + uuid.New().String()[:8]
 	if _, err := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
-		VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)`,
+		VALUES ($1, $2, ARRAY['system/Subscription.cruds','system/Subscription.c','system/Subscription.r','system/Subscription.u','system/Subscription.d']::text[], $1)`,
 		clientID, jwksSrv.URL+"/jwks"); err != nil {
 		t.Fatalf("seed auth_clients: %v", err)
 	}
@@ -82,6 +113,17 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 	}
 	issuedSecret := base64.StdEncoding.EncodeToString(secretBytes)
 	audience := "https://e2e-prod-serves/token"
+
+	// Stage a topic catalog directory so /Subscription POST does not
+	// reject with "topic not in catalog" (OP #154 persists loaded
+	// topics into subscription_topics; the createSubscription handler
+	// reads through PgTopicsStore.ListActive). Without this, the
+	// 201-with-token assertion can never succeed.
+	topicsDir := t.TempDir()
+	if werr := os.WriteFile(filepath.Join(topicsDir, "observation.json"),
+		[]byte(observationTopicForServesAPI), 0o600); werr != nil {
+		t.Fatalf("write topic: %v", werr)
+	}
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
 		DatabaseURL:           h.DBURL,
@@ -95,6 +137,8 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 		AuthIssuedSecret:      issuedSecret,
 		AuthIssuedIssuer:      "e2e-prod-serves-issuer",
 		AuthAccessTokenTTL:    5 * time.Minute,
+		TopicsCatalogDir:      topicsDir,
+		URLValidatorAllowHTTP: true, // /Subscription endpoint is http://127.0.0.1
 	})
 	defer bin.Stop(t, 5*time.Second)
 
@@ -110,14 +154,19 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 		}
 	}
 
+	// R4B-backport schema requires `channel` (the project's Subscription
+	// schema validates the R4B shape). Include the R5 `channelType` /
+	// `endpoint` fields too — both are accepted by the parser and are
+	// what production handlers persist on the row.
 	subBody := `{
 		"resourceType": "Subscription",
 		"status": "requested",
 		"topic": "http://example.org/topic/observation",
 		"channelType": {"system": "http://terminology.hl7.org/CodeSystem/subscription-channel-type", "code": "rest-hook"},
-		"endpoint": "https://subscriber.example.com/hook",
+		"endpoint": "http://127.0.0.1:9/hook",
 		"contentType": "application/fhir+json",
-		"content": "id-only"
+		"content": "id-only",
+		"channel": {"type": "rest-hook", "endpoint": "http://127.0.0.1:9/hook"}
 	}`
 
 	// AC #3a: POST /Subscription/ with NO Authorization header MUST

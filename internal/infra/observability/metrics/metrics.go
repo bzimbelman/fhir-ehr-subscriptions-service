@@ -384,6 +384,20 @@ type Inventory struct {
 	SubmatcherRowAttemptsTotal *Counter
 	TopicsRejectedTotal        *Counter
 	TopicOverriddenTotal       *Counter
+
+	// OP #341 / story #207 — lifecycle module metric set. The lifecycle
+	// package emits these via its MetricsEmitter seam; the host wires a
+	// translating adapter that forwards into these handles. Pre-seeding
+	// at registration ensures /metrics surfaces the canonical names
+	// before the first probe / shutdown happens, which is what operator
+	// dashboards (and the phase-duration e2e test) rely on.
+	LifecyclePhaseDurationSeconds   *Histogram
+	LifecycleShutdownInitiatedTotal *Counter
+	LifecycleShutdownForcedTotal    *Counter
+	LifecycleShutdownHookOutcome    *Counter
+	LifecycleProbeRequestsTotal     *Counter
+	LifecycleReadinessFailuresTotal *Counter
+	LifecycleStartupComplete        *Gauge
 }
 
 // RegisterStartupInventory creates and registers the canonical metric set.
@@ -519,7 +533,63 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	if err != nil {
 		return nil, err
 	}
-	mr.Set(16, nil)
+	// OP #341 / story #207 — lifecycle module metric set.
+	lcPhaseDur, err := em.NewHistogram(HistogramOpts{
+		Name:    "fhir_subs_lifecycle_phase_duration_seconds",
+		Help:    "Wall-clock seconds spent in each lifecycle shutdown phase, labeled by phase.",
+		Labels:  []string{"phase"},
+		Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
+	})
+	if err != nil {
+		return nil, err
+	}
+	lsi, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_lifecycle_shutdown_initiated_total",
+		Help:   "Lifecycle shutdowns initiated, labeled by reason (signal name or operator-supplied tag).",
+		Labels: []string{"reason"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	lsf, err := em.NewCounter(CounterOpts{
+		Name: "fhir_subs_lifecycle_shutdown_forced_total",
+		Help: "Lifecycle shutdowns that hit the grace-period wall-clock deadline (forced exit).",
+	})
+	if err != nil {
+		return nil, err
+	}
+	lho, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_lifecycle_shutdown_hook_outcome_total",
+		Help:   "Per-hook shutdown outcomes labeled by hook and outcome (drained|timed_out|errored).",
+		Labels: []string{"hook", "outcome"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	lpr, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_lifecycle_probe_requests_total",
+		Help:   "Probe requests served by the lifecycle module, labeled by probe and status_code.",
+		Labels: []string{"probe", "status_code"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	lrf, err := em.NewCounter(CounterOpts{
+		Name:   "fhir_subs_lifecycle_readiness_check_failures_total",
+		Help:   "Readiness check failures, labeled by registered check name.",
+		Labels: []string{"name"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	lsc, err := em.NewGauge(GaugeOpts{
+		Name: "fhir_subs_lifecycle_startup_complete",
+		Help: "1 when MarkStartupComplete has been called, 0 before.",
+	})
+	if err != nil {
+		return nil, err
+	}
+	mr.Set(23, nil) // OP #341: +7 lifecycle metrics (phase histogram, shutdown counters, probe + readiness counters, startup gauge)
 	// Pre-register a zero-valued time series for each label-set we know
 	// about so the /metrics endpoint exposes them at scrape time even
 	// before the first event lands. This makes alert rules targeting
@@ -558,6 +628,36 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 	}
 	tot.Add(0, prometheus.Labels{"from": "_unset", "to": "_unset"})
 
+	// OP #341 / story #207 — pre-seed every shutdown phase the
+	// sequencer drives so the histogram appears in /metrics BEFORE the
+	// first shutdown. The e2e test polls /metrics pre-shutdown to
+	// confirm the lifecycle metric set is registered; without
+	// pre-seeding the histogram only materializes mid-shutdown,
+	// after the listener has already started tearing down.
+	for _, phase := range []string{
+		"mark_unready",
+		"stop_accepting",
+		"drain_in_flight",
+		"close_connections",
+	} {
+		lcPhaseDur.Observe(0, prometheus.Labels{"phase": phase})
+	}
+	// Pre-seed shutdown-initiated reasons so dashboards see the family
+	// at scrape time. SIGTERM / SIGINT are the operator-visible signal
+	// names; "test-cleanup" is what the test helper reports.
+	for _, reason := range []string{"sigterm", "sigint", "test-cleanup", "request-shutdown"} {
+		lsi.Add(0, prometheus.Labels{"reason": reason})
+	}
+	lsf.Add(0, nil)
+	// Pre-seed probe / status pairs so /metrics shows the canonical
+	// lifecycle.probe_requests families at boot.
+	for _, probe := range []string{"healthz", "readyz", "startup"} {
+		for _, status := range []string{"200", "503"} {
+			lpr.Add(0, prometheus.Labels{"probe": probe, "status_code": status})
+		}
+	}
+	lsc.Set(0, nil)
+
 	return &Inventory{
 		MetricsRegistered:                  mr,
 		AuditWritesTotal:                   aw,
@@ -575,5 +675,12 @@ func RegisterStartupInventory(em *Emitter) (*Inventory, error) {
 		SubmatcherRowAttemptsTotal:         smra,
 		TopicsRejectedTotal:                trt,
 		TopicOverriddenTotal:               tot,
+		LifecyclePhaseDurationSeconds:      lcPhaseDur,
+		LifecycleShutdownInitiatedTotal:    lsi,
+		LifecycleShutdownForcedTotal:       lsf,
+		LifecycleShutdownHookOutcome:       lho,
+		LifecycleProbeRequestsTotal:        lpr,
+		LifecycleReadinessFailuresTotal:    lrf,
+		LifecycleStartupComplete:           lsc,
 	}, nil
 }
