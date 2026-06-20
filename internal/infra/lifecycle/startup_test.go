@@ -16,7 +16,8 @@ import (
 //     {"status":"starting"} regardless of readiness checks.
 //   - After MarkStartupComplete, /startup proxies /readyz semantics
 //     (200 when all checks pass; 503 with failed[] when any fails;
-//     503 with failed=["shutting_down"] during shutdown).
+//     503 with status="shutting_down" + failed=["shutting_down"] during
+//     shutdown — same canonical label the liveness probe emits).
 
 func TestStartup_BeforeCompleteReturns503Starting(t *testing.T) {
 	t.Parallel()
@@ -94,8 +95,8 @@ func TestStartup_ShutdownInProgressReturns503Shutdown(t *testing.T) {
 		t.Fatalf("status: got %d want 503", rr.Code)
 	}
 	body := decodeJSONStatus(t, rr.Result().Body)
-	if body["status"] != "unready" {
-		t.Fatalf("status field: got %q want \"unready\"", body["status"])
+	if body["status"] != "shutting_down" {
+		t.Fatalf("status field: got %q want \"shutting_down\"", body["status"])
 	}
 	failed := stringSlice(body["failed"])
 	if len(failed) != 1 || failed[0] != "shutting_down" {

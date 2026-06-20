@@ -128,8 +128,8 @@ func (r *registry) hooksInPhase(phase Phase) []ShutdownHook {
 }
 
 // shutdownInProgress reports whether the sequencer has begun. Used by
-// `/healthz` (returns 503) and `/readyz` (returns 503 with
-// failed=["shutting_down"]).
+// `/healthz` (returns 503 status="shutting_down") and `/readyz` (returns
+// 503 status="shutting_down" with failed=["shutting_down"]).
 func (r *registry) shutdownInProgress() bool { return r.shutdownStarted.Load() }
 
 // startupComplete reports whether MarkStartupComplete has been called.

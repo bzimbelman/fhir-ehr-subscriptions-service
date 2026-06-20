@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/lifecycle"
@@ -192,6 +193,22 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		hooks.onProbeListening(probeAddr)
 	}
 
+	// OP #338: register the probe listener's graceful shutdown in the
+	// final phase of the lifecycle sequencer so /healthz and /readyz
+	// keep serving (with status="shutting_down") for the entire drain
+	// window. Closing the probe listener in PhaseStopAccepting (the old
+	// behavior — `probeSrv.Shutdown` called eagerly from run.go below)
+	// caused the kubelet to see TCP connect-refused instead of an
+	// unready 503 during the drain, which is the wrong K8s preStop
+	// signal and broke the e2e graceful-shutdown contract.
+	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "probe.listener.shutdown",
+		Phase: lifecycle.PhaseCloseConnections,
+		Run: func(ctx context.Context) error {
+			return probeSrv.Shutdown(ctx)
+		},
+	})
+
 	mux := buildHTTPMux(lcMod, prod)
 	// Wrap the outer mux with the production tracer when observability
 	// is wired so probe endpoints (/healthz, /readyz, /startup) generate
@@ -339,21 +356,23 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Lifecycle.ShutdownGracePeriod)
 	defer cancel()
 
-	// Shut the probe listener down first so kubelet probes start
-	// failing while we drain the main listener; this matches Kubernetes
-	// preStop semantics (mark not-ready, then drain).
-	if perr := probeSrv.Shutdown(shutdownCtx); perr != nil {
-		logger.Warn("probe listener shutdown error", "err", perr.Error())
-	}
+	// OP #338: do NOT close the probe listener here. The kubelet must
+	// keep observing /readyz=503 status="shutting_down" throughout the
+	// drain — closing the listener early surfaces as connect-refused,
+	// not as an unready signal, and trips both K8s preStop semantics
+	// and the production graceful-shutdown contract. The probe
+	// listener's shutdown is now registered as a
+	// PhaseCloseConnections hook (see lcMod.RegisterShutdown above)
+	// so it fires after the main listener has drained.
 	shutdownErr := srv.Shutdown(shutdownCtx)
 	if hooks.shutdownErr != nil {
 		shutdownErr = hooks.shutdownErr()
 	}
-	// Drain the probe serve goroutine.
-	select {
-	case <-probeServeErr:
-	case <-shutdownCtx.Done():
-	}
+	// OP #338: probe goroutine drain happens AFTER lcMod.WaitForExit
+	// below — the probe listener now shuts down via the lifecycle
+	// PhaseCloseConnections hook, so its goroutine cannot exit until
+	// the sequencer reaches Phase 4. Doing the wait here would
+	// always time out the shutdownCtx for no reason.
 	if shutdownErr != nil {
 		// On grace-period exhaustion srv.Shutdown returns context.DeadlineExceeded.
 		// We log and force-close so the goroutine exits. The Close error
@@ -384,8 +403,21 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 		return errors.New("http serve goroutine did not exit within budget")
 	}
 
-	// Drain the lifecycle sequencer before returning.
+	// Drain the lifecycle sequencer before returning. PhaseCloseConnections
+	// runs the probe.listener.shutdown hook — once that completes, the
+	// probe Serve goroutine exits.
 	_ = lcMod.WaitForExit(waitCtx)
+
+	// OP #338: drain the probe serve goroutine after PhaseCloseConnections
+	// has shut its listener. Bounded so a stuck listener cannot pin the
+	// process; in practice the goroutine returns within microseconds of
+	// probeSrv.Shutdown completing.
+	select {
+	case <-probeServeErr:
+	case <-time.After(2 * time.Second):
+		_ = probeSrv.Close()
+		<-probeServeErr
+	}
 
 	logger.Info("shutdown complete")
 	return nil
