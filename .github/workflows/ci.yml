@@ -211,7 +211,7 @@ jobs:
       # with a multi-platform manifest, so this build only confirms
       # both arches compile + cache layers for the second build.
       - name: cross-platform build (linux/amd64,linux/arm64) — verify only
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -226,7 +226,7 @@ jobs:
       # smoke run steps below can `docker run` the image. Reuses the
       # GHA cache primed by the cross-platform verify above so wall-
       # clock stays low.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
