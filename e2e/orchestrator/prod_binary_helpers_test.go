@@ -193,6 +193,12 @@ type prodBinaryConfig struct {
 	// interpolates the key from disk. The caller seeds the file. Story
 	// #152 e2e exercises rotation through this seam.
 	CodecKeyMaterialFile string
+
+	// URLValidatorAllowHTTP renders url_validator.allow_http: true so a
+	// test that POSTs a /Subscription with an http://127.0.0.1 endpoint
+	// passes the SSRF guard at create-time. Default false (production
+	// posture; https-only). OP #184 / #341.
+	URLValidatorAllowHTTP bool
 }
 
 // startProdBinary builds and launches cmd/fhir-subs against the
@@ -347,6 +353,16 @@ topics:
 		}
 		authInsecureLine += fmt.Sprintf("\n  trusted_issuers:\n    - issuer: %s\n      audience: %s",
 			issuer, cfg.AuthAudience)
+	}
+
+	urlValidatorBlock := ""
+	if cfg.URLValidatorAllowHTTP {
+		// OP #184: url_validator.allow_http is decoupled from
+		// auth.allow_insecure_jwks. Tests that POST a /Subscription with
+		// an http://127.0.0.1 endpoint (because the harness rest-hook
+		// receiver is local-only) must opt into the http scheme via the
+		// dedicated url_validator block.
+		urlValidatorBlock = "\nurl_validator:\n  allow_http: true\n  allow_hosts: [\"127.0.0.1\", \"::1\"]\n"
 	}
 
 	tracingBlock := ""
