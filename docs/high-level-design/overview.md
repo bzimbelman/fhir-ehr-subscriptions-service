@@ -2,7 +2,7 @@
 
 **Purpose.** A one-page reading of the system: what it does, how it is shaped, and what the pipeline looks like end-to-end.
 
-**Reader's prerequisites.** None. This is the entry document. After reading this, go to `../architecture.md` for the canonical sequence diagram and component table, then to the per-domain HLDs in [domains/](domains/).
+**Reader's prerequisites.** None. This is the entry document. After reading this, go to `../architecture.md` for the canonical sequence diagram and component table, then to the per-domain HLDs starting with [domains/subscriptions-api.md](domains/subscriptions-api.md).
 
 ## What it is
 

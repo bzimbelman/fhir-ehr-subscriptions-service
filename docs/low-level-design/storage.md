@@ -643,7 +643,7 @@ Tests live in `storage/` alongside the production code. Database tests use a ded
 
 - **Row contracts.** Wire-level shapes for every stage-handoff table are owned by [internal-tables.md](../high-level-design/contracts/internal-tables.md). This document handles infrastructure around those rows, not the rows themselves.
 - **Stage logic.** HL7 Message Processor, Topic Matcher, Subscriptions Engine, and channel modules each own their own LLDs; storage is a passive substrate.
-- **Subscription state machine.** `Subscription.status` transitions are owned by the [Subscriptions API LLD](subscriptions-api.md) and the [delivery scheduler LLD](delivery-scheduler.md).
+- **Subscription state machine.** `Subscription.status` transitions are owned by the [Subscriptions API LLD](subscriptions-api.md) and the delivery scheduler (LLD pending; current behavior lives in [`internal/engine/scheduler`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/tree/main/internal/engine/scheduler)).
 - **Audit policy.** What counts as an auditable event is decided by the API, engine, and channels; storage just guarantees `audit_log` is `INSERT`-only at the application credential layer.
 - **Encryption key management.** The codec consumes a key reference from configuration; KMS integration, sealed-secret patterns, and HSM use are operator concerns.
 - **Backup orchestration.** Backups, snapshot scheduling, and PITR windows are operator-owned. Storage documents the recommended posture and the application properties that make backup-restore safe.

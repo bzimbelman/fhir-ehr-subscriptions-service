@@ -67,7 +67,7 @@ Every package below has its LLD home. Code reviewers reject PRs that put logic o
 | `internal/adapterspi/` | Adapter SPI base classes (the framework). | [low-level-design/adapter-spi-framework.md](low-level-design/adapter-spi-framework.md) |
 | `internal/adapters/defaults/` | The no-vendor reference adapter. | [low-level-design/adapter-spi-framework.md](low-level-design/adapter-spi-framework.md) |
 | `internal/adapters/epic/` | Epic vendor adapter — Z-segments, Interconnect, FHIR profile quirks. | (LLD pending — Epic-specific) |
-| `internal/domain/` | R5-shaped internal types — `Subscription`, `SubscriptionTopic`, `SubscriptionStatus`, etc. | [high-level-design/contracts/](high-level-design/contracts/) |
+| `internal/domain/` | R5-shaped internal types — `Subscription`, `SubscriptionTopic`, `SubscriptionStatus`, etc. | [high-level-design/contracts/internal-tables.md](high-level-design/contracts/internal-tables.md) |
 | `internal/domain/bundle/` | `subscription-notification` Bundle assembly primitives. | [high-level-design/contracts/notification-bundle.md](high-level-design/contracts/notification-bundle.md) |
 | `internal/domain/cursor/` | Per-subscription event cursors. | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
 | `internal/infra/storage/` | Postgres pool, repositories, queue-claim primitive, encryption-at-rest. | [low-level-design/storage.md](low-level-design/storage.md) |

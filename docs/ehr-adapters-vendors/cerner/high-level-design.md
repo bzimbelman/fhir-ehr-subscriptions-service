@@ -1,6 +1,6 @@
 # Oracle Health (Cerner) Adapter — High-Level Design
 
-**Summary.** This document is the vendor research and architecture brief for the `cerner` (Oracle Health Millennium) adapter that plugs into [`fhir-ehr-subscriptions-service`](../../../README.md) via the [Adapter SPI](../../high-level-design/contracts/adapter-spi.md). It maps Cerner's real, current 2026 API surface onto the four adapter sub-components — `Hl7MessageProcessor`, `FhirScanRunner`, `VendorAPIClient`, `HydrationService` — and recommends a primary CDC path plus a fallback.
+**Summary.** This document is the vendor research and architecture brief for the `cerner` (Oracle Health Millennium) adapter that plugs into [`fhir-ehr-subscriptions-service`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/README.md) via the [Adapter SPI](../../high-level-design/contracts/adapter-spi.md). It maps Cerner's real, current 2026 API surface onto the four adapter sub-components — `Hl7MessageProcessor`, `FhirScanRunner`, `VendorAPIClient`, `HydrationService` — and recommends a primary CDC path plus a fallback.
 
 ---
 
@@ -240,4 +240,4 @@ In-repo:
 - [domains/ehr-adapter.md](../../high-level-design/domains/ehr-adapter.md)
 - [contracts/adapter-spi.md](../../high-level-design/contracts/adapter-spi.md)
 - [adapter-authoring-guide.md](../../adapter-authoring-guide.md)
-- [adapters/cerner/cerner.go](../../../adapters/cerner/cerner.go) (current scaffold)
+- [adapters/cerner/cerner.go](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/cerner/cerner.go) (current scaffold)
