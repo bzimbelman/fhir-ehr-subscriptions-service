@@ -123,7 +123,7 @@ func TestLoad_UsesRealVegetaSubprocess(t *testing.T) {
 	stack, token := bootStackWithLowRateLimits(t)
 
 	res := load.Run(t, load.Spec{
-		Name:     "smoke",
+		Name:      "smoke",
 		TargetURL: stack.Binary.URL + "/readyz",
 		Method:    http.MethodGet,
 		Token:     token,

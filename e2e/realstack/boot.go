@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,6 +53,17 @@ type Options struct {
 	// EnableTracing causes the rendered config to point the binary at
 	// the OTel collector. Default: true.
 	EnableTracing bool
+
+	// SubscriptionCreateRateLimit installs a per-authenticated-client
+	// token bucket on POST /Subscription. Burst <= 0 (the default)
+	// leaves the limit disabled. Set by H3 LoadDriver scenarios that
+	// need to drive the binary into 429 territory.
+	SubscriptionCreateRateLimit RateLimit
+
+	// WSBindingTokenRateLimit installs a per-authenticated-client
+	// token bucket on the $get-ws-binding-token operation. Burst <= 0
+	// (the default) leaves the limit disabled.
+	WSBindingTokenRateLimit RateLimit
 }
 
 // Stack is the handle Boot returns. Field naming mirrors the docker
@@ -78,6 +90,13 @@ type Stack struct {
 	binaryStop func()
 	closed     bool
 	closeMu    sync.Mutex
+
+	// keycloakClientID and keycloakClientSecret are the credentials
+	// provisionKeycloak created on the realm. MintClientToken uses
+	// them with the client_credentials grant to mint real bearer
+	// tokens for load tests.
+	keycloakClientID     string
+	keycloakClientSecret string
 }
 
 // ProjectName returns the docker-compose project name the Stack is
@@ -299,19 +318,25 @@ func (s *Stack) provisionKeycloak(ctx context.Context) error {
 	}
 
 	// Create a confidential client with service accounts enabled.
+	const (
+		clientID     = "fhir-subs-test"
+		clientSecret = "fhir-subs-test-secret"
+	)
 	clientBody := map[string]any{
-		"clientId":                  "fhir-subs-test",
+		"clientId":                  clientID,
 		"enabled":                   true,
 		"protocol":                  "openid-connect",
 		"publicClient":              false,
 		"serviceAccountsEnabled":    true,
 		"directAccessGrantsEnabled": true,
 		"standardFlowEnabled":       false,
-		"secret":                    "fhir-subs-test-secret",
+		"secret":                    clientSecret,
 	}
 	if err := keycloakAdminPOST(ctx, base+"/admin/realms/"+realm+"/clients", adminToken, clientBody); err != nil && !isConflict(err) {
 		return fmt.Errorf("create client: %w", err)
 	}
+	s.keycloakClientID = clientID
+	s.keycloakClientSecret = clientSecret
 
 	s.Keycloak.Realm = realm
 	s.Keycloak.IssuerURL = base + "/realms/" + realm
@@ -376,6 +401,8 @@ tracing:
 	}
 	keyB64 := base64.StdEncoding.EncodeToString(codecKey)
 
+	rateLimitBlock := renderRateLimitBlock(opts.SubscriptionCreateRateLimit, opts.WSBindingTokenRateLimit)
+
 	cfgYAML := fmt.Sprintf(`
 deployment:
   facility_id: realstack
@@ -402,9 +429,9 @@ auth:
   audience: fhir-subs-test
   issuer: %s
   jwks_url: %s
-  allow_dev_bypass: true
+  allow_dev_bypass: true%s
 %s%s
-`, httpAddr, s.Postgres.URL, keyB64, s.Keycloak.IssuerURL, s.Keycloak.JWKSURL, tracingBlock, mllpBlock)
+`, httpAddr, s.Postgres.URL, keyB64, s.Keycloak.IssuerURL, s.Keycloak.JWKSURL, rateLimitBlock, tracingBlock, mllpBlock)
 
 	configFile := filepath.Join(binDir, "config.yaml")
 	if err := os.WriteFile(configFile, []byte(cfgYAML), 0o600); err != nil {
@@ -586,4 +613,67 @@ func (e conflictError) Error() string {
 func isConflict(err error) bool {
 	var ce conflictError
 	return errors.As(err, &ce)
+}
+
+// renderRateLimitBlock emits the auth.subscription_create_rate_limit
+// and auth.ws_binding_token_rate_limit YAML fragments the production
+// binary's config.go reads. An all-zero RateLimit emits nothing for
+// that surface — the binary then leaves the limit nil-disabled,
+// matching the operator-facing default.
+func renderRateLimitBlock(create, wsToken RateLimit) string {
+	var b strings.Builder
+	if create.Burst > 0 {
+		fmt.Fprintf(&b, "\n  subscription_create_rate_limit:\n    burst: %d\n    refill_per_second: %g\n    max_keys: %d",
+			create.Burst, create.RefillPerSecond, create.MaxKeys)
+	}
+	if wsToken.Burst > 0 {
+		fmt.Fprintf(&b, "\n  ws_binding_token_rate_limit:\n    burst: %d\n    refill_per_second: %g\n    max_keys: %d",
+			wsToken.Burst, wsToken.RefillPerSecond, wsToken.MaxKeys)
+	}
+	return b.String()
+}
+
+// MintClientToken obtains a real bearer token from the Keycloak
+// container using the client_credentials grant against the realm and
+// confidential client provisionKeycloak created. Used by H3 LoadDriver
+// scenarios that need to drive the binary's authenticated endpoints
+// under sustained RPS.
+func (s *Stack) MintClientToken(ctx context.Context) (string, error) {
+	if s.Keycloak.TokenURL == "" {
+		return "", fmt.Errorf("realstack: Keycloak.TokenURL is empty; was the stack booted?")
+	}
+	if s.keycloakClientID == "" || s.keycloakClientSecret == "" {
+		return "", fmt.Errorf("realstack: Keycloak client credentials missing; was provisionKeycloak run?")
+	}
+
+	form := url.Values{
+		"grant_type":    []string{"client_credentials"},
+		"client_id":     []string{s.keycloakClientID},
+		"client_secret": []string{s.keycloakClientSecret},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.Keycloak.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("keycloak token: %d %s", resp.StatusCode, string(body))
+	}
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.AccessToken == "" {
+		return "", fmt.Errorf("keycloak token: empty access_token")
+	}
+	return out.AccessToken, nil
 }
