@@ -1,4 +1,10 @@
 {{- if .Values.networkPolicy.enabled -}}
+{{- if eq (len .Values.networkPolicy.ingress.api.from) 0 -}}
+{{- fail "networkPolicy.ingress.api.from MUST list at least one peer (podSelector / namespaceSelector). An empty list allows ingress from any pod in the namespace and silently undoes the NetworkPolicy hardening promise (OP #122). See deploy/helm/README.md for an example." -}}
+{{- end -}}
+{{- if eq (len .Values.networkPolicy.ingress.mllp.from) 0 -}}
+{{- fail "networkPolicy.ingress.mllp.from MUST list at least one peer. An empty list allows MLLP ingress from any pod in the namespace (OP #122)." -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -33,8 +39,10 @@ spec:
     - ports:
         - port: probes
           protocol: TCP
+        {{- if .Values.metrics.enabled }}
         - port: metrics
           protocol: TCP
+        {{- end }}
       {{- with .Values.networkPolicy.ingress.probes.from }}
       from:
         {{- toYaml . | nindent 8 }}

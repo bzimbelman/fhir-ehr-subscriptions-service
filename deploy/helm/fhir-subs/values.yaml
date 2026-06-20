@@ -6,7 +6,9 @@
 replicaCount: 2
 
 image:
-  repository: ghcr.io/bzimbelman/fhir-ehr-subscriptions-service
+  # Operator MUST override. The placeholder string below is intentionally
+  # invalid; helm template fails until image.repository is set.
+  repository: <your-org>/fhir-ehr-subscriptions-service
   pullPolicy: IfNotPresent
   # Empty string means use Chart.appVersion.
   tag: ""
@@ -52,6 +54,14 @@ service:
   mllpPort: 2575
   metricsPort: 9090
   annotations: {}
+
+# Prometheus /metrics listener. Until the binary opens this listener
+# (cross-ref OP #121 Go-side wiring), operators SHOULD leave this off in
+# production; the Service/ServiceMonitor/NetworkPolicy templates all
+# condition on metrics.enabled so a "ServiceMonitor scrapes nothing"
+# silent-failure mode is impossible.
+metrics:
+  enabled: false
 
 # Ingress is intentionally optional. The API talks TLS directly, so most
 # clusters want a Gateway / Ingress doing TLS passthrough rather than
@@ -113,10 +123,22 @@ networkPolicy:
   enabled: true
   ingress:
     api:
-      # Empty `from` allows ingress to the API port from any pod in the same
-      # namespace. Override with explicit selectors in production.
+      # Operator MUST supply at least one peer (podSelector or
+      # namespaceSelector). An empty list allows ALL pods in the
+      # namespace, which silently undoes the NetworkPolicy hardening
+      # promise (OP #122). Helm template fails fast when this is empty.
+      #
+      # Example:
+      #   from:
+      #     - namespaceSelector:
+      #         matchLabels:
+      #           kubernetes.io/metadata.name: subscriber-clients
+      #       podSelector:
+      #         matchLabels:
+      #           app.kubernetes.io/name: subscriber-gateway
       from: []
     mllp:
+      # Same rule as `api.from` above: operator MUST supply explicit peers.
       from: []
     probes:
       # kubelet-driven probes come from the node. Empty `from` allows the
@@ -237,11 +259,16 @@ tls:
   existingSecret: ""
   mountPath: /etc/fhir-subs/tls
 
-# Migration init container. Runs the same image with --check-config so the
+# Config-check init container. Runs the same image with --check-config so the
 # pod fails fast on bad config before the main container attempts startup.
 # Schema migrations themselves run in the main container guarded by a
 # Postgres advisory lock (B-33), which is multi-replica safe.
-migrationInit:
+#
+# Renamed from `migrationInit` (OP #125) because the container does NOT
+# run migrations. A separate `migrationInit` block will be added once
+# the binary grows a `migrate up` subcommand (cross-ref make-migrate-up
+# story).
+configCheck:
   enabled: true
   resources:
     limits:
