@@ -12,7 +12,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +290,10 @@ func minimalProductionConfig(dbURL string) *Config {
 				{Version: 1, Material: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
 			},
 		},
+		// Dev bypass keeps these wiring tests off the trusted-issuer
+		// JWKS path; they only assert wire-up of Deps fields, not auth
+		// flow. Production deployments leave AllowDevBypass false.
+		Auth: AuthConfig{AllowDevBypass: true},
 	}
 }
 
@@ -324,27 +327,26 @@ func startTestRuntime(t *testing.T, mutate func(*Config)) *productionRuntime {
 }
 
 // TestProductionRuntime_BaseURL_RespectsInsecure (story #179) asserts
-// that when server.http.insecure=true the CapabilityStatement.url
-// scheme is http (not https). FAILS today: wiring.go hardcodes
-// "https://" + cfg.Server.HTTP.Bind regardless of insecure.
+// that when server.http.insecure=true the derived BaseURL/WSBaseURL
+// schemes are http/ws (not https/wss). FAILS today: wiring.go
+// hardcodes "https://" + cfg.Server.HTTP.Bind regardless of insecure.
 func TestProductionRuntime_BaseURL_RespectsInsecure(t *testing.T) {
 	rt := startTestRuntime(t, func(c *Config) {
 		c.Server.HTTP.Insecure = true
 		// Set bind to a sentinel so we can identify it in the doc.
 		c.Server.HTTP.Bind = "127.0.0.1:18443"
 	})
-	doc := metadataDoc(t, rt)
-	url, _ := doc["url"].(string)
-	implURL := ""
-	if impl, ok := doc["implementation"].(map[string]any); ok {
-		implURL, _ = impl["url"].(string)
+	if got := rt.deps.BaseURL; !strings.HasPrefix(got, "http://") {
+		t.Errorf("Deps.BaseURL = %q, want http:// prefix when insecure=true (story #179)", got)
 	}
-	combined := url + " " + implURL
-	if strings.Contains(combined, "https://") {
-		t.Fatalf("CapabilityStatement url/implementation contains https:// despite insecure=true; got url=%q implementation.url=%q (story #179)", url, implURL)
+	if got := rt.deps.BaseURL; strings.HasPrefix(got, "https://") {
+		t.Errorf("Deps.BaseURL = %q, must not be https:// when insecure=true (story #179)", got)
 	}
-	if !strings.Contains(combined, "http://") {
-		t.Fatalf("CapabilityStatement url/implementation missing http://; got url=%q implementation.url=%q (story #179)", url, implURL)
+	if got := rt.deps.WSBaseURL; !strings.HasPrefix(got, "ws://") {
+		t.Errorf("Deps.WSBaseURL = %q, want ws:// prefix when insecure=true (story #179)", got)
+	}
+	if got := rt.deps.WSBaseURL; strings.HasPrefix(got, "wss://") {
+		t.Errorf("Deps.WSBaseURL = %q, must not be wss:// when insecure=true (story #179)", got)
 	}
 }
 
@@ -370,17 +372,26 @@ func TestProductionRuntime_BaseURL_RespectsConfiguredOverride(t *testing.T) {
 		}
 		wf.SetString("wss://public.example.invalid/ws")
 	})
+	if got := rt.deps.BaseURL; !strings.Contains(got, "public.example.invalid") {
+		t.Errorf("Deps.BaseURL = %q, want host public.example.invalid (story #179)", got)
+	}
+	if got := rt.deps.WSBaseURL; !strings.Contains(got, "public.example.invalid") {
+		t.Errorf("Deps.WSBaseURL = %q, want host public.example.invalid (story #179)", got)
+	}
+	// CapabilityStatement reflects the same value via implementation.url
+	// (the FHIR conformance probes consume it).
 	doc := metadataDoc(t, rt)
-	url, _ := doc["url"].(string)
-	if !strings.Contains(url, "public.example.invalid") {
-		t.Fatalf("CapabilityStatement.url = %q, want host public.example.invalid (story #179: api.base_url override must win)", url)
+	impl, _ := doc["implementation"].(map[string]any)
+	implURL, _ := impl["url"].(string)
+	if !strings.Contains(implURL, "public.example.invalid") {
+		t.Errorf("CapabilityStatement.implementation.url = %q, want host public.example.invalid (story #179)", implURL)
 	}
 }
 
 // TestProductionRuntime_FHIRVersion_FromConfig (story #178) asserts
-// the configured fhir_version is rendered into the CapabilityStatement.
-// FAILS today: cfg has no API.FHIRVersion field; wiring.go does not
-// pass it through.
+// the configured fhir_version is rendered into the CapabilityStatement
+// AND threaded onto handlers.Deps. FAILS today: cfg has no
+// API.FHIRVersion field; wiring.go does not pass it through.
 func TestProductionRuntime_FHIRVersion_FromConfig(t *testing.T) {
 	rt := startTestRuntime(t, func(c *Config) {
 		v := reflect.ValueOf(c).Elem()
@@ -390,6 +401,9 @@ func TestProductionRuntime_FHIRVersion_FromConfig(t *testing.T) {
 		}
 		f.SetString("4.0.1")
 	})
+	if got := rt.deps.FHIRVersion; got != "4.0.1" {
+		t.Errorf("Deps.FHIRVersion = %q, want 4.0.1 (story #178)", got)
+	}
 	doc := metadataDoc(t, rt)
 	got, _ := doc["fhirVersion"].(string)
 	if got != "4.0.1" {
@@ -398,9 +412,10 @@ func TestProductionRuntime_FHIRVersion_FromConfig(t *testing.T) {
 }
 
 // TestProductionRuntime_JWKSURL_FromConfig (story #178) asserts the
-// configured api.jwks_url is rendered into the SMART security
-// extension. The handler-side rendering already exists; the wiring
-// must thread the value into Deps.JWKSURL (currently never set).
+// configured api.jwks_url is threaded onto Deps.JWKSURL and rendered
+// into the SMART security extension. The handler-side rendering
+// already exists; the wiring must thread the value into Deps.JWKSURL
+// (currently never set).
 func TestProductionRuntime_JWKSURL_FromConfig(t *testing.T) {
 	const want = "https://api.example.invalid/.well-known/jwks.json"
 	rt := startTestRuntime(t, func(c *Config) {
@@ -411,6 +426,9 @@ func TestProductionRuntime_JWKSURL_FromConfig(t *testing.T) {
 		}
 		f.SetString(want)
 	})
+	if got := rt.deps.JWKSURL; got != want {
+		t.Errorf("Deps.JWKSURL = %q, want %q (story #178)", got, want)
+	}
 	doc := metadataDoc(t, rt)
 	if !strings.Contains(rec(t, doc), want) {
 		t.Fatalf("CapabilityStatement does not contain configured jwks_url %q; doc=%s (story #178)", want, rec(t, doc))
@@ -461,76 +479,21 @@ func TestProductionRuntime_WellKnownJWKSMounted(t *testing.T) {
 
 // TestProductionRuntime_DepsLoggerWired (story #177) asserts that
 // handlers.Deps.Logger is non-nil after the production wiring runs.
-// Reflective probe via the registered chi handler to avoid leaking the
-// internal Deps; we check by exercising a path that emits a log on
-// a known error condition is overkill — instead this test goes through
-// reflection on the productionRuntime to find the handlers.Deps struct
-// stored on the rest-hook activator (a known consumer of the same
-// logger pattern). FAILS today: wiring.go never assigns deps.Logger.
-//
-// Implementation note: rather than expose deps publicly, we call a
-// real handler that documents its Logger usage. The
-// /Subscription/$status route emits a slog message on a non-existent
-// id when Logger is configured. We only care that wiring sets it; if
-// the logger field is nil today, Phase B must assign it.
+// Without Logger the activate-side error path in handlers silently
+// drops failures the API can't surface to the client (router.go
+// comment on Deps.Logger). FAILS today: wiring.go never assigns
+// deps.Logger.
 func TestProductionRuntime_DepsLoggerWired(t *testing.T) {
 	rt := startTestRuntime(t, nil)
-
-	// We probe via reflection: walk fields of *productionRuntime
-	// looking for any handlers.Deps assigned with a non-nil Logger.
-	// If wiring keeps deps as a function-local, the test instead
-	// inspects a handler that surfaces logger presence. We chose the
-	// reflection-on-runtime path because the deps struct is captured
-	// in the closures the chi router holds.
-	//
-	// Phase B implementation: simplest path is to add a public
-	// `(*productionRuntime).Logger() *slog.Logger` and assert it
-	// matches the logger threaded into Deps. For now we assert via a
-	// behavioral side effect: a Subscription create with a malformed
-	// JSON body returns a 400 with a diagnostics field, which only
-	// happens when the schema validator can produce a redacted
-	// message — a path that today logs at warn level when Logger is
-	// non-nil. The test fails when the path is unreachable (route
-	// missing or body parser regression).
-	//
-	// Until Phase B exposes a probe, this test asserts at least the
-	// behavioral marker: POST /Subscription with no Authorization
-	// returns 401 (auth installed) AND the response body is
-	// redacted. The auth-installed assertion proves wiring ran; the
-	// redacted body proves AuditMaxBytes is honored. Phase B will
-	// then strengthen this to assert deps.Logger != nil directly.
-	req := httptest.NewRequest(http.MethodPost, "/Subscription", strings.NewReader(`{}`))
-	req.Header.Set("Content-Type", "application/fhir+json")
-	rec := httptest.NewRecorder()
-	rt.router.ServeHTTP(rec, req)
-	if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
-		t.Fatalf("POST /Subscription unreachable on production router: %d (story #177: Deps.Logger wiring presupposes a wired router)", rec.Code)
-	}
-
-	// The structural probe: reflect on rt and walk every field. Any
-	// chi router that has captured a deps.Logger closure ought to
-	// expose it; if the wiring never assigned Logger this is a NOP.
-	// We at minimum verify rt.logger is non-nil (the production
-	// logger from runWithHooks).
-	v := reflect.ValueOf(rt).Elem()
-	lf := v.FieldByName("logger")
-	if !lf.IsValid() {
-		t.Fatalf("productionRuntime.logger field missing — story #177 needs a logger to thread")
-	}
-	if lf.IsNil() {
-		t.Fatalf("productionRuntime.logger is nil — Phase B must set Deps.Logger from this logger (story #177)")
+	if rt.deps.Logger == nil {
+		t.Fatalf("Deps.Logger is nil — Phase B must thread the production logger through to handlers.Deps (story #177)")
 	}
 }
 
 // TestProductionRuntime_WSBindingTTL_FromConfig (story #180) asserts
 // the operator-configured ws_binding_ttl reaches handlers.Deps.
 // Today wiring.go hardcodes 5 * time.Minute. After Phase B, the field
-// flows from cfg.API.WSBindingTTL.
-//
-// We probe behaviorally: the $get-ws-binding-token operation embeds
-// the TTL into the issued token's exp claim. Decoding the token would
-// be heavyweight; instead we assert the expires_in numeric in the
-// JSON response equals the configured TTL.
+// flows from cfg.API.WSBindingTTL onto rt.deps.WSBindingTTL.
 func TestProductionRuntime_WSBindingTTL_FromConfig(t *testing.T) {
 	const want = 7 * time.Minute
 	rt := startTestRuntime(t, func(c *Config) {
@@ -541,23 +504,8 @@ func TestProductionRuntime_WSBindingTTL_FromConfig(t *testing.T) {
 		}
 		f.Set(reflect.ValueOf(want))
 	})
-
-	// $get-ws-binding-token requires auth; without bearer we get 401
-	// but the configured TTL is still bound on the deps (the binding
-	// value is resolved during route mount, not per request). We
-	// therefore probe via a CapabilityStatement extension that
-	// renders the TTL — story #180 Phase B must add it. If no such
-	// extension exists, fall back to a structural reflection check
-	// equivalent to the Logger test above.
-	doc := metadataDoc(t, rt)
-	body := rec(t, doc)
-	if !strings.Contains(body, "ws_binding_ttl") &&
-		!strings.Contains(body, strconv.Itoa(int(want.Seconds()))) {
-		// Phase B strategy: render the configured TTL into a
-		// CapabilityStatement.rest[].extension or implementation
-		// extension so operators can probe it without a token. The
-		// test fails until that hook is added.
-		t.Fatalf("CapabilityStatement does not surface configured ws_binding_ttl=%s; body=%s (story #180: TTL must be config-driven, not hardcoded 5m)", want, body)
+	if got := rt.deps.WSBindingTTL; got != want {
+		t.Fatalf("Deps.WSBindingTTL = %s, want %s (story #180: hardcoded 5m must come from cfg.API.WSBindingTTL)", got, want)
 	}
 }
 
@@ -642,26 +590,20 @@ func intOrZero(v reflect.Value) int {
 }
 
 // TestProductionRuntime_DepsMetricsWired (story #176) asserts the live
-// metrics recorder is non-nil. Today wiring.go already assigns
-// `Metrics: apiMetrics`, but story #176 requires the assignment to
-// remain in place AND for the same recorder to surface a counter on
-// /metrics for an API call. Without the wiring, /metrics returns no
-// fhir_subs_subscription_create_total samples after a POST; with it,
-// the counter shows up.
-//
-// FAILS today: prometheus.Registry on the production runtime exposes
-// metrics, but the api-metrics counter is not exported with the
-// expected name unless apimetrics.New is called against the live
-// registry returned by obsMod.Registry(). Story #176 closes the
-// regression by asserting the wire-up.
+// metrics recorder is non-nil on Deps AND that the same registry
+// surfaces metrics on /metrics. Without the wiring the recorder is
+// nil and apimetrics drops every observation.
 func TestProductionRuntime_DepsMetricsWired(t *testing.T) {
 	rt := startTestRuntime(t, nil)
+
+	if rt.deps.Metrics == nil {
+		t.Fatalf("Deps.Metrics is nil — Phase B must keep apimetrics.New(obsMod.Registry()) wired into handlers.Deps (story #176)")
+	}
 
 	// /metrics is a Prometheus text-format endpoint mounted on the
 	// public chi router (story #94 AC #3). It MUST exist and serve a
 	// 200; story #176 then requires the api-metrics counter family
-	// names to be present even before any traffic is generated
-	// (prometheus exposes registered families with zero samples).
+	// names to be present even before any traffic is generated.
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 	rt.router.ServeHTTP(rec, req)
@@ -669,9 +611,6 @@ func TestProductionRuntime_DepsMetricsWired(t *testing.T) {
 		t.Fatalf("/metrics: got %d, want 200 (story #176 needs the metrics surface live)", rec.Code)
 	}
 	body := rec.Body.String()
-	// fhir_subs_* family is what apimetrics.New registers; the exact
-	// names live in internal/api/metrics. We assert the prefix is
-	// present so the test does not over-couple to one counter.
 	if !strings.Contains(body, "fhir_subs_") {
 		t.Fatalf("/metrics body does not contain fhir_subs_* family — Deps.Metrics not wired against obsMod.Registry() (story #176)\nbody=%s", body)
 	}
