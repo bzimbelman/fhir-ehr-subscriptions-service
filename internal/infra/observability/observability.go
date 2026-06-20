@@ -197,6 +197,107 @@ func (a *matcherEmitterAdapter) RowAttempt(outcome string) {
 	a.inv.MatcherRowAttemptsTotal.Inc(prometheus.Labels{"outcome": outcome})
 }
 
+// LifecycleMetricsAdapter forwards lifecycle.MetricsEmitter calls into
+// the observability inventory so the production binary's lifecycle
+// module surfaces phase-duration histograms / shutdown counters /
+// probe-request counters via /metrics. OP #341 — pre-fix the lifecycle
+// module wrote into a no-op emitter because lifecycle.Start ran before
+// observability.Start was up. The host now constructs this adapter
+// once observability is wired and calls lcMod.SetMetrics(adapter) so
+// every subsequent emit lands on the registered prom collectors.
+type LifecycleMetricsAdapter struct {
+	inv *metrics.Inventory
+}
+
+// NewLifecycleMetricsAdapter returns an adapter bound to mod's
+// inventory. Returns nil when mod or its inventory is nil; the caller
+// guards against passing nil to lcMod.SetMetrics (a nil emitter would
+// panic on Inc / Observe), so a nil-or-real return is the contract.
+func NewLifecycleMetricsAdapter(mod *ObservabilityModule) *LifecycleMetricsAdapter {
+	if mod == nil || mod.inventory == nil {
+		return nil
+	}
+	return &LifecycleMetricsAdapter{inv: mod.inventory}
+}
+
+// Inc forwards a counter bump. Unknown / unlabeled metric names are
+// dropped silently — operators see "metric not registered" via missing
+// /metrics rows, NOT via a process panic.
+func (a *LifecycleMetricsAdapter) Inc(name string, labels map[string]string) {
+	if a == nil || a.inv == nil {
+		return
+	}
+	switch name {
+	case "fhir_subs_lifecycle_shutdown_initiated_total":
+		a.inv.LifecycleShutdownInitiatedTotal.Inc(toPromLabels(labels))
+	case "fhir_subs_lifecycle_shutdown_forced_total":
+		a.inv.LifecycleShutdownForcedTotal.Inc(toPromLabels(labels))
+	case "fhir_subs_lifecycle_shutdown_hook_outcome_total":
+		a.inv.LifecycleShutdownHookOutcome.Inc(toPromLabels(labels))
+	case "fhir_subs_lifecycle_probe_requests_total":
+		a.inv.LifecycleProbeRequestsTotal.Inc(toPromLabels(labels))
+	case "fhir_subs_lifecycle_readiness_check_failures_total":
+		a.inv.LifecycleReadinessFailuresTotal.Inc(toPromLabels(labels))
+	}
+}
+
+// Add forwards a counter add. Same dispatch shape as Inc.
+func (a *LifecycleMetricsAdapter) Add(name string, delta float64, labels map[string]string) {
+	if a == nil || a.inv == nil {
+		return
+	}
+	switch name {
+	case "fhir_subs_lifecycle_shutdown_initiated_total":
+		a.inv.LifecycleShutdownInitiatedTotal.Add(delta, toPromLabels(labels))
+	case "fhir_subs_lifecycle_shutdown_forced_total":
+		a.inv.LifecycleShutdownForcedTotal.Add(delta, toPromLabels(labels))
+	case "fhir_subs_lifecycle_shutdown_hook_outcome_total":
+		a.inv.LifecycleShutdownHookOutcome.Add(delta, toPromLabels(labels))
+	case "fhir_subs_lifecycle_probe_requests_total":
+		a.inv.LifecycleProbeRequestsTotal.Add(delta, toPromLabels(labels))
+	case "fhir_subs_lifecycle_readiness_check_failures_total":
+		a.inv.LifecycleReadinessFailuresTotal.Add(delta, toPromLabels(labels))
+	}
+}
+
+// Observe forwards a histogram observation. Only the phase-duration
+// histogram is registered today — extend the switch when the lifecycle
+// package ships another histogram.
+func (a *LifecycleMetricsAdapter) Observe(name string, value float64, labels map[string]string) {
+	if a == nil || a.inv == nil {
+		return
+	}
+	if name == "fhir_subs_lifecycle_phase_duration_seconds" {
+		a.inv.LifecyclePhaseDurationSeconds.Observe(value, toPromLabels(labels))
+	}
+}
+
+// Set forwards a gauge value. Only the startup-complete gauge is
+// registered today.
+func (a *LifecycleMetricsAdapter) Set(name string, value float64, labels map[string]string) {
+	if a == nil || a.inv == nil {
+		return
+	}
+	if name == "fhir_subs_lifecycle_startup_complete" {
+		a.inv.LifecycleStartupComplete.Set(value, toPromLabels(labels))
+	}
+}
+
+// toPromLabels converts the lifecycle module's plain-map label form
+// into the prometheus.Labels alias that the Inventory call sites
+// expect. nil maps return an empty Labels map so the call site doesn't
+// special-case nil.
+func toPromLabels(in map[string]string) prometheus.Labels {
+	if in == nil {
+		return prometheus.Labels{}
+	}
+	out := make(prometheus.Labels, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // SubmatcherMetricsAdapter forwards submatcher.Metrics calls into the
 // observability inventory so the host can wire one adapter per worker
 // (story #61). The adapter is exported so cmd/fhir-subs can pass it via

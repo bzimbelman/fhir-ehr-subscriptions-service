@@ -204,6 +204,25 @@ type shutdownRequest struct {
 	ctx    context.Context
 }
 
+// SetMetrics swaps the metrics emitter the lifecycle module uses for
+// probe-handler counters AND shutdown-sequencer histograms. The default
+// at Start is a swappableEmitter wrapping nopMetrics so probe handlers
+// and the sequencer have a stable, no-op-safe seam at boot. Once the
+// host has constructed the production metrics emitter (typically after
+// observability.Start has built the prom registry), it MUST call
+// SetMetrics so /metrics surfaces lifecycle telemetry — including the
+// `fhir_subs_lifecycle_phase_duration_seconds` histogram operators
+// inspect during shutdown. nil falls back to nopMetrics. Safe to call
+// before any shutdown is initiated. OP #341.
+func (m *LifecycleModule) SetMetrics(em MetricsEmitter) {
+	if m == nil {
+		return
+	}
+	if sw, ok := m.lctx.Metrics.(*swappableEmitter); ok {
+		sw.SwapEmitter(em)
+	}
+}
+
 // SetReloadHandler registers (or replaces) the SIGHUP-driven reload
 // handler. nil clears the handler. Safe under concurrent calls.
 // Established for B-35.

@@ -107,11 +107,18 @@ func TestE2E_ProdBinary_ShutdownPhasesAllRunRegisteredHooks(t *testing.T) {
 	if !bin.Stderr().ContainsLine("lifecycle shutdown complete") {
 		t.Errorf("never observed `lifecycle shutdown complete` log; sequencer did not finish")
 	}
-	if !bin.Stderr().ContainsLine("kind=graceful") {
+	// OP #341: production runs JSON logs (`"kind":"graceful"`); some
+	// dev / e2e variants render text (`kind=graceful`). Match either
+	// shape so a log-format flip in the harness does not silently break
+	// this assertion.
+	graceful := bin.Stderr().ContainsLine("kind=graceful") ||
+		bin.Stderr().ContainsLine(`"kind":"graceful"`)
+	forced := bin.Stderr().ContainsLine("kind=forced") ||
+		bin.Stderr().ContainsLine(`"kind":"forced"`)
+	if !graceful {
 		// A forced exit indicates a hook timed out — typically because a
 		// phase had no registered hook but the sequencer expected work.
-		// Look for the kind=forced/forced line as the negative case.
-		if bin.Stderr().ContainsLine("kind=forced") {
+		if forced {
 			t.Errorf("shutdown completed kind=forced; some hook timed out (phase wiring incomplete)")
 		} else {
 			t.Errorf("shutdown completed but kind=graceful not observed; check log lines")

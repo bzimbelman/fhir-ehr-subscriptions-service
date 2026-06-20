@@ -58,18 +58,34 @@ func (h *prodBinaryHandle) ProbeURL() string { return "http://" + h.probeAddr }
 // listener was configured).
 func (h *prodBinaryHandle) MLLPAddr() string { return h.mllpAddr }
 
-// Stop stops the running binary by canceling its parent context (the
-// signal handler in main.go translates that to a graceful shutdown).
-// Returns the binary's exit code.
+// Stop stops the running binary by sending SIGINT (so main.go's
+// signal handler runs the graceful lifecycle sequencer) and waiting
+// for the process to exit. Returns the binary's exit code.
+//
+// OP #341: previously this called h.cancel() to drive shutdown, but
+// exec.CommandContext sends SIGKILL when the parent context is
+// canceled — that interrupts the lifecycle sequencer mid-phase, so the
+// "lifecycle shutdown complete" log line and any in-flight phase
+// duration observations are lost. Sending SIGINT instead lets the
+// signal dispatcher complete every phase under the grace budget. We
+// only fall back to h.cancel() (SIGKILL) when the binary fails to
+// exit within (gracePeriod + 5s) — that path is the safety net for a
+// stuck shutdown.
 func (h *prodBinaryHandle) Stop(t *testing.T, gracePeriod time.Duration) int {
 	t.Helper()
-	if h.cancel != nil {
-		h.cancel()
+	// If the process has already been signaled (e.g. test called
+	// SignalTerm), Signal will return "process already finished" once
+	// the binary has exited — that's fine. Best-effort send.
+	if h.cmd != nil && h.cmd.Process != nil {
+		_ = h.cmd.Process.Signal(os.Interrupt)
 	}
 	done := make(chan error, 1)
 	go func() { done <- h.cmd.Wait() }()
 	select {
 	case err := <-done:
+		if h.cancel != nil {
+			h.cancel()
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode()
 		}
@@ -79,6 +95,12 @@ func (h *prodBinaryHandle) Stop(t *testing.T, gracePeriod time.Duration) int {
 		}
 		return 0
 	case <-time.After(gracePeriod + 5*time.Second):
+		// Graceful budget exhausted — escalate to SIGKILL via context
+		// cancellation, then wait so cmd.Wait returns and the runtime
+		// reaps the process.
+		if h.cancel != nil {
+			h.cancel()
+		}
 		_ = h.cmd.Process.Kill()
 		<-done
 		return -2

@@ -298,6 +298,17 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		return nil, fmt.Errorf("observability: %w", err)
 	}
 	rt.obsModule = obsMod
+	// OP #341 — bridge the lifecycle module's metric emits onto the
+	// production prom registry. Pre-fix, lifecycle.Start ran before
+	// observability.Start and consequently emitted into a no-op
+	// emitter; the phase-duration histogram never appeared in /metrics.
+	// SetMetrics swaps the swappableEmitter the lifecycle module is
+	// already configured with so probe-handler counters and the
+	// shutdown sequencer's phase histogram both land on the registered
+	// prom collectors.
+	if lcAdapter := observability.NewLifecycleMetricsAdapter(obsMod); lcAdapter != nil {
+		lcMod.SetMetrics(lcAdapter)
+	}
 	// Build the API metrics set once the registry exists; this is the
 	// MetricsRecorder shape the handlers consume (story #94 AC #4).
 	apiMetrics, err := apimetrics.New(obsMod.Registry())

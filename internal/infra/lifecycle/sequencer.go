@@ -99,10 +99,15 @@ func applyConfigDefaults(cfg LifecycleConfig) LifecycleConfig {
 }
 
 // applyContextDefaults fills in nop fallbacks for nil dependencies so the
-// module is nil-safe on the hot path.
+// module is nil-safe on the hot path. Metrics is wrapped in a
+// swappableEmitter so the host can supply the real emitter AFTER
+// lifecycle.Start (production wiring constructs observability — and
+// thus the prom registry — after lifecycle is up). OP #341.
 func applyContextDefaults(lctx LifecycleContext) LifecycleContext {
-	if lctx.Metrics == nil {
-		lctx.Metrics = nopMetrics{}
+	// Always wrap in swappableEmitter so SetMetrics has a stable seam
+	// the probe handlers and sequencer share.
+	if _, alreadyWrapped := lctx.Metrics.(*swappableEmitter); !alreadyWrapped {
+		lctx.Metrics = newSwappableEmitter(lctx.Metrics)
 	}
 	if lctx.Clock == nil {
 		lctx.Clock = time.Now
