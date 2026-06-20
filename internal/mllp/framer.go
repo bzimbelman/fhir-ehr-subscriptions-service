@@ -3,12 +3,22 @@
 
 package mllp
 
+import "errors"
+
 // MLLP framing constants per the HL7 MLLP transport specification.
 const (
 	frameStart = 0x0B
 	frameEnd1  = 0x1C
 	frameEnd2  = 0x0D
 )
+
+// ErrPendingExceeded is returned by Framer.Append when the proposed bytes
+// would push the framer's pending buffer past 2*maxBody. The connection
+// loop treats it identically to a MalformedEvent{ReasonOversizedMessage}:
+// drop the connection. OP #227: the cap is enforced eagerly so a peer
+// streaming junk faster than Next() can drain it cannot cross the cap by
+// up to one ReadBufBytes between Next() calls.
+var ErrPendingExceeded = errors.New("mllp: framer pending buffer exceeded cap")
 
 // MalformedReason categorizes why the framer rejected a stream of bytes.
 type MalformedReason string
@@ -114,16 +124,29 @@ func NewFramer(maxBody int) *Framer {
 
 // Append feeds raw bytes from the wire into the framer. The framer copies
 // only what it needs, so callers may reuse the input slice immediately.
-func (f *Framer) Append(p []byte) {
+//
+// OP #227: Append rejects up front if accepting `p` would push pending
+// past 2*maxBody, returning ErrPendingExceeded. Pre-fix, the cap was
+// consulted only at the top of Next, which let pending grow to
+// 2*maxBody + ReadBufBytes (default 64 KiB) before the connection loop
+// noticed. Eager rejection keeps the documented cap honest.
+func (f *Framer) Append(p []byte) error {
 	if len(p) == 0 {
-		return
+		return nil
+	}
+	if f.maxBody > 0 && len(f.pending)+len(p) > 2*f.maxBody {
+		return ErrPendingExceeded
 	}
 	f.pending = append(f.pending, p...)
+	return nil
 }
 
 // pendingExceeded reports whether pending has grown past 2× maxBody;
 // callers (Next) treat that as a slowloris signal and emit Malformed
-// (S-9.4). A non-positive maxBody disables the cap.
+// (S-9.4). A non-positive maxBody disables the cap. Append also enforces
+// the same cap eagerly (OP #227); pendingExceeded remains as a
+// belt-and-braces check on Next so any pre-fix code path that grew
+// pending past the cap is still surfaced.
 func (f *Framer) pendingExceeded() bool {
 	return f.maxBody > 0 && len(f.pending) > 2*f.maxBody
 }

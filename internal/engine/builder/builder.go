@@ -36,6 +36,7 @@ package builder
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -45,6 +46,14 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
+
+// ErrPermanent is the sentinel a Build error wraps when the failure is
+// deterministic — i.e. the same job will fail again on every retry. The
+// scheduler classifies via errors.Is(err, ErrPermanent) so it does not
+// have to inspect err.Error() (OP #222). String matching is brittle: a
+// log-message wording change silently broke classification before this
+// sentinel landed.
+var ErrPermanent = errors.New("builder: permanent error")
 
 // Config tunes the builder.
 type Config struct {
@@ -154,7 +163,7 @@ type notificationBundle struct {
 // channel.Deliver.
 func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelope, error) {
 	if job.Subscription.ID == uuid.Nil {
-		return channel.NotificationEnvelope{}, fmt.Errorf("builder: subscription has nil id")
+		return channel.NotificationEnvelope{}, fmt.Errorf("builder: subscription has nil id: %w", ErrPermanent)
 	}
 
 	// 1. Pre-sort events by per-sub event_number so the wire ordering
@@ -230,7 +239,7 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 	//    layout is final before it goes into the Bundle entry list.
 	statusBytes, err := json.Marshal(status)
 	if err != nil {
-		return channel.NotificationEnvelope{}, fmt.Errorf("builder: marshal status: %w", err)
+		return channel.NotificationEnvelope{}, fmt.Errorf("builder: marshal status: %w: %w", err, ErrPermanent)
 	}
 	entries := []bundleEntry{
 		{Resource: json.RawMessage(statusBytes)},
@@ -256,7 +265,7 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			// channel time.
 			var probe json.RawMessage
 			if uerr := json.Unmarshal(ev.Resource, &probe); uerr != nil {
-				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode focus resource: %w", uerr)
+				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode focus resource: %w: %w", uerr, ErrPermanent)
 			}
 			entries = append(entries, bundleEntry{Resource: probe})
 		}
@@ -271,7 +280,7 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			}
 			var probe json.RawMessage
 			if uerr := json.Unmarshal(body, &probe); uerr != nil {
-				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode hydrated resource: %w", uerr)
+				return channel.NotificationEnvelope{}, fmt.Errorf("builder: decode hydrated resource: %w: %w", uerr, ErrPermanent)
 			}
 			entries = append(entries, bundleEntry{Resource: probe})
 		}
@@ -287,7 +296,7 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 
 	bytes, err := json.Marshal(bundle)
 	if err != nil {
-		return channel.NotificationEnvelope{}, fmt.Errorf("builder: marshal bundle: %w", err)
+		return channel.NotificationEnvelope{}, fmt.Errorf("builder: marshal bundle: %w: %w", err, ErrPermanent)
 	}
 
 	// 6. Resolve content type. Defaults to fhir+json.

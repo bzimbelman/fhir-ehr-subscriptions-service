@@ -781,9 +781,21 @@ func (w *Worker) applyBailoutDecision(ctx context.Context, row *repos.DeliveryRo
 
 // isPermanentBuildError matches deterministic build-time conditions
 // that will never succeed on retry (S-8.3).
+//
+// OP #222: classification is via the typed sentinel
+// builder.ErrPermanent — the canonical contract. The legacy substring
+// match is preserved as a fallback so historical errors (logged or
+// persisted with the old format, or returned from a non-fhir-subs build
+// of the builder package) still classify correctly during the
+// migration. The substring set is closed and matches the four
+// deterministic conditions: nil-id, marshal status/bundle, decode focus
+// resource. New permanent conditions go through ErrPermanent only.
 func isPermanentBuildError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, builder.ErrPermanent) {
+		return true
 	}
 	msg := err.Error()
 	for _, marker := range []string{

@@ -206,7 +206,7 @@ func (te *TokenEndpoint) Close() error {
 // Services profile.
 func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		te.fail(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed", "malformed")
+		te.fail(w, http.StatusMethodNotAllowed, "invalid_request", "method_not_allowed")
 		return
 	}
 	// Per-source rate limit before any expensive work. The endpoint is
@@ -221,8 +221,7 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				w.Header().Set("Retry-After", strconv.Itoa(secs))
 			}
-			te.fail(w, http.StatusTooManyRequests, "slow_down",
-				"rate limit exceeded", "rate_limited")
+			te.fail(w, http.StatusTooManyRequests, "slow_down", "rate_limited")
 			return
 		}
 	}
@@ -233,28 +232,24 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
-			te.fail(w, http.StatusRequestEntityTooLarge, "invalid_request",
-				"request body too large", "malformed")
+			te.fail(w, http.StatusRequestEntityTooLarge, "invalid_request", "body_too_large")
 			return
 		}
-		te.fail(w, http.StatusBadRequest, "invalid_request", "could not parse form", "malformed")
+		te.fail(w, http.StatusBadRequest, "invalid_request", "parse_form_failed")
 		return
 	}
 	if r.PostForm.Get("grant_type") != "client_credentials" {
-		te.fail(w, http.StatusBadRequest, "unsupported_grant_type",
-			"only client_credentials is supported", "malformed")
+		te.fail(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported_grant_type")
 		return
 	}
 	if r.PostForm.Get("client_assertion_type") !=
 		"urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
-		te.fail(w, http.StatusBadRequest, "invalid_client",
-			"client_assertion_type must be jwt-bearer", "malformed")
+		te.fail(w, http.StatusBadRequest, "invalid_client", "assertion_type_mismatch")
 		return
 	}
 	assertion := r.PostForm.Get("client_assertion")
 	if assertion == "" {
-		te.fail(w, http.StatusBadRequest, "invalid_client",
-			"client_assertion required", "malformed")
+		te.fail(w, http.StatusBadRequest, "invalid_client", "assertion_required")
 		return
 	}
 
@@ -262,8 +257,7 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
 	unverified, _, err := parser.ParseUnverified(assertion, jwt.MapClaims{})
 	if err != nil {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"malformed assertion", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "malformed")
 		return
 	}
 	claims, _ := unverified.Claims.(jwt.MapClaims)
@@ -273,27 +267,23 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientID, _ = claims["sub"].(string)
 	}
 	if clientID == "" {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"missing client_id/sub", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing_client_id")
 		return
 	}
 
 	client, err := te.cfg.ClientLookup.GetByID(r.Context(), clientID)
 	if err != nil {
-		te.fail(w, http.StatusInternalServerError, "server_error",
-			"client lookup failed", "unknown_client")
+		te.fail(w, http.StatusInternalServerError, "server_error", "client_lookup_failed")
 		return
 	}
 	if client == nil || client.JwksURL == "" {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"unknown client", "unknown_client")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "unknown_client")
 		return
 	}
 
 	kf, err := te.jwksCache.fetch(r.Context(), client.JwksURL)
 	if err != nil {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"jwks unavailable", "signature")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "signature")
 		return
 	}
 
@@ -311,37 +301,34 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// fixed enum of generic strings; log the detail server-side.
 		reason := classifyAssertionErr(err)
 		te.logAssertionFailure(r, clientID, reason, err)
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			diagnosticForReason(reason), reason)
+		te.fail(w, http.StatusUnauthorized, "invalid_client", reason)
 		return
 	}
 	if !verified.Valid {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"assertion invalid", "signature")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "signature")
 		return
 	}
 	vc, _ := verified.Claims.(jwt.MapClaims)
 
 	// Required claims per RFC 7523.
 	if _, ok := vc["exp"]; !ok {
-		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing exp", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing_exp")
 		return
 	}
 	if _, ok := vc["iat"]; !ok {
-		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing iat", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing_iat")
 		return
 	}
 	if iss, _ := vc["iss"].(string); iss != clientID {
-		te.fail(w, http.StatusUnauthorized, "invalid_client", "iss mismatch", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "iss_mismatch")
 		return
 	}
 	if sub, _ := vc["sub"].(string); sub != clientID {
-		te.fail(w, http.StatusUnauthorized, "invalid_client", "sub mismatch", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "sub_mismatch")
 		return
 	}
 	if !audienceMatches(vc["aud"], te.cfg.TokenURL) {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"assertion aud must equal token URL", "audience")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "audience")
 		return
 	}
 
@@ -349,8 +336,7 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// silently bypassed (B-7). Treat missing/empty jti as malformed.
 	jti, _ := vc["jti"].(string)
 	if jti == "" {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"missing jti", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "missing_jti")
 		return
 	}
 	assertionExp, err := claimToTime(vc["exp"])
@@ -358,16 +344,14 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// S-3: a swallowed parse error here causes Put(jti, time.Time{}),
 		// which silently disables replay protection for the issued token.
 		// Fail closed so JTI tracking always carries a real expiry.
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"assertion exp invalid", "malformed")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "exp_invalid")
 		return
 	}
 	// Atomic replay-check + record. Separate Seen + Put across two lock
 	// acquisitions left a TOCTOU window where two concurrent /token
 	// POSTs with the same jti could both succeed (OP #110).
 	if te.jtiCache.CheckAndPut(jti, assertionExp) {
-		te.fail(w, http.StatusUnauthorized, "invalid_client",
-			"assertion jti replay", "replayed_jti")
+		te.fail(w, http.StatusUnauthorized, "invalid_client", "replayed_jti")
 		return
 	}
 
@@ -378,8 +362,7 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	granted := intersect(requested, client.Scopes)
 	if len(granted) == 0 {
-		te.fail(w, http.StatusForbidden, "invalid_scope",
-			"no authorized scopes", "revoked")
+		te.fail(w, http.StatusForbidden, "invalid_scope", "revoked")
 		return
 	}
 
@@ -397,8 +380,7 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	signed, err := access.SignedString(te.cfg.AccessTokenSecret)
 	if err != nil {
-		te.fail(w, http.StatusInternalServerError, "server_error",
-			"signing failed", "malformed")
+		te.fail(w, http.StatusInternalServerError, "server_error", "server_error")
 		return
 	}
 
@@ -418,12 +400,15 @@ func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // fail writes an OAuth-formatted OperationOutcome and records the
-// matching auth_failures metric.
-func (te *TokenEndpoint) fail(w http.ResponseWriter, status int, code, desc, reason string) {
+// matching auth_failures metric. The diagnostic on the wire is derived
+// from the typed reason via diagnosticForReason so every callsite emits
+// a stable enum-mapped string and operators see consistent reason codes
+// in logs and metric labels (OP #221).
+func (te *TokenEndpoint) fail(w http.ResponseWriter, status int, code, reason string) {
 	if te.cfg.Metrics != nil {
 		te.cfg.Metrics.RecordAuthFailure(reason)
 	}
-	writeOAuthError(w, status, code, desc)
+	writeOAuthError(w, status, code, diagnosticForReason(reason))
 }
 
 func classifyAssertionErr(err error) string {
@@ -445,8 +430,14 @@ func classifyAssertionErr(err error) string {
 // each canonical auth-failure reason. The message MUST NOT include any
 // caller-controlled data, library-internal phrases, or key material;
 // see B-8.
+//
+// OP #221: every te.fail callsite flows its diagnostic through this
+// function. Reasons cover the three /token endpoint stages — wire
+// (method, body, form), grant validation (grant_type, assertion shape),
+// and assertion claim checks (exp, iat, iss/sub, aud, jti, scope).
 func diagnosticForReason(reason string) string {
 	switch reason {
+	// Assertion validation outcomes (B-8 enum).
 	case "expired":
 		return "assertion expired"
 	case "audience":
@@ -457,6 +448,47 @@ func diagnosticForReason(reason string) string {
 		return "unknown client"
 	case "replayed_jti":
 		return "assertion jti replay"
+
+	// Wire-level rejections (OP #221).
+	case "method_not_allowed":
+		return "method not allowed"
+	case "body_too_large":
+		return "request body too large"
+	case "parse_form_failed":
+		return "could not parse form"
+	case "unsupported_grant_type":
+		return "only client_credentials is supported"
+	case "rate_limited":
+		return "rate limit exceeded"
+	case "server_error":
+		return "server error"
+
+	// Granular assertion-shape rejections — each preserves a stable,
+	// caller-agnostic message routed through this enum.
+	case "assertion_type_mismatch":
+		return "client_assertion_type must be jwt-bearer"
+	case "assertion_required":
+		return "client_assertion required"
+	case "missing_client_id":
+		return "missing client_id/sub"
+	case "client_lookup_failed":
+		return "client lookup failed"
+	case "missing_exp":
+		return "missing exp"
+	case "missing_iat":
+		return "missing iat"
+	case "iss_mismatch":
+		return "iss mismatch"
+	case "sub_mismatch":
+		return "sub mismatch"
+	case "missing_jti":
+		return "missing jti"
+	case "exp_invalid":
+		return "assertion exp invalid"
+	case "revoked":
+		return "no authorized scopes"
+
+	// Default catches "signature" and any unrecognized future reasons.
 	default:
 		return "assertion invalid"
 	}

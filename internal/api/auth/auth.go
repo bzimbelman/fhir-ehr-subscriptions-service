@@ -9,8 +9,14 @@ package auth
 // package does not depend on the metrics package and to keep the
 // recorder injectable from tests.
 //
-// reason values for RecordAuthFailure are: expired, audience, signature,
-// unknown_client, revoked, replayed_jti, malformed.
+// reason values for RecordAuthFailure include: expired, audience,
+// signature, unknown_client, revoked, replayed_jti, malformed,
+// method_not_allowed, body_too_large, parse_form_failed,
+// unsupported_grant_type, rate_limited, server_error, and the granular
+// assertion-shape rejections (assertion_type_mismatch, missing_*,
+// iss_mismatch, sub_mismatch, exp_invalid, client_lookup_failed). Every
+// reason is mapped through diagnosticForReason so the on-the-wire
+// diagnostic stays caller-agnostic (OP #221).
 type MetricsRecorder interface {
 	RecordAuthFailure(reason string)
 	RecordTokenIssued()

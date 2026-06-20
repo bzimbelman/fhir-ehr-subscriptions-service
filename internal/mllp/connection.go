@@ -136,6 +136,21 @@ func HandleConnectionWithLogger(
 	// readCh is fed by a goroutine that does the blocking Read. We select
 	// on it AND on ctx.Done() so ctx cancellation can trigger shutdown
 	// without waiting for the read to return.
+	//
+	// OP #228 — invariant under test: readCh MUST be buffered with
+	// capacity >= 1. The startRead goroutine writes the result of its
+	// blocking Read into readCh and then exits. The main loop selects on
+	// readCh and ctx.Done(). When ctx fires the main loop closes the
+	// connection, drains readCh once (`<-readCh`) and returns. The
+	// buffer guarantees the read goroutine's send succeeds even if the
+	// main loop has already entered the `<-ctx.Done()` arm — without
+	// the buffer the send would block forever after the main loop
+	// stopped selecting on readCh, leaking the goroutine. Cap-1 is the
+	// minimum that satisfies the invariant; a `select { case readCh
+	// <- out: case <-ctx.Done(): }` would also work but adds a select
+	// per Read on the hot path. The buffered-channel pattern is the
+	// long-standing choice; goleak coverage in connection_goleak_test.go
+	// guards against regression.
 	type readResult struct {
 		n   int
 		err error
@@ -219,7 +234,22 @@ func HandleConnectionWithLogger(
 				return
 			}
 			if r.n > 0 {
-				framer.Append(r.buf)
+				if appendErr := framer.Append(r.buf); appendErr != nil {
+					// OP #227: Framer.Append rejected the chunk because
+					// it would push pending past 2*maxBody. Treat
+					// identically to a malformed event with reason
+					// oversized_message — the connection loop drops the
+					// peer.
+					metrics.Inc(MetricMalformedTotal, map[string]string{
+						"listener_endpoint": ep.Name,
+						"reason":            string(ReasonOversizedMessage),
+					})
+					clog.emit(logLevelWarn, "malformed", map[string]any{
+						"reason": string(ReasonOversizedMessage),
+						"error":  appendErr.Error(),
+					})
+					return
+				}
 				metrics.Add(MetricMessageBytes, float64(r.n), endpointLabels)
 			}
 
