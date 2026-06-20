@@ -246,8 +246,21 @@ func pathExistsInStruct(t reflect.Type, path string) bool {
 			tag := f.Tag.Get("yaml")
 			name, opts := splitYAMLTag(tag)
 			if opts["inline"] {
-				// Inline (Config.Extra) is the silent-swallow sink we
-				// explicitly do not want to count as a match.
+				// `,inline` on a map is the silent-swallow catch-all
+				// (Config.Extra) we don't want to count. `,inline` on
+				// an embedded struct flattens that struct's modeled
+				// fields into the parent path — story #217 uses this
+				// for SchedulerConfig embedding StageConfig — so we
+				// recurse without consuming a path segment.
+				ft := f.Type
+				for ft.Kind() == reflect.Pointer {
+					ft = ft.Elem()
+				}
+				if ft.Kind() == reflect.Struct {
+					if pathExistsInStruct(ft, path) {
+						return true
+					}
+				}
 				continue
 			}
 			if name == "-" {

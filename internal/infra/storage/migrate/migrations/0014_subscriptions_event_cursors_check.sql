@@ -24,6 +24,8 @@
 -- See docs/architecture.md "Subscription event cursors" for the
 -- complementary documentation.
 
+alter table subscriptions drop constraint if exists subscriptions_event_cursors_check;
+
 alter table subscriptions
     add constraint subscriptions_event_cursors_check
     check (next_event_number >= events_since_subscription_start);

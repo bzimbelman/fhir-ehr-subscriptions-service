@@ -17,7 +17,7 @@
 -- rotated keys must split this into expand/contract.
 
 alter table dead_letters
-    add column key_version int not null default 1;
+    add column if not exists key_version int not null default 1;
 
 comment on column dead_letters.key_version is
     'Codec key version that wrapped payload_redacted; required so a row written under v1 still decrypts after the active key rotates.';

@@ -43,23 +43,33 @@ func (r *EhrEventsRepo) Insert(ctx context.Context, q Querier, row EhrEventRow) 
 			return uuid.Nil, 0, fmt.Errorf("ehr_events: encrypt previous: %w", err)
 		}
 	}
-	// created_month is set explicitly so partition routing has a non-null
-	// value; the v0 trigger normally sets it but Postgres routes
-	// partitions before BEFORE triggers fire on the parent.
+	// created_month MUST be derived from created_at, not now(), so a
+	// backfill / replay write with an explicit historical created_at
+	// lands in the partition for that month. OP #215 (finding #139):
+	// see resource_changes.Insert for the full rationale. We compute
+	// both columns from the same source-of-truth value via COALESCE
+	// so the production hot path (row.CreatedAt zero → now()) and the
+	// backfill path (explicit row.CreatedAt) share one INSERT shape.
 	const sql = `
 		INSERT INTO ehr_events
 			(id, client_id, topic_url, focus, change_kind, resource, previous_resource,
 			 key_version, correlation_id, occurred_at, notification_shape_hint,
-			 resource_change_id, created_month)
+			 resource_change_id, created_at, created_month)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-		        date_trunc('month', now())::date)
+		        COALESCE($13, now()),
+		        date_trunc('month', COALESCE($13, now()))::date)
 		RETURNING id, event_number, created_month`
+	var createdAtArg any
+	if !row.CreatedAt.IsZero() {
+		createdAtArg = row.CreatedAt
+	}
 	var got uuid.UUID
 	var ev int64
 	var month any
 	if err := q.QueryRow(ctx, sql,
 		id, row.ClientID, row.TopicURL, row.Focus, string(row.ChangeKind), enc, prev, kv,
 		row.CorrelationID, row.OccurredAt, row.NotificationShapeHint, row.ResourceChangeID,
+		createdAtArg,
 	).Scan(&got, &ev, &month); err != nil {
 		return uuid.Nil, 0, fmt.Errorf("ehr_events: insert: %w", err)
 	}
