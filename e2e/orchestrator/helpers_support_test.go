@@ -33,6 +33,18 @@ type RegisterSubscriberOptions struct {
 	// and polls the returned id until status=active. Required.
 	APIBaseURL string
 
+	// BearerTokenFunc, when non-nil, is called for every request the
+	// helper makes (POST + activation poll). The returned string is
+	// sent as `Authorization: Bearer <tok>` and X-Client-Id is NOT
+	// set. Use this when targeting a prod binary running the real
+	// auth.Verifier (OP #292: prod-binary e2e tests must drive the
+	// real bearer middleware, no dev-bypass).
+	//
+	// When BearerTokenFunc is nil the helper falls back to the
+	// X-Client-Id header path used against the harness API server
+	// and against pre-#146 test servers.
+	BearerTokenFunc func() string
+
 	// ActivateTimeout caps how long the helper waits for the API to
 	// flip the subscription from `requested` to `active`. Defaults to
 	// 5s when zero.
@@ -80,7 +92,11 @@ func RegisterSubscriber(ctx context.Context, _ *Harness, opts RegisterSubscriber
 	}
 	req.Header.Set("Content-Type", "application/fhir+json")
 	req.Header.Set("Accept", "application/fhir+json")
-	req.Header.Set("X-Client-Id", opts.ClientID)
+	if opts.BearerTokenFunc != nil {
+		req.Header.Set("Authorization", "Bearer "+opts.BearerTokenFunc())
+	} else {
+		req.Header.Set("X-Client-Id", opts.ClientID)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("RegisterSubscriber: POST /Subscription: %w", err)
@@ -97,7 +113,7 @@ func RegisterSubscriber(ctx context.Context, _ *Harness, opts RegisterSubscriber
 		return "", fmt.Errorf("RegisterSubscriber: %w", err)
 	}
 
-	if err := waitForSubscriptionActive(ctx, opts.APIBaseURL, opts.ClientID, subID, opts.ActivateTimeout); err != nil {
+	if err := waitForSubscriptionActive(ctx, opts.APIBaseURL, opts.ClientID, opts.BearerTokenFunc, subID, opts.ActivateTimeout); err != nil {
 		return "", fmt.Errorf("RegisterSubscriber: %w", err)
 	}
 	return subID, nil
@@ -163,7 +179,7 @@ func extractSubscriptionID(location string, body []byte) (string, error) {
 // waitForSubscriptionActive polls GET /Subscription/{id} until the
 // returned status is "active" or the deadline elapses. Returns an error
 // describing the last observed status on timeout.
-func waitForSubscriptionActive(ctx context.Context, apiBase, clientID, subID string, timeout time.Duration) error {
+func waitForSubscriptionActive(ctx context.Context, apiBase, clientID string, bearerFn func() string, subID string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	getURL := strings.TrimRight(apiBase, "/") + "/Subscription/" + subID
 	var lastStatus string
@@ -177,7 +193,11 @@ func waitForSubscriptionActive(ctx context.Context, apiBase, clientID, subID str
 			return fmt.Errorf("build GET /Subscription/%s: %w", subID, err)
 		}
 		req.Header.Set("Accept", "application/fhir+json")
-		req.Header.Set("X-Client-Id", clientID)
+		if bearerFn != nil {
+			req.Header.Set("Authorization", "Bearer "+bearerFn())
+		} else {
+			req.Header.Set("X-Client-Id", clientID)
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			if time.Now().After(deadline) {

@@ -112,9 +112,12 @@ func TestE2E_ProdBinary_WebhookIngressMatchesAndDelivers(t *testing.T) {
 		Insecure:         true,
 		GracePeriod:      5 * time.Second,
 		TopicsCatalogDir: topicsDir,
-		// audience empty so the bearer middleware is skipped — webhook
-		// ingress is HMAC-only and must NOT be bearer-gated regardless.
-		AuthAudience: "",
+		// Real audience so the binary boots in production posture (no
+		// dev bypass). Webhook ingress is HMAC-only and is mounted on
+		// the chi router outside the bearer middleware regardless of
+		// what auth.audience is — see webhook handler wiring.
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
 	})
 	defer bin.Stop(t, 10*time.Second)
 
@@ -189,12 +192,13 @@ func TestE2E_ProdBinary_WebhookRejectsBadSignature(t *testing.T) {
 	}
 
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
-		DatabaseURL:  h.DBURL,
-		FacilityID:   "e2e-prod-webhook-badsig",
-		AdapterID:    adapterID,
-		Insecure:     true,
-		GracePeriod:  5 * time.Second,
-		AuthAudience: "",
+		DatabaseURL:           h.DBURL,
+		FacilityID:            "e2e-prod-webhook-badsig",
+		AdapterID:             adapterID,
+		Insecure:              true,
+		GracePeriod:           5 * time.Second,
+		AuthAudience:          "https://api.test.local",
+		AuthAllowInsecureJWKS: true,
 	})
 	defer bin.Stop(t, 10*time.Second)
 
