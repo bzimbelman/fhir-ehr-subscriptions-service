@@ -116,6 +116,29 @@ type SubscriberHandle struct {
 	QueryAPIURL string
 }
 
+// TokenMintHandle exposes the real cmd/test-token-mint binary that runs
+// inside docker-compose. Adversarial-auth tests use it to mint RS256
+// JWTs with arbitrary claim overrides without round-tripping through
+// Keycloak. The harness wires its JWKS URL into an auth_clients row so
+// the prod fhir-subs verifier trusts tokens it signs.
+type TokenMintHandle struct {
+	// Addr is host:port the test process can reach the binary on.
+	Addr string
+	// TokenAPIURL is the http base URL the test process POSTs /mint
+	// requests to (e.g. http://<addr>). Stack.MintTestToken wraps it.
+	TokenAPIURL string
+	// JWKSURL is the full JWKS endpoint (http://<addr>/jwks.json) the
+	// prod binary's verifier fetches via the per-client lookup.
+	JWKSURL string
+	// Issuer is the iss claim the binary stamps on default-minted
+	// tokens. Distinct from Keycloak.IssuerURL.
+	Issuer string
+	// ClientID is the auth_clients id the harness provisioned and
+	// pointed at this binary's JWKS URL. Default-minted tokens carry
+	// this value as client_id and sub so the verifier can resolve.
+	ClientID string
+}
+
 // BinaryHandle is the running cmd/fhir-subs process plus its primary
 // HTTP/MLLP listeners.
 type BinaryHandle struct {
