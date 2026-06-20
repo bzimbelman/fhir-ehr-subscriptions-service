@@ -160,3 +160,46 @@ func TestWiring_PhaseCloseConnectionsHasDBPoolAndChannelsAndActivator(t *testing
 	lcMod.RequestShutdown(context.Background(), "test")
 	_ = lcMod.WaitForExit(ctx)
 }
+
+// TestWiring_PhaseCloseConnectionsHasAuthTokenAndJWKSHooks — OP #208
+// RED. The AC extends the rest-hook activator close pattern (already
+// present at line ~198-206) to the auth verifier's JWKS fetcher AND
+// the token endpoint client. Both spin a long-lived http.Transport
+// that holds idle TCP/TLS sockets to the operator's IDP; on shutdown
+// those connections must be released so the process exits without
+// warm sockets.
+//
+// Today neither hook is registered. This test pins the contract that
+// PhaseCloseConnections includes "auth.token_endpoint.close" and
+// "auth.jwks_fetcher.close" in addition to the rest-hook activator
+// close.
+func TestWiring_PhaseCloseConnectionsHasAuthTokenAndJWKSHooks(t *testing.T) {
+	t.Parallel()
+
+	url := startTestPostgres(t)
+	cfg := fullProductionConfig(t, url)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	logger := slog.Default()
+	lcMod, err := lifecycle.Start(ctx, lifecycle.LifecycleConfig{
+		ShutdownGracePeriod: 5 * time.Second,
+	}, lifecycle.LifecycleContext{Logger: logger})
+	if err != nil {
+		t.Fatalf("lifecycle.Start: %v", err)
+	}
+	rt, err := buildProductionRuntime(ctx, cfg, logger, lcMod)
+	if err != nil {
+		t.Fatalf("buildProductionRuntime: %v", err)
+	}
+	t.Cleanup(func() { rt.shutdown(context.Background()) })
+
+	requirePhaseHas(t, lcMod, lifecycle.PhaseCloseConnections, []string{
+		"auth.token_endpoint.close",
+		"auth.jwks_fetcher.close",
+	})
+
+	lcMod.RequestShutdown(context.Background(), "test")
+	_ = lcMod.WaitForExit(ctx)
+}

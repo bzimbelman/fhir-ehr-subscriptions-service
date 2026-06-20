@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 )
@@ -297,4 +298,168 @@ func postRaw(u, body string) (*http.Response, error) {
 	req, _ := http.NewRequest("POST", u, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/fhir+json")
 	return http.DefaultClient.Do(req)
+}
+
+// ---------------------------------------------------------------------
+// OP #183 — RED. Validate must reject the unhandled SSRF surfaces today:
+// IPv4 broadcast, CG-NAT 100.64.0.0/10, IPv6 site-local fec0::/10, and
+// IDN/Punycode hostnames that decode to "localhost" before the loopback
+// substring check fires.
+// ---------------------------------------------------------------------
+
+func TestURLValidator_BlocksIPv4Broadcast(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
+	if err := v.Validate(context.Background(), "https://255.255.255.255/"); err == nil {
+		t.Fatalf("expected IPv4 broadcast 255.255.255.255 to be rejected")
+	}
+}
+
+func TestURLValidator_BlocksCGNAT(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
+	for _, raw := range []string{
+		"https://100.64.0.1/",
+		"https://100.127.255.254/",
+	} {
+		if err := v.Validate(context.Background(), raw); err == nil {
+			t.Errorf("expected CG-NAT %s to be rejected", raw)
+		}
+	}
+}
+
+func TestURLValidator_BlocksIPv6SiteLocal(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
+	if err := v.Validate(context.Background(), "https://[fec0::1]/"); err == nil {
+		t.Fatalf("expected IPv6 site-local fec0::1 to be rejected")
+	}
+}
+
+// TestURLValidator_BlocksIDNHomoglyphLocalhost asserts the validator
+// runs idna.Lookup.ToASCII (or equivalent) BEFORE the loopback
+// substring check. The literal hostname "loсalhost" (with the Cyrillic
+// 'с' U+0441) is NOT == "localhost" by direct strings.ToLower, so the
+// existing syntactic gate misses it. After IDN decode the host
+// normalises to a string an attacker-controlled DNS could point at
+// loopback-equivalent infra.
+func TestURLValidator_BlocksIDNHomoglyphLocalhost(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
+	// Cyrillic small letter 'es' (U+0441) replaces ASCII 'c'. The host
+	// looks like "localhost" but is not byte-equal. Today the validator
+	// does no IDN normalization, so this is accepted as a bare hostname
+	// and DNS-looked-up. The AC requires explicit IDN-aware loopback
+	// rejection — the test asserts a non-nil error.
+	if err := v.Validate(context.Background(), "https://loсalhost/"); err == nil {
+		t.Fatalf("expected IDN homoglyph host that decodes to a localhost-equivalent to be rejected")
+	}
+}
+
+// TestURLValidator_BlocksPunycodeLocalhost covers the explicit punycode
+// form: an attacker registers a hostname whose Punycode (ACE) form
+// includes "localhost" once decoded. We use the literal IDN form
+// `xn--lcalhost-w0a.example` here as a stand-in shape; the AC says the
+// validator MUST decode IDN BEFORE the loopback substring check.
+func TestURLValidator_BlocksPunycodeLocalhost(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
+	// `xn--lcalhost-w0a` is a punycode form whose Unicode decode
+	// includes a Latin-with-diacritic that visually reads "lócalhost".
+	// The substring "localhost" is not present byte-equal, but a host
+	// like this in production should still be flagged because IDN-aware
+	// normalization can fold it. We assert the validator does the
+	// normalization step and rejects the hostname.
+	if err := v.Validate(context.Background(), "https://xn--lclhst-rua.example/"); err == nil {
+		t.Fatalf("expected punycode/IDN-decoded hostname containing a localhost homoglyph to be rejected")
+	}
+}
+
+// TestURLValidator_BlocksGCPMetadataDNS — explicit AC coverage. GCP's
+// metadata.google.internal canonically resolves to 169.254.169.254
+// (link-local), and a malicious DNS or /etc/hosts override could try
+// the same trick. We inject a resolver that returns 169.254.169.254
+// for the GCP-shaped hostname and assert rejection.
+func TestURLValidator_BlocksGCPMetadataDNS(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{
+		Resolver: staticResolver{ips: []net.IP{net.ParseIP("169.254.169.254")}},
+	})
+	if err := v.Validate(context.Background(), "https://metadata.google.internal/computeMetadata/v1/"); err == nil {
+		t.Fatalf("expected GCP metadata host to be rejected when DNS lands on 169.254.169.254")
+	}
+}
+
+// TestURLValidator_BlocksAzureMetadataExplicit — explicit AC coverage
+// that Azure's well-known metadata IP is rejected over https as well as
+// http (Azure's IMDS lives at 169.254.169.254 just like AWS).
+func TestURLValidator_BlocksAzureMetadataExplicit(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
+	for _, raw := range []string{
+		"http://169.254.169.254/metadata/instance",
+		"https://169.254.169.254/metadata/instance?api-version=2021-02-01",
+	} {
+		if err := v.Validate(context.Background(), raw); err == nil {
+			t.Errorf("expected Azure metadata URL %s to be rejected", raw)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------
+// OP #186 — RED. Validate MUST take a context.Context and propagate it
+// into the DNS lookup so a slow / hung resolver cannot pin the API
+// goroutine past the request deadline. The test below intentionally
+// uses the new signature (ctx, rawURL); today Validate has signature
+// (rawURL) and the call will fail to compile. That compile failure is
+// the RED. Phase B's job is to update the signature and all three
+// production callers.
+// ---------------------------------------------------------------------
+
+// blockingResolver simulates a slow DNS lookup: it sleeps for `delay`
+// and only returns once `delay` elapses OR the context is cancelled,
+// whichever fires first.
+type blockingResolver struct {
+	delay time.Duration
+}
+
+func (b blockingResolver) LookupIP(ctx context.Context, _, _ string) ([]net.IP, error) {
+	select {
+	case <-time.After(b.delay):
+		return []net.IP{net.ParseIP("93.184.216.34")}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestURLValidator_PropagatesContextCancellation asserts the caller's
+// ctx (not context.Background) bounds the DNS hop. We pass a 10ms ctx
+// to a 5s-blocking resolver and require Validate to return promptly
+// (within 2s — generous slack for CI scheduling).
+func TestURLValidator_PropagatesContextCancellation(t *testing.T) {
+	t.Parallel()
+	v := handlers.NewURLValidator(handlers.URLValidatorConfig{
+		Resolver:      blockingResolver{delay: 5 * time.Second},
+		LookupTimeout: 10 * time.Second, // large internal timeout so ONLY the caller ctx can fire
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := v.Validate(ctx, "https://slow.example.com/")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected error from cancelled ctx, got nil after %v", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Validate did not propagate caller ctx — waited %v (expected ~10ms-bounded)", elapsed)
+	}
+	// Sanity: error must be ctx-cancellation-related, not the SSRF
+	// sentinel masquerading. Either the caller ctx error wraps through
+	// or ErrSSRFBlocked carries it — either is acceptable as long as it
+	// is not a "no addresses returned" success-shaped error.
+	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, handlers.ErrSSRFBlocked) {
+		t.Errorf("expected DeadlineExceeded or ErrSSRFBlocked, got %v", err)
+	}
 }
