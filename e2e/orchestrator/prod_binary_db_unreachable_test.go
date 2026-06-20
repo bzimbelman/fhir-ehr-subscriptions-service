@@ -64,9 +64,19 @@ func TestE2E_ProdBinary_DBUnreachable_FailsLoud(t *testing.T) {
 	key := make([]byte, 32)
 	keyB64 := base64.StdEncoding.EncodeToString(key)
 
+	// Story #336: production-mode validation requires auth.audience and
+	// mllp.listeners. Both checks fire BEFORE the DB connect attempt, so
+	// configuring this test with default (production) mode swallows the
+	// DB-unreachable error this test is asserting on. Switch to
+	// deployment.mode=probe-only (the documented dev/e2e opt-out for
+	// the strict production posture) so the binary boots far enough to
+	// dial the DB and surface the unreachable error. allow_dev_bypass
+	// is set explicitly to keep the auth.audience guard from triggering
+	// even in modes where it is permissive — defensive belt-and-suspenders.
 	yamlBody := fmt.Sprintf(`deployment:
   facility_id: e2e
   environment: e2e
+  mode: probe-only
 adapter:
   id: default
 server:
@@ -84,6 +94,7 @@ codec:
       material: %s
 auth:
   audience: ""
+  allow_dev_bypass: true
 `, httpPort, unreachableURL, keyB64)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -111,6 +122,20 @@ auth:
 		_ = resp.Body.Close()
 		t.Errorf("binary bound the listener despite unreachable DB; status=%d",
 			resp.StatusCode)
+	}
+
+	// Story #336: pgxpool's Acquire retries connect attempts indefinitely
+	// on the parent context, so the binary's startup path stays blocked
+	// inside migrate.Up until *some* termination signal cancels its
+	// internal context. Sending SIGTERM here mimics what kubelet does
+	// when a pod's livenessProbe fails — the signal handler in main()
+	// translates SIGTERM into ctx-cancel, which lets Acquire return
+	// the underlying connect error. Without this prod, exec.CommandContext
+	// would later kill the process with SIGKILL on binCtx expiry, and
+	// SIGKILL gives the binary no chance to flush its diagnostic to
+	// stderr — exactly the regression OP #336 was filed to surface.
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("signal binary: %v", err)
 	}
 
 	// Wait for exit.

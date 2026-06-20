@@ -279,6 +279,7 @@ topics:
 	}
 
 	authInsecureLine := ""
+	urlValidatorBlock := ""
 	if cfg.AuthAllowInsecureJWKS {
 		authInsecureLine = "\n  allow_insecure_jwks: true"
 		// Story #290: e2e rest-hook receivers bind to 127.0.0.1. The
@@ -288,6 +289,16 @@ topics:
 		// loopback IP literals so the test's harness rest-hook URL
 		// passes both gates. Production leaves both empty.
 		authInsecureLine += "\n  allow_subscriber_hosts: [\"127.0.0.1\", \"::1\"]"
+		// Story #337: OP #184 split url_validator.* (subscriber endpoint
+		// scheme + host gates) from auth.allow_insecure_jwks (insecure
+		// JWKS) — the two trust decisions are independent. The legacy
+		// auth.allow_subscriber_hosts list is still merged into AllowHosts
+		// for backward compat (see wiring.go), but the AllowHTTP gate now
+		// lives ONLY under url_validator. Emit the dedicated block here
+		// so e2e tests that opt into insecure JWKS for a dev IDP also get
+		// http:// rest-hook endpoints accepted on POST /Subscription.
+		// Production leaves url_validator empty (https-only, no allow-list).
+		urlValidatorBlock = "\nurl_validator:\n  allow_http: true\n  allow_hosts:\n    - \"127.0.0.1\"\n    - \"::1\"\n"
 	}
 	// Story #117: an empty AuthAudience means "skip the bearer
 	// middleware in this e2e". Validate() will reject an empty
@@ -426,11 +437,11 @@ pipeline:
     claim_batch_size: 16
     idle_poll_interval: 100ms
   correlation_hold_window: 1s
-%s%s%s
+%s%s%s%s
 `,
 		cfg.FacilityID, logLevel, logFormat, deploymentMode, secretPollLine, cfg.AdapterID, cfg.HTTPBind, probeBind, cfg.Insecure,
 		cfg.GracePeriod.String(),
-		cfg.DatabaseURL, codecMaterialField, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock,
+		cfg.DatabaseURL, codecMaterialField, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock, urlValidatorBlock,
 	)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
