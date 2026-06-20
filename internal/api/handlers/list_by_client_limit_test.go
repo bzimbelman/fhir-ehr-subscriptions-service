@@ -43,8 +43,15 @@ func TestPgSubscriptionsStore_ListByClient_EnforcesMaxPageSize(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	subsRepo := repos.NewSubscriptionsRepo()
 	clientID := "client-fanout"
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO auth_clients (id) VALUES ($1) ON CONFLICT DO NOTHING`,
+		clientID,
+	); err != nil {
+		t.Fatalf("seed auth_clients: %v", err)
+	}
+
+	subsRepo := repos.NewSubscriptionsRepo()
 	const want = 250
 	for i := 0; i < want; i++ {
 		row := repos.SubscriptionRow{
