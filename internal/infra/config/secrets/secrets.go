@@ -54,16 +54,16 @@ func Resolve(tree map[string]interface{}, rmap *redaction.Map) (map[string]inter
 // ResolveWithFilePaths is Resolve plus the deduplicated set of on-disk
 // paths actually read for ${file:...} placeholders. Used by the secret
 // rotation watcher (B-35) so it knows which paths to mtime-poll.
-func ResolveWithFilePaths(tree map[string]interface{}, rmap *redaction.Map) (map[string]interface{}, *redaction.Map, []string, error) {
+func ResolveWithFilePaths(tree map[string]interface{}, rmap *redaction.Map) (resolved map[string]interface{}, redactionMap *redaction.Map, filePaths []string, err error) {
 	if rmap == nil {
 		rmap = redaction.NewMap()
 	}
 	seen := map[string]struct{}{}
-	out, err := walk(tree, "", rmap, seen)
-	if err != nil {
-		return nil, nil, nil, err
+	out, walkErr := walk(tree, "", rmap, seen)
+	if walkErr != nil {
+		return nil, nil, nil, walkErr
 	}
-	resolved, _ := out.(map[string]interface{})
+	resolved, _ = out.(map[string]interface{})
 	paths := make([]string, 0, len(seen))
 	for p := range seen {
 		paths = append(paths, p)

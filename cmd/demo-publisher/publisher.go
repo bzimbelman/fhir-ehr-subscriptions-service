@@ -103,8 +103,10 @@ func (p *publisher) printSend(entry MessageEntry, ctrlID string) {
 // printAck emits a cliprint "ack" event. AA → OK, AE → warn, AR/UNKNOWN
 // → fail; the publisher keeps running either way.
 func (p *publisher) printAck(ctrlID string, ack []byte) {
-	status := cliprint.StatusOK
-	msg := "OK"
+	var (
+		status cliprint.Status
+		msg    string
+	)
 	switch classifyACK(ack) {
 	case "AA":
 		status = cliprint.StatusOK

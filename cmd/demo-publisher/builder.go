@@ -15,7 +15,7 @@ import (
 //
 // Returns the raw HL7 string, the control id used, and an error if the
 // template is unknown (catalog validation should prevent that path).
-func buildMessage(e MessageEntry, ctrlID string) (body string, ctrl string, err error) {
+func buildMessage(e MessageEntry, ctrlID string) (body, ctrl string, err error) {
 	patientID := e.Fields["patient_id"]
 	switch e.Template {
 	case "oru-r01":

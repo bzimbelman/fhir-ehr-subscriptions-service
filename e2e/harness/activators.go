@@ -277,7 +277,7 @@ func (a *harnessWebsocketActivator) httpFallback(ctx context.Context) (handlers.
 	httpURL = strings.Replace(httpURL, "wss://", "https://", 1)
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, httpURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, httpURL, http.NoBody)
 	if err != nil {
 		return handlers.HandshakeFailed, err
 	}

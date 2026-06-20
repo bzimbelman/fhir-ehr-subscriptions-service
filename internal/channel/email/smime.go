@@ -39,15 +39,6 @@ type Signer interface {
 // can fix it without reading the source.
 var ErrSignerRequired = errors.New("email: Mode=smime requires Config.Signer to be set")
 
-// noopSigner is a defensive default that fails any Sign call. The
-// channel only uses it as a sentinel; New rejects ModeSMIME with no
-// Signer at startup, so this is never reached in production.
-type noopSigner struct{}
-
-func (noopSigner) Sign([]byte) ([]byte, error) {
-	return nil, errors.New("email: no S/MIME signer configured")
-}
-
 // applySMIMESignature wraps the unsigned MIME message in the
 // configured signer's envelope. Returns the original bytes when no
 // signer is wired (callers ensure this only happens for ModeSMTP).

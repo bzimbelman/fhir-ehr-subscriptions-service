@@ -205,7 +205,7 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	// operator-selected MinVersion before ServeTLS runs. ServeTLS will
 	// add the cert pair on top of this base config.
 	if !cfg.Server.HTTP.Insecure {
-		srv.TLSConfig = &tls.Config{
+		srv.TLSConfig = &tls.Config{ //nolint:gosec // parseTLSMinVersion always returns >= TLS 1.2; Validate rejects anything lower.
 			MinVersion: parseTLSMinVersion(cfg.Server.HTTP.TLS.MinVersion),
 		}
 	}

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"sync"
 	"testing"
 
 	"github.com/emersion/go-smtp"
@@ -21,7 +20,6 @@ type fakeSMTPRelay struct {
 	server   *smtp.Server
 	listener net.Listener
 
-	mu   sync.Mutex
 	host string
 	port int
 }

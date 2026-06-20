@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -163,7 +164,12 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) runOne(ctx context.Context, t spi.ScanTarget) {
 	// Run immediately on entry, then on each tick. Most operators
 	// want "scan on startup, scan every N minutes thereafter."
-	w.tickOne(ctx, t)
+	if err := w.tickOne(ctx, t); err != nil {
+		slog.ErrorContext(ctx, "scanrunner: tick failed",
+			"adapter_id", w.adapterID,
+			"resource_type", t.ResourceType,
+			"err", err)
+	}
 	tk := time.NewTicker(t.Cadence)
 	defer tk.Stop()
 	for {
@@ -171,7 +177,12 @@ func (w *Worker) runOne(ctx context.Context, t spi.ScanTarget) {
 		case <-ctx.Done():
 			return
 		case <-tk.C:
-			w.tickOne(ctx, t)
+			if err := w.tickOne(ctx, t); err != nil {
+				slog.ErrorContext(ctx, "scanrunner: tick failed",
+					"adapter_id", w.adapterID,
+					"resource_type", t.ResourceType,
+					"err", err)
+			}
 		}
 	}
 }

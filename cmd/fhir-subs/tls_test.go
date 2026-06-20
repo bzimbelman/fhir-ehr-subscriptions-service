@@ -58,9 +58,9 @@ func genSelfSignedCert(t *testing.T, dir string) (certPath, keyPath string) {
 	if err != nil {
 		t.Fatalf("open cert: %v", err)
 	}
-	if err := pem.Encode(cf, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); err != nil {
+	if encErr := pem.Encode(cf, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}); encErr != nil {
 		_ = cf.Close()
-		t.Fatalf("encode cert: %v", err)
+		t.Fatalf("encode cert: %v", encErr)
 	}
 	_ = cf.Close()
 

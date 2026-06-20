@@ -83,7 +83,8 @@ func VerifyChainExternalDetail(rows []ExternalVerifierRow, genesisLiteral string
 func externalVerifierBadIndices(rows []ExternalVerifierRow, genesisLiteral string) []int {
 	prior := GenesisHashFromLiteral(genesisLiteral)
 	var bad []int
-	for i, r := range rows {
+	for i := range rows {
+		r := &rows[i]
 		obj := map[string]any{
 			"ts":             r.OccurredAt.UTC().Format(time.RFC3339Nano),
 			"actor_kind":     r.ActorKind,
