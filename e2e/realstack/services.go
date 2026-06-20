@@ -124,3 +124,23 @@ type BinaryHandle struct {
 	// MLLPAddr is host:port of the MLLP listener (empty when MLLP not configured).
 	MLLPAddr string
 }
+
+// RateLimit is the operator-facing shape for a per-client token
+// bucket the harness installs on the production binary's auth
+// middleware. Mirrors cmd/fhir-subs.RateLimitConfig so what callers
+// set on Options.* is what the rendered config.yaml writes under
+// auth.subscription_create_rate_limit / auth.ws_binding_token_rate_limit.
+//
+// The H3 LoadDriver (story #258) uses these to drive the binary's
+// rate-limit middleware into 429 territory under sustained load.
+type RateLimit struct {
+	// Burst is the bucket capacity. Zero or negative disables the
+	// limit (auth.Middleware treats a nil limiter as pass-through).
+	Burst int
+	// RefillPerSecond is the steady-state allowed rate. Zero pins
+	// the bucket at Burst (strict cap, no replenishment).
+	RefillPerSecond float64
+	// MaxKeys caps the number of distinct client identities
+	// tracked. Zero falls back to the binary's default (65536).
+	MaxKeys int
+}
