@@ -224,10 +224,20 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		return nil, fmt.Errorf("adapter load: %w", err)
 	}
 	rt.loadedAdapter = loadedAdapter
-	hl7Proc := loadedAdapter.BuildHl7Processor(adapterspi.AdapterContext{
-		AdapterID: cfg.Adapter.ID,
-		Now:       time.Now,
-	})
+	// OP #311/#313: gate the host-side hl7processor on
+	// Capabilities.HL7Processor. Direct (OP #175) declares all
+	// capabilities false because Direct messaging is SMTP/S-MIME, not
+	// HL7 v2 over MLLP — BuildHl7Processor returns nil for that adapter,
+	// and feeding nil into hl7processor.New as Deps.Adapter fails with
+	// "Deps.Adapter is required". Mirror the gating already used for
+	// FhirScanRunner / VendorAPIClient / HydrationService.
+	var hl7Proc adapterspi.Hl7MessageProcessor
+	if loadedAdapter.Manifest().Capabilities.HL7Processor {
+		hl7Proc = loadedAdapter.BuildHl7Processor(adapterspi.AdapterContext{
+			AdapterID: cfg.Adapter.ID,
+			Now:       time.Now,
+		})
+	}
 
 	// Story #98: build the adapter HydrationService so the scheduler
 	// can expand `_include` / `_revinclude` rules for full-resource
@@ -647,36 +657,43 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// and the worker is restarted with backoff. The supervisedPipeline
 	// also exposes Status snapshots to /admin/supervisor/status.
 
-	// HL7 processor.
-	processorPoll := cfg.Pipeline.HL7Processor.IdlePollInterval
-	if processorPoll == 0 {
-		processorPoll = 200 * time.Millisecond
+	// HL7 processor. OP #311/#313: only construct when the adapter
+	// declares Capabilities.HL7Processor; hl7Proc is nil for "direct"
+	// (and any future SMTP/S-MIME-only adapter) so hl7processor.New
+	// would otherwise fail with "Deps.Adapter is required" at boot.
+	var proc *hl7processor.Processor
+	if hl7Proc != nil {
+		processorPoll := cfg.Pipeline.HL7Processor.IdlePollInterval
+		if processorPoll == 0 {
+			processorPoll = 200 * time.Millisecond
+		}
+		correlHold := cfg.Pipeline.CorrelationHoldWindow
+		if correlHold == 0 {
+			correlHold = 30 * time.Second
+		}
+		p, err := hl7processor.New(hl7processor.Config{
+			AdapterID:             cfg.Adapter.ID,
+			ClaimBatchSize:        nonZeroInt32(cfg.Pipeline.HL7Processor.ClaimBatchSize, 16),
+			ClaimIdlePollInterval: processorPoll,
+			ReaperTickInterval:    processorPoll,
+			CorrelationHoldWindow: correlHold,
+		}, hl7processor.Deps{
+			Pool:       pool,
+			Codec:      cdc,
+			HL7Queue:   hl7Q,
+			Pending:    pendingPairs,
+			Changes:    rcs,
+			DeadLetter: dl,
+			Adapter:    hl7Proc,
+			Logger:     logger.With("component", "hl7processor"),
+		})
+		if err != nil {
+			rt.shutdown(context.Background())
+			return nil, fmt.Errorf("hl7processor: %w", err)
+		}
+		proc = p
+		rt.processor = proc
 	}
-	correlHold := cfg.Pipeline.CorrelationHoldWindow
-	if correlHold == 0 {
-		correlHold = 30 * time.Second
-	}
-	proc, err := hl7processor.New(hl7processor.Config{
-		AdapterID:             cfg.Adapter.ID,
-		ClaimBatchSize:        nonZeroInt32(cfg.Pipeline.HL7Processor.ClaimBatchSize, 16),
-		ClaimIdlePollInterval: processorPoll,
-		ReaperTickInterval:    processorPoll,
-		CorrelationHoldWindow: correlHold,
-	}, hl7processor.Deps{
-		Pool:       pool,
-		Codec:      cdc,
-		HL7Queue:   hl7Q,
-		Pending:    pendingPairs,
-		Changes:    rcs,
-		DeadLetter: dl,
-		Adapter:    hl7Proc,
-		Logger:     logger.With("component", "hl7processor"),
-	})
-	if err != nil {
-		rt.shutdown(context.Background())
-		return nil, fmt.Errorf("hl7processor: %w", err)
-	}
-	rt.processor = proc
 
 	// Matcher. The CatalogProvider is hot-swappable: at startup we load
 	// the operator-supplied topic JSON files (D-1); on SIGHUP the
@@ -843,12 +860,19 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// panics, restarts on exit with bounded exponential backoff, and
 	// exposes a Status snapshot to /admin/supervisor/status.
 	supDeps := pipelineSupervisorDeps{
-		HL7:        proc,
 		Matcher:    matcherWorker,
 		Submatcher: submatcherWorker,
 		Scheduler:  schedulerWorker,
 		Lifecycle:  lcMod,
 		Backoff:    cfg.Pipeline.Supervisor,
+	}
+	// OP #311/#313: HL7 is gated on adapter Capabilities.HL7Processor.
+	// Same typed-nil guard as FhirScanRunner / VendorAPIClient: assigning
+	// a (*hl7processor.Processor)(nil) to a supervisor.Worker interface
+	// field would yield a non-nil interface that the supervisor would
+	// mistakenly host (and immediately panic on Run).
+	if proc != nil {
+		supDeps.HL7 = proc
 	}
 	// Assign FhirScanRunner only when non-nil; assigning a typed-nil
 	// *scanrunner.Worker to an interface field would produce a non-nil

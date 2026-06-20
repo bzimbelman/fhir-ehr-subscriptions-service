@@ -536,3 +536,53 @@ func TestPipelineSupervisor_StatusListsAllFour(t *testing.T) {
 		}
 	}
 }
+
+// TestPipelineSupervisor_OmitsHL7ProcessorWhenNil covers OP #311/#313:
+// when the loaded adapter declares Capabilities.HL7Processor=false (e.g.
+// "direct" after OP #175 — Direct messaging is SMTP/S-MIME, not HL7 v2
+// over MLLP), buildProductionRuntime now skips hl7processor.New and
+// passes a nil HL7 worker into the supervisor. The pipeline must accept
+// that — gating the HL7 supervisor identically to FhirScanRunner /
+// VendorAPIClient — and Status() must not surface a stale "hl7-processor"
+// entry for an adapter that never had one.
+func TestPipelineSupervisor_OmitsHL7ProcessorWhenNil(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	lcMod, err := lifecycle.Start(ctx, lifecycle.LifecycleConfig{
+		ShutdownGracePeriod: 5 * time.Second,
+	}, lifecycle.LifecycleContext{})
+	if err != nil {
+		t.Fatalf("lifecycle start: %v", err)
+	}
+	defer func() {
+		lcMod.RequestShutdown(context.Background(), "test_cleanup")
+		exitCtx, exitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer exitCancel()
+		_ = lcMod.WaitForExit(exitCtx)
+	}()
+
+	pl, err := buildSupervisedPipeline(pipelineSupervisorDeps{
+		HL7:        nil,
+		Matcher:    &fakeWorker{},
+		Submatcher: &fakeWorker{},
+		Scheduler:  &fakeWorker{},
+		Lifecycle:  lcMod,
+		Backoff: PipelineSupervisorConfig{
+			BackoffInitial: 10 * time.Millisecond,
+			BackoffMax:     50 * time.Millisecond,
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildSupervisedPipeline with nil HL7: %v", err)
+	}
+	defer func() { _ = pl.Stop(context.Background()) }()
+
+	for _, st := range pl.Status() {
+		if st.AdapterID == "hl7-processor" {
+			t.Fatalf("Status() surfaced hl7-processor entry when HL7 worker was nil: %+v", pl.Status())
+		}
+	}
+}
