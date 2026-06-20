@@ -33,9 +33,18 @@ func TestCodecAAD_SwapBetweenRowsFails(t *testing.T) {
 	c := newCodecForTest(t)
 	repo := repos.NewEhrEventsRepo(c)
 
+	clientID := "tenant-codec-aad-swap"
+	if _, err := h.DB.Exec(ctx,
+		`INSERT INTO auth_clients (id) VALUES ($1) ON CONFLICT DO NOTHING`,
+		clientID,
+	); err != nil {
+		t.Fatalf("seed auth_clients: %v", err)
+	}
+
 	now := time.Now().UTC()
 	rowA := repos.EhrEventRow{
 		ID:               uuid.New(),
+		ClientID:         clientID,
 		TopicURL:         "http://example.org/aad-test-A",
 		Focus:            "Observation/aad-A",
 		ChangeKind:       repos.ChangeCreate,
@@ -46,6 +55,7 @@ func TestCodecAAD_SwapBetweenRowsFails(t *testing.T) {
 	}
 	rowB := repos.EhrEventRow{
 		ID:               uuid.New(),
+		ClientID:         clientID,
 		TopicURL:         "http://example.org/aad-test-B",
 		Focus:            "Observation/aad-B",
 		ChangeKind:       repos.ChangeCreate,
@@ -113,8 +123,18 @@ func TestCodecAAD_KeyVersionMismatchInRowFails(t *testing.T) {
 
 	c := newCodecForTest(t)
 	repo := repos.NewEhrEventsRepo(c)
+
+	clientID := "tenant-codec-aad-kv"
+	if _, err := h.DB.Exec(ctx,
+		`INSERT INTO auth_clients (id) VALUES ($1) ON CONFLICT DO NOTHING`,
+		clientID,
+	); err != nil {
+		t.Fatalf("seed auth_clients: %v", err)
+	}
+
 	row := repos.EhrEventRow{
 		ID:               uuid.New(),
+		ClientID:         clientID,
 		TopicURL:         "http://example.org/kv-test",
 		Focus:            "Observation/kv",
 		ChangeKind:       repos.ChangeCreate,
