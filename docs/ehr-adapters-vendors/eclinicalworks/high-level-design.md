@@ -2,7 +2,7 @@
 
 **Summary.** eClinicalWorks publishes a FHIR R4 read/write API (US Core 3.1.1 / 6.1.0) and an HL7 v2 lab interface, but offers **no native push, webhook, or `Subscription` mechanism**. The eCW adapter will therefore be **HL7 v2 dominant for real-time signal** and **FHIR R4 polling (with bulk-data `$export` for large pulls) as the cold-path scanner**, with hydration via FHIR R4 read.
 
-**Reader's prerequisites.** [overview.md](../../high-level-design/overview.md), [domains/ehr-adapter.md](../../high-level-design/domains/ehr-adapter.md), [contracts/adapter-spi.md](../../high-level-design/contracts/adapter-spi.md), [adapter-authoring-guide.md](../../adapter-authoring-guide.md). The Cerner and Athena scaffolds in [`adapters/cerner/cerner.go`](../../../adapters/cerner/cerner.go) and [`adapters/athena/athena.go`](../../../adapters/athena/athena.go) show the manifest shape this adapter will follow.
+**Reader's prerequisites.** [overview.md](../../high-level-design/overview.md), [domains/ehr-adapter.md](../../high-level-design/domains/ehr-adapter.md), [contracts/adapter-spi.md](../../high-level-design/contracts/adapter-spi.md), [adapter-authoring-guide.md](../../adapter-authoring-guide.md). The Cerner and Athena scaffolds in [`adapters/cerner/cerner.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/cerner/cerner.go) and [`adapters/athena/athena.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/athena/athena.go) show the manifest shape this adapter will follow.
 
 ---
 

@@ -8,7 +8,7 @@
 
 1. [Adapter SPI contract](high-level-design/contracts/adapter-spi.md) — the canonical method signatures, the REQUIRED-vs-OPTIONAL split, and the versioning policy.
 2. [Adapter SPI Framework LLD](low-level-design/adapter-spi-framework.md) — what the host does on your behalf (queue claim loop, transactional outbox, dead-letter routing, snapshot diffing, cache, supervisors).
-3. [`adapters/default/`](../adapters/default/) — the runnable reference adapter. Read it; it is short. The shape you will write is the same shape, with vendor-specific overrides.
+3. [`adapters/default/`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/default/) — the runnable reference adapter. Read it; it is short. The shape you will write is the same shape, with vendor-specific overrides.
 
 If you have not read those, this guide will look arbitrary. If you have, it will look obvious.
 
@@ -69,7 +69,7 @@ adapters/
 
 Naming rules:
 
-- The id must match `[a-z0-9-]+`, no leading/trailing dash. The host validates this — see `validateAdapterID` in [`internal/adapter/spi/types.go`](../internal/adapter/spi/types.go).
+- The id must match `[a-z0-9-]+`, no leading/trailing dash. The host validates this — see `validateAdapterID` in [`internal/adapter/spi/types.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/internal/adapter/spi/types.go).
 - The Go package name is conventionally `<id>adapter` (e.g., `acmeadapter`). The reference adapter uses `defaultadapter`.
 - One package per adapter. Do not split sub-components into separate Go packages — the host registers and constructs them through a single `EhrAdapter` factory.
 
@@ -129,7 +129,7 @@ func (a *Adapter) BuildHydrationService(ctx spi.AdapterContext) spi.HydrationSer
 // Override only if you need vendor-SDK init or shared connection setup.
 ```
 
-Compare: [`adapters/default/default.go`](../adapters/default/default.go) is the same shape with everything dialed back to no-ops. Read it once before you continue — it is the simplest legal adapter.
+Compare: [`adapters/default/default.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/default/default.go) is the same shape with everything dialed back to no-ops. Read it once before you continue — it is the simplest legal adapter.
 
 ---
 
@@ -146,7 +146,7 @@ The manifest is the host's first point of contact. The host validates it before 
 | `SpiVersion` | Set to `spi.HostSPIVersion`. The host accepts adapters whose major matches the host's; minor must be ≤ host's. |
 | `Capabilities` | Each `true` field must correspond to a non-nil return from the matching `Build*`. Each `false` field must correspond to a `nil` return. Mismatch = fatal startup error. |
 | `SupportedEhrVersions` | Grammar: exact `"X.Y"`, lower bound `">=X.Y"`, or `"*"` any. Operator config can pin a stricter version with `adapter.version_pin`. |
-| `ConfigSchema` | A valid JSON Schema (compiled with `santhosh-tekuri/jsonschema/v5`). Empty bytes = "no validation." See `validateConfigSchema` in [`registry.go`](../internal/adapter/registry/registry.go). |
+| `ConfigSchema` | A valid JSON Schema (compiled with `santhosh-tekuri/jsonschema/v5`). Empty bytes = "no validation." See `validateConfigSchema` in [`registry.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/internal/adapter/registry/registry.go). |
 
 ### Optional fields
 
@@ -202,7 +202,7 @@ func newHl7(ctx spi.AdapterContext) *hl7Processor { return &hl7Processor{} }
 
 `MapToFHIR(parsed ParsedHL7Message, c Classification) (FhirResource, error)` — Produce the post-translation FHIR resource. Body must be canonical JSON. Set `ResourceType` and `ID` so downstream routing does not have to re-parse. If your vendor extension carries data the R5 base profile cannot represent, use a vendor profile and emit it; do not lose data silently.
 
-### OPTIONAL overrides (defaults documented in [`interfaces.go`](../internal/adapter/spi/interfaces.go))
+### OPTIONAL overrides (defaults documented in [`interfaces.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/internal/adapter/spi/interfaces.go))
 
 | Method | Default | Override when |
 |---|---|---|
@@ -417,7 +417,7 @@ Use the [adapter-conformance-checklist.md](adapter-conformance-checklist.md) tes
 | Hydration happy path | Concurrent calls dedupe; cache hits avoid EHR call; timeout returns `TransientFailure`. | Hydration harness with controllable EHR. |
 | State scoping | Adapter cannot read another adapter's state. | Negative test against `AdapterStateStore`. |
 
-The reference unit tests for `adapters/default/` ([`default_test.go`](../adapters/default/default_test.go)) exercise the manifest, the registry round-trip, the build methods, and the inherited base behavior. Mirror them for your adapter as the **first** layer — they are fast and they catch most authoring mistakes before the full conformance harness runs.
+The reference unit tests for `adapters/default/` ([`default_test.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/default/default_test.go)) exercise the manifest, the registry round-trip, the build methods, and the inherited base behavior. Mirror them for your adapter as the **first** layer — they are fast and they catch most authoring mistakes before the full conformance harness runs.
 
 The full harness runs in `e2e/orchestrator/`. CI runs it against the default adapter; you are responsible for adding a per-adapter stage that runs it against yours before your adapter ships.
 

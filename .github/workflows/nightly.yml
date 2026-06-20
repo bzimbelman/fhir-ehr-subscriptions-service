@@ -14,13 +14,20 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.22'
+  # OP #134: pinned exactly. See ci.yml for the rationale.
+  GO_VERSION: '1.22.10'
 
 jobs:
   conformance:
     name: nightly e2e + integration
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # OP #133: a silent red nightly is functionally a green nightly.
+    # Grant issues: write so the failure-alerting step can file a
+    # tracking issue when the conformance run breaks.
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -32,3 +39,52 @@ jobs:
         run: go test -race -tags integration -count=1 ./...
       - name: e2e harness
         run: go test -race -tags e2e -count=1 ./e2e/...
+
+      # OP #133: failure alerting. When any prior step fails, file (or
+      # update) a GitHub issue tagged `nightly-failure` with the run
+      # URL so the on-call rotation has a single inbox to drive
+      # remediation from. github-script lets us search-and-update in
+      # the same step so consecutive nightly failures don't fan out
+      # into duplicate issues.
+      - name: alert on failure (file or update tracking issue)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const title = 'Nightly conformance failure';
+            const label = 'nightly-failure';
+            // Look for an open tracking issue first so we don't spam.
+            const search = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              per_page: 50,
+            });
+            const body = [
+              `Nightly conformance run failed.`,
+              ``,
+              `Run: ${runUrl}`,
+              `Commit: ${context.sha}`,
+              `Workflow: ${context.workflow}`,
+            ].join('\n');
+            if (search.data.length > 0) {
+              const existing = search.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: body,
+              });
+              core.notice(`Updated existing tracking issue #${existing.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: [label],
+              });
+              core.notice(`Filed tracking issue #${created.data.number}`);
+            }

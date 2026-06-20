@@ -17,7 +17,12 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.22'
+  # OP #134: Pin Go toolchain to an exact patch. Wildcard pins like
+  # '1.22' silently drift the compiler under us; a new patch release
+  # with a behavior change can break CI without a single repo change.
+  # Bumping requires updating go.mod, Dockerfile, and every workflow
+  # in lockstep.
+  GO_VERSION: '1.22.10'
 
 jobs:
   gofmt:
@@ -196,10 +201,35 @@ jobs:
     needs: [gofmt, vet, lint, nolint-explanation, test]
     steps:
       - uses: actions/checkout@v4
+      # OP #130: cross-platform image build on every PR. The release
+      # workflow already pushes multi-arch; CI must mirror it (without
+      # push) so a Dockerfile or dependency that breaks the arm64
+      # build is caught before tag time.
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
+      # First build: multi-arch verification. Cannot use load: true
+      # with a multi-platform manifest, so this build only confirms
+      # both arches compile + cache layers for the second build.
+      - name: cross-platform build (linux/amd64,linux/arm64) — verify only
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: fhir-subs:ci-multiarch
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            COMMIT=${{ github.sha }}
+      # Second build: single-arch (host = amd64) with load:true so the
+      # smoke run steps below can `docker run` the image. Reuses the
+      # GHA cache primed by the cross-platform verify above so wall-
+      # clock stays low.
       - uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64
           push: false
           load: true
           tags: fhir-subs:ci

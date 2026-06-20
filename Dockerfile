@@ -5,7 +5,10 @@
 # the platform we are building for. Combined with `docker buildx build
 # --platform linux/amd64,linux/arm64`, this produces a multi-arch image with
 # one native-host build per arch (cross-compiled by the Go toolchain).
-FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS build
+# OP #134: pin Go toolchain exactly. The wildcard '1.22-alpine' tag
+# silently rolls forward; an exact patch keeps image builds reproducible
+# and aligned with the .github/workflows/ pin and go.mod.
+FROM --platform=$BUILDPLATFORM golang:1.22.10-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH

@@ -16,7 +16,7 @@ The adapter loads cleanly through the bundled-adapter registry.
 
 | # | Criterion | Reference test |
 |---|---|---|
-| A1 | `Manifest().Validate()` returns `nil`. | `TestDefaultManifestShape` in [`adapters/default/default_test.go`](../adapters/default/default_test.go). |
+| A1 | `Manifest().Validate()` returns `nil`. | `TestDefaultManifestShape` in [`adapters/default/default_test.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/default/default_test.go). |
 | A2 | `Manifest().ID` matches the registry key the factory was registered under. | `registry.Load` round-trip; see `TestDefaultManifestIsRegistrable`. |
 | A3 | `Manifest().SpiVersion == spi.HostSPIVersion`. | `TestDefaultManifestShape`. |
 | A4 | `Manifest().Vendor` is non-empty. | `TestDefaultManifestShape`. |

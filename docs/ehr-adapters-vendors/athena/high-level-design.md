@@ -65,7 +65,7 @@ How each Stage 1 sub-component maps onto athena's API surface.
 
 ### `Hl7MessageProcessor` — **not built**
 
-athena does not expose HL7 v2 over MLLP to customers or interface engines. The adapter declares `Capabilities.HL7Processor = false` and returns `nil` from `BuildHl7Processor`. The existing scaffold in [`adapters/athena/athena.go`](../../../adapters/athena/athena.go) wires a passthrough HL7 processor for "facilities that still emit v2 over MLLP to athena bridges" — that path is not part of the supported athenaOne integration and should be removed or moved behind a configuration flag before this adapter goes to production.
+athena does not expose HL7 v2 over MLLP to customers or interface engines. The adapter declares `Capabilities.HL7Processor = false` and returns `nil` from `BuildHl7Processor`. The existing scaffold in [`adapters/athena/athena.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/athena/athena.go) wires a passthrough HL7 processor for "facilities that still emit v2 over MLLP to athena bridges" — that path is not part of the supported athenaOne integration and should be removed or moved behind a configuration flag before this adapter goes to production.
 
 ### `VendorAPIClient` — **primary CDC source (two modes)**
 
@@ -116,7 +116,7 @@ When `system/Subscription.write` is granted on the practice's OAuth client:
 
 4. **Translate(record VendorRecord)** is trivial in this mode: the `id-only` payload already carries the FHIR resource type and id, so `Translate` simply fans out to `HydrationService.Fetch` and copies the result into `VendorRecord.Resource`.
 
-5. **Webhook endpoint hosting.** The adapter assembly defined in [`adapters/athena/athena.go`](../../../adapters/athena/athena.go) must register an HTTP route on the host's mux (per the SPI's `RegisterRoutes` extension point). The host is responsible for terminating TLS and exposing the route on a public DNS name; the adapter brings the handler.
+5. **Webhook endpoint hosting.** The adapter assembly defined in [`adapters/athena/athena.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/athena/athena.go) must register an HTTP route on the host's mux (per the SPI's `RegisterRoutes` extension point). The host is responsible for terminating TLS and exposing the route on a public DNS name; the adapter brings the handler.
 
 #### Mode B: athenaNet `/changed` polling (fallback)
 
@@ -238,4 +238,4 @@ All URLs verified 2026-06-19 unless noted.
   - Appointments (`/changed`): <https://github.com/eleanorhealth/go-athenahealth/blob/e08f0a979b3e13fd37c9ea328d190b1c279ec1d1/athenahealth/appointments.go>
   - Lab results (`/changed`): <https://github.com/eleanorhealth/go-athenahealth/blob/e08f0a979b3e13fd37c9ea328d190b1c279ec1d1/athenahealth/lab_results.go>
 - jmandel/ehi-export-analysis (mirrored athena API specs, including a Subscription-Example1.json that is consistent with the Mode A shape): <https://github.com/jmandel/ehi-export-analysis/tree/9b8271c8030030f9a9647bbc30209550d962c446/results/athenahealth-inc--athenaclinicals/downloads/api-specs>
-- Existing scaffold in this repo: [`adapters/athena/athena.go`](../../../adapters/athena/athena.go)
+- Existing scaffold in this repo: [`adapters/athena/athena.go`](https://github.com/bzimbelman/fhir-ehr-subscriptions-service/blob/main/adapters/athena/athena.go)

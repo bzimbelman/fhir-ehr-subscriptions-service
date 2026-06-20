@@ -7,6 +7,18 @@ edit_uri: edit/main/docs/
 
 docs_dir: docs
 
+# OP #137: validation tuning. `mkdocs build --strict` runs on every PR
+# (.github/workflows/docs.yml). The `links.absolute_links` setting
+# downgrades absolute http(s)://github.com/... source-code references
+# from WARNING to INFO so authors can link into the codebase from the
+# docs without fighting strict mode. Anchor and unrecognized-link
+# checks stay at WARNING so genuine docs breakage still fails.
+validation:
+  omitted_files: warn
+  absolute_links: ignore
+  unrecognized_links: warn
+  anchors: info
+
 theme:
   name: material
   features:

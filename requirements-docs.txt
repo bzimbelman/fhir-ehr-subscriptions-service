@@ -1,1 +1,6 @@
-mkdocs-material>=9.5,<10
+# OP #137: pinned exactly so `mkdocs build --strict` is reproducible
+# across PR runs. Bumping requires re-running the build to confirm
+# the validation tuning in mkdocs.yml still aligns with the new
+# version's link-validation behavior.
+mkdocs==1.6.1
+mkdocs-material==9.5.39
