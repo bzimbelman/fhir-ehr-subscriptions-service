@@ -40,10 +40,19 @@ type Config struct {
 	Audit      AuditConfig      `yaml:"audit"`
 	Hydration  HydrationConfig  `yaml:"hydration"`
 	API        APIConfig        `yaml:"api"`
+	Handlers   HandlersConfig   `yaml:"handlers"`
 
-	// Extra captures anything not modeled above so a stricter loader can
-	// claim it later without this thin loader rejecting valid configs.
-	Extra map[string]any `yaml:",inline"`
+	// URLValidator carries the SSRF policy knobs for outbound rest-hook
+	// endpoints. Decoupled from auth.allow_insecure_jwks so an operator
+	// who opts into insecure JWKS for a dev IDP does NOT implicitly
+	// open http:// rest-hook endpoints (OP #184).
+	URLValidator URLValidatorSettings `yaml:"url_validator"`
+
+	// OP #205: Extra field removed. The yaml.Decoder runs with
+	// KnownFields(true) (see loadConfig) so any unmodeled top-level key
+	// is now a startup error rather than a silent swallow into a
+	// catch-all map. Operators get a loud error mentioning the typo'd
+	// key instead of shipping a misconfigured pod.
 
 	// Source is non-yaml runtime metadata main.go fills in so the
 	// SIGHUP-driven and mtime-driven reload paths (stories #151, #152)
@@ -108,6 +117,38 @@ type APIConfig struct {
 	// (story #181). Rendered into CapabilityStatement.security and
 	// served at the /.well-known/jwks.json path.
 	JWKSURL string `yaml:"jwks_url"`
+}
+
+// URLValidatorSettings models url_validator.* fields. The SSRF policy
+// for outbound rest-hook endpoints (handlers.URLValidatorConfig). The
+// fields are deliberately decoupled from auth.* so an operator who
+// opts into insecure JWKS for a dev IDP does NOT implicitly open
+// http:// rest-hook endpoints (OP #184). Empty by default;
+// production deployments leave AllowHTTP false and AllowHosts empty
+// unless an explicit internal target is needed (OP #185).
+type URLValidatorSettings struct {
+	// AllowHTTP enables the http:// scheme for subscriber endpoints.
+	// Default false (https-only). Independent of auth.allow_insecure_jwks
+	// (OP #184).
+	AllowHTTP bool `yaml:"allow_http"`
+	// AllowHosts is the explicit allow-list of hostnames whose
+	// resolved IPs may land in private CIDRs (OP #185). Hostnames are
+	// matched case-insensitively against the canonical ASCII form
+	// (idna.Lookup.ToASCII). Empty in production unless an explicit
+	// internal target is required.
+	AllowHosts []string `yaml:"allow_hosts"`
+}
+
+// HandlersConfig models handlers.* fields. Operator-tunable knobs that
+// flow through to handlers.Deps without affecting wire protocol
+// behavior. Defaults applied by RegisterRoutes when zero.
+type HandlersConfig struct {
+	// MaxListByClientPageSize caps the number of subscriptions
+	// PgSubscriptionsStore.ListByClient returns for a single
+	// client_id. Defends against a high-fan-out tenant pulling a
+	// multi-thousand-row resultset into one allocation (OP #188).
+	// Zero means use the package default (200).
+	MaxListByClientPageSize int `yaml:"max_list_by_client_page_size"`
 }
 
 // HydrationConfig models hydration.* fields. Story #98: the FHIR base
@@ -249,6 +290,13 @@ type AuthConfig struct {
 	// e2e harness's loopback rest-hook receiver. Empty by default;
 	// production deployments MUST leave this empty unless they have an
 	// explicit reason to trust an internal host.
+	//
+	// DEPRECATED (OP #185): operators should migrate to
+	// `url_validator.allow_hosts`, which is the dedicated home for the
+	// SSRF allow-list. The two lists merge at startup — both still take
+	// effect — but new charts / values files should write only the
+	// url_validator block. The auth.allow_subscriber_hosts list will be
+	// removed in a future release.
 	AllowSubscriberHosts []string `yaml:"allow_subscriber_hosts"`
 
 	// AllowDevBypass, when true, lets the binary run without
@@ -669,8 +717,13 @@ func loadConfig(path string) (*Config, error) {
 	}
 
 	if strings.TrimSpace(string(body)) != "" {
-		// Use strict-ish parsing: malformed YAML is a startup error.
+		// Use strict parsing: malformed YAML is a startup error AND any
+		// unknown field at any nesting level is rejected (OP #205). The
+		// previous Config.Extra catch-all silently absorbed operator
+		// typos like `databse:` and shipped them to production; a
+		// stricter decode forces every key to map onto a modeled field.
 		dec := yaml.NewDecoder(strings.NewReader(string(body)))
+		dec.KnownFields(true)
 		if err := dec.Decode(cfg); err != nil {
 			return nil, fmt.Errorf("parse config %s: %w", path, err)
 		}

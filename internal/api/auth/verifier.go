@@ -319,6 +319,22 @@ func (v *Verifier) recordFailure(reason string) {
 	v.cfg.Metrics.RecordAuthFailure(reason)
 }
 
+// Close releases the verifier's HTTP transport idle connections. The
+// JWKS fetcher is a long-lived http.Client that holds keep-alive
+// sockets to the operator's IDP; on graceful shutdown those connections
+// must be released so the process exits without warm sockets (OP #208).
+// Idempotent: calling Close on a verifier whose HTTPClient does not
+// own a *http.Transport (caller-supplied client) is a no-op.
+func (v *Verifier) Close() error {
+	if v == nil || v.cfg.HTTPClient == nil {
+		return nil
+	}
+	if tr, ok := v.cfg.HTTPClient.Transport.(*http.Transport); ok && tr != nil {
+		tr.CloseIdleConnections()
+	}
+	return nil
+}
+
 // Middleware wraps next with bearer-token authentication. On failure it
 // writes an OperationOutcome and stops the chain.
 func (v *Verifier) Middleware(next http.Handler) http.Handler {

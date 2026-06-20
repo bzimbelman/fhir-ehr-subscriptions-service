@@ -9,13 +9,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -317,7 +317,7 @@ func (s *server) createSubscription(w http.ResponseWriter, r *http.Request) {
 	// we skip the check there. The same validator is reused at delivery
 	// time by the rest-hook channel as a DNS-rebinding defense.
 	if s.deps.URLValidator != nil && internal.Endpoint != "" && internal.ChannelType != "websocket" {
-		if err := s.deps.URLValidator.Validate(internal.Endpoint); err != nil {
+		if err := s.deps.URLValidator.Validate(r.Context(), internal.Endpoint); err != nil {
 			s.recordValidationFailure("ssrf")
 			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
 				"endpoint rejected by SSRF policy")
@@ -383,11 +383,22 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 			reason = err.Error()
 		}
 		// If the per-call ctx is dead (timeout / lifecycle cancel),
-		// fall back to a fresh background ctx so the row does not stay
-		// stuck at `requested` (B-10).
+		// derive the bookkeeping ctx from Deps.LifecycleCtx with a
+		// bounded 30s deadline so the row does not stay stuck at
+		// `requested` AND a binary shutdown can still abort an
+		// otherwise-unbounded write (OP #187 / B-10). The previous
+		// fallback to context.Background() left the bookkeeping ctx
+		// uncancellable: a shutdown could not pre-empt a stuck
+		// UpdateStatus call.
 		bookkeepingCtx := ctx
+		var bkCancel context.CancelFunc
 		if bookkeepingCtx.Err() != nil {
-			bookkeepingCtx = context.Background()
+			parent := s.deps.LifecycleCtx
+			if parent == nil {
+				parent = context.Background()
+			}
+			bookkeepingCtx, bkCancel = context.WithTimeout(parent, 30*time.Second)
+			defer bkCancel()
 		}
 		if uErr := s.deps.Subscriptions.UpdateStatus(bookkeepingCtx, id, repos.SubError, reason); uErr != nil {
 			s.logActivateError("activate.handshake_fail.update_status", id, uErr)
@@ -545,23 +556,43 @@ func (s *server) searchSubscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseCountParam normalizes a `_count` query parameter against the
-// configured default and cap. Empty -> default. Non-integer or negative
-// -> not ok (caller answers 400). Values above the cap clamp to the
-// cap silently — the spec considers `_count` an upper bound, not a
-// command (FHIR R5 §3.1.1.5).
+// configured default and cap. Empty -> default. Anything that is not
+// strict ASCII digits (no signs, no whitespace, no hex literals, no
+// trailing junk) -> not ok (caller answers 400). Any value exceeding
+// the cap is a 400 too, NOT a silent clamp — so a runaway client can't
+// paper over a misconfigured page-size by always asking for more
+// (OP #189).
+//
+// strconv.Atoi already rejects "10  ", "0x10", and "10malicious", but
+// it ACCEPTS leading "+" / "-" signs. We pre-screen against any non-
+// digit character so "+10", "-5", " 10" all return false rather than
+// folding into Atoi's permissive sign handling.
 func parseCountParam(raw string, defaultPageSize, maxPageSize int) (int, bool) {
 	if raw == "" {
 		return defaultPageSize, true
 	}
-	var n int
-	if _, err := fmt.Sscanf(raw, "%d", &n); err != nil {
+	// Strict pre-screen: every character must be an ASCII digit. This
+	// catches "+10" / "-5" / " 10" before strconv.Atoi has a chance to
+	// fold a sign character into a valid int.
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
 		return 0, false
 	}
 	if n <= 0 {
 		return 0, false
 	}
 	if maxPageSize > 0 && n > maxPageSize {
-		n = maxPageSize
+		// AC: reject above-cap values explicitly. Silently clamping
+		// (the legacy behavior) hides operator-visible mismatch
+		// between client expectation and the deployed cap; an explicit
+		// 400 forces the client to align.
+		return 0, false
 	}
 	return n, true
 }
@@ -691,7 +722,7 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.deps.URLValidator != nil && newDoc.Endpoint != "" && newDoc.ChannelType != "websocket" {
-		if err := s.deps.URLValidator.Validate(newDoc.Endpoint); err != nil {
+		if err := s.deps.URLValidator.Validate(r.Context(), newDoc.Endpoint); err != nil {
 			s.recordValidationFailure("ssrf")
 			fhirerror.WriteError(w, http.StatusBadRequest, fhirerror.CodeValue,
 				"endpoint rejected by SSRF policy")
@@ -1144,10 +1175,19 @@ func (s *server) writeCapabilityStatement(w http.ResponseWriter, r *http.Request
 
 // buildSubscriptionStatus assembles a SubscriptionStatus resource per
 // the spec. ctx is the caller's request context so deadline / cancel
-// propagate to the deliveries lookup (S-2.12).
+// propagate to the deliveries lookup (S-2.12). When the caller passed
+// nil, derive a bounded ctx from Deps.LifecycleCtx so a binary
+// shutdown can still abort the deliveries read; the previous fallback
+// to context.Background() left the read unbounded by lifecycle (OP #187).
 func (s *server) buildSubscriptionStatus(ctx context.Context, sub *repos.SubscriptionRow, kind string, events []map[string]any) map[string]any {
 	if ctx == nil {
-		ctx = context.Background()
+		parent := s.deps.LifecycleCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(parent, 30*time.Second)
+		defer cancel()
 	}
 	last, _ := s.deps.Deliveries.LastDeliveredEventNumber(ctx, sub.ID)
 	out := map[string]any{

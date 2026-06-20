@@ -55,14 +55,13 @@ func TestHelmChart_ConfigMapParsesIntoConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig of helm-rendered config: %v\n--- config.yaml ---\n%s", err, configYAML)
 	}
-	if len(cfg.Extra) != 0 {
-		// Render orphan keys for a precise diagnostic.
-		var keys []string
-		for k := range cfg.Extra {
-			keys = append(keys, k)
-		}
-		t.Fatalf("helm-rendered config.yaml contains keys not modeled in Config (orphans): %v\n--- config.yaml ---\n%s", keys, configYAML)
-	}
+	// OP #205: Config.Extra has been removed; KnownFields(true) on the
+	// yaml.Decoder makes orphan keys a startup error. Reaching this
+	// point with a non-nil cfg means loadConfig succeeded and every
+	// top-level key was modeled — the orphan-detection contract holds
+	// implicitly. Keep cfg referenced so the diagnostic tail still
+	// rebuilds if the loader signature changes.
+	_ = cfg
 }
 
 // TestHelmChart_TopicCatalogConfigMap_Renders is the binary contract

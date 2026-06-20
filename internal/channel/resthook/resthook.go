@@ -240,7 +240,7 @@ type Options struct {
 // channel layer must not depend on the api/handlers package). Callers
 // pass the same instance the API layer used at create-time.
 type URLValidator interface {
-	Validate(rawURL string) error
+	Validate(ctx context.Context, rawURL string) error
 }
 
 // Channel implements the rest-hook delivery channel. Construct with New;
@@ -417,7 +417,7 @@ func (c *Channel) deliverInner(ctx context.Context, env channel.NotificationEnve
 	// until the operator fixes it, and burning retry budget re-dialing
 	// the same private IP is pointless.
 	if c.urlValidator != nil {
-		if vErr := c.urlValidator.Validate(env.SubscriptionEndpoint); vErr != nil {
+		if vErr := c.urlValidator.Validate(ctx, env.SubscriptionEndpoint); vErr != nil {
 			return channel.PermanentFailure(fmt.Sprintf("ssrf policy: %v", vErr))
 		}
 	}

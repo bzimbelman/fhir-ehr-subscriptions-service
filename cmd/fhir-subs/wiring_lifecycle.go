@@ -204,6 +204,32 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 			},
 		})
 	}
+
+	// OP #208: auth token-endpoint + JWKS fetcher transports keep
+	// long-lived TLS sockets to the operator's IDP (the same trust
+	// boundary the rest-hook activator owns for the subscriber side).
+	// On graceful shutdown those connections must be released so the
+	// process exits without warm sockets. Both hooks live in
+	// PhaseCloseConnections alongside resthook.activator.close so the
+	// connection-tier teardown is concentrated in one phase.
+	if r.tokenSrv != nil {
+		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+			Name:  "auth.token_endpoint.close",
+			Phase: lifecycle.PhaseCloseConnections,
+			Run: func(_ context.Context) error {
+				return r.tokenSrv.Close()
+			},
+		})
+	}
+	if r.authVerif != nil {
+		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+			Name:  "auth.jwks_fetcher.close",
+			Phase: lifecycle.PhaseCloseConnections,
+			Run: func(_ context.Context) error {
+				return r.authVerif.Close()
+			},
+		})
+	}
 }
 
 // setHTTPServer publishes the public HTTP server so the

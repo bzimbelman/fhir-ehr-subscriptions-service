@@ -113,9 +113,10 @@ func TestHTTPConfig_ProbeBind_ParsesFromYAML(t *testing.T) {
 	if cfg.Server.HTTP.ProbeBind != ":8081" {
 		t.Fatalf("HTTPConfig.ProbeBind=%q, want %q", cfg.Server.HTTP.ProbeBind, ":8081")
 	}
-	if _, ok := cfg.Extra["server"]; ok {
-		t.Fatalf("server block ended up in Extra: %v", cfg.Extra)
-	}
+	// OP #205: Config.Extra removed. With KnownFields(true), a
+	// successfully-unmarshalled cfg implies every top-level key
+	// resolved to a modeled field — there is no inline-catch-all to
+	// inspect.
 }
 
 func freeProbePort(t *testing.T) string {

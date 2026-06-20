@@ -122,6 +122,12 @@ func (qt QueryTimeouts) withWrite(parent context.Context) (context.Context, cont
 	return context.WithTimeout(parent, t)
 }
 
+// DefaultMaxListByClientPageSize caps the rows PgSubscriptionsStore.
+// ListByClient returns when no per-instance override is configured.
+// Defends a high-fan-out tenant against pulling a multi-thousand-row
+// resultset into one allocation (OP #188).
+const DefaultMaxListByClientPageSize = 200
+
 // PgSubscriptionsStore wraps repos.SubscriptionsRepo with a pool plus
 // the extra methods (UpdateResource, UpdateStatus, ListByClient) the
 // API needs that are not part of the existing repo's surface.
@@ -129,10 +135,15 @@ type PgSubscriptionsStore struct {
 	Pool     *pgxpool.Pool
 	Repo     *repos.SubscriptionsRepo
 	Timeouts QueryTimeouts
+	// MaxListByClientPageSize caps ListByClient. Zero means use
+	// DefaultMaxListByClientPageSize (200) per OP #188. Operators
+	// override via cfg.Handlers.MaxListByClientPageSize.
+	MaxListByClientPageSize int
 }
 
 // NewPgSubscriptionsStore is a convenience constructor that uses the
-// default per-query deadlines (5s read / 10s write).
+// default per-query deadlines (5s read / 10s write) and the default
+// page-size cap (DefaultMaxListByClientPageSize).
 func NewPgSubscriptionsStore(pool *pgxpool.Pool) *PgSubscriptionsStore {
 	return NewPgSubscriptionsStoreWithTimeouts(pool, QueryTimeouts{})
 }
@@ -142,6 +153,14 @@ func NewPgSubscriptionsStore(pool *pgxpool.Pool) *PgSubscriptionsStore {
 func NewPgSubscriptionsStoreWithTimeouts(pool *pgxpool.Pool, qt QueryTimeouts) *PgSubscriptionsStore {
 	qt.ApplyDefaults()
 	return &PgSubscriptionsStore{Pool: pool, Repo: repos.NewSubscriptionsRepo(), Timeouts: qt}
+}
+
+// WithMaxListByClientPageSize returns s after overriding the
+// ListByClient page-size cap. Zero or negative resets to the default
+// (DefaultMaxListByClientPageSize).
+func (s *PgSubscriptionsStore) WithMaxListByClientPageSize(n int) *PgSubscriptionsStore {
+	s.MaxListByClientPageSize = n
+	return s
 }
 
 // Insert delegates to the existing repo on a pool-checked-out connection.
@@ -168,6 +187,14 @@ func (s *PgSubscriptionsStore) GetByID(ctx context.Context, id uuid.UUID) (*repo
 
 // ListByClient queries subscriptions by client id. The existing repo
 // has no equivalent; the small scope here justifies an inline query.
+//
+// OP #188: a high-fan-out tenant (thousands of subscriptions for a
+// single client_id) used to materialize the entire resultset into one
+// allocation. Cap the page size with LIMIT $2 so an admin /admin/clients
+// fan-out cannot starve memory or pin a connection past its read
+// deadline. Operators tune cfg.Handlers.MaxListByClientPageSize; the
+// default (DefaultMaxListByClientPageSize = 200) is plumbed by the
+// production wiring.
 func (s *PgSubscriptionsStore) ListByClient(ctx context.Context, clientID string) ([]repos.SubscriptionRow, error) {
 	const sql = `
 		SELECT id, client_id, status, topic_url, channel_type,
@@ -179,10 +206,15 @@ func (s *PgSubscriptionsStore) ListByClient(ctx context.Context, clientID string
 		       created_at, updated_at
 		FROM subscriptions
 		WHERE client_id = $1
-		ORDER BY created_at DESC`
+		ORDER BY created_at DESC
+		LIMIT $2`
+	limit := s.MaxListByClientPageSize
+	if limit <= 0 {
+		limit = DefaultMaxListByClientPageSize
+	}
 	qctx, cancel := s.Timeouts.withRead(ctx)
 	defer cancel()
-	rows, err := s.Pool.Query(qctx, sql, clientID)
+	rows, err := s.Pool.Query(qctx, sql, clientID, limit)
 	if err != nil {
 		return nil, TranslateQueryErr(ctx, qctx, err, "subscriptions: list by client")
 	}

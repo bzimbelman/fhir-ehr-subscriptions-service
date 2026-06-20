@@ -186,6 +186,22 @@ func NewTokenEndpoint(cfg TokenEndpointConfig) (*TokenEndpoint, error) {
 	return te, nil
 }
 
+// Close releases the token endpoint's HTTP transport idle connections.
+// The JWKS fetcher is a long-lived http.Client that holds keep-alive
+// sockets to the operator's IDP; on graceful shutdown those connections
+// must be released so the process exits without warm sockets (OP #208).
+// Idempotent: a caller-supplied client whose Transport is not a
+// *http.Transport (e.g. a wrapping middleware) is left untouched.
+func (te *TokenEndpoint) Close() error {
+	if te == nil || te.cfg.HTTPClient == nil {
+		return nil
+	}
+	if tr, ok := te.cfg.HTTPClient.Transport.(*http.Transport); ok && tr != nil {
+		tr.CloseIdleConnections()
+	}
+	return nil
+}
+
 // ServeHTTP handles POST /token per RFC 6749 with the SMART Backend
 // Services profile.
 func (te *TokenEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
