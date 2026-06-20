@@ -21,7 +21,8 @@ import (
 //   - A check that exceeds its timeout is reported as failed with no
 //     retry, and the slow check does not block the others.
 //   - The failed list is the names of failing checks (sorted, deterministic).
-//   - shutdown_in_progress short-circuits to 503 with failed=["shutting_down"].
+//   - shutdown_in_progress short-circuits to 503 with status="shutting_down"
+//     (matches the liveness probe label) and failed=["shutting_down"].
 //   - 200 only when EVERY check passes.
 
 func TestReadyz_AllPassReturns200(t *testing.T) {
@@ -161,8 +162,8 @@ func TestReadyz_ShutdownInProgressShortCircuits(t *testing.T) {
 		t.Fatalf("status: got %d want 503", rr.Code)
 	}
 	body := decodeJSONStatus(t, rr.Result().Body)
-	if body["status"] != "unready" {
-		t.Fatalf("status field: got %q want \"unready\"", body["status"])
+	if body["status"] != "shutting_down" {
+		t.Fatalf("status field: got %q want \"shutting_down\"", body["status"])
 	}
 	failed := stringSlice(body["failed"])
 	if len(failed) != 1 || failed[0] != "shutting_down" {

@@ -66,6 +66,11 @@ func TestE2E_ConfigInterpolation_BootsWithEnvAndFilePlaceholders(t *testing.T) {
 	}
 
 	httpBind := "127.0.0.1:" + freePort(t)
+	// /healthz, /readyz, /startup live on the probe listener (S-118
+	// split-listener layout); the main http listener serves only the
+	// auth-gated FHIR routes. Bind the probe listener to a free port so
+	// the test does not collide with the production default 0.0.0.0:8081.
+	probeBind := "127.0.0.1:" + freePort(t)
 	yamlBody := fmt.Sprintf(`deployment:
   facility_id: e2e-interp
   environment: e2e
@@ -77,6 +82,7 @@ adapter:
 server:
   http:
     bind: %s
+    probe_bind: %s
     insecure: true
 lifecycle:
   shutdown_grace_period: 5s
@@ -89,7 +95,7 @@ codec:
       material: ${file:%s}
 auth:
   allow_dev_bypass: true
-`, httpBind, keyPath)
+`, httpBind, probeBind, keyPath)
 
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte(yamlBody), 0o600); err != nil {
@@ -114,9 +120,11 @@ auth:
 
 	// Poll /healthz until 200 — proves the binary parsed the config,
 	// substituted the placeholders, opened the real Postgres pool, and
-	// activated the real codec key.
+	// activated the real codec key. Probes live on the probe listener,
+	// not the auth-gated http listener (S-118), so polling probeBind
+	// is what the kubelet actually does in production.
 	deadline := time.Now().Add(45 * time.Second)
-	healthURL := "http://" + httpBind + "/healthz"
+	healthURL := "http://" + probeBind + "/healthz"
 	var lastErr error
 	var lastStatus int
 	for time.Now().Before(deadline) {

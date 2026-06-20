@@ -42,8 +42,13 @@ func newReadinessHandler(reg *registry, metrics MetricsEmitter, perCheckTimeout 
 
 func (h *readinessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Shutdown short-circuits without invoking any check (LLD §5.2).
+	// During the drain window the probe reports the same canonical
+	// status string the liveness probe emits ("shutting_down") so an
+	// orchestrator that scrapes either probe sees a consistent label;
+	// `failed: ["shutting_down"]` is preserved for backward
+	// compatibility with consumers that key off the failed[] list.
 	if h.reg.shutdownInProgress() {
-		writeJSONStatus(w, http.StatusServiceUnavailable, "unready", []string{"shutting_down"})
+		writeJSONStatus(w, http.StatusServiceUnavailable, "shutting_down", []string{"shutting_down"})
 		h.metrics.Inc(MetricProbeRequestsTotal, map[string]string{
 			"probe":       "readyz",
 			"status_code": "503",
