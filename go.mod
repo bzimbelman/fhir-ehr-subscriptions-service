@@ -1,11 +1,11 @@
 module github.com/bzimbelman/fhir-ehr-subscriptions-service
 
-go 1.22.0
+go 1.23
 
 require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/MicahParks/keyfunc/v3 v3.3.5
-	github.com/coder/websocket v1.8.12
+	github.com/coder/websocket v1.8.15
 	github.com/emersion/go-smtp v0.24.0
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
