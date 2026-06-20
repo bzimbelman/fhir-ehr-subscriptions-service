@@ -687,18 +687,30 @@ func (w *Worker) requeueAsTransient(ctx context.Context, row *repos.DeliveryRow,
 			w.logger.ErrorContext(ctx, "scheduler: deadletter update failed", slog.Any("err", err))
 			return
 		}
-		subID := row.SubscriptionID
-		corr := row.CorrelationID
-		if _, err := w.dl.Insert(ctx, tx, repos.DeadLetterRow{
-			Kind:           "delivery_exhausted",
-			SourceTable:    "deliveries",
-			SourceID:       row.ID,
-			SubscriptionID: &subID,
-			Reason:         decision.Reason,
-			CorrelationID:  &corr,
-		}); err != nil {
-			w.logger.ErrorContext(ctx, "scheduler: dead_letter insert failed", slog.Any("err", err))
-			return
+		// OP #342: same nil-dl guard as applyBailoutDecision (see comment
+		// there). Production always wires a real repo; the guard exists
+		// so a misconfigured probe Worker that finds itself on the
+		// max-attempts path does not crash the goroutine.
+		if w.dl != nil {
+			subID := row.SubscriptionID
+			corr := row.CorrelationID
+			if _, err := w.dl.Insert(ctx, tx, repos.DeadLetterRow{
+				Kind:           "delivery_exhausted",
+				SourceTable:    "deliveries",
+				SourceID:       row.ID,
+				SubscriptionID: &subID,
+				Reason:         decision.Reason,
+				CorrelationID:  &corr,
+			}); err != nil {
+				w.logger.ErrorContext(ctx, "scheduler: dead_letter insert failed", slog.Any("err", err))
+				return
+			}
+		} else {
+			w.logger.ErrorContext(ctx,
+				"scheduler: dead_letter insert skipped — Worker constructed with nil DeadLettersRepo (wiring bug, see OP #342)",
+				slog.String("delivery_id", row.ID.String()),
+				slog.String("reason", decision.Reason),
+			)
 		}
 	}
 
@@ -758,18 +770,41 @@ func (w *Worker) applyBailoutDecision(ctx context.Context, row *repos.DeliveryRo
 			w.logger.ErrorContext(ctx, "scheduler: deadletter update failed", slog.Any("err", err))
 			return
 		}
-		subID := row.SubscriptionID
-		corr := row.CorrelationID
-		if _, err := w.dl.Insert(ctx, tx, repos.DeadLetterRow{
-			Kind:           "delivery_exhausted",
-			SourceTable:    "deliveries",
-			SourceID:       row.ID,
-			SubscriptionID: &subID,
-			Reason:         reason,
-			CorrelationID:  &corr,
-		}); err != nil {
-			w.logger.ErrorContext(ctx, "scheduler: dead_letter insert failed", slog.Any("err", err))
-			return
+		// OP #342: production wiring (cmd/fhir-subs/wiring.go) always
+		// passes a real DeadLettersRepo so dl is non-nil at runtime. The
+		// e2e harness historically wired Workers with dl=nil for
+		// shutdown-only probes (engine_scheduler_drain_test.go), and a
+		// concurrent test sharing the same pgxpool let that probe Worker
+		// claim a real delivery row whose ehr_event had been retention-
+		// swept — driving requeueWithReason here and crashing on
+		// w.dl.Insert(...) with a nil-receiver panic. Guard the bookkeeping
+		// write so a misconfigured Worker still commits MarkDead (so the
+		// row reaches its terminal state and the recovery sweep does not
+		// repick it forever) and surfaces a loud ERROR so the wiring bug
+		// is visible in logs. The fix in the test (commit-mate of this
+		// guard) restores the proper repo wiring; this guard is the
+		// belt-and-braces so a future probe Worker cannot reintroduce
+		// the same crash.
+		if w.dl != nil {
+			subID := row.SubscriptionID
+			corr := row.CorrelationID
+			if _, err := w.dl.Insert(ctx, tx, repos.DeadLetterRow{
+				Kind:           "delivery_exhausted",
+				SourceTable:    "deliveries",
+				SourceID:       row.ID,
+				SubscriptionID: &subID,
+				Reason:         reason,
+				CorrelationID:  &corr,
+			}); err != nil {
+				w.logger.ErrorContext(ctx, "scheduler: dead_letter insert failed", slog.Any("err", err))
+				return
+			}
+		} else {
+			w.logger.ErrorContext(ctx,
+				"scheduler: dead_letter insert skipped — Worker constructed with nil DeadLettersRepo (wiring bug, see OP #342)",
+				slog.String("delivery_id", row.ID.String()),
+				slog.String("reason", reason),
+			)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
