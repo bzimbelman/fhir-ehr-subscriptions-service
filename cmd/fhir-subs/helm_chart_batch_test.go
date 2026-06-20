@@ -270,7 +270,7 @@ func (e *unexpectedSuccessError) Error() string {
 // stdout, which includes the NOTES.txt block.
 func helmInstallDryRun(t *testing.T, chartPath string, extra []string) string {
 	t.Helper()
-	args := append([]string{"install", "testrel", chartPath, "--dry-run", "--namespace", "default"}, extra...)
+	args := append([]string{"install", "testrel", chartPath, "--dry-run=client", "--namespace", "default"}, extra...)
 	cmd := exec.Command("helm", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
