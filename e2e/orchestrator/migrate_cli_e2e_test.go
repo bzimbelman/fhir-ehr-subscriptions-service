@@ -40,6 +40,7 @@ import (
 func TestE2E_MigrateCLI_AppliesAllAndIsIdempotent(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
+		// OP #259: env-gated skip — -short mode skips the testcontainers Postgres path.
 		t.Skip("short")
 	}
 
@@ -238,10 +239,12 @@ pipeline:
 func TestE2E_MakeMigrateUp_AppliesAllMigrations(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
+		// OP #259: env-gated skip — -short mode skips the make-driven migration path.
 		t.Skip("short")
 	}
 
 	if _, err := exec.LookPath("make"); err != nil {
+		// OP #259: env-gated skip — make not available on this runner.
 		t.Skipf("make not available on this runner: %v", err)
 	}
 

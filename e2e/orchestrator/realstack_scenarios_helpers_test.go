@@ -32,6 +32,7 @@ type rsScenarioCtx struct {
 func bootForScenario(t *testing.T, opts realstack.Options) *rsScenarioCtx {
 	t.Helper()
 	if err := realstack.CheckDocker(); err != nil {
+		// OP #259: env-gated skip — docker unavailable, scenario harness is testcontainers-driven.
 		t.Skipf("docker unavailable: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

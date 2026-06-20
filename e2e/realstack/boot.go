@@ -135,6 +135,7 @@ func CheckDocker() error {
 func Boot(ctx context.Context, t *testing.T, opts Options) *Stack {
 	t.Helper()
 	if err := CheckDocker(); err != nil {
+		// OP #259: env-gated skip — docker unavailable, real-stack harness is testcontainers-driven.
 		t.Skipf("docker unavailable: %v", err)
 	}
 

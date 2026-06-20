@@ -33,6 +33,7 @@ func dockerGate(t errSink, err error, allowNoDocker bool) {
 		return
 	}
 	if allowNoDocker {
+		// OP #259: env-gated skip — docker unavailable, E2E_ALLOW_NO_DOCKER=1 honored.
 		t.Skipf("docker required but unavailable; E2E_ALLOW_NO_DOCKER=1 honored: %v", err)
 		return
 	}
