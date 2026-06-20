@@ -29,7 +29,7 @@ func (s staticResolver) LookupIP(_ context.Context, _, _ string) ([]net.IP, erro
 func TestURLValidator_RejectsHTTPByDefault(t *testing.T) {
 	t.Parallel()
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
-	if err := v.Validate("http://example.com/hook"); err == nil {
+	if err := v.Validate(context.Background(), "http://example.com/hook"); err == nil {
 		t.Fatalf("expected http to be rejected by default")
 	}
 }
@@ -39,7 +39,7 @@ func TestURLValidator_AcceptsHTTPSPublicHost(t *testing.T) {
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		Resolver: staticResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}},
 	})
-	if err := v.Validate("https://example.com/hook"); err != nil {
+	if err := v.Validate(context.Background(), "https://example.com/hook"); err != nil {
 		t.Fatalf("expected https public host to pass, got %v", err)
 	}
 }
@@ -47,7 +47,7 @@ func TestURLValidator_AcceptsHTTPSPublicHost(t *testing.T) {
 func TestURLValidator_BlocksAWSMetadata(t *testing.T) {
 	t.Parallel()
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
-	err := v.Validate("http://169.254.169.254/latest/meta-data/")
+	err := v.Validate(context.Background(), "http://169.254.169.254/latest/meta-data/")
 	if err == nil {
 		t.Fatalf("expected metadata IP to be rejected")
 	}
@@ -56,7 +56,7 @@ func TestURLValidator_BlocksAWSMetadata(t *testing.T) {
 func TestURLValidator_BlocksAWSMetadataOverHTTPS(t *testing.T) {
 	t.Parallel()
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
-	err := v.Validate("https://169.254.169.254/")
+	err := v.Validate(context.Background(), "https://169.254.169.254/")
 	if err == nil {
 		t.Fatalf("expected metadata IP to be rejected even over https")
 	}
@@ -71,7 +71,7 @@ func TestURLValidator_BlocksLoopback(t *testing.T) {
 		"http://[::1]:5432/",
 		"http://0.0.0.0:80/",
 	} {
-		if err := v.Validate(raw); err == nil {
+		if err := v.Validate(context.Background(), raw); err == nil {
 			t.Errorf("expected %s to be rejected", raw)
 		}
 	}
@@ -86,7 +86,7 @@ func TestURLValidator_BlocksRFC1918(t *testing.T) {
 		"https://172.16.0.1/",
 		"https://192.168.1.1/",
 	} {
-		if err := v.Validate(raw); err == nil {
+		if err := v.Validate(context.Background(), raw); err == nil {
 			t.Errorf("expected %s to be rejected", raw)
 		}
 	}
@@ -99,7 +99,7 @@ func TestURLValidator_BlocksLinkLocalIPv6(t *testing.T) {
 		"https://[fe80::1]/",
 		"https://[fc00::1]/",
 	} {
-		if err := v.Validate(raw); err == nil {
+		if err := v.Validate(context.Background(), raw); err == nil {
 			t.Errorf("expected %s to be rejected", raw)
 		}
 	}
@@ -114,7 +114,7 @@ func TestURLValidator_RejectsExoticSchemes(t *testing.T) {
 		"ftp://example.com/",
 		"javascript:alert(1)",
 	} {
-		if err := v.Validate(raw); err == nil {
+		if err := v.Validate(context.Background(), raw); err == nil {
 			t.Errorf("expected %s to be rejected", raw)
 		}
 	}
@@ -125,7 +125,7 @@ func TestURLValidator_HostnameResolvesToPrivate_Blocked(t *testing.T) {
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		Resolver: staticResolver{ips: []net.IP{net.ParseIP("10.0.0.1")}},
 	})
-	if err := v.Validate("https://internal.example.com/"); err == nil {
+	if err := v.Validate(context.Background(), "https://internal.example.com/"); err == nil {
 		t.Fatalf("expected DNS->private to be rejected")
 	}
 }
@@ -136,7 +136,7 @@ func TestURLValidator_AllowHostBypassesPrivate(t *testing.T) {
 		AllowHosts: []string{"internal.example.com"},
 		Resolver:   staticResolver{ips: []net.IP{net.ParseIP("10.0.0.1")}},
 	})
-	if err := v.Validate("https://internal.example.com/"); err != nil {
+	if err := v.Validate(context.Background(), "https://internal.example.com/"); err != nil {
 		t.Fatalf("expected allow-listed host to bypass, got %v", err)
 	}
 }
@@ -147,7 +147,7 @@ func TestURLValidator_AllowHTTPOptIn(t *testing.T) {
 		AllowHTTP: true,
 		Resolver:  staticResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}},
 	})
-	if err := v.Validate("http://example.com/"); err != nil {
+	if err := v.Validate(context.Background(), "http://example.com/"); err != nil {
 		t.Fatalf("expected http to pass with AllowHTTP=true, got %v", err)
 	}
 }
@@ -157,7 +157,7 @@ func TestURLValidator_DNSError_Blocked(t *testing.T) {
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		Resolver: staticResolver{err: errors.New("nxdomain")},
 	})
-	if err := v.Validate("https://does-not-exist.example.com/"); err == nil {
+	if err := v.Validate(context.Background(), "https://does-not-exist.example.com/"); err == nil {
 		t.Fatalf("expected DNS-failure to be rejected")
 	}
 }
@@ -172,7 +172,7 @@ func TestURLValidator_RejectsEmptyAndMalformed(t *testing.T) {
 		"://example.com",
 		"https://exa mple.com/",
 	} {
-		if err := v.Validate(raw); err == nil {
+		if err := v.Validate(context.Background(), raw); err == nil {
 			t.Errorf("expected malformed %q to be rejected", raw)
 		}
 	}
@@ -183,7 +183,7 @@ func TestURLValidator_RejectsEmptyAndMalformed(t *testing.T) {
 func TestURLValidator_ReturnsSSRFSentinel(t *testing.T) {
 	t.Parallel()
 	v := handlers.NewURLValidator(handlers.URLValidatorConfig{})
-	err := v.Validate("http://169.254.169.254/")
+	err := v.Validate(context.Background(), "http://169.254.169.254/")
 	if err == nil {
 		t.Fatalf("expected error")
 	}

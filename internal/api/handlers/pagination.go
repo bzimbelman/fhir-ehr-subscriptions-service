@@ -6,6 +6,7 @@ package handlers
 import (
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,8 +38,13 @@ func decodeSubscriptionCursor(s string) (SubscriptionCursor, bool) {
 	}
 	nanosPart := string(raw[:idx])
 	idPart := string(raw[idx+1:])
-	var nanos int64
-	if _, scanErr := fmt.Sscanf(nanosPart, "%d", &nanos); scanErr != nil {
+	// strconv.ParseInt is strict — leading "+", trailing junk, or any
+	// non-decimal character fails. The cursor is a server-emitted token
+	// so the input shape is fully under our control; using strconv keeps
+	// the parse semantics consistent with parseCountParam (OP #189) and
+	// avoids fmt.Sscanf's permissive trailing-junk acceptance.
+	nanos, scanErr := strconv.ParseInt(nanosPart, 10, 64)
+	if scanErr != nil {
 		return SubscriptionCursor{}, false
 	}
 	id, err := uuid.Parse(idPart)

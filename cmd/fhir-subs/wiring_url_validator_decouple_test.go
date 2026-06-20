@@ -26,9 +26,11 @@ func (s staticResolverDecouple) LookupIP(_ context.Context, _, _ string) ([]net.
 // writeTempYAML is provided by config_test.go in the same package.
 
 // minimalConfigYAML returns the smallest YAML that loadConfig accepts
-// without erroring, plus an additional `extra` block the caller writes
-// in to exercise the field under test.
-func minimalConfigYAML(extra string) string {
+// without erroring. The caller-supplied `auth_extra` is merged into
+// the auth: block so the YAML never repeats a top-level key (yaml.v3
+// with KnownFields(true) rejects duplicates as of OP #205).
+// `topLevelExtra` lands as additional top-level YAML.
+func minimalConfigYAML(topLevelExtra string) string {
 	return `
 deployment:
   facility_id: f1
@@ -44,7 +46,7 @@ auth:
   audience: https://example.invalid
 topics:
   catalog_dir: /tmp/topics
-` + extra
+` + topLevelExtra
 }
 
 // TestConfig_URLValidatorAllowHTTPDecoupledFromInsecureJWKS — OP #184
@@ -63,13 +65,30 @@ topics:
 func TestConfig_URLValidatorAllowHTTPDecoupledFromInsecureJWKS(t *testing.T) {
 	t.Parallel()
 
-	yaml := minimalConfigYAML(`
+	// Build a YAML where auth.allow_insecure_jwks is true (one knob)
+	// and url_validator.allow_http is false (the other knob, default).
+	// We MUST emit the auth: block exactly once because yaml.v3 with
+	// KnownFields(true) rejects a duplicate top-level key (OP #205).
+	yaml := `
+deployment:
+  facility_id: f1
+adapter:
+  id: default
+server:
+  http:
+    bind: 127.0.0.1:0
+    insecure: true
+database:
+  url: postgres://example.invalid/db?sslmode=disable
 auth:
+  audience: https://example.invalid
   allow_insecure_jwks: true
+topics:
+  catalog_dir: /tmp/topics
 url_validator:
   allow_http: false
-`)
-	path := writeTempYAML(t,yaml)
+`
+	path := writeTempYAML(t, yaml)
 	cfg, err := loadConfig(path)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -100,7 +119,7 @@ func TestConfig_URLValidatorAllowHTTPInverse(t *testing.T) {
 url_validator:
   allow_http: true
 `)
-	path := writeTempYAML(t,yaml)
+	path := writeTempYAML(t, yaml)
 	cfg, err := loadConfig(path)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
@@ -128,7 +147,7 @@ url_validator:
   allow_hosts:
     - internal.corp
 `)
-	path := writeTempYAML(t,yaml)
+	path := writeTempYAML(t, yaml)
 	cfg, err := loadConfig(path)
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)

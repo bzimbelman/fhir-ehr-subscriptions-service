@@ -70,7 +70,7 @@ func TestDeliver_RevalidatesURLAtDeliveryTime(t *testing.T) {
 
 	// Create-time validation: simulate the API path that successfully
 	// validates the endpoint when the subscription is first POSTed.
-	if err := validator.Validate("https://victim.example.com/notify"); err != nil {
+	if err := validator.Validate(context.Background(), "https://victim.example.com/notify"); err != nil {
 		t.Fatalf("create-time Validate must pass: %v", err)
 	}
 
@@ -237,7 +237,7 @@ func TestDeliver_RevalidatesURLAtDeliveryTime_DNSError(t *testing.T) {
 	validator := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		Resolver: resolver,
 	})
-	if err := validator.Validate("https://flipper.example.com/notify"); err != nil {
+	if err := validator.Validate(context.Background(), "https://flipper.example.com/notify"); err != nil {
 		t.Fatalf("create-time Validate must pass: %v", err)
 	}
 

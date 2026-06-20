@@ -44,7 +44,7 @@ topics:
 	path := writeTempYAML(t, yaml)
 	cfg, err := loadConfig(path)
 	if err == nil {
-		t.Fatalf("loadConfig succeeded; expected error mentioning unknown 'databse' field. cfg.Extra=%v", cfg.Extra)
+		t.Fatalf("loadConfig succeeded; expected error mentioning unknown 'databse' field. cfg=%+v", cfg)
 	}
 	// The yaml.Decoder error from KnownFields(true) is shaped like
 	// "field databse not found in type ..." — be lenient about the

@@ -98,6 +98,16 @@ func (m *memSubsForBookkeeping) UpdateResource(_ context.Context, id uuid.UUID, 
 	return nil
 }
 
+func (m *memSubsForBookkeeping) HardDelete(_ context.Context, id uuid.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.rows[id]; !ok {
+		return nil
+	}
+	delete(m.rows, id)
+	return nil
+}
+
 func (m *memSubsForBookkeeping) UpdateStatus(_ context.Context, id uuid.UUID, status repos.SubscriptionStatus, errMsg string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

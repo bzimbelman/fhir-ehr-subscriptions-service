@@ -327,13 +327,30 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// API layer at step 7 reuses the same instance for create-time
 	// validation, so a hostname's create-time approval and delivery-
 	// time re-check share one policy surface.
+	//
+	// OP #184: AllowHTTP is now sourced from cfg.URLValidator.AllowHTTP
+	// (a dedicated url_validator.* block) NOT cfg.Auth.AllowInsecure.
+	// The two trust decisions are independent: an operator opting into
+	// insecure JWKS for a dev IDP must not implicitly open http:// rest-
+	// hook endpoints. Emit a WARN if BOTH switches are flipped on so an
+	// operator-visible audit line lands at startup.
+	if cfg.Auth.AllowInsecure && cfg.URLValidator.AllowHTTP {
+		logger.Warn("BOTH auth.allow_insecure_jwks AND url_validator.allow_http are true; insecure JWKS and plaintext rest-hook endpoints are independently gated and both are now enabled",
+			"auth.allow_insecure_jwks", cfg.Auth.AllowInsecure,
+			"url_validator.allow_http", cfg.URLValidator.AllowHTTP,
+		)
+	}
+	// OP #185 + legacy compat: AllowHosts is now sourced from
+	// cfg.URLValidator.AllowHosts (the new home). The legacy
+	// cfg.Auth.AllowSubscriberHosts list is preserved for backward
+	// compat — chart values and existing e2e configs still ship it —
+	// but operators should migrate to the dedicated url_validator
+	// block. Both lists merge.
+	allowHosts := append([]string(nil), cfg.URLValidator.AllowHosts...)
+	allowHosts = append(allowHosts, cfg.Auth.AllowSubscriberHosts...)
 	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
-		AllowHTTP: cfg.Auth.AllowInsecure, // dev convenience: if insecure JWKS allowed, allow http endpoints too
-		// OP #154 / #290: pipe operator-trusted internal hostnames or
-		// IP literals through. The demo uses this to allow
-		// `demo-subscriber` past the RFC1918 SSRF gate; e2e tests use
-		// it for 127.0.0.1 loopback receivers. Empty in production.
-		AllowHosts: cfg.Auth.AllowSubscriberHosts,
+		AllowHTTP:  cfg.URLValidator.AllowHTTP,
+		AllowHosts: allowHosts,
 	})
 	rhCh, err := chresthook.New(chresthook.Options{
 		UserAgent:      cfg.Channels.RestHook.UserAgent,
@@ -426,8 +443,12 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// creation) and the SPI seams for a real handshake do not exist yet
 	// (#114b adds them, #114c uses them). message stays on the default
 	// pending its own activation story.
+	// OP #184: the activator's AllowHTTP shares the URL validator's
+	// trust boundary, NOT the auth verifier's. Operators opt into
+	// insecure handshakes by flipping url_validator.allow_http, the
+	// same switch the create-time + delivery-time SSRF gate honours.
 	rhActivator := newRestHookActivator(restHookActivatorOptions{
-		AllowHTTP: cfg.Auth.AllowInsecure,
+		AllowHTTP: cfg.URLValidator.AllowHTTP,
 		Timeout:   cfg.Channels.RestHook.RequestTimeout,
 		Logger:    logger.With("component", "channel.resthook.activator"),
 	})
@@ -494,9 +515,14 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	if wsBindingTTL == 0 {
 		wsBindingTTL = 5 * time.Minute
 	}
+	// OP #188: plumb the page-size cap from cfg.Handlers into the
+	// PgSubscriptionsStore so a high-fan-out tenant cannot pull a
+	// multi-thousand-row resultset in one ListByClient call.
+	subsStore := handlers.NewPgSubscriptionsStore(pool).
+		WithMaxListByClientPageSize(cfg.Handlers.MaxListByClientPageSize)
 	deps := handlers.Deps{
 		Auth:          authMiddleware,
-		Subscriptions: handlers.NewPgSubscriptionsStore(pool),
+		Subscriptions: subsStore,
 		Topics:        handlers.NewPgTopicsStore(pool),
 		Events:        handlers.NewPgEventsStore(pool),
 		Deliveries:    handlers.NewPgDeliveriesStore(pool),
