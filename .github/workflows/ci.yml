@@ -103,6 +103,27 @@ jobs:
           fi
           echo "All //nolint directives carry an explanation."
 
+  prod-stub-lint:
+    name: prod-stub-lint (no test-time stubs in cmd/, internal/)
+    runs-on: ubuntu-latest
+    # Story #264 (H9 ProductionStubLint): surfaces test-time stubs that
+    # leaked into production code. Runs on every PR so findings are
+    # visible; intentionally NOT yet in build/docker `needs:` because
+    # W1 and the wiring stories own removing the current findings.
+    # Once the count reaches zero, promote to a hard gate by adding
+    # `prod-stub-lint` to `needs:` for `build` and `docker`.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # F84 needs git blame history
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: go run ./tools/prod-stub-lint
+        run: go run ./tools/prod-stub-lint
+        continue-on-error: true
+
   test:
     name: unit tests (race)
     runs-on: ubuntu-latest
