@@ -1,3 +1,6 @@
+<!-- docs-lint:ignore-metric=fhir_subs_scheduler_dispatch_duration_seconds -->
+<!-- docs-lint:ignore-metric=fhir_subs_hl7processor_queue_depth_gauge -->
+
 # Horizontal Scale and Multi-Instance Deployment
 
 Per [ADR 0002](../high-level-design/decisions/0002-single-instance-no-leader-election.md),

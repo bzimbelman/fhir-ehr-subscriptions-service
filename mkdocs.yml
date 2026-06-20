@@ -135,6 +135,13 @@ nav:
       - Horizontal Scale: operations/horizontal-scale.md
       - OTel Exporter Recipes: operations/otel-exporter-recipes.md
       - Production Readiness Audit: production-readiness-audit.md
+  - Adapters:
+      - Authoring Guide: adapter-authoring-guide.md
+      - Conformance Checklist: adapter-conformance-checklist.md
+      - Athena: ehr-adapters-vendors/athena/high-level-design.md
+      - Cerner: ehr-adapters-vendors/cerner/high-level-design.md
+      - eClinicalWorks: ehr-adapters-vendors/eclinicalworks/high-level-design.md
+      - Meditech: ehr-adapters-vendors/meditech/high-level-design.md
   - Project:
       - Repository Layout: repository-layout.md
       - Demo Walkthrough: subscription-sidecar-demo.md

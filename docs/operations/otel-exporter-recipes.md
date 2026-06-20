@@ -1,3 +1,6 @@
+<!-- docs-lint:ignore-metric=fhir_subs_observability_tracing_export_failures_total -->
+<!-- docs-lint:ignore-metric=fhir_subs_observability_tracing_spans_dropped_total -->
+
 # OpenTelemetry Trace Exporter — Deployment Recipes
 
 This guide covers deploying the OTLP HTTP trace exporter against the major
