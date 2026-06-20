@@ -353,6 +353,7 @@ func TestRealStack_NoGoLanguageFakes(t *testing.T) {
 func requireDocker(t *testing.T) {
 	t.Helper()
 	if err := realstack.CheckDocker(); err != nil {
+		// OP #259: env-gated skip — docker unavailable, real-stack harness is testcontainers-driven.
 		t.Skipf("docker unavailable: %v", err)
 	}
 }

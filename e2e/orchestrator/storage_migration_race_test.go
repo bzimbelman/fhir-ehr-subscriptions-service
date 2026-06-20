@@ -27,6 +27,7 @@ import (
 func TestE2E_Migrate_AdvisoryLockSerializesParallelRunners(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
+		// OP #259: env-gated skip — -short mode skips the testcontainers Postgres path.
 		t.Skip("short")
 	}
 

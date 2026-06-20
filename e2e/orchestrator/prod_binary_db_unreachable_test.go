@@ -34,6 +34,7 @@ import (
 // B-4.
 func TestE2E_ProdBinary_DBUnreachable_FailsLoud(t *testing.T) {
 	if testing.Short() {
+		// OP #259: env-gated skip — -short mode skips the testcontainers prod-binary path.
 		t.Skip("short")
 	}
 	dockerGate(t, harnessSetupErr, allowNoDocker)

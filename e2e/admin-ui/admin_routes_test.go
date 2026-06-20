@@ -60,8 +60,10 @@ import (
 func TestProductionAdminRoutes_AreReachableWithToken_DBGated(t *testing.T) {
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
+		// OP #259: env-gated skip — TEST_DATABASE_URL not set. OP #92 owns the
+		// underlying acceptance criterion (admin routes wired into production binary).
 		t.Skip("TEST_DATABASE_URL not set — skipping production-binary admin route assertion. " +
-			"Story #92 acceptance criterion 1 (admin routes wired into production binary) is " +
+			"OP #92 acceptance criterion 1 (admin routes wired into production binary) is " +
 			"covered by TestAdminWiringMirror_AdminRoutesMountedAtSameRouter when the DB is " +
 			"unavailable. To run this gated test, set TEST_DATABASE_URL to a writable Postgres URL.")
 	}

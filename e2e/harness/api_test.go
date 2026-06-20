@@ -129,7 +129,7 @@ func TestHarness_APIServer_ExposesBearer(t *testing.T) {
 // lives in TestE2E_ProdBinary_ServesSubscriptionAPI; this test pins the
 // minimal harness-side contract.
 func TestHarness_StartAPIServer_RealVerifier_RejectsNoToken(t *testing.T) {
-	t.Skip("Phase B drives this green by adding harness-minted bearer plumbing; left as a TODO assertion until then")
+	t.Skip("OP #146 Phase B drives this green by adding harness-minted bearer plumbing; left as a TODO assertion until then")
 
 	// The body below is the post-#146 shape. Phase B replaces the t.Skip
 	// above with the real wiring. Keeping the code as documentation of

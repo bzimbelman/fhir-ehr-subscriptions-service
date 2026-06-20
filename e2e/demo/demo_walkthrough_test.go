@@ -152,11 +152,13 @@ func fetchJournal(url string) ([]map[string]any, error) {
 // set, the test t.Skips. Otherwise it t.Fatalfs — CI must hit Docker.
 func TestDemoWalkthroughDeliversNotifications(t *testing.T) {
 	if testing.Short() {
+		// OP #259: env-gated skip — -short mode skips the slow docker-compose path.
 		t.Skip("docker-compose walkthrough is slow; skipped in -short mode")
 	}
 	allowNoDocker := os.Getenv("E2E_ALLOW_NO_DOCKER") == "1"
 	if err := dockerAvailable(); err != nil {
 		if allowNoDocker {
+			// OP #259: env-gated skip — docker unavailable, E2E_ALLOW_NO_DOCKER=1 honored.
 			t.Skipf("docker unavailable; E2E_ALLOW_NO_DOCKER=1 honored: %v", err)
 		}
 		t.Fatalf("docker required but unavailable; set E2E_ALLOW_NO_DOCKER=1 to skip locally: %v", err)
