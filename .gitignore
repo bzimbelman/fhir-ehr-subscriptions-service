@@ -6,8 +6,10 @@
 /cmd/demo-subscriber/demo-subscriber
 /cmd/test-resthook-subscriber/test-resthook-subscriber
 /cmd/test-ws-subscriber/test-ws-subscriber
+/cmd/test-mllp-control-plane/test-mllp-control-plane
 /test-resthook-subscriber
 /test-ws-subscriber
+/test-mllp-control-plane
 *.exe
 *.dll
 *.so

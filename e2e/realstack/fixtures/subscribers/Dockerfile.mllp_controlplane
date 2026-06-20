@@ -1,0 +1,23 @@
+# Dockerfile for cmd/test-mllp-control-plane.
+#
+# Build context is the repo root. Two-stage build keeps the runtime
+# image small and avoids the build toolchain on the captured-attack
+# surface. Mirrors Dockerfile.resthook and Dockerfile.ws so the harness
+# fixtures are uniform.
+
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/test-mllp-control-plane ./cmd/test-mllp-control-plane
+RUN printf '#!/bin/sh\nwget -qO- http://127.0.0.1:8093/healthz >/dev/null 2>&1\n' > /out/test-mllp-control-plane-healthcheck \
+    && chmod +x /out/test-mllp-control-plane-healthcheck
+
+FROM alpine:3.19
+RUN apk add --no-cache wget ca-certificates
+COPY --from=build /out/test-mllp-control-plane /usr/local/bin/test-mllp-control-plane
+COPY --from=build /out/test-mllp-control-plane-healthcheck /usr/local/bin/test-mllp-control-plane-healthcheck
+EXPOSE 8093
+ENTRYPOINT ["/usr/local/bin/test-mllp-control-plane"]
+CMD ["-addr", ":8093"]

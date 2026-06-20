@@ -257,5 +257,37 @@ services:
       retries: 30
       start_period: 5s
 
+  # Real test MLLP scripted control plane — built from
+  # cmd/test-mllp-control-plane. Replaces the legacy
+  # e2e/mockehr.ControlPlane in-process fake. Accepts POST /scenarios/*
+  # JSON requests, synthesizes HL7 v2 frames (ADT/ORM/ORU), and emits
+  # them over a real TCP socket to the prod binary's MLLP listener.
+  # FHIRSUBS_MLLP_TARGET is set by the realstack harness once the prod
+  # binary's MLLP port is allocated; the container can reach the host
+  # via host.docker.internal (host-gateway alias for Linux runners).
+  #
+  # The "mllp" compose profile keeps this service out of the default
+  # `up --wait` cycle so non-MLLP test runs do not pay the build cost.
+  # The harness brings it up explicitly when Boot is called with
+  # EnableMLLP=true.
+  test-mllp-control-plane:
+    profiles: ["mllp"]
+    build:
+      context: ../..
+      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.mllp_controlplane
+    image: fhir-subs-test-mllp-control-plane:dev
+    environment:
+      FHIRSUBS_MLLP_TARGET: ${FHIRSUBS_MLLP_TARGET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8093"
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/test-mllp-control-plane-healthcheck"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+
 volumes:
   otel-spans:
