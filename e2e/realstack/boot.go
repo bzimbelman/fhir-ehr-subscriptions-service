@@ -86,6 +86,7 @@ type Stack struct {
 	WSSubscriber       SubscriberHandle
 	TokenMint          TokenMintHandle
 	Binary             BinaryHandle
+	MLLPControlPlane   MLLPControlPlaneHandle
 
 	project    string
 	composeDir string
@@ -217,6 +218,17 @@ func Boot(ctx context.Context, t *testing.T, opts Options) *Stack {
 		if err := s.provisionTestMintClient(bootCtx); err != nil {
 			t.Cleanup(s.Close)
 			t.Fatalf("provision test-token-mint client: %v", err)
+		}
+		// Bring up the MLLP scripted control plane container after the
+		// prod binary's MLLP listener has a host-side address. The
+		// container reaches the host's MLLP port via host.docker.internal
+		// (host-gateway alias) and is gated behind the "mllp" compose
+		// profile so non-MLLP test runs skip the build.
+		if opts.EnableMLLP {
+			if err := s.launchMLLPControlPlane(bootCtx); err != nil {
+				t.Cleanup(s.Close)
+				t.Fatalf("launch mllp control plane: %v", err)
+			}
 		}
 	}
 
@@ -586,6 +598,64 @@ auth:
 	}); err != nil {
 		s.binaryStop()
 		return fmt.Errorf("/readyz never returned 200: %w", err)
+	}
+	return nil
+}
+
+// launchMLLPControlPlane brings up the test-mllp-control-plane
+// container and resolves its host-published port. The container is
+// declared under the "mllp" compose profile so the default
+// `up --build --wait` cycle skips it; this function is the explicit
+// opt-in path.
+//
+// The container reaches the prod binary's MLLP listener on the host
+// via host.docker.internal:<port> — the docker-compose service entry
+// declares a host-gateway alias for Linux runners; macOS docker
+// resolves the name natively.
+func (s *Stack) launchMLLPControlPlane(ctx context.Context) error {
+	if s.Binary.MLLPAddr == "" {
+		return fmt.Errorf("EnableMLLP=true but Binary.MLLPAddr is empty")
+	}
+	// Translate 127.0.0.1:<port> into host.docker.internal:<port>.
+	_, port, ok := strings.Cut(s.Binary.MLLPAddr, ":")
+	if !ok {
+		return fmt.Errorf("Binary.MLLPAddr %q is not host:port", s.Binary.MLLPAddr)
+	}
+	target := "host.docker.internal:" + port
+
+	// Bring the service up via the "mllp" profile with the resolved
+	// target injected as env. --build ensures the image exists; --wait
+	// blocks on the healthcheck.
+	args := []string{"--profile", "mllp", "up", "-d", "--build", "--wait", "--wait-timeout", "60", "test-mllp-control-plane"}
+	cmd := composeCommand(ctx, s.composeDir, s.project, args...)
+	cmd.Env = append(cmd.Env, "FHIRSUBS_MLLP_TARGET="+target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker compose up test-mllp-control-plane: %v\n%s", err, out)
+	}
+
+	// Resolve the host port for the control plane.
+	addr, err := composeServiceAddr(ctx, s.composeDir, s.project, "test-mllp-control-plane", "8093/tcp")
+	if err != nil {
+		return fmt.Errorf("resolve test-mllp-control-plane port: %w", err)
+	}
+	s.MLLPControlPlane.HTTPAddr = addr
+	s.MLLPControlPlane.URL = "http://" + addr
+
+	// Sanity probe — the healthcheck already waited, but a final dial
+	// gives a clearer error when the env injection failed and the
+	// binary exited at startup.
+	if err := retryUntil(ctx, 15*time.Second, func() error {
+		resp, herr := http.Get(s.MLLPControlPlane.URL + "/healthz")
+		if herr != nil {
+			return herr
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("status %d", resp.StatusCode)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("test-mllp-control-plane /healthz never returned 200: %w", err)
 	}
 	return nil
 }

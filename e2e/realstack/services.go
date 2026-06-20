@@ -155,6 +155,23 @@ type BinaryHandle struct {
 	MLLPAddr string
 }
 
+// MLLPControlPlaneHandle exposes the real test-mllp-control-plane
+// container. The container runs cmd/test-mllp-control-plane and accepts
+// POST /scenarios/* JSON requests that synthesize HL7 v2 frames over a
+// real TCP socket to the prod binary's MLLP listener (Stack.Binary.MLLPAddr).
+//
+// Populated only when Boot is called with Options{EnableMLLP: true};
+// otherwise zero-valued. The harness brings the container up via the
+// "mllp" compose profile after the binary's MLLP port is allocated and
+// before Boot returns.
+type MLLPControlPlaneHandle struct {
+	// HTTPAddr is host:port of the control plane's HTTP listener as
+	// resolved from `docker compose port`. Tests dial this address.
+	HTTPAddr string
+	// URL is the http base URL form: "http://<HTTPAddr>".
+	URL string
+}
+
 // RateLimit is the operator-facing shape for a per-client token
 // bucket the harness installs on the production binary's auth
 // middleware. Mirrors cmd/fhir-subs.RateLimitConfig so what callers
