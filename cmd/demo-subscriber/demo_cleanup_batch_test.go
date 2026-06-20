@@ -71,13 +71,14 @@ func TestDemoSubscriber_NoE2EImports(t *testing.T) {
 	}
 }
 
-// TestPostSubscription_PicksR5OnlyChannelShape asserts OP #157:
-// the Subscription body MUST emit the R5 shape (top-level
-// `channelType` + `endpoint`) and MUST NOT include the legacy
-// R4B `channel:{type,endpoint}` block. Carrying both makes the
-// resource brittle against any stricter validator that the
-// bridge or downstream consumer might add.
-func TestPostSubscription_PicksR5OnlyChannelShape(t *testing.T) {
+// TestPostSubscription_PicksSingleChannelShape asserts OP #157:
+// the Subscription body MUST emit a SINGLE channel-spec shape, not
+// both R4B `channel:{type,endpoint}` AND R5-style top-level
+// `channelType`+`endpoint`. The bridge's JSON schema today requires
+// the R4B `channel` block, so that is the shape we keep — the test
+// fails if the body adds duplicate top-level R5 fields OR if the
+// `channel` block goes missing.
+func TestPostSubscription_PicksSingleChannelShape(t *testing.T) {
 	t.Parallel()
 
 	var captured []byte
@@ -85,9 +86,9 @@ func TestPostSubscription_PicksR5OnlyChannelShape(t *testing.T) {
 		body := make([]byte, 64*1024)
 		n, _ := r.Body.Read(body)
 		captured = body[:n]
-		w.Header().Set("Location", "/Subscription/r5-only")
+		w.Header().Set("Location", "/Subscription/single")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":"r5-only"}`))
+		_, _ = w.Write([]byte(`{"id":"single"}`))
 	}))
 	defer srv.Close()
 
@@ -107,18 +108,24 @@ func TestPostSubscription_PicksR5OnlyChannelShape(t *testing.T) {
 	if err := json.Unmarshal(captured, &sub); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
-	if _, ok := sub["channel"]; ok {
-		t.Errorf("OP #157: Subscription body must not include legacy R4B `channel` block; got %v", sub["channel"])
-	}
-	ct, ok := sub["channelType"].(map[string]any)
+	// Single source of truth: the R4B `channel` block.
+	channel, ok := sub["channel"].(map[string]any)
 	if !ok {
-		t.Fatalf("OP #157: Subscription body must include R5 `channelType` map; got %v", sub["channelType"])
+		t.Fatalf("OP #157: Subscription body must include the bridge-required `channel` block; got %v", sub["channel"])
 	}
-	if ct["code"] != "rest-hook" {
-		t.Errorf("OP #157: channelType.code: got %v want rest-hook", ct["code"])
+	if channel["type"] != "rest-hook" {
+		t.Errorf("OP #157: channel.type: got %v want rest-hook", channel["type"])
 	}
-	if sub["endpoint"] != "http://demo-subscriber:9090/hook/sub-1" {
-		t.Errorf("OP #157: top-level endpoint missing or wrong: %v", sub["endpoint"])
+	if channel["endpoint"] != "http://demo-subscriber:9090/hook/sub-1" {
+		t.Errorf("OP #157: channel.endpoint: got %v", channel["endpoint"])
+	}
+	// The duplicate R5 fields must be absent — that was the
+	// "both shapes at once" hazard the OP called out.
+	if _, present := sub["channelType"]; present {
+		t.Errorf("OP #157: top-level `channelType` must not be emitted alongside the `channel` block; got %v", sub["channelType"])
+	}
+	if _, present := sub["endpoint"]; present {
+		t.Errorf("OP #157: top-level `endpoint` must not be emitted alongside the `channel` block; got %v", sub["endpoint"])
 	}
 }
 

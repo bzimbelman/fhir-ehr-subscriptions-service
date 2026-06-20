@@ -96,23 +96,25 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 		channelType = "rest-hook"
 	}
 
-	// OP #157: emit the R5 channel shape only.
-	// FHIR R5 SubscriptionResource encodes the channel as a top-level
-	// `channelType` Coding plus a top-level `endpoint` URL. The
-	// pre-R5 (R4B / DSTU draft) shape used a nested
-	// `channel: {type, endpoint}` block. Carrying both at once made
-	// the resource pass present-day permissive validators but
-	// brittle against any future stricter validator, and was already
-	// inconsistent with the bridge's R5-supported path. Pick one —
-	// R5 — and document the choice so future copy-pasters do not
-	// reintroduce the legacy block.
+	// OP #157: emit a single channel-spec shape.
+	// The bridge's Subscription JSON schema (internal/api/schemas/
+	// subscription.schema.json) requires the R4B/DSTU `channel`
+	// object — that is the production-supported path today. Future
+	// schema work to add full R5 support is tracked separately;
+	// when that lands, flip the demo CLI to top-level `channelType`
+	// + `endpoint`. Until then, picking the legacy block as the
+	// single source of truth keeps the demo working AND removes
+	// the brittle "both shapes at once" the original bug
+	// (inventory line 118) called out.
 	body := map[string]any{
 		"resourceType": "Subscription",
 		"status":       "requested",
 		"topic":        cfg.Topic,
-		"channelType":  map[string]any{"code": channelType},
-		"endpoint":     cfg.Endpoint,
 		"content":      "full-resource",
+		"channel": map[string]any{
+			"type":     channelType,
+			"endpoint": cfg.Endpoint,
+		},
 	}
 	if len(filters) > 0 {
 		filterBy := make([]any, 0, len(filters))

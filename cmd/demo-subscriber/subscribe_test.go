@@ -71,20 +71,25 @@ func TestPostSubscription_BuildsRestHookBody(t *testing.T) {
 	if sub["topic"] != "http://demo.org/topics/lab-results" {
 		t.Errorf("topic: got %v", sub["topic"])
 	}
-	if sub["endpoint"] != "http://127.0.0.1:9000/hook/sub-1" {
-		t.Errorf("endpoint: got %v", sub["endpoint"])
-	}
-	// OP #157: the body now emits the R5 shape only — top-level
-	// channelType + endpoint, no nested R4B `channel` block.
-	if _, present := sub["channel"]; present {
-		t.Errorf("OP #157: legacy R4B `channel` block must not be emitted; got %v", sub["channel"])
-	}
-	channelType, ok := sub["channelType"].(map[string]any)
+	// OP #157: single channel-spec shape — the bridge schema
+	// requires the R4B `channel` block, so that is the only shape
+	// the body emits. Top-level R5 `channelType`/`endpoint` are
+	// absent (the duplicate state was the hazard the OP called out).
+	channel, ok := sub["channel"].(map[string]any)
 	if !ok {
-		t.Fatalf("channelType missing or wrong type: %v", sub["channelType"])
+		t.Fatalf("channel missing or wrong type: %v", sub["channel"])
 	}
-	if channelType["code"] != "rest-hook" {
-		t.Errorf("channelType.code: got %v want rest-hook", channelType["code"])
+	if channel["type"] != "rest-hook" {
+		t.Errorf("channel.type: got %v want rest-hook", channel["type"])
+	}
+	if channel["endpoint"] != "http://127.0.0.1:9000/hook/sub-1" {
+		t.Errorf("channel.endpoint: got %v", channel["endpoint"])
+	}
+	if _, present := sub["channelType"]; present {
+		t.Errorf("OP #157: top-level channelType must not duplicate the `channel` block; got %v", sub["channelType"])
+	}
+	if _, present := sub["endpoint"]; present {
+		t.Errorf("OP #157: top-level endpoint must not duplicate the `channel` block; got %v", sub["endpoint"])
 	}
 	// Filter is preserved in filterBy[].value with name=patient.
 	filterBy, ok := sub["filterBy"].([]any)
