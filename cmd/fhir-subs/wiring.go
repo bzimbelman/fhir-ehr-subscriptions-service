@@ -62,6 +62,13 @@ type productionRuntime struct {
 	catalogProv *matcher.AtomicCatalogProvider
 	topicsDir   string
 
+	// deps is the effective handlers.Deps the API router was built
+	// with. Stored so wiring tests can assert that Config knobs
+	// reached the live Deps without tunnelling through the chi
+	// closure (stories #176-#181). Read-only after buildProductionRuntime
+	// returns.
+	deps handlers.Deps
+
 	// reloadTopicCatalog is the topic-catalog hot-apply hook. The
 	// reload coordinator (run.go) invokes it after a successful whole-
 	// config reload (story #151). Nil-safe: empty when production
@@ -482,25 +489,57 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		return nil, fmt.Errorf("wiring: auth.audience is empty and auth.allow_dev_bypass is false; refusing to install no-op auth")
 	}
 
+	baseURL, wsBaseURL := derivePublicURLs(cfg)
+	wsBindingTTL := cfg.API.WSBindingTTL
+	if wsBindingTTL == 0 {
+		wsBindingTTL = 5 * time.Minute
+	}
 	deps := handlers.Deps{
-		Auth:                authMiddleware,
-		Subscriptions:       handlers.NewPgSubscriptionsStore(pool),
-		Topics:              handlers.NewPgTopicsStore(pool),
-		Events:              handlers.NewPgEventsStore(pool),
-		Deliveries:          handlers.NewPgDeliveriesStore(pool),
-		WsTokens:            handlers.NewPgWsBindingTokensStore(pool),
-		Audit:               handlers.NewChainedAuditStore(obsMod.AuditWriter()),
-		Channels:            channels,
-		Metrics:             apiMetrics,
+		Auth:          authMiddleware,
+		Subscriptions: handlers.NewPgSubscriptionsStore(pool),
+		Topics:        handlers.NewPgTopicsStore(pool),
+		Events:        handlers.NewPgEventsStore(pool),
+		Deliveries:    handlers.NewPgDeliveriesStore(pool),
+		WsTokens:      handlers.NewPgWsBindingTokensStore(pool),
+		Audit:         handlers.NewChainedAuditStore(obsMod.AuditWriter()),
+		Channels:      channels,
+		Metrics:       apiMetrics,
+		// Logger threads through to handlers' activation-side error
+		// path so failures the API can't surface to the client land in
+		// structured logs instead of being silently dropped (story #177).
+		Logger:              logger.With("component", "api"),
 		Now:                 func() time.Time { return time.Now().UTC() },
-		WSBindingTTL:        5 * time.Minute,
-		BaseURL:             "https://" + cfg.Server.HTTP.Bind,
-		WSBaseURL:           "wss://" + cfg.Server.HTTP.Bind + "/ws",
+		WSBindingTTL:        wsBindingTTL,
+		BaseURL:             baseURL,
+		WSBaseURL:           wsBaseURL,
 		ServerVersion:       Version,
 		URLValidator:        urlValidator,
 		LifecycleCtx:        ctx,
 		ActivationTimeout:   30 * time.Second,
 		ActivationWaitGroup: &rt.activationWG,
+		// API tunables (story #178). Zero values fall back to the
+		// handlers package defaults via RegisterRoutes' applyDefaults,
+		// so operators who omit api.* keep legacy behavior.
+		SearchPageSize:        cfg.API.SearchPageSize,
+		SearchMaxPageSize:     cfg.API.SearchMaxPageSize,
+		EventReplayPageSize:   cfg.API.EventReplayPageSize,
+		MaxStatusBulkIDs:      cfg.API.MaxStatusBulkIDs,
+		MaxBodyBytes:          cfg.API.MaxBodyBytes,
+		MaxSchemaErrorBytes:   cfg.API.MaxSchemaErrorBytes,
+		AuditMaxBytes:         cfg.API.AuditMaxBytes,
+		FHIRVersion:           cfg.API.FHIRVersion,
+		SupportedFHIRVersions: cfg.API.SupportedFHIRVersions,
+		// SMART security (stories #178/#181). JWKSURL falls back to
+		// {BaseURL}/.well-known/jwks.json so the JWKS document we
+		// serve below is also the value rendered into
+		// CapabilityStatement.
+		JWKSURL: deriveJWKSURL(cfg.API.JWKSURL, baseURL),
+	}
+	if tokenSrv != nil && cfg.Auth.TokenURL != "" {
+		// Render the operator-supplied token endpoint into the SMART
+		// security extension (P1.7). Empty TokenURL leaves the
+		// extension absent, matching legacy behavior.
+		deps.TokenEndpointURL = cfg.Auth.TokenURL
 	}
 
 	// Story #104 (S-3.3): plug per-client token buckets into the chi
@@ -516,6 +555,12 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// Mount /metrics on the chi router so Prometheus scrapes against
 	// the same HTTP listener as the FHIR API (story #94 AC #3).
 	r.Handle("/metrics", obsMod.PrometheusHandler())
+	// Story #181: mount /.well-known/jwks.json on the public mux. The
+	// SMART security extension advertises this URL; clients that
+	// resolve it MUST get a JSON document with a top-level "keys"
+	// array. With HS256 signing the array is empty (the secret is
+	// not publishable); the path itself is the contract.
+	r.Method(http.MethodGet, "/.well-known/jwks.json", newJWKSHandler())
 	// Story #93 / S-2.1: mount the public routes (today: just
 	// /metadata for FHIR conformance probes) BEFORE RegisterRoutes
 	// installs the auth-protected group. chi serves the bare-router
@@ -554,6 +599,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	})
 
 	rt.router = r
+	rt.deps = deps
 
 	// --- 8. MLLP listener (optional) ------------------------------------
 	if len(cfg.MLLP.Listeners) > 0 {
@@ -696,6 +742,14 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 				Min:         500 * time.Millisecond,
 				MaxAttempts: 8,
 			},
+			// Story #199: surface the operator-tunable knobs.
+			// Zero values fall through to scheduler.applyDefaults
+			// (30s recovery, 5m stuck, 1 dispatch concurrency) so
+			// configs that omit pipeline.scheduler.* keep legacy
+			// behavior.
+			RecoveryInterval:    cfg.Pipeline.Scheduler.RecoveryInterval,
+			StuckThreshold:      cfg.Pipeline.Scheduler.StuckThreshold,
+			DispatchConcurrency: cfg.Pipeline.Scheduler.DispatchConcurrency,
 		},
 		scheduler.Options{
 			Logger:           logger.With("component", "scheduler"),

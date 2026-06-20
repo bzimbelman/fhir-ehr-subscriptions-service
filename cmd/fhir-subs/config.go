@@ -39,6 +39,7 @@ type Config struct {
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	Audit      AuditConfig      `yaml:"audit"`
 	Hydration  HydrationConfig  `yaml:"hydration"`
+	API        APIConfig        `yaml:"api"`
 
 	// Extra captures anything not modeled above so a stricter loader can
 	// claim it later without this thin loader rejecting valid configs.
@@ -65,6 +66,48 @@ type ConfigSource struct {
 	// LogLevelOverride mirrors --log-level. Empty when the flag was
 	// not passed.
 	LogLevelOverride string
+}
+
+// APIConfig models api.* fields — the operator-tunable knobs the API
+// handlers consume at request time. Every field maps 1:1 onto a
+// handlers.Deps field (see internal/api/handlers/router.go). Zero values
+// fall back to the per-field DefaultX constants in the handlers
+// package, preserving legacy behavior when a YAML omits the block.
+//
+// Stories #178 / #179 / #180 surface these knobs so operators can tune
+// the API without recompiling. Story #181 adds JWKSURL which is also
+// rendered into CapabilityStatement and served at /.well-known/jwks.json.
+type APIConfig struct {
+	// Pagination (story #178).
+	SearchPageSize      int `yaml:"search_page_size"`
+	SearchMaxPageSize   int `yaml:"search_max_page_size"`
+	EventReplayPageSize int `yaml:"event_replay_page_size"`
+	MaxStatusBulkIDs    int `yaml:"max_status_bulk_ids"`
+
+	// Byte caps (story #178).
+	MaxBodyBytes        int64 `yaml:"max_body_bytes"`
+	MaxSchemaErrorBytes int   `yaml:"max_schema_error_bytes"`
+	AuditMaxBytes       int   `yaml:"audit_max_bytes"`
+
+	// WSBindingTTL is the lifetime of issued ws-binding tokens
+	// (story #180). Zero falls back to handlers' default (5m).
+	WSBindingTTL time.Duration `yaml:"ws_binding_ttl"`
+
+	// FHIR identity (stories #178, #181).
+	FHIRVersion           string   `yaml:"fhir_version"`
+	SupportedFHIRVersions []string `yaml:"supported_fhir_versions"`
+
+	// Public URLs (story #179). When empty, BaseURL/WSBaseURL are
+	// derived from server.http.bind: scheme is "http"/"ws" when
+	// server.http.insecure is true, "https"/"wss" otherwise; host
+	// comes from server.http.bind verbatim.
+	BaseURL   string `yaml:"base_url"`
+	WSBaseURL string `yaml:"ws_base_url"`
+
+	// JWKSURL is the absolute URL of the server's JWKS document
+	// (story #181). Rendered into CapabilityStatement.security and
+	// served at the /.well-known/jwks.json path.
+	JWKSURL string `yaml:"jwks_url"`
 }
 
 // HydrationConfig models hydration.* fields. Story #98: the FHIR base
@@ -351,9 +394,29 @@ type PipelineConfig struct {
 }
 
 // StageConfig is the per-stage pipeline tunables.
+//
+// RecoveryInterval / StuckThreshold / DispatchConcurrency are read only
+// by the scheduler stage today (story #199); other stages ignore them.
+// Keeping them on the shared shape avoids a parallel SchedulerStageConfig
+// type and lets future stages reuse the same operator surface without a
+// schema break.
 type StageConfig struct {
 	ClaimBatchSize   int32         `yaml:"claim_batch_size"`
 	IdlePollInterval time.Duration `yaml:"idle_poll_interval"`
+
+	// RecoveryInterval is how often the scheduler's recovery sweep
+	// runs to reset rows stuck in 'delivering' beyond StuckThreshold.
+	// Zero falls back to the scheduler's package default (30s).
+	// Story #199.
+	RecoveryInterval time.Duration `yaml:"recovery_interval"`
+	// StuckThreshold is the minimum age a 'delivering' row must reach
+	// before the recovery sweep flips it back to 'pending'. Zero falls
+	// back to the scheduler's package default (5m). Story #199.
+	StuckThreshold time.Duration `yaml:"stuck_threshold"`
+	// DispatchConcurrency bounds how many dispatchOne calls per batch
+	// run in parallel. Zero falls back to the scheduler's package
+	// default (1 = serial). Story #199.
+	DispatchConcurrency int `yaml:"dispatch_concurrency"`
 }
 
 // ChannelsConfig models channels.* fields. Each channel block is
@@ -1251,6 +1314,91 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Channels.Message.TLSMinVersion = uint16(n)
+
+		// API tunables (stories #178/#179/#180/#181).
+		case "api.search_page_size":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.SearchPageSize = n
+		case "api.search_max_page_size":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.SearchMaxPageSize = n
+		case "api.event_replay_page_size":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.EventReplayPageSize = n
+		case "api.max_status_bulk_ids":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.MaxStatusBulkIDs = n
+		case "api.max_body_bytes":
+			n, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.MaxBodyBytes = n
+		case "api.max_schema_error_bytes":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.MaxSchemaErrorBytes = n
+		case "api.audit_max_bytes":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.AuditMaxBytes = n
+		case "api.ws_binding_ttl":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.WSBindingTTL = d
+		case "api.fhir_version":
+			cfg.API.FHIRVersion = val
+		case "api.supported_fhir_versions":
+			var vs []string
+			if err := yaml.Unmarshal([]byte(val), &vs); err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.API.SupportedFHIRVersions = vs
+		case "api.base_url":
+			cfg.API.BaseURL = val
+		case "api.ws_base_url":
+			cfg.API.WSBaseURL = val
+		case "api.jwks_url":
+			cfg.API.JWKSURL = val
+
+		// Pipeline scheduler tunables (story #199).
+		case "pipeline.scheduler.recovery_interval":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.RecoveryInterval = d
+		case "pipeline.scheduler.stuck_threshold":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.StuckThreshold = d
+		case "pipeline.scheduler.dispatch_concurrency":
+			n, err := strconv.Atoi(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Pipeline.Scheduler.DispatchConcurrency = n
+
 		default:
 			return fmt.Errorf("--set %s: unsupported key (this loader is minimal)", key)
 		}
