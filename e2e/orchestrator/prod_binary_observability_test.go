@@ -190,11 +190,11 @@ func TestE2E_ProdBinary_OTLPExporterSendsSpan(t *testing.T) {
 
 	// Trigger spans by hitting a few endpoints.
 	for i := 0; i < 5; i++ {
-		resp, err := http.Get(bin.HTTPURL() + "/healthz")
+		resp, err := http.Get(bin.ProbeURL() + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 		}
-		resp, err = http.Get(bin.HTTPURL() + "/readyz")
+		resp, err = http.Get(bin.ProbeURL() + "/readyz")
 		if err == nil {
 			_ = resp.Body.Close()
 		}

@@ -45,7 +45,7 @@ func TestE2E_ProdBinary_GracefulShutdown(t *testing.T) {
 
 	// Pre-shutdown sanity: /readyz reports 200.
 	{
-		resp, err := http.Get(bin.HTTPURL() + "/readyz")
+		resp, err := http.Get(bin.ProbeURL() + "/readyz")
 		if err != nil {
 			t.Fatalf("readyz: %v", err)
 		}
@@ -63,7 +63,7 @@ func TestE2E_ProdBinary_GracefulShutdown(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	sawShuttingDown := false
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(bin.HTTPURL() + "/readyz")
+		resp, err := http.Get(bin.ProbeURL() + "/readyz")
 		if err != nil {
 			break // listener already stopped — that's fine if mark_unready already won
 		}
