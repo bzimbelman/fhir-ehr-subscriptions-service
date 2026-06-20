@@ -192,6 +192,12 @@ func setupIntegration(t *testing.T) *integration {
 		Audience:     "https://api.example/audience",
 		ClientLookup: handlers.NewAuthClientLookup(pool),
 		Now:          now,
+		// OP #126: the integration tests run an httptest JWKS server
+		// on http://127.0.0.1; the always-on integration gate now
+		// exercises the verifier path against that URL. Without the
+		// opt-in, the policy correctly rejects http:// and the
+		// keyfunc fetch returns "jwks unavailable".
+		AllowInsecureJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
@@ -517,6 +523,10 @@ func TestIntegration_TokenEndpoint(t *testing.T) {
 		AccessTokenTTL:    5 * time.Minute,
 		ClientLookup:      handlers.NewAuthClientLookup(i.pool),
 		Now:               i.now,
+		// OP #126: see setupIntegration — the test JWKS server uses
+		// http://127.0.0.1; without the opt-in the policy rejects it
+		// and the assertion verification returns "jwks unavailable".
+		AllowInsecureJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewTokenEndpoint: %v", err)

@@ -1,0 +1,24 @@
+# OP #135: probe-only smoke fixture for the docker image CI smoke run.
+# `--check-config` is run against this file so the built image's
+# embedded Validate() exercises the same path operators get on
+# `helm install`. probe-only mode skips DB / codec / auth requirements
+# so the image only needs the binary itself; it never opens a database
+# socket or binds the FHIR API.
+deployment:
+  facility_id: ci-smoke
+  environment: ci
+  log_level: info
+  log_format: json
+  mode: probe-only
+
+adapter:
+  id: default
+
+server:
+  http:
+    bind: "127.0.0.1:18443"
+    probe_bind: "127.0.0.1:18081"
+    insecure: true
+
+lifecycle:
+  shutdown_grace_period: 5s

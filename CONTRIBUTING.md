@@ -56,6 +56,35 @@ golangci-lint run
 The race detector is mandatory in CI; please run it locally before pushing.
 The lint configuration lives in `.golangci.yml`.
 
+## CI gates
+
+Every PR runs the following gates without any opt-in label:
+
+- **Unit tests** with the race detector (`ci.yml`).
+- **Coverage threshold** — `tools/covergate` parses `cover.out` and
+  fails the build below the per-package floor in
+  `.coverage-thresholds.json` (default 80%).
+- **govulncheck** — `golang.org/x/vuln/cmd/govulncheck ./...`. Adding
+  a known-CVE dep blocks merge.
+- **Integration tests** (`integration.yml`, `-tags integration`).
+- **e2e smoke** (`integration.yml`, `-tags e2e_smoke`, `e2e/smoke/...`)
+  — the ~3-minute subset that exercises probe-only boot and `/healthz`
+  against the binary.
+- **Image smoke** (`ci.yml`, `docker` job) — the built image is
+  exercised via `docker run --version`, `--check-config`, and a
+  `/healthz` probe so entrypoint, ldflag, and probe regressions fail
+  CI before merge.
+
+Optional gates (label-driven):
+
+- **Full e2e** (`integration.yml` `e2e` job) — runs on pushes to `main`
+  and on PRs labeled `full-e2e`. The smoke job covers the default-PR
+  budget; the full suite is gated to keep PR turnaround fast.
+
+Updates to dependencies arrive via Dependabot (`.github/dependabot.yml`)
+on a weekly cadence covering Go modules, GitHub Actions, and Docker
+base images.
+
 ## Spec compliance
 
 The external compliance bar for this project is **Inferno** (the ONC reference

@@ -141,6 +141,42 @@ jobs:
           name: coverage
           path: cover.out
           retention-days: 14
+      # OP #128: enforce the per-package coverage floor declared in
+      # .coverage-thresholds.json. Failures list the offending packages
+      # and exit non-zero so the PR cannot merge below threshold.
+      - name: enforce coverage threshold
+        run: go run ./tools/covergate -profile cover.out -thresholds .coverage-thresholds.json
+
+  govulncheck:
+    # OP #131: govulncheck closes the vulnerability gap CodeQL leaves
+    # open (CodeQL is SAST-only and ignores known-CVE deps in
+    # go.sum).
+    #
+    # Phase 1 (this PR): the job runs and surfaces the dependency
+    # vulnerability inventory. continue-on-error keeps it green while
+    # dependabot (also wired up in this PR via .github/dependabot.yml)
+    # ages out the affected modules. The on-main scan in nightly.yml
+    # is the same job without continue-on-error so a regression after
+    # the inventory is cleaned cannot silently re-enter the tree.
+    #
+    # Phase 2 (follow-on; tracked separately in OP #131): once the
+    # weekly dependabot PRs land go1.23.7+ and clean otel/golang.org/x
+    # deps, drop continue-on-error so govulncheck blocks PR merge —
+    # which is the eventual AC.
+    name: govulncheck
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - run: go mod download
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: govulncheck ./...
+        run: govulncheck ./...
 
   build:
     name: build
@@ -169,3 +205,56 @@ jobs:
           tags: fhir-subs:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # OP #210: VERSION + COMMIT must be embedded so the image's
+          # --version banner is non-empty for the smoke step below.
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            COMMIT=${{ github.sha }}
+
+      # OP #135: smoke-run the built image. Catches entrypoint, ldflag,
+      # and probe-surface regressions that an unrun image would hide.
+      - name: smoke — docker run --version
+        run: |
+          out="$(docker run --rm fhir-subs:ci --version)"
+          echo "version: $out"
+          if [ -z "$out" ]; then
+            echo "::error::--version produced empty output"
+            exit 1
+          fi
+          # AC: assert non-empty version (ldflag wired).
+          if printf '%s' "$out" | grep -qE 'commit dev'; then
+            echo "::error::image was built without a commit ldflag (still 'commit dev')"
+            exit 1
+          fi
+      - name: smoke — docker run --check-config
+        run: |
+          docker run --rm \
+            -v "$PWD/.github/ci/smoke-config.yaml:/etc/fhir-subs/config.yaml:ro" \
+            fhir-subs:ci \
+            --check-config \
+            --config /etc/fhir-subs/config.yaml
+      - name: smoke — /healthz probe (10s probe-only run)
+        run: |
+          # Boot the binary in probe-only mode, hit /healthz on the
+          # probe listener, then send SIGTERM. The container is host-
+          # networked so the probe port is reachable from the runner.
+          cid=$(docker run -d --rm --network host \
+            -v "$PWD/.github/ci/smoke-config.yaml:/etc/fhir-subs/config.yaml:ro" \
+            fhir-subs:ci \
+            --config /etc/fhir-subs/config.yaml)
+          trap 'docker stop "$cid" >/dev/null 2>&1 || true' EXIT
+          # /healthz is on probe_bind 127.0.0.1:18081 per the smoke fixture.
+          ok=0
+          for _ in $(seq 1 50); do
+            if curl -fsS --max-time 1 http://127.0.0.1:18081/healthz >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::/healthz never returned 200 within 10s"
+            docker logs "$cid" || true
+            exit 1
+          fi
+          echo "/healthz OK"
