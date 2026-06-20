@@ -94,16 +94,24 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 func TestE2E_ProdBinary_ProcessesHL7Message_VendorAdapters(t *testing.T) {
 	cases := []prodBinaryHL7Case{
 		{
+			// OP #168: Cerner MapToFHIR shipped (unit-tested in
+			// adapters/cerner/mapping_test.go). The e2e check stays
+			// blocked because the parametric test uses content=id-only
+			// subscriptions; PATID1234 only round-trips on
+			// content=full-resource. Tracked for follow-up.
 			adapterID:       "cerner",
 			facilityPrefix:  "e2e-prod-hl7-cerner",
 			bodyMustContain: []string{"PATID1234"},
-			skipReason:      "blocked on OP #168 (implement Cerner MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+			skipReason:      "OP #168 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
+			// OP #169: Epic MapToFHIR shipped (unit-tested in
+			// adapters/epic/mapping_test.go). See cerner case for
+			// why the e2e remains skipped.
 			adapterID:       "epic",
 			facilityPrefix:  "e2e-prod-hl7-epic",
 			bodyMustContain: []string{"PATID1234"},
-			skipReason:      "blocked on OP #169 (implement Epic MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+			skipReason:      "OP #169 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
 			adapterID:       "athena",
