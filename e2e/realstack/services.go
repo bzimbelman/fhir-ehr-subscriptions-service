@@ -114,6 +114,13 @@ type SubscriberHandle struct {
 	// every delivery the subscriber received, GET <QueryAPIURL>/healthz
 	// to probe.
 	QueryAPIURL string
+	// ControlAPIURL is the programmable control plane the rest-hook
+	// subscriber exposes (POST /program/{tag}, DELETE /program/{tag}).
+	// Tests install per-tag response programs (status sequence, header
+	// injection, latency, mid-body close) here instead of wiring an
+	// in-process http.Handler. Empty for subscribers that don't expose
+	// a programmable control plane (e.g. ws subscriber).
+	ControlAPIURL string
 }
 
 // BinaryHandle is the running cmd/fhir-subs process plus its primary

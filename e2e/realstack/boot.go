@@ -255,6 +255,7 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 			s.RestHookSubscriber.Addr = addr
 			s.RestHookSubscriber.EndpointURL = "http://" + addr + "/notify"
 			s.RestHookSubscriber.QueryAPIURL = "http://" + addr
+			s.RestHookSubscriber.ControlAPIURL = "http://" + addr
 		}},
 		{"test-ws-subscriber", "8091/tcp", func(addr string) {
 			s.WSSubscriber.Addr = addr
