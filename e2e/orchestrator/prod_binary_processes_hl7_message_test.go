@@ -6,6 +6,7 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -38,9 +39,8 @@ const hl7PassthroughTopicJSON = `{
 }`
 
 // TestE2E_ProdBinary_ProcessesHL7Message proves the production binary
-// — not just the harness — runs the full pipeline end-to-end. A
-// Subscription is registered (directly via SQL helpers, since the API
-// surface is exercised by the sibling test), an HL7 v2 message is
+// — not just the harness — runs the full pipeline end-to-end for the
+// default adapter. A Subscription is registered, an HL7 v2 message is
 // framed and sent over the binary's MLLP listener, and the rest-hook
 // subscriber must receive the resulting notification within a few
 // seconds.
@@ -55,8 +55,107 @@ const hl7PassthroughTopicJSON = `{
 //     ehr_events -> deliveries -> rest-hook chain works through the
 //     production binary's wiring.
 //
-// B-4.
+// B-4. The vendor-adapter variants live in
+// TestE2E_ProdBinary_ProcessesHL7Message_VendorAdapters (OP #149).
 func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
+	runProdBinaryHL7E2E(t, prodBinaryHL7Case{
+		adapterID: "default",
+		// Default adapter wraps raw HL7 in a hardcoded
+		// {"resourceType":"Bundle","type":"collection"} body. Matching
+		// "Bundle" is enough — pipeline wiring, not vendor mapping, is
+		// what this test pins.
+		bodyMustContain: []string{`"resourceType":"Bundle"`},
+		facilityPrefix:  "e2e-prod-hl7",
+	})
+}
+
+// TestE2E_ProdBinary_ProcessesHL7Message_VendorAdapters parameterizes
+// the prod-binary HL7 round-trip over every vendor adapter (OP #149).
+// Each subtest boots cmd/fhir-subs with adapter.id set to the vendor
+// and asserts that a real HL7 v2 message produces a non-stub Bundle
+// notification — i.e., MapToFHIR was actually exercised.
+//
+// Today every vendor adapter's MapToFHIR returns a hardcoded
+// {"resourceType":"Bundle","type":"collection"} (see
+// adapters/{cerner,epic,athena,nextgen,meditech,allscripts}/*.go),
+// which discards the parsed input. Each subtest is therefore RED until
+// its corresponding implementation story lands and is t.Skip'd with
+// the OP id of the per-vendor follow-up:
+//
+//   - cerner     -> OP #168
+//   - epic       -> OP #169
+//   - athena     -> OP #170
+//   - nextgen    -> OP #171
+//   - meditech   -> OP #172
+//   - allscripts -> OP #173
+//
+// Removing a t.Skip is the green-bar signal that the matching vendor
+// implementation has shipped.
+func TestE2E_ProdBinary_ProcessesHL7Message_VendorAdapters(t *testing.T) {
+	cases := []prodBinaryHL7Case{
+		{
+			adapterID:       "cerner",
+			facilityPrefix:  "e2e-prod-hl7-cerner",
+			bodyMustContain: []string{"PATID1234"},
+			skipReason:      "blocked on OP #168 (implement Cerner MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+		},
+		{
+			adapterID:       "epic",
+			facilityPrefix:  "e2e-prod-hl7-epic",
+			bodyMustContain: []string{"PATID1234"},
+			skipReason:      "blocked on OP #169 (implement Epic MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+		},
+		{
+			adapterID:       "athena",
+			facilityPrefix:  "e2e-prod-hl7-athena",
+			bodyMustContain: []string{"PATID1234"},
+			skipReason:      "blocked on OP #170 (implement Athena MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+		},
+		{
+			adapterID:       "nextgen",
+			facilityPrefix:  "e2e-prod-hl7-nextgen",
+			bodyMustContain: []string{"PATID1234"},
+			skipReason:      "blocked on OP #171 (implement NextGen MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+		},
+		{
+			adapterID:       "meditech",
+			facilityPrefix:  "e2e-prod-hl7-meditech",
+			bodyMustContain: []string{"PATID1234"},
+			skipReason:      "blocked on OP #172 (implement Meditech MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+		},
+		{
+			adapterID:       "allscripts",
+			facilityPrefix:  "e2e-prod-hl7-allscripts",
+			bodyMustContain: []string{"PATID1234"},
+			skipReason:      "blocked on OP #173 (implement Allscripts MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.adapterID, func(t *testing.T) {
+			runProdBinaryHL7E2E(t, tc)
+		})
+	}
+}
+
+// prodBinaryHL7Case parameterizes runProdBinaryHL7E2E over a vendor
+// adapter id. skipReason — when non-empty — flags the test as
+// blocked on the named per-vendor follow-up OP and triggers t.Skip
+// before any harness setup runs.
+type prodBinaryHL7Case struct {
+	adapterID       string
+	facilityPrefix  string
+	bodyMustContain []string
+	skipReason      string
+}
+
+func runProdBinaryHL7E2E(t *testing.T, tc prodBinaryHL7Case) {
+	t.Helper()
+	if tc.skipReason != "" {
+		t.Skip(tc.skipReason)
+	}
+
 	h := requireHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -74,10 +173,9 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 		t.Fatalf("write topic file: %v", err)
 	}
 
-	// 1. Real RSA key + httptest JWKS server (same scaffolding as the
-	//    #146 401/200 path test). Story #292: no more dev-bypass for
-	//    prod-binary e2e — the binary boots in production posture and
-	//    /Subscription POSTs MUST carry a real bearer.
+	// 1. Real RSA key + httptest JWKS server. Story #292: prod-binary
+	//    e2e boots in production posture and /Subscription POSTs MUST
+	//    carry a real bearer.
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
@@ -91,13 +189,9 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 	jwksSrv := httptest.NewServer(jwksMux)
 	t.Cleanup(jwksSrv.Close)
 
-	clientID := "e2e-prod-hl7-" + uuid.New().String()[:8]
-	// Story #290: handlers gate POST /Subscription on a literal
-	// system/Subscription.c scope and GET /Subscription/{id} on .r;
-	// scope strings are not expanded from "cruds" letters. Grant the
-	// per-letter scopes alongside "cruds" so both gates fire green.
+	clientID := tc.facilityPrefix + "-" + uuid.New().String()[:8]
 	if _, seedErr := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
-		VALUES ($1, $2, ARRAY['system/Subscription.cruds','system/Subscription.c','system/Subscription.r','system/Subscription.u','system/Subscription.d']::text[], $1)`,
+			VALUES ($1, $2, ARRAY['system/Subscription.cruds','system/Subscription.c','system/Subscription.r','system/Subscription.u','system/Subscription.d']::text[], $1)`,
 		clientID, jwksSrv.URL+"/jwks"); seedErr != nil {
 		t.Fatalf("seed auth_clients: %v", seedErr)
 	}
@@ -107,18 +201,15 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 		t.Fatalf("rand: %v", rndErr)
 	}
 	issuedSecret := base64.StdEncoding.EncodeToString(secretBytes)
-	audience := "https://e2e-prod-hl7/token"
+	audience := "https://" + tc.facilityPrefix + "/token"
 
-	// 2. Start the production binary with an MLLP listener AND real
-	//    bearer-auth wired up. allow_insecure_jwks=true also makes the
-	//    rest-hook URL validator accept http:// endpoints — required
-	//    because we register against the harness's plaintext mocksub
-	//    receiver.
+	// 2. Start the production binary with the case's adapter id and a
+	//    real MLLP listener.
 	mllpPort := freePort(t)
 	bin := startProdBinary(t, ctx, prodBinaryConfig{
 		DatabaseURL:           h.DBURL,
-		FacilityID:            "e2e-prod-hl7",
-		AdapterID:             "default",
+		FacilityID:            tc.facilityPrefix,
+		AdapterID:             tc.adapterID,
 		MLLPBind:              "127.0.0.1:" + mllpPort,
 		Insecure:              true,
 		GracePeriod:           5 * time.Second,
@@ -127,23 +218,20 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 		AuthAllowInsecureJWKS: true,
 		AuthTokenURL:          audience,
 		AuthIssuedSecret:      issuedSecret,
-		AuthIssuedIssuer:      "e2e-prod-hl7-issuer",
+		AuthIssuedIssuer:      tc.facilityPrefix + "-issuer",
 		AuthAccessTokenTTL:    5 * time.Minute,
 	})
 	defer bin.Stop(t, 10*time.Second)
 
-	// 3. Register an active subscription via the real /Subscription
-	//    HTTP API. The helper polls until status=active, so once it
-	//    returns the submatcher's "active subscriptions" filter sees
-	//    the row — no SQL UPDATE bypass. Bearer is freshly minted on
-	//    every helper request to avoid the JTI replay cache.
+	// 3. Register a subscription via the real /Subscription HTTP API.
 	bearerFn := func() string {
 		return mintRealBearer(t, ctx, bin.HTTPURL(), audience, clientID, kid, priv)
 	}
+	subPath := tc.facilityPrefix + "-sub"
 	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
 		ClientID:        clientID,
 		TopicURL:        "http://example.org/topics/hl7-passthrough",
-		Endpoint:        "http://" + h.MockSub.HTTPAddr + "/hook/e2e-prod-hl7-sub",
+		Endpoint:        "http://" + h.MockSub.HTTPAddr + "/hook/" + subPath,
 		APIBaseURL:      bin.HTTPURL(),
 		BearerTokenFunc: bearerFn,
 	})
@@ -151,13 +239,12 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 		t.Fatalf("RegisterSubscriber: %v", err)
 	}
 
-	// 3. Send an HL7 v2 message via the binary's MLLP listener.
+	// 4. Send an HL7 v2 message via the binary's MLLP listener.
 	sendHL7ToProdBinary(t, ctx, bin.MLLPAddr(), sampleHL7v2)
 
-	// 4. Wait for the rest-hook receiver to record the notification.
-	got, err := WaitForNotification(ctx, h, "e2e-prod-hl7-sub", 30*time.Second)
+	// 5. Wait for the rest-hook receiver to record the notification.
+	got, err := WaitForNotification(ctx, h, subPath, 30*time.Second)
 	if err != nil {
-		// Dump some pipeline state to make a flake easier to debug.
 		if pid, parseErr := uuid.Parse(subID); parseErr == nil {
 			dumpPipelineState(t, ctx, h, pid)
 		} else {
@@ -165,19 +252,22 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 		}
 		t.Fatalf("WaitForNotification: %v", err)
 	}
-	if got.SubscriptionID != "e2e-prod-hl7-sub" {
-		t.Fatalf("subscription id: got %q", got.SubscriptionID)
+	if got.SubscriptionID != subPath {
+		t.Fatalf("subscription id: got %q, want %q", got.SubscriptionID, subPath)
+	}
+	for _, want := range tc.bodyMustContain {
+		if !bytes.Contains(got.Body, []byte(want)) {
+			t.Errorf("notification body for adapter %q missing %q.\n got: %s",
+				tc.adapterID, want, got.Body)
+		}
 	}
 }
 
 // sampleHL7v2 is a minimal ADT^A01 message used to drive a single
-// HL7 v2 round-trip. The default adapter passes the bytes through as a
-// resource_changes row of resource_type=Bundle, which the catalog has
-// no specific topic mapping for — the test catalog is empty, so the
-// matcher would never produce ehr_events. To keep the e2e test focused
-// on the wiring (not on the catalog), we let the SUT use the default
-// catalog provider; the assertion is "the rest-hook receives a
-// notification at all", proving the chain is connected end-to-end.
+// HL7 v2 round-trip. PATID1234 is the load-bearing identifier: any
+// genuine vendor MapToFHIR implementation that uses the parsed input
+// must surface this token in the resulting Bundle, which the
+// vendor-parametric variants assert.
 //
 // MLLP framing: 0x0B <body> 0x1C 0x0D
 const sampleHL7v2 = "MSH|^~\\&|SENDING_APP|SENDING_FAC|RECEIVING_APP|RECEIVING_FAC|20260618120000||ADT^A01|MSG00001|P|2.5\r" +
