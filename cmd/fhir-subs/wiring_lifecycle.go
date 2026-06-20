@@ -212,24 +212,34 @@ func (r *productionRuntime) registerLifecycle(lcMod *lifecycle.LifecycleModule, 
 	// process exits without warm sockets. Both hooks live in
 	// PhaseCloseConnections alongside resthook.activator.close so the
 	// connection-tier teardown is concentrated in one phase.
-	if r.tokenSrv != nil {
-		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
-			Name:  "auth.token_endpoint.close",
-			Phase: lifecycle.PhaseCloseConnections,
-			Run: func(_ context.Context) error {
-				return r.tokenSrv.Close()
-			},
-		})
-	}
-	if r.authVerif != nil {
-		lcMod.RegisterShutdown(lifecycle.ShutdownHook{
-			Name:  "auth.jwks_fetcher.close",
-			Phase: lifecycle.PhaseCloseConnections,
-			Run: func(_ context.Context) error {
-				return r.authVerif.Close()
-			},
-		})
-	}
+	//
+	// Both hooks are registered unconditionally and nil-check inside the
+	// Run closure (mirrors database.pool.close above) so the
+	// operator-visible phase contract pins both names regardless of
+	// whether the runtime built a token endpoint (TokenURL +
+	// IssuedSecret) or only a verifier (Audience-only). Without
+	// unconditional registration the probe-only / verifier-only deploy
+	// path silently drops the token_endpoint.close phase line.
+	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "auth.token_endpoint.close",
+		Phase: lifecycle.PhaseCloseConnections,
+		Run: func(_ context.Context) error {
+			if r.tokenSrv == nil {
+				return nil
+			}
+			return r.tokenSrv.Close()
+		},
+	})
+	lcMod.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "auth.jwks_fetcher.close",
+		Phase: lifecycle.PhaseCloseConnections,
+		Run: func(_ context.Context) error {
+			if r.authVerif == nil {
+				return nil
+			}
+			return r.authVerif.Close()
+		},
+	})
 }
 
 // setHTTPServer publishes the public HTTP server so the
