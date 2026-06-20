@@ -12,21 +12,20 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
-// TestAthenaMapToFHIRRoundTripsRealHL7 — see cerner/mapping_test.go for the
-// full rationale. Skipped until OP #170 (Athena MapToFHIR implementation)
-// lands.
+// TestAthenaMapToFHIRRoundTripsRealHL7 covers OP #170: Athena MapToFHIR
+// must use the parsed HL7 v2 input, not the hardcoded passthrough Bundle.
 func TestAthenaMapToFHIRRoundTripsRealHL7(t *testing.T) {
 	t.Parallel()
-	t.Skip("blocked on OP #170 (implement Athena MapToFHIR HL7 v2 -> FHIR R4 mapping)")
 
 	cases := []struct {
 		name             string
 		hl7              string
 		wantResourceType string
+		wantContains     []string
 	}{
-		{"ADT_A01", sampleADTA01, "Bundle"},
-		{"ORU_R01", sampleORUR01, "Bundle"},
-		{"ORM_O01", sampleORMO01, "Bundle"},
+		{"ADT_A01", sampleADTA01, "Bundle", []string{"PATID1234", "Patient", "Encounter"}},
+		{"ORU_R01", sampleORUR01, "Bundle", []string{"PATID1234", "DiagnosticReport", "Observation", "Sodium"}},
+		{"ORM_O01", sampleORMO01, "Bundle", []string{"PATID1234", "ServiceRequest", "ORD-1"}},
 	}
 
 	p := athenaadapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
@@ -52,8 +51,44 @@ func TestAthenaMapToFHIRRoundTripsRealHL7(t *testing.T) {
 			if len(res.Body) == 0 {
 				t.Fatal("Body is empty; MapToFHIR produced no payload")
 			}
-			if !bytes.Contains(res.Body, []byte("PATID1234")) {
-				t.Errorf("Body missing patient identifier PATID1234 — MapToFHIR ignored its input.\n got: %s", res.Body)
+			for _, want := range tc.wantContains {
+				if !bytes.Contains(res.Body, []byte(want)) {
+					t.Errorf("Body missing %q.\n got: %s", want, res.Body)
+				}
+			}
+			if bytes.Equal(res.Body, []byte(`{"resourceType":"Bundle","type":"collection"}`)) {
+				t.Fatal("MapToFHIR returned the legacy hardcoded passthrough Bundle")
+			}
+		})
+	}
+}
+
+func TestAthenaClassifyMapsADTTriggers(t *testing.T) {
+	t.Parallel()
+	p := athenaadapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
+	cases := []struct {
+		name string
+		hl7  string
+		want spi.ChangeKind
+	}{
+		{"A01_create", sampleADTA01, spi.ChangeCreate},
+		{"A03_delete", "MSH|^~\\&|ATHENA|FAC|REC|FAC|20260618120000||ADT^A03|M|P|2.5\rPID|1||PATID9999\r", spi.ChangeDelete},
+		{"A08_update", "MSH|^~\\&|ATHENA|FAC|REC|FAC|20260618120000||ADT^A08|M|P|2.5\rPID|1||PATID9999\r", spi.ChangeUpdate},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := p.Lex([]byte(tc.hl7))
+			if err != nil {
+				t.Fatalf("Lex: %v", err)
+			}
+			c, err := p.Classify(parsed)
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if c.Kind != tc.want {
+				t.Errorf("Kind = %q, want %q", c.Kind, tc.want)
 			}
 		})
 	}
