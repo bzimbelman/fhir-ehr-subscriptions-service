@@ -38,9 +38,11 @@ func TestHelpers_RegisterSubscriber_DrivesAPIAndActivates(t *testing.T) {
 	}
 
 	const clientID = "test-client-helper-150"
+	probeURL := "http://" + h.MockSub.HTTPAddr
 	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
-		Pool:     h.DB,
-		ClientID: clientID,
+		Pool:             h.DB,
+		ClientID:         clientID,
+		RestHookProbeURL: probeURL,
 	})
 	if err != nil {
 		t.Fatalf("api start: %v", err)
@@ -50,7 +52,7 @@ func TestHelpers_RegisterSubscriber_DrivesAPIAndActivates(t *testing.T) {
 	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
 		ClientID:        clientID,
 		TopicURL:        "http://example.org/topics/hl7-passthrough",
-		Endpoint:        "https://subscriber.example.com/hook/test-client-150",
+		Endpoint:        probeURL + "/hook/test-client-150",
 		APIBaseURL:      api.URL,
 		BearerTokenFunc: api.Bearer,
 	})
