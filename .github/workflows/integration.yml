@@ -22,7 +22,8 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.22'
+  # OP #134: pinned exactly. See ci.yml for the rationale.
+  GO_VERSION: '1.22.10'
 
 jobs:
   integration:

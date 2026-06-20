@@ -1,8 +1,19 @@
 name: docs
 
+# OP #137: `mkdocs build --strict` MUST run on every PR so broken
+# links, missing nav entries, and template errors are caught before
+# merge. The deploy job stays gated to push-to-main so PRs (especially
+# from forks) don't try to deploy without secrets.
+
 on:
   push:
     branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'requirements-docs.txt'
+      - '.github/workflows/docs.yml'
+  pull_request:
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
@@ -34,12 +45,18 @@ jobs:
       - run: pip install -r requirements-docs.txt
       - run: mkdocs build --strict
       - uses: actions/configure-pages@v5
+        if: github.event_name == 'push'
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push'
         with:
           path: site
 
   deploy:
     needs: build
+    # OP #137: deploy runs on push-to-main only. PR builds (and
+    # workflow_dispatch from non-main refs) verify --strict but do not
+    # deploy because they lack the pages id-token.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
