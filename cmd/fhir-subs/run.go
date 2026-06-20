@@ -103,8 +103,8 @@ func runWithHooks(ctx context.Context, cfg *Config, logOut io.Writer, hooks runH
 	logger.Info(banner(cfg.Deployment.FacilityID, cfg.Adapter.ID),
 		"facility_id", cfg.Deployment.FacilityID,
 		"adapter_id", cfg.Adapter.ID,
-		"version", Version,
-		"commit", Commit,
+		"version", GetVersion(),
+		"commit", GetCommit(),
 		"environment", cfg.Deployment.Environment,
 	)
 

@@ -91,7 +91,7 @@ func TestEmit_ChainsToPriorRow(t *testing.T) {
 		t.Fatalf("got %d rows", len(rows))
 	}
 	// Row 0's prior_hash is the genesis hash.
-	if !bytesEqual(rows[0].PriorHash, audit.GenesisHash()) {
+	if !bytesEqual(rows[0].PriorHash, audit.GenesisHashFromLiteral("")) {
 		t.Fatalf("row 0 prior_hash != genesis")
 	}
 	// Each subsequent row's prior_hash equals the prior row's chain_hash.
@@ -325,11 +325,14 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-// Sanity: the genesis hash is exactly SHA-256("fhir-ehr-subscriptions-service audit chain genesis").
+// Sanity: the default genesis hash is exactly
+// SHA-256("fhir-ehr-subscriptions-service audit chain genesis"). OP #220
+// removed the no-arg GenesisHash() helper; callers now invoke
+// GenesisHashFromLiteral with an empty literal to get the same default.
 func TestGenesisHash(t *testing.T) {
 	t.Parallel()
 	want := sha256.Sum256([]byte("fhir-ehr-subscriptions-service audit chain genesis"))
-	got := audit.GenesisHash()
+	got := audit.GenesisHashFromLiteral("")
 	if hex.EncodeToString(got) != hex.EncodeToString(want[:]) {
 		t.Fatalf("genesis hash mismatch: %x vs %x", got, want[:])
 	}

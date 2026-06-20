@@ -83,6 +83,11 @@ markdown_extensions:
   - pymdownx.keys
 
 plugins:
+  # OP #229: `search` is the built-in mkdocs search plugin (ships with
+  # the `mkdocs` package itself, not a separate PyPI install). It is
+  # listed here so the omission of an explicit pin is intentional and
+  # documented; the plugin's version follows requirements-docs.txt
+  # `mkdocs==<X>` transitively.
   - search
 
 nav:

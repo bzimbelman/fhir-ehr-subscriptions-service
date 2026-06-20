@@ -115,7 +115,7 @@ func TestCanonicalInput_PriorHashHashedAsRawBytes(t *testing.T) {
 		t.Fatalf("rows: %d", len(rows))
 	}
 	row := rows[0]
-	genesis := audit.GenesisHash()
+	genesis := audit.GenesisHashFromLiteral("")
 	hexForm := fmt.Sprintf("%x", genesis)
 	if bytes.Contains(row.ChainInput, []byte(hexForm)) {
 		t.Errorf("ChainInput contains hex-encoded prior_hash %q; spec requires raw-bytes hashing of prior, not hex stringification.\nChainInput=%s", hexForm, string(row.ChainInput))

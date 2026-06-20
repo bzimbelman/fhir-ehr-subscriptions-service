@@ -12,12 +12,14 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'requirements-docs.txt'
+      - 'requirements-docs.in'
       - '.github/workflows/docs.yml'
   pull_request:
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'requirements-docs.txt'
+      - 'requirements-docs.in'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -43,6 +45,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-docs.txt
       - run: pip install -r requirements-docs.txt
+      # OP #229: surface known CVEs in the doc-build dependency tree
+      # before they ship the static site. `pip-audit` runs against the
+      # resolved requirements-docs.txt so transitive pins are covered
+      # too. Failures fail CI; bumping a pin and re-running pip-compile
+      # is the path forward.
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements-docs.txt
       - run: mkdocs build --strict
       - uses: actions/configure-pages@v5
         if: github.event_name == 'push'
