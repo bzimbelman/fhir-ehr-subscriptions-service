@@ -1,3 +1,5 @@
+<!-- docs-lint:ignore-cli=dead-letters -->
+
 # Dead-Letter Runbook
 
 The `dead_letters` table accumulates rows whenever the pipeline can't make

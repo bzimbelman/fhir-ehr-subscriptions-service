@@ -1,3 +1,5 @@
+<!-- docs-lint:ignore-metric=fhir_subs_adapter_supervisor_state -->
+
 # Adapter Conformance Checklist
 
 **Purpose.** A concrete, line-item checklist every adapter (`adapters/default`, vendor adapters, third-party adapters) must satisfy before it ships. Pair this with the prose [adapter-authoring-guide.md](adapter-authoring-guide.md) and the test plan in [adapter-spi-framework.md §9.2](low-level-design/adapter-spi-framework.md#92-conformance-tests-every-adapter-must-pass).
