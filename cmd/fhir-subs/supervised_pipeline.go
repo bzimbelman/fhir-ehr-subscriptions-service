@@ -184,6 +184,23 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 		}{"vendor-api-client", deps.VendorAPIClient})
 	}
 
+	// OP #201: register the drain hook BEFORE launching any
+	// supervisor goroutine so a SIGTERM that fires between the first
+	// `go sv.Start(ctx)` and the loop's exit cannot leak workers. The
+	// hook reads pl.Stop, which is idempotent and a no-op when no
+	// supervisor has been registered yet, so registering before the
+	// for-loop is safe even if every supervisor.New below fails.
+	stopGrace := deps.Backoff.StopGrace
+	deps.Lifecycle.RegisterShutdown(lifecycle.ShutdownHook{
+		Name:  "pipeline.supervisors.drain",
+		Phase: lifecycle.PhaseDrainInFlight,
+		Run: func(ctx context.Context) error {
+			drainCtx, cancel := context.WithTimeout(ctx, stopGrace)
+			defer cancel()
+			return pl.Stop(drainCtx)
+		},
+	})
+
 	for _, sp := range specs {
 		id := sp.id
 		var onTick func(supervisor.Status)
@@ -214,6 +231,12 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 			cancel:   cancel,
 			done:     make(chan struct{}),
 		}
+		// Register the entry under the supervisedPipeline BEFORE
+		// launching the goroutine so a concurrent Stop (driven by an
+		// early SIGTERM) sees the entry in pl.supervisors and waits on
+		// entry.done. Without this, a goroutine launched on a
+		// supervisor that hasn't been added to the map yet leaks past
+		// shutdown.
 		pl.supervisors[id] = entry
 		pl.orderedIDs = append(pl.orderedIDs, id)
 		go func() {
@@ -221,17 +244,6 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 			_ = sv.Start(ctx)
 		}()
 	}
-
-	stopGrace := deps.Backoff.StopGrace
-	deps.Lifecycle.RegisterShutdown(lifecycle.ShutdownHook{
-		Name:  "pipeline.supervisors.drain",
-		Phase: lifecycle.PhaseDrainInFlight,
-		Run: func(ctx context.Context) error {
-			drainCtx, cancel := context.WithTimeout(ctx, stopGrace)
-			defer cancel()
-			return pl.Stop(drainCtx)
-		},
-	})
 
 	return pl, nil
 }
