@@ -48,10 +48,11 @@ func TestHelpers_RegisterSubscriber_DrivesAPIAndActivates(t *testing.T) {
 	t.Cleanup(func() { _ = api.Close() })
 
 	subID, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
-		ClientID:   clientID,
-		TopicURL:   "http://example.org/topics/hl7-passthrough",
-		Endpoint:   "https://subscriber.example.com/hook/test-client-150",
-		APIBaseURL: api.URL,
+		ClientID:        clientID,
+		TopicURL:        "http://example.org/topics/hl7-passthrough",
+		Endpoint:        "https://subscriber.example.com/hook/test-client-150",
+		APIBaseURL:      api.URL,
+		BearerTokenFunc: api.Bearer,
 	})
 	if err != nil {
 		t.Fatalf("RegisterSubscriber: %v", err)

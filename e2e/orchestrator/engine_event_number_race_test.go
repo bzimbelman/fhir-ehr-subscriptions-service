@@ -201,11 +201,12 @@ func (h *Harness) mustRegisterSubscription(t *testing.T, ctx context.Context, cl
 	}
 	t.Cleanup(func() { _ = api.Close() })
 	id, err := RegisterSubscriber(ctx, h, RegisterSubscriberOptions{
-		ClientID:    uniqueClient,
-		TopicURL:    "http://example.org/topics/hl7-passthrough",
-		ChannelType: "rest-hook",
-		Endpoint:    "https://sub.example.org/notif",
-		APIBaseURL:  api.URL,
+		ClientID:        uniqueClient,
+		TopicURL:        "http://example.org/topics/hl7-passthrough",
+		ChannelType:     "rest-hook",
+		Endpoint:        "https://sub.example.org/notif",
+		APIBaseURL:      api.URL,
+		BearerTokenFunc: api.Bearer,
 	})
 	if err != nil {
 		t.Fatalf("register subscriber: %v", err)
