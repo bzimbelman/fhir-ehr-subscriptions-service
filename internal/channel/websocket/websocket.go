@@ -413,7 +413,17 @@ func (c *Channel) upgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	conn.SetReadLimit(bindReadLimit)
 
-	c.runConnection(r.Context(), conn)
+	// #243: pass c.ctx (channel-scoped) into runConnection rather than
+	// r.Context() (HTTP request ctx). For an upgraded WebSocket the
+	// request ctx semantics are murky — the http server may cancel it on
+	// graceful shutdown or transport teardown, but Channel.Close() does
+	// not — while c.ctx is the single source of truth for "this channel
+	// is shutting down". Anchoring the bind handshake (token consume,
+	// error writes, replay) to c.ctx means Close() reliably unblocks an
+	// in-flight bind wedged on a slow TokenConsumer or replay store, and
+	// post-bind goroutines (already on c.ctx) share one cancellation
+	// tree with the bind path.
+	c.runConnection(c.ctx, conn)
 }
 
 // defaultBindReadLimit is the inbound read limit applied during the
