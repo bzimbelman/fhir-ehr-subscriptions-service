@@ -12,8 +12,9 @@ import (
 // message. The body shapes are how the matcher's resource-trigger
 // evaluator and the submatcher's filterBy evaluator see the world, so a
 // scenario that wants to exercise filterBy decisions or topic
-// matching needs control over the body — not the raw passthrough body
-// the defaultadapter emits.
+// matching needs control over the body — not the generic Patient +
+// Encounter / DiagnosticReport / ServiceRequest bundle the defaultadapter
+// emits via its standard-segment HL7 v2 -> FHIR R4 mapping.
 type ScriptedAdapter struct {
 	spi.BaseHl7MessageProcessor
 
