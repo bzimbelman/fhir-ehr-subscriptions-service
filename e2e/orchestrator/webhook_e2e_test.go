@@ -142,36 +142,6 @@ func TestE2E_ProdBinary_WebhookIngressMatchesAndDelivers(t *testing.T) {
 		t.Fatalf("write topic: %v", err)
 	}
 
-	// 1a. OP #272 / #341 — seed an auth_client and an active
-	//     subscription pointed at the topic. The matcher's per-row
-	//     fanout enumerates distinct active client_ids per matched
-	//     topic via distinctActiveClientIDs and emits ONE ehr_events
-	//     row per (match × client_id). With no subscription seeded
-	//     the inner loop runs zero times and no ehr_event is written
-	//     even when the topic matches — exactly the failure this
-	//     test was hitting (resource_changes=1, ehr_events=0).
-	subClientID := "e2e-webhook-sub-client"
-	if _, err := h.DB.Exec(ctx,
-		`INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
-		 VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)
-		 ON CONFLICT (id) DO NOTHING`,
-		subClientID, "http://example.test/jwks-not-used"); err != nil {
-		t.Fatalf("seed auth_clients: %v", err)
-	}
-	// Insert an active subscription for the observation topic. Channel
-	// fields are required by the table CHECK + the production fanout
-	// path. The endpoint is never dialed in this test — we assert at
-	// the ehr_events row, NOT at delivery.
-	if _, err := h.DB.Exec(ctx,
-		`INSERT INTO subscriptions
-		   (client_id, status, topic_url, channel_type, endpoint, content)
-		 VALUES ($1, 'active', $2, 'rest-hook', $3, 'id-only')`,
-		subClientID,
-		"http://example.org/topic/observation",
-		"https://subscriber.example.test/hook"); err != nil {
-		t.Fatalf("seed subscription: %v", err)
-	}
-
 	// 2. Boot the production binary. No MLLP needed — webhook ingress
 	//    runs against the same chi router.
 	bin := startProdBinary(t, ctx, prodBinaryConfig{

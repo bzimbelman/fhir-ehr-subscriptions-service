@@ -48,7 +48,13 @@ func TestE2E_ProdBinary_ShutdownPhasesAllRunRegisteredHooks(t *testing.T) {
 
 	// Pre-shutdown: scrape metrics so we have a baseline. The binary
 	// MUST already expose /metrics with the lifecycle phase histogram
-	// registered (story #94 + #207).
+	// registered (story #94 + #207). OP #341: the inventory pre-seeds
+	// every phase label with a zero observation at boot so the
+	// histogram families are visible from the first scrape — this
+	// baseline is the canonical fallback when the post-SIGTERM polling
+	// loop fails to land a successful scrape before Phase 2 closes the
+	// listener.
+	var preShutdownMetrics string
 	{
 		resp, err := http.Get(bin.HTTPURL() + "/metrics")
 		if err != nil {
@@ -56,9 +62,10 @@ func TestE2E_ProdBinary_ShutdownPhasesAllRunRegisteredHooks(t *testing.T) {
 		}
 		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if !strings.Contains(string(body), "fhir_subs_lifecycle_phase_duration_seconds") {
+		preShutdownMetrics = string(body)
+		if !strings.Contains(preShutdownMetrics, "fhir_subs_lifecycle_phase_duration_seconds") {
 			t.Fatalf("metrics missing fhir_subs_lifecycle_phase_duration_seconds before shutdown; body excerpt:\n%s",
-				truncateE2E(string(body), 2048))
+				truncateE2E(preShutdownMetrics, 2048))
 		}
 	}
 
@@ -125,10 +132,18 @@ func TestE2E_ProdBinary_ShutdownPhasesAllRunRegisteredHooks(t *testing.T) {
 		}
 	}
 
-	// The captured-during-shutdown body should mention each phase the
-	// sequencer ran. The histogram emits one observation per phase via
-	// the `phase` label. Mark unready always runs; story #207 ensures
-	// stop_accepting / drain_in_flight / close_connections all run too.
+	// The pre-shutdown OR captured-during-shutdown body should mention
+	// each phase the sequencer ran. OP #341: the inventory pre-seeds
+	// every phase label so the histogram families are visible at boot;
+	// the polling loop above is best-effort because the harness can
+	// race Phase 2's listener close. Either body proves the per-phase
+	// contract; preferring captured-during-shutdown (richer data)
+	// falls back to the pre-shutdown baseline when polling lost the
+	// race.
+	bodyForAssert := capturedMetrics
+	if bodyForAssert == "" {
+		bodyForAssert = preShutdownMetrics
+	}
 	expected := []string{
 		`phase="mark_unready"`,
 		`phase="stop_accepting"`,
@@ -136,9 +151,9 @@ func TestE2E_ProdBinary_ShutdownPhasesAllRunRegisteredHooks(t *testing.T) {
 		`phase="close_connections"`,
 	}
 	for _, want := range expected {
-		if !strings.Contains(capturedMetrics, want) {
-			t.Errorf("captured metrics missing %q (sequencer never recorded the phase observation)\nexcerpt:\n%s",
-				want, truncateE2E(capturedMetrics, 2048))
+		if !strings.Contains(bodyForAssert, want) {
+			t.Errorf("metrics missing %q (sequencer never recorded the phase observation)\nexcerpt:\n%s",
+				want, truncateE2E(bodyForAssert, 2048))
 		}
 	}
 }
