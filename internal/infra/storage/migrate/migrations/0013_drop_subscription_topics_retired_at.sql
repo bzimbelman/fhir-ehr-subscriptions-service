@@ -8,9 +8,9 @@
 -- repo + admin handler that nobody has asked for. A future story that
 -- actually needs retirement can re-add both under expand/contract.
 
-alter table subscription_topics drop column retired_at;
+alter table subscription_topics drop column if exists retired_at;
 
-alter table subscription_topics drop constraint subscription_topics_status_check;
+alter table subscription_topics drop constraint if exists subscription_topics_status_check;
 
 alter table subscription_topics
     add constraint subscription_topics_status_check

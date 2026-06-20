@@ -19,12 +19,42 @@
 -- (and a uuid.UUID), which fails on NULL. Tighten to NOT NULL with a
 -- safe backfill so already-migrated test environments don't fail the
 -- ALTER.
+--
+-- OP #214: every body must survive a partial-apply retry. Postgres
+-- has no `RENAME COLUMN IF EXISTS`, so we guard each rename with a
+-- DO block that checks information_schema. ADD COLUMN gets
+-- `IF NOT EXISTS`. ALTER COLUMN ... DROP DEFAULT and SET NOT NULL
+-- are intrinsically idempotent (re-applying is a no-op once the
+-- target state is reached).
 
-alter table audit_log rename column hash to chain_hash;
-alter table audit_log rename column prev_hash to prior_hash;
-alter table audit_log rename column canonical_form to chain_input;
+do $$
+begin
+    if exists (select 1 from information_schema.columns
+               where table_name = 'audit_log' and column_name = 'hash') then
+        alter table audit_log rename column hash to chain_hash;
+    end if;
+end;
+$$;
 
-alter table audit_log add column payload jsonb;
+do $$
+begin
+    if exists (select 1 from information_schema.columns
+               where table_name = 'audit_log' and column_name = 'prev_hash') then
+        alter table audit_log rename column prev_hash to prior_hash;
+    end if;
+end;
+$$;
+
+do $$
+begin
+    if exists (select 1 from information_schema.columns
+               where table_name = 'audit_log' and column_name = 'canonical_form') then
+        alter table audit_log rename column canonical_form to chain_input;
+    end if;
+end;
+$$;
+
+alter table audit_log add column if not exists payload jsonb;
 
 alter table audit_log alter column occurred_at drop default;
 

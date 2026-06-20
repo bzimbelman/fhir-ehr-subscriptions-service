@@ -13,4 +13,4 @@
 -- If a future story actually needs persisted bundles, it can re-add the
 -- column under expand/contract together with a write path.
 
-alter table deliveries drop column bundle;
+alter table deliveries drop column if exists bundle;

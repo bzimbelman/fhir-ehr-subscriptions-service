@@ -31,14 +31,20 @@
 -- The ehr_events table is partitioned monthly by created_month. ALTER
 -- TABLE … ADD COLUMN against the parent cascades to every attached
 -- partition automatically.
+--
+-- OP #214: idempotent against partial-apply retry. TRUNCATE is
+-- always idempotent. ADD COLUMN gets IF NOT EXISTS; the FK reference
+-- attaches once and re-running has no effect. CREATE INDEX gets
+-- IF NOT EXISTS so a partial apply that ran the index step but
+-- crashed before recording the version row succeeds on retry.
 truncate table deliveries;
 truncate table ehr_events;
 
 alter table ehr_events
-    add column client_id text not null
+    add column if not exists client_id text not null
         references auth_clients(id);
 
-create index ehr_events_topic_client_event_idx
+create index if not exists ehr_events_topic_client_event_idx
     on ehr_events (topic_url, client_id, event_number);
 
 comment on column ehr_events.client_id is
