@@ -1,22 +1,30 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package directadapter is the P3.2 SPI scaffold for Direct messaging (the
+// Package directadapter is the SPI placeholder for Direct messaging (the
 // SMTP-based exchange standard from the Direct Project / DirectTrust). It
 // targets facilities that only expose Direct, not HL7 v2 over MLLP and not a
 // FHIR REST API.
 //
-// Real Direct mapping needs:
-//   - SMTP/SMIME envelope handling per RFC 5322 + S/MIME RFC 5751
-//   - XDM/XDR payload decoding per IHE ITI TF-2b §3.32
-//     (https://profiles.ihe.net/ITI/TF/Volume2b/) -- Direct typically wraps
-//     a CDA Continuity-of-Care Document in an XDM zip
-//   - CDA → FHIR R4 transformation (Bundle of Patient/Encounter/etc.) per
-//     the FHIR US-Core CDA → FHIR maps
+// OP #175: Direct messages are SMTP+S/MIME envelopes carrying XDM/CDA, NOT
+// HL7 v2 over MLLP. The previous manifest declared HL7Processor=true and
+// returned a passthrough Hl7MessageProcessor that lex'd raw SMTP bytes and
+// emitted a hardcoded {"resourceType":"Bundle","type":"collection"} —
+// a capability lie that would let the framework route SMTP traffic into
+// the MLLP pipeline. The honest manifest declares NO capabilities until
+// SMTP/S-MIME ingress is wired (separate story). The adapter remains
+// loadable so operators see Direct in the registry, but every Build*
+// method returns nil and no subsystem will mis-route Direct traffic.
 //
-// This stub takes the same shape as HL7 v2 adapters (Lex consumes raw bytes
-// of the SMTP message body) so the framework's persistence + outbox path is
-// exercised. The Lex / Classify / MapToFHIR methods are TODOs.
+// A future Direct implementation needs:
+//   - SMTP/S-MIME envelope handling per RFC 5322 + S/MIME RFC 5751
+//   - XDM/XDR payload decoding per IHE ITI TF-2b §3.32
+//     (https://profiles.ihe.net/ITI/TF/Volume2b/) — Direct typically wraps
+//     a CDA Continuity-of-Care Document in an XDM zip
+//   - CDA -> FHIR R4 transformation (Bundle of Patient/Encounter/etc.) per
+//     the FHIR US-Core CDA -> FHIR maps
+//   - A webhook-style ingress that accepts SMTP body bytes and validates
+//     S/MIME signatures
 package directadapter
 
 import (
@@ -38,55 +46,27 @@ func NewRegistered() *registry.Registry {
 	return r
 }
 
+// Manifest declares the Direct adapter with NO capabilities. SMTP/S-MIME
+// XDM ingress and CDA -> FHIR mapping are unimplemented; the registry's
+// validateCapabilities check would reject any capability=true paired with
+// a nil builder, and pretending otherwise is the lie OP #175 fixes.
 func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
 		ID:                   "direct",
 		Vendor:               "Direct Project / DirectTrust",
-		Description:          "Scaffold adapter for Direct (SMTP/S-MIME XDM messaging) per Direct Project + IHE XDM. CDA→FHIR mapping is TODO.",
+		Description:          "Placeholder adapter for Direct (SMTP/S-MIME XDM messaging). No capabilities declared until SMTP ingress + CDA->FHIR mapping ship.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
-		Capabilities: spi.Capabilities{
-			HL7Processor:     true,
-			FhirScanRunner:   false,
-			VendorAPIClient:  false,
-			HydrationService: false,
-		},
-		ConfigSchema: []byte(`{"type":"object","additionalProperties":true}`),
-		SpiVersion:   spi.HostSPIVersion,
+		Capabilities:         spi.Capabilities{},
+		ConfigSchema:         []byte(`{"type":"object","additionalProperties":true}`),
+		SpiVersion:           spi.HostSPIVersion,
 	}
 }
 
-// BuildHl7Processor returns a passthrough. TODO(direct): Direct messages are
-// not HL7 v2 — the framework's Hl7MessageProcessor surface is reused as the
-// "raw bytes in, FHIR resource out" pipeline. Lex must parse the SMTP+SMIME
-// envelope, decode the XDM zip per IHE ITI TF-2b §3.32, and surface the inner
-// CDA document; MapToFHIR must run a CDA→FHIR R4 transform.
-func (a *Adapter) BuildHl7Processor(_ spi.AdapterContext) spi.Hl7MessageProcessor {
-	return &hl7Processor{}
-}
-
-func (a *Adapter) BuildFhirScanRunner(_ spi.AdapterContext) spi.FhirScanRunner   { return nil }
-func (a *Adapter) BuildVendorAPIClient(_ spi.AdapterContext) spi.VendorAPIClient { return nil }
-func (a *Adapter) BuildHydrationService(_ spi.AdapterContext) spi.HydrationService {
-	return nil
-}
-
-type hl7Processor struct {
-	spi.BaseHl7MessageProcessor
-}
-
-func (h *hl7Processor) Lex(raw []byte) (spi.ParsedHL7Message, error) {
-	cp := make([]byte, len(raw))
-	copy(cp, raw)
-	return spi.ParsedHL7Message{Raw: cp}, nil
-}
-
-func (h *hl7Processor) Classify(_ spi.ParsedHL7Message) (spi.Classification, error) {
-	return spi.Classification{Kind: spi.ChangeCreate}, nil
-}
-
-func (h *hl7Processor) MapToFHIR(_ spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
-	return spi.FhirResource{
-		ResourceType: "Bundle",
-		Body:         []byte(`{"resourceType":"Bundle","type":"collection"}`),
-	}, nil
-}
+// All Build* methods return nil. The manifest declares no capabilities, so
+// the registry's validateCapabilities check accepts the nil returns and
+// the host never invokes any subsystem against this adapter. SMTP/S-MIME
+// support is a separate story.
+func (a *Adapter) BuildHl7Processor(_ spi.AdapterContext) spi.Hl7MessageProcessor  { return nil }
+func (a *Adapter) BuildFhirScanRunner(_ spi.AdapterContext) spi.FhirScanRunner     { return nil }
+func (a *Adapter) BuildVendorAPIClient(_ spi.AdapterContext) spi.VendorAPIClient   { return nil }
+func (a *Adapter) BuildHydrationService(_ spi.AdapterContext) spi.HydrationService { return nil }

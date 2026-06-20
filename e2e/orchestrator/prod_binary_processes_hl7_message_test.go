@@ -60,10 +60,13 @@ const hl7PassthroughTopicJSON = `{
 func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 	runProdBinaryHL7E2E(t, prodBinaryHL7Case{
 		adapterID: "default",
-		// Default adapter wraps raw HL7 in a hardcoded
-		// {"resourceType":"Bundle","type":"collection"} body. Matching
-		// "Bundle" is enough — pipeline wiring, not vendor mapping, is
-		// what this test pins.
+		// OP #174: Default adapter now runs the shared hl7v2 mapper and
+		// emits a real FHIR R4 Bundle (Patient + Encounter for ADT). The
+		// parametric harness uses content=id-only subscriptions so the
+		// notification body carries the bundle envelope but not the
+		// PID round-trip — same harness limitation that gates the
+		// vendor-adapter cases. Matching "Bundle" pins pipeline wiring;
+		// the round-trip is unit-tested in adapters/default/mapping_test.go.
 		bodyMustContain: []string{`"resourceType":"Bundle"`},
 		facilityPrefix:  "e2e-prod-hl7",
 	})

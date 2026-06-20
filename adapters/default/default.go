@@ -7,11 +7,13 @@
 // oracle-health, ...) inherit the same Base structs and override only what
 // differs.
 //
-// The default adapter does not normalize HL7 v2 input — Lex preserves the
-// raw bytes verbatim and the resource produced by MapToFHIR carries the
-// original payload. A real translation pipeline lives in vendor adapters
-// (and in a future generic v2-to-FHIR mapping pass that operators can
-// configure for the default adapter, per architecture.md).
+// The default adapter performs a vendor-agnostic HL7 v2 -> FHIR R4
+// translation using only standard segments (MSH, EVN, PID, PV1, OBR, OBX,
+// ORC) via the shared internal/adapter/hl7v2 parser+mapper. It is the
+// production fallback when no vendor adapter is configured: ADT, ORU, and
+// ORM messages produce real FHIR Bundles (Patient, Encounter, Observation,
+// DiagnosticReport, ServiceRequest). Vendor adapters override the mapping
+// to consume their proprietary Z-segments.
 package defaultadapter
 
 import (
@@ -22,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/hl7v2"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
@@ -54,7 +57,7 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
 		ID:                   "default",
 		Vendor:               "fhir-ehr-subscriptions-service",
-		Description:          "Reference adapter: passes HL7 v2 through unchanged; FHIR scan plan empty by default; vendor change-feed quiescent by default.",
+		Description:          "Reference adapter: vendor-agnostic HL7 v2 -> FHIR R4 mapping (PID/PV1/OBR/OBX/ORC); FHIR scan plan empty by default; vendor change-feed quiescent by default.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{
 			HL7Processor:     true,
@@ -67,11 +70,12 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	}
 }
 
-// BuildHl7Processor returns the default HL7 message processor. It is a
-// no-normalization pass-through: Lex preserves the raw bytes; Classify always
-// produces ChangeCreate (no vendor-specific trigger-code interpretation);
-// MapToFHIR wraps the raw payload in a minimal FhirResource with type
-// "Bundle" so downstream conformance is trivially satisfied.
+// BuildHl7Processor returns the default HL7 message processor. Lex parses
+// the HL7 v2 message via the shared internal/adapter/hl7v2 parser; Classify
+// maps standard ADT trigger codes to ChangeKind (A03/A23/A29 -> delete,
+// A02/A08/A11/A13 -> update, others -> create); MapToFHIR runs the shared
+// vendor-agnostic mapper that emits a FHIR R4 Bundle of Patient + Encounter
+// (ADT) / DiagnosticReport + Observation (ORU) / ServiceRequest (ORM).
 func (a *Adapter) BuildHl7Processor(_ spi.AdapterContext) spi.Hl7MessageProcessor {
 	return &hl7Processor{}
 }
@@ -117,8 +121,8 @@ func (a *Adapter) BuildHydrationService(actx spi.AdapterContext) spi.HydrationSe
 	}
 }
 
-// hl7Processor is the default HL7 pipeline: pass raw bytes through, classify
-// every message as a create, map to a Bundle resource carrying the bytes.
+// hl7Processor is the default HL7 pipeline: parse via the shared hl7v2
+// package, classify standard ADT triggers, and map to FHIR R4.
 type hl7Processor struct {
 	spi.BaseHl7MessageProcessor
 }
@@ -126,24 +130,47 @@ type hl7Processor struct {
 func (h *hl7Processor) Lex(raw []byte) (spi.ParsedHL7Message, error) {
 	cp := make([]byte, len(raw))
 	copy(cp, raw)
-	return spi.ParsedHL7Message{Raw: cp, Segments: nil}, nil
+	parsed, err := hl7v2.Parse(cp)
+	if err != nil {
+		return spi.ParsedHL7Message{Raw: cp}, err
+	}
+	return spi.ParsedHL7Message{Raw: cp, Segments: parsed}, nil
 }
 
-func (h *hl7Processor) Classify(_ spi.ParsedHL7Message) (spi.Classification, error) {
-	return spi.Classification{Kind: spi.ChangeCreate, CorrelationKey: ""}, nil
+func (h *hl7Processor) Classify(parsed spi.ParsedHL7Message) (spi.Classification, error) {
+	msg, _ := parsed.Segments.(*hl7v2.Message)
+	if msg == nil {
+		return spi.Classification{Kind: spi.ChangeCreate}, nil
+	}
+	return spi.Classification{
+		Kind:           classifyTrigger(strings.ToUpper(msg.TriggerEvent())),
+		CorrelationKey: msg.PatientID(),
+	}, nil
+}
+
+// classifyTrigger maps the standard HL7 v2 ADT trigger event to a SPI
+// ChangeKind. Vendor-specific triggers fall through to ChangeCreate; that
+// matches the no-prior-knowledge stance of the default adapter.
+func classifyTrigger(trigger string) spi.ChangeKind {
+	switch trigger {
+	case "A03", "A23", "A29":
+		return spi.ChangeDelete
+	case "A02", "A08", "A11", "A13":
+		return spi.ChangeUpdate
+	}
+	return spi.ChangeCreate
 }
 
 func (h *hl7Processor) MapToFHIR(parsed spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
-	// The default adapter does not parse HL7 into a FHIR resource. It wraps
-	// the payload in a minimal Bundle so the SPI pipeline (validate, sink
-	// write) sees a non-empty body. Operators who need real translation
-	// configure a vendor adapter.
-	body := []byte(`{"resourceType":"Bundle","type":"collection"}`)
-	return spi.FhirResource{
-		ResourceType: "Bundle",
-		ID:           "",
-		Body:         body,
-	}, nil
+	msg, _ := parsed.Segments.(*hl7v2.Message)
+	if msg == nil {
+		var err error
+		msg, err = hl7v2.Parse(parsed.Raw)
+		if err != nil {
+			return spi.FhirResource{}, err
+		}
+	}
+	return hl7v2.MapToFHIR(msg)
 }
 
 // scanRunner is the default FHIR scan runner with an empty plan.
