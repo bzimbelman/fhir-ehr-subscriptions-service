@@ -357,6 +357,15 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 	//    head-of-line-block sibling rows in the same batch (S-8.1). We
 	//    register each call on the in-flight WaitGroup so a Run
 	//    shutdown can wait for them to commit before returning (B-31).
+	//    OP #291: tickOnce awaits this batch's dispatches before
+	//    returning. Without that wait, callers that observe deliveries
+	//    state after TickOnce returns (tests, the recovery sweep, the
+	//    next tick on the same row) race the in-flight goroutines and
+	//    see partial state — concurrent workers also lost the "delivered
+	//    20/20" invariant when wg.Done fired in fakeChannel.Deliver
+	//    before applyDecision committed. Concurrency *within* a batch
+	//    (S-8.1) is preserved; we just don't return from a tick until
+	//    the batch's goroutines finish.
 	concurrency := w.cfg.DispatchConcurrency
 	if concurrency <= 0 {
 		concurrency = 1
@@ -365,15 +374,19 @@ func (w *Worker) tickOnce(ctx context.Context) (bool, error) {
 		concurrency = len(rows)
 	}
 	sem := make(chan struct{}, concurrency)
+	var batch sync.WaitGroup
 	for i := range rows {
 		w.inflight.Add(1)
+		batch.Add(1)
 		sem <- struct{}{}
 		go func(r *repos.DeliveryRow) {
 			defer w.inflight.Done()
+			defer batch.Done()
 			defer func() { <-sem }()
 			w.dispatchOne(ctx, r)
 		}(&rows[i])
 	}
+	batch.Wait()
 	return true, nil
 }
 
