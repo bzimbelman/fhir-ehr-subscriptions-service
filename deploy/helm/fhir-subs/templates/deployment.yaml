@@ -40,7 +40,7 @@ spec:
       {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- if .Values.migrationInit.enabled }}
+      {{- if .Values.configCheck.enabled }}
       initContainers:
         # Validate config + secret resolution before main container starts.
         # Schema migrations run inside main, guarded by a Postgres advisory
@@ -86,7 +86,7 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           resources:
-            {{- toYaml .Values.migrationInit.resources | nindent 12 }}
+            {{- toYaml .Values.configCheck.resources | nindent 12 }}
       {{- end }}
       containers:
         - name: fhir-subs
@@ -113,9 +113,11 @@ spec:
             - name: mllp
               containerPort: 2575
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: 9090
               protocol: TCP
+            {{- end }}
           {{- if .Values.probes.liveness.enabled }}
           livenessProbe:
             httpGet:

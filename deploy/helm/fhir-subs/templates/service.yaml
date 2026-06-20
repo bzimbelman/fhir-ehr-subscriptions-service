@@ -23,9 +23,11 @@ spec:
       port: {{ .Values.service.mllpPort }}
       targetPort: mllp
       protocol: TCP
+    {{- if .Values.metrics.enabled }}
     - name: metrics
       port: {{ .Values.service.metricsPort }}
       targetPort: metrics
       protocol: TCP
+    {{- end }}
   selector:
     {{- include "fhir-subs.selectorLabels" . | nindent 4 }}

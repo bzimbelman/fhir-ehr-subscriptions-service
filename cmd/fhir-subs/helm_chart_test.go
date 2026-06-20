@@ -35,6 +35,10 @@ func TestHelmChart_ConfigMapParsesIntoConfig(t *testing.T) {
 		"--set", "probes.liveness.enabled=false",
 		"--set", "probes.readiness.enabled=false",
 		"--set", "probes.startup.enabled=false",
+		// OPs #122/#123: chart fails fast on default placeholders.
+		"--set", "image.repository=ghcr.io/example/fhir-ehr-subscriptions-service",
+		"--set", "networkPolicy.ingress.api.from[0].podSelector.matchLabels.app=test",
+		"--set", "networkPolicy.ingress.mllp.from[0].podSelector.matchLabels.app=test",
 	})
 
 	configYAML := extractConfigMapConfigYAML(t, rendered)
@@ -87,6 +91,20 @@ topicCatalog:
   files:
     demo.json: |
       {"resourceType":"SubscriptionTopic","status":"active","url":"http://example.org/topic/demo"}
+image:
+  repository: ghcr.io/example/fhir-ehr-subscriptions-service
+networkPolicy:
+  ingress:
+    api:
+      from:
+        - podSelector:
+            matchLabels:
+              app: test
+    mllp:
+      from:
+        - podSelector:
+            matchLabels:
+              app: test
 `
 	if err := os.WriteFile(valuesFile, []byte(valuesBody), 0o600); err != nil {
 		t.Fatalf("write values: %v", err)
@@ -118,6 +136,9 @@ func TestHelmChart_ProbePort_MatchesBinaryListener(t *testing.T) {
 	chartPath := chartDir(t)
 	rendered := helmTemplate(t, chartPath, []string{
 		"--set", "tls.enabled=false",
+		"--set", "image.repository=ghcr.io/example/fhir-ehr-subscriptions-service",
+		"--set", "networkPolicy.ingress.api.from[0].podSelector.matchLabels.app=test",
+		"--set", "networkPolicy.ingress.mllp.from[0].podSelector.matchLabels.app=test",
 	})
 	configYAML := extractConfigMapConfigYAML(t, rendered)
 

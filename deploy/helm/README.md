@@ -279,7 +279,7 @@ reference. Key sections:
 | Path | Type | Default | Purpose |
 |---|---|---|---|
 | `replicaCount` | int | 2 | Replicas when HPA is disabled. |
-| `image.repository` | string | `ghcr.io/...` | Image to deploy. |
+| `image.repository` | string | `<your-org>/...` (placeholder; **required**) | Image to deploy. Helm template fails until the operator overrides this (OP #123). |
 | `image.tag` | string | `""` (=appVersion) | Image tag override. |
 | `image.digest` | string | `""` | Pin to a sha256 digest (overrides tag). |
 | `service.apiPort` | int | 8443 | Subscriptions API port. |
@@ -291,6 +291,8 @@ reference. Key sections:
 | `autoscaling.targetCPUUtilizationPercentage` | int | 75 | CPU HPA target. |
 | `podDisruptionBudget.minAvailable` | int | 1 | PDB. |
 | `networkPolicy.enabled` | bool | true | Toggle NetworkPolicy. |
+| `networkPolicy.ingress.api.from` | list | `[]` (**required**) | Operator MUST list at least one peer. Empty list fails template (OP #122). |
+| `networkPolicy.ingress.mllp.from` | list | `[]` (**required**) | Operator MUST list at least one peer. Empty list fails template (OP #122). |
 | `networkPolicy.egress.postgres.podSelector` | object | PGO master | Match your PG primary. |
 | `networkPolicy.egress.extraRules` | list | `[]` | Extra egress (e.g., subscriber endpoints). |
 | `config.contents` | string | minimal dev config | Inline service config. |
@@ -299,8 +301,9 @@ reference. Key sections:
 | `secrets.existingSecret` | string | `""` | Use a pre-created Secret. |
 | `tls.enabled` | bool | true | Mount TLS Secret. |
 | `tls.existingSecret` | string | `""` | Existing `kubernetes.io/tls` Secret. |
-| `migrationInit.enabled` | bool | true | InitContainer fail-fast on bad config. |
-| `serviceMonitor.enabled` | bool | false | Prometheus Operator scraping. |
+| `configCheck.enabled` | bool | true | InitContainer fail-fast on bad config. Renamed from `migrationInit` (OP #125) — the container does NOT run migrations. |
+| `metrics.enabled` | bool | false | Expose `/metrics` Service port and allow ServiceMonitor (OP #121). Leave off until the binary opens its Prometheus listener. |
+| `serviceMonitor.enabled` | bool | false | Prometheus Operator scraping. Requires `metrics.enabled=true`. |
 | `affinity` | object | podAntiAffinity / hostname | Spread replicas across nodes. |
 
 ## Upgrades

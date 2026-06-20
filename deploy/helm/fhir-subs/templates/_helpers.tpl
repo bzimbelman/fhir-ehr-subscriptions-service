@@ -61,8 +61,14 @@ ServiceAccount name
 
 {{/*
 Image reference. Prefers digest when set; otherwise tag (or appVersion).
+The default image.repository is an intentionally invalid placeholder
+(OP #123) so helm template fails fast when the operator forgets to set
+it.
 */}}
 {{- define "fhir-subs.image" -}}
+{{- if or (eq .Values.image.repository "<your-org>/fhir-ehr-subscriptions-service") (eq .Values.image.repository "") -}}
+{{- fail "image.repository MUST be set to your container image (e.g. ghcr.io/myorg/fhir-ehr-subscriptions-service). The chart no longer ships a working default (OP #123)." -}}
+{{- end -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- if .Values.image.digest -}}
 {{ printf "%s@%s" .Values.image.repository .Values.image.digest }}

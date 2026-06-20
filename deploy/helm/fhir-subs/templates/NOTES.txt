@@ -1,0 +1,28 @@
+{{- /*
+Operator NOTES surfaced after `helm install` / `helm upgrade`.
+*/ -}}
+fhir-subs {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Probe the readiness endpoint:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fhir-subs.fullname" . }} 8081:{{ .Values.service.probePort }}
+  curl -fsS http://localhost:8081/readyz
+
+{{- if and .Values.autoscaling.enabled (hasKey .Values "replicaCount") }}
+
+WARNING (OP #124):
+  Both `replicaCount` ({{ .Values.replicaCount }}) and
+  `autoscaling.enabled` are set. The Deployment template intentionally
+  omits .spec.replicas when autoscaling is on, so `replicaCount` has NO
+  effect at install time — the HPA's `minReplicas`
+  ({{ .Values.autoscaling.minReplicas }}) controls the floor instead.
+  Either set autoscaling.minReplicas to your desired floor and remove
+  the replicaCount override, or set autoscaling.enabled=false to use a
+  static replicaCount.
+{{- end }}
+
+{{- if not .Values.metrics.enabled }}
+
+NOTE: metrics.enabled=false — the chart does not expose a /metrics
+  Service port and any ServiceMonitor is suppressed (OP #121). Flip
+  metrics.enabled=true once the binary opens its Prometheus listener.
+{{- end }}
