@@ -46,7 +46,7 @@ type streamFakeLister struct {
 }
 
 func (s *streamFakeLister) StreamActiveByTopic(
-	_ context.Context, _ repos.Querier, _ string,
+	_ context.Context, _ repos.Querier, _ string, _ string,
 	fn func(repos.SubscriptionRow) error,
 ) error {
 	s.streamCalls++
@@ -80,7 +80,7 @@ func (s *streamFakeLister) StreamActiveByTopic(
 type failIfMaterialized struct{}
 
 func (failIfMaterialized) StreamActiveByTopic(
-	context.Context, repos.Querier, string,
+	context.Context, repos.Querier, string, string,
 	func(repos.SubscriptionRow) error,
 ) error {
 	return errors.New("forbidden: caller bypassed streaming entry point")

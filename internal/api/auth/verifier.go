@@ -27,6 +27,18 @@ type ClientRecord struct {
 	Scopes  []string
 }
 
+// TrustedIssuer pins a single (iss, jwks_url) pair the verifier will
+// honor. When VerifierConfig.TrustedIssuers is non-empty, the verifier
+// rejects tokens whose iss is not present here AND whose JWKS URL
+// (resolved from the client's auth_clients row) does not match a
+// trusted JWKS URL in the same entry. Operators use this list to pin
+// trust to a fixed set of identity providers; an empty list disables
+// the filter (legacy / unmanaged-trust deployments).
+type TrustedIssuer struct {
+	Issuer  string
+	JWKSURL string
+}
+
 // ClientLookup is the dependency the verifier uses to resolve a client
 // by id. The Subscriptions API wires it to repos.AuthClientsRepo.GetByID.
 type ClientLookup interface {
@@ -87,6 +99,16 @@ type VerifierConfig struct {
 
 	// JWKSFetchTimeout caps each JWKS HTTP fetch. Default 5s (B-12).
 	JWKSFetchTimeout time.Duration
+
+	// TrustedIssuers, when non-empty, pins the set of (iss, jwks_url)
+	// pairs the verifier will accept (OP #226). A token whose iss
+	// claim is not in the list is rejected as untrusted; a token
+	// whose iss IS in the list but whose JWKS would be loaded from a
+	// jwks_url not paired with that iss is also rejected. Empty
+	// disables the filter (legacy / unmanaged-trust path) and the
+	// verifier behaves as before — per-client JWKS pinning still
+	// applies via auth_clients.jwks_url.
+	TrustedIssuers []TrustedIssuer
 }
 
 // Verifier authenticates SMART Backend Services bearer tokens.
@@ -102,6 +124,11 @@ type Verifier struct {
 	// same uncached jwksURL stamp N HTTP fetches at the IdP — a
 	// request-stampede the verifier should not generate.
 	jwksFetchGroup singleflight.Group
+
+	// trustedIssuers maps iss → set of allowed jwks_url for that iss
+	// (OP #226). Built once in NewVerifier from cfg.TrustedIssuers.
+	// nil when the operator left the list empty (filter disabled).
+	trustedIssuers map[string]map[string]struct{}
 }
 
 type jwksEntry struct {
@@ -135,6 +162,29 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if cfg.JTICache == nil {
 		cfg.JTICache = NewJTIReplayCache(0, cfg.Now)
 	}
+	var trusted map[string]map[string]struct{}
+	if len(cfg.TrustedIssuers) > 0 {
+		trusted = make(map[string]map[string]struct{}, len(cfg.TrustedIssuers))
+		for _, ti := range cfg.TrustedIssuers {
+			if ti.Issuer == "" {
+				continue
+			}
+			set, ok := trusted[ti.Issuer]
+			if !ok {
+				set = make(map[string]struct{})
+				trusted[ti.Issuer] = set
+			}
+			if ti.JWKSURL != "" {
+				set[ti.JWKSURL] = struct{}{}
+			}
+		}
+		if len(trusted) == 0 {
+			// All entries had empty Issuer — treat as "no filter
+			// configured" rather than "everything is untrusted",
+			// which would be a config-error footgun.
+			trusted = nil
+		}
+	}
 	return &Verifier{
 		cfg:       cfg,
 		jwksCache: make(map[string]jwksEntry),
@@ -142,6 +192,7 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 			allowInsecure: cfg.AllowInsecureJWKS,
 			allowedHosts:  normalizeHosts(cfg.JWKSAllowedHosts),
 		},
+		trustedIssuers: trusted,
 	}, nil
 }
 
@@ -201,6 +252,30 @@ func (v *Verifier) Authenticate(r *http.Request) (principal *Principal, status i
 	// HS256-signed with IssuedSecret; we detect them by iss claim.
 	iss, _ := claims["iss"].(string)
 	useServerKey := v.cfg.IssuedSecret != nil && v.cfg.IssuedIssuer != "" && iss == v.cfg.IssuedIssuer
+
+	// OP #226: when TrustedIssuers is configured, refuse tokens
+	// whose iss is not in the list AND tokens whose client JWKS URL
+	// is not paired with the iss. Server-issued tokens (useServerKey)
+	// bypass — they are signed by us with IssuedSecret, not against
+	// an operator-trusted IdP. Empty trustedIssuers disables the
+	// filter (legacy / unmanaged-trust path).
+	if !useServerKey && v.trustedIssuers != nil {
+		allowedJWKS, trusted := v.trustedIssuers[iss]
+		if !trusted {
+			v.recordFailure("untrusted_issuer")
+			return nil, http.StatusUnauthorized, "untrusted iss"
+		}
+		// When the trusted entry pinned specific JWKS URLs, the
+		// client's resolved jwks_url MUST be one of them. If the
+		// trusted entry had no jwks_url (Issuer-only), accept any
+		// client JWKS that's already gated by per-client pinning.
+		if len(allowedJWKS) > 0 && client.JwksURL != "" {
+			if _, allowed := allowedJWKS[client.JwksURL]; !allowed {
+				v.recordFailure("untrusted_issuer")
+				return nil, http.StatusUnauthorized, "untrusted iss/jwks pairing"
+			}
+		}
+	}
 
 	var keyFn jwt.Keyfunc
 	var validMethods []string

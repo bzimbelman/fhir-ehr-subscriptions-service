@@ -34,6 +34,10 @@ func buildAuthEndpoints(cfg AuthConfig, pool *pgxpool.Pool, clients *repos.AuthC
 		issuedSecret = decoded
 	}
 
+	trusted := make([]auth.TrustedIssuer, 0, len(cfg.TrustedIssuers))
+	for _, ti := range cfg.TrustedIssuers {
+		trusted = append(trusted, auth.TrustedIssuer{Issuer: ti.Issuer, JWKSURL: ti.JWKSURL})
+	}
 	verif, err := auth.NewVerifier(auth.VerifierConfig{
 		Audience:          cfg.Audience,
 		ClockSkew:         cfg.ClockSkew,
@@ -43,6 +47,7 @@ func buildAuthEndpoints(cfg AuthConfig, pool *pgxpool.Pool, clients *repos.AuthC
 		IssuedIssuer:      cfg.IssuedIssuer,
 		AllowInsecureJWKS: cfg.AllowInsecure,
 		JWKSAllowedHosts:  cfg.JWKSAllowed,
+		TrustedIssuers:    trusted,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("verifier: %w", err)

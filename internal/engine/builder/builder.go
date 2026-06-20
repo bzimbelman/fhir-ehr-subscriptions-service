@@ -125,9 +125,10 @@ type reference struct {
 // `omitempty` is used on the optional fields so the wire shape matches
 // the FHIR contract exactly.
 type notificationEvent struct {
-	EventNumber int64      `json:"eventNumber"`
-	Timestamp   string     `json:"timestamp"`
-	Focus       *reference `json:"focus,omitempty"`
+	EventNumber       int64       `json:"eventNumber"`
+	Timestamp         string      `json:"timestamp"`
+	Focus             *reference  `json:"focus,omitempty"`
+	AdditionalContext []reference `json:"additionalContext,omitempty"`
 }
 
 // subscriptionStatus is the FHIR R5 SubscriptionStatus resource.
@@ -210,6 +211,13 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 	if hasNotificationEvents(job.NotificationType) && len(events) > 0 {
 		notifEvents := make([]notificationEvent, 0, len(events))
 		payload := payloadType(job.Subscription)
+		// OP #234: hydrated include resources are appended to the
+		// Bundle once, after focus body entries. Their references
+		// belong on EVERY notificationEvent in the batch so a
+		// subscriber processing one event sees the full set of
+		// included pointers without needing a side-channel. Compute
+		// once.
+		hydratedRefs := hydratedReferences(job.Hydrated)
 		for i := range events {
 			ev := &events[i]
 			n := perSubEv(job.PerSubEventNumbers, ev.ID)
@@ -225,11 +233,25 @@ func (b *Builder) Build(_ context.Context, job Job) (channel.NotificationEnvelop
 			if payload != channel.PayloadEmpty {
 				entry.Focus = &reference{Reference: ev.Focus}
 			}
-			// additionalContext is only present on full-resource and
-			// only when the topic shape calls for it. Without the
-			// HydrationClient wired we emit no additional references;
-			// this is a deliberate v1 cut described in the package
-			// docstring.
+			// OP #234: full-resource Bundles populate
+			// additionalContext with the focus reference plus a
+			// reference for each hydrated include resource. id-only
+			// and empty payloads omit the field — they have no
+			// resource bodies to point at, so the spec-required
+			// context list would be empty. Pre-#234 the field was
+			// never emitted, leaving full-resource subscribers
+			// receiving "id-only-like" bundles despite their
+			// contract.
+			if payload == channel.PayloadFullResource {
+				addl := make([]reference, 0, 1+len(hydratedRefs))
+				if ev.Focus != "" {
+					addl = append(addl, reference{Reference: ev.Focus})
+				}
+				addl = append(addl, hydratedRefs...)
+				if len(addl) > 0 {
+					entry.AdditionalContext = addl
+				}
+			}
 			notifEvents = append(notifEvents, entry)
 		}
 		status.NotificationEvent = notifEvents
@@ -375,4 +397,36 @@ func perSubEv(m map[uuid.UUID]int64, id uuid.UUID) int64 {
 		return 0
 	}
 	return m[id]
+}
+
+// hydratedReferences extracts FHIR References from already-fetched
+// include resource bodies (OP #234). Each body is parsed just enough
+// to read resourceType+id; bodies that don't contain both fields are
+// silently skipped — they appear as Bundle entries via the existing
+// emit path but cannot be referenced from additionalContext without
+// the canonical resourceType/id pair. A malformed body is also
+// already rejected by the focus-body emit loop's strict json
+// validation, so this best-effort parse never sees one in production.
+func hydratedReferences(hydrated [][]byte) []reference {
+	if len(hydrated) == 0 {
+		return nil
+	}
+	out := make([]reference, 0, len(hydrated))
+	for _, body := range hydrated {
+		if len(body) == 0 {
+			continue
+		}
+		var probe struct {
+			ResourceType string `json:"resourceType"`
+			ID           string `json:"id"`
+		}
+		if err := json.Unmarshal(body, &probe); err != nil {
+			continue
+		}
+		if probe.ResourceType == "" || probe.ID == "" {
+			continue
+		}
+		out = append(out, reference{Reference: probe.ResourceType + "/" + probe.ID})
+	}
+	return out
 }

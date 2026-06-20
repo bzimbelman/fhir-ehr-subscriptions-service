@@ -165,7 +165,7 @@ type SubscriptionStateUpdater interface {
 // ListActiveByTopic. *repos.SubscriptionsRepo satisfies it directly.
 type subscriptionLister interface {
 	StreamActiveByTopic(
-		ctx context.Context, q repos.Querier, topicURL string,
+		ctx context.Context, q repos.Querier, topicURL string, clientID string,
 		fn func(repos.SubscriptionRow) error,
 	) error
 }
@@ -413,7 +413,14 @@ func (w *Worker) fanoutOne(ctx context.Context, tx pgx.Tx, row *repos.EhrEventRo
 	// evaluator's signature stays unchanged but we never grow a
 	// per-topic slab.
 	one := make([]repos.SubscriptionRow, 1)
-	if err := w.subs.StreamActiveByTopic(cctx, tx, row.TopicURL, func(sub repos.SubscriptionRow) error {
+	// OP #232: scope the active-subscription stream to the event's
+	// recipient ClientID. Pre-#232 the worker streamed every active
+	// subscription on the topic regardless of tenant, so a single
+	// ehr_events row addressed to client A could fan out to client B's
+	// subscriptions and queue deliveries against B's endpoint — a
+	// cross-tenant disclosure of the subscriber URL/headers/filterBy
+	// (all per-tenant secrets).
+	if err := w.subs.StreamActiveByTopic(cctx, tx, row.TopicURL, row.ClientID, func(sub repos.SubscriptionRow) error {
 		one[0] = sub
 		decisions := Evaluate(event, one)
 		if len(decisions) != 1 {

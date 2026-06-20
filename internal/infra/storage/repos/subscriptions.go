@@ -103,7 +103,10 @@ func (r *SubscriptionsRepo) HardDelete(ctx context.Context, q Querier, id uuid.U
 	return nil
 }
 
-// ListActiveByTopic returns all active subscriptions for a topic.
+// ListActiveByTopic returns all active subscriptions for a topic
+// across all tenants. Tests use this to assert fanout fixtures; the
+// production fanout path uses StreamActiveByTopic with a clientID
+// predicate (OP #232).
 //
 // Memory: this returns every active subscription for the topic in a
 // single slice. For very large catalogs (>10k subscribers per topic)
@@ -111,7 +114,7 @@ func (r *SubscriptionsRepo) HardDelete(ctx context.Context, q Querier, id uuid.U
 // which bound peak memory.
 func (r *SubscriptionsRepo) ListActiveByTopic(ctx context.Context, q Querier, topicURL string) ([]SubscriptionRow, error) {
 	out := make([]SubscriptionRow, 0, 4)
-	if err := r.StreamActiveByTopic(ctx, q, topicURL, func(row SubscriptionRow) error {
+	if err := r.StreamActiveByTopic(ctx, q, topicURL, "", func(row SubscriptionRow) error {
 		out = append(out, row)
 		return nil
 	}); err != nil {
@@ -124,11 +127,19 @@ func (r *SubscriptionsRepo) ListActiveByTopic(ctx context.Context, q Querier, to
 // given topic, in id order. Returning a non-nil error from fn aborts
 // iteration and is propagated to the caller. The fanout worker uses
 // this to keep peak memory flat as the active-subscription set grows.
+//
+// OP #232: clientID, when non-empty, scopes the stream to a single
+// tenant. The fanout path passes the recipient client_id from the
+// ehr_events row so cross-tenant subscriptions on the same topic do
+// NOT receive deliveries for another tenant's event (subscriber
+// endpoints, headers, and filterBy are per-tenant secrets). An empty
+// clientID disables the predicate — used by ListActiveByTopic and
+// admin/diagnostic callers that legitimately need a topic-wide view.
 func (r *SubscriptionsRepo) StreamActiveByTopic(
-	ctx context.Context, q Querier, topicURL string,
+	ctx context.Context, q Querier, topicURL string, clientID string,
 	fn func(SubscriptionRow) error,
 ) error {
-	const sql = `
+	const sqlAll = `
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
@@ -139,7 +150,24 @@ func (r *SubscriptionsRepo) StreamActiveByTopic(
 		FROM subscriptions
 		WHERE topic_url = $1 AND status = 'active'
 		ORDER BY id`
-	rows, err := q.Query(ctx, sql, topicURL)
+	const sqlScoped = `
+		SELECT id, client_id, status, topic_url, channel_type,
+		       COALESCE(endpoint, ''), header, filter_by, content,
+		       heartbeat_period, timeout, max_count,
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
+		       end_time, COALESCE(error, ''), contact, last_handshake_at,
+		       created_at, updated_at
+		FROM subscriptions
+		WHERE topic_url = $1 AND status = 'active' AND client_id = $2
+		ORDER BY id`
+	var rows pgx.Rows
+	var err error
+	if clientID == "" {
+		rows, err = q.Query(ctx, sqlAll, topicURL)
+	} else {
+		rows, err = q.Query(ctx, sqlScoped, topicURL, clientID)
+	}
 	if err != nil {
 		return fmt.Errorf("subscriptions: list: %w", err)
 	}

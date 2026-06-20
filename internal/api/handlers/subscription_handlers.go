@@ -655,12 +655,15 @@ func (s *server) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
-		// FHIR optimistic-concurrency requires the weak ETag form
-		// (`W/"<version>"`); a bare UUID is no longer accepted because
-		// then the version is the resource id and lost-update detection
-		// is impossible (S-2.6).
-		expected := `W/"` + existing.ID.String() + `"`
-		if ifMatch != expected {
+		// OP #233: accept BOTH weak (`W/"<id>"`) and strong (`"<id>"`)
+		// ETag forms per FHIR R5 + RFC 7232. We emit the weak form on
+		// PUT/POST responses, but spec-compliant clients are free to
+		// strip the `W/` prefix when comparing — the resource id is
+		// the version validator either way. Pre-#233 only the exact
+		// weak string passed; strong ETag was 409.
+		expectedWeak := `W/"` + existing.ID.String() + `"`
+		expectedStrong := `"` + existing.ID.String() + `"`
+		if ifMatch != expectedWeak && ifMatch != expectedStrong {
 			fhirerror.WriteError(w, http.StatusConflict, fhirerror.CodeConflict,
 				"version mismatch")
 			return
