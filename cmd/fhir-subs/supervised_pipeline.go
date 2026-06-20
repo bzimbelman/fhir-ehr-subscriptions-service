@@ -102,6 +102,13 @@ type supervisorEntry struct {
 // (Run(ctx) error). The pipeline workers in production
 // (hl7processor.Processor, matcher.Worker, submatcher.Worker,
 // scheduler.Worker) all match this contract today.
+//
+// HL7 is optional (OP #311/#313): when the loaded adapter declares
+// Capabilities.HL7Processor=false (e.g. "direct" — Direct messaging
+// is SMTP/S-MIME, not HL7 v2 over MLLP), buildProductionRuntime skips
+// hl7processor.New and threads a nil HL7 through here. The supervisor
+// gates registration on non-nil identically to FhirScanRunner /
+// VendorAPIClient.
 type pipelineSupervisorDeps struct {
 	HL7        supervisor.Worker
 	Matcher    supervisor.Worker
@@ -151,8 +158,8 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 	if deps.Lifecycle == nil {
 		return nil, errors.New("supervisor pipeline: Lifecycle is required")
 	}
-	if deps.HL7 == nil || deps.Matcher == nil || deps.Submatcher == nil || deps.Scheduler == nil {
-		return nil, errors.New("supervisor pipeline: every Worker (HL7, Matcher, Submatcher, Scheduler) is required")
+	if deps.Matcher == nil || deps.Submatcher == nil || deps.Scheduler == nil {
+		return nil, errors.New("supervisor pipeline: every core Worker (Matcher, Submatcher, Scheduler) is required")
 	}
 	deps.Backoff.applyDefaults()
 
@@ -166,10 +173,19 @@ func buildSupervisedPipeline(deps pipelineSupervisorDeps) (*supervisedPipeline, 
 		id     string
 		worker supervisor.Worker
 	}{
-		{"hl7-processor", deps.HL7},
 		{"matcher", deps.Matcher},
 		{"submatcher", deps.Submatcher},
 		{"scheduler", deps.Scheduler},
+	}
+	// OP #311/#313: HL7 is gated on adapter Capabilities.HL7Processor.
+	// Nil for adapters like "direct" that explicitly disclaim the
+	// capability — keep the supervisor list free of an entry the host
+	// never produced.
+	if deps.HL7 != nil {
+		specs = append([]struct {
+			id     string
+			worker supervisor.Worker
+		}{{"hl7-processor", deps.HL7}}, specs...)
 	}
 	if deps.FhirScanRunner != nil {
 		specs = append(specs, struct {
