@@ -19,7 +19,7 @@ flowchart TB
     adapterspi["internal/adapterspi/<br/>Adapter SPI base classes"]
     adapters["internal/adapters/<br/>concrete vendor adapters"]
     domain["internal/domain/<br/>R5-shaped types"]
-    infra["internal/infra/<br/>storage, queue, wakeup,<br/>lifecycle, observability,<br/>config"]
+    infra["internal/infra/<br/>storage, lifecycle,<br/>observability, config"]
     migrations["migrations/<br/>SQL migrations"]
     testdata["testdata/<br/>shared test fixtures"]
     docs_dir["docs/<br/>concept, architecture,<br/>HLD, LLD, decisions"]
@@ -52,12 +52,10 @@ Every package below has its LLD home. Code reviewers reject PRs that put logic o
 | `internal/api/versionshim/` | R5 internal model ↔ R4B Backport / R5 native / R6 wire shim. | [decisions/0004-fhir-version-strategy.md](high-level-design/decisions/0004-fhir-version-strategy.md) |
 | `internal/api/handlers/` | REST handlers for each route. | [low-level-design/subscriptions-api.md](low-level-design/subscriptions-api.md) |
 | `internal/engine/` | Subscriptions Engine top-level (composes the four sub-packages). | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
-| `internal/engine/topicmatcher/` | Stage 2 — match `resource_changes` against the topic catalog. | [low-level-design/topic-matcher.md](low-level-design/topic-matcher.md) |
 | `internal/engine/submatcher/` | Stage 3 — subscription fanout. | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
 | `internal/engine/builder/` | Stage 4 — Notification Bundle assembly. | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
 | `internal/engine/scheduler/` | Delivery scheduler, retries, heartbeats, handshakes. | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
-| `internal/topics/` | Topic catalog: load from built-in / adapter / operator sources. | [low-level-design/topics.md](low-level-design/topics.md) |
-| `internal/topics/filter/` | FHIR search-parameter expression evaluator + sandboxed FHIRPath. | [low-level-design/topic-matcher.md](low-level-design/topic-matcher.md) |
+| `internal/topics/catalog/` | Topic catalog: load from built-in / adapter / operator sources. | [low-level-design/topics.md](low-level-design/topics.md) |
 | `internal/channel/` | Channel SPI — manifest, lifecycle, deliver, heartbeats. | [low-level-design/channels.md](low-level-design/channels.md) |
 | `internal/channel/resthook/` | rest-hook channel. | [low-level-design/channels.md](low-level-design/channels.md) |
 | `internal/channel/websocket/` | WebSocket channel. | [low-level-design/channels.md](low-level-design/channels.md) |
@@ -72,8 +70,6 @@ Every package below has its LLD home. Code reviewers reject PRs that put logic o
 | `internal/domain/cursor/` | Per-subscription event cursors. | [low-level-design/subscriptions-engine.md](low-level-design/subscriptions-engine.md) |
 | `internal/infra/storage/` | Postgres pool, repositories, queue-claim primitive, encryption-at-rest. | [low-level-design/storage.md](low-level-design/storage.md) |
 | `internal/infra/storage/migrate/` | Migration runner (forward-compatible expand-then-contract). | [low-level-design/storage.md](low-level-design/storage.md) |
-| `internal/infra/queue/` | The `SELECT FOR UPDATE SKIP LOCKED` claim primitive. | [low-level-design/storage.md](low-level-design/storage.md) |
-| `internal/infra/wakeup/` | In-memory signal bus between stages. | [high-level-design/domains/storage.md](high-level-design/domains/storage.md) |
 | `internal/infra/lifecycle/` | `/healthz`, `/readyz`, `/startup`, graceful shutdown. | [low-level-design/lifecycle.md](low-level-design/lifecycle.md) |
 | `internal/infra/observability/` | Prometheus metrics, OpenTelemetry tracing, structured logs, hash-chained audit log. | [low-level-design/observability.md](low-level-design/observability.md) |
 | `internal/infra/config/` | Layered config loader, secret-placeholder resolver, redaction map, SIGHUP hot-reload. | [low-level-design/configuration.md](low-level-design/configuration.md) |
