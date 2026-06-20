@@ -39,7 +39,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "prod-stub-lint: skip-age walk failed: %v\n", err)
 		os.Exit(2)
 	}
-	all := append(astFindings, skipFindings...)
+	all := make([]Finding, 0, len(astFindings)+len(skipFindings))
+	all = append(all, astFindings...)
+	all = append(all, skipFindings...)
 	for _, f := range all {
 		fmt.Printf("%s:%d: [%s] %s\n", f.File, f.Line, f.Rule, f.Message)
 	}

@@ -101,6 +101,7 @@ func blameLineDate(repoRoot, path string, line int) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("rel %s under %s: %w", path, repoRoot, err)
 	}
+	//nolint:gosec // inputs to `git blame` are repo-internal: rel comes from filepath.WalkDir under repoRoot and line is the AST position of a *.Skip call site, both controlled by this tool
 	cmd := exec.Command("git", "blame", "--porcelain", "-L", fmt.Sprintf("%d,%d", line, line), "--", rel)
 	cmd.Dir = repoRoot
 	var stdout, stderr bytes.Buffer
