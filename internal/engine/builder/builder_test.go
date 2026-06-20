@@ -235,6 +235,169 @@ func TestBuildFullResourcePayloadIncludesFocusBody(t *testing.T) {
 	}
 }
 
+// OP #234: full-resource notification Bundles MUST populate
+// SubscriptionStatus.notificationEvent.additionalContext with at
+// least the focus reference so subscribers receive the spec-required
+// pointer to the included full resource entry. id-only / empty
+// payloads must NOT populate it (the contract is tighter for those).
+func TestBuildFullResourcePopulatesAdditionalContext(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID: uuid.New(), TopicURL: "http://example.org/t", Status: repos.SubActive,
+		Content: "full-resource",
+	}
+	ev := repos.EhrEventRow{
+		ID:               uuid.New(),
+		EventNumber:      42,
+		TopicURL:         "http://example.org/t",
+		Focus:            "ServiceRequest/srF",
+		ChangeKind:       repos.ChangeUpdate,
+		Resource:         []byte(`{"resourceType":"ServiceRequest","id":"srF","status":"active"}`),
+		CorrelationID:    uuid.New(),
+		OccurredAt:       time.Now().UTC(),
+		ResourceChangeID: uuid.New(),
+	}
+	b := builder.New(builder.Config{})
+	env, err := b.Build(context.Background(), builder.Job{
+		Subscription:       sub,
+		NotificationType:   channel.BundleEventNotification,
+		Events:             []repos.EhrEventRow{ev},
+		PerSubEventNumbers: map[uuid.UUID]int64{ev.ID: 1},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	bundle := unmarshalBundle(t, env.BundleBytes)
+	entries := bundle["entry"].([]any)
+	status := entries[0].(map[string]any)["resource"].(map[string]any)
+	notifEvents, ok := status["notificationEvent"].([]any)
+	if !ok || len(notifEvents) != 1 {
+		t.Fatalf("notificationEvent: want 1 entry, got %#v", status["notificationEvent"])
+	}
+	notif := notifEvents[0].(map[string]any)
+	addl, ok := notif["additionalContext"].([]any)
+	if !ok {
+		t.Fatalf("notificationEvent[0].additionalContext: missing or wrong type, got %#v", notif["additionalContext"])
+	}
+	if len(addl) < 1 {
+		t.Fatalf("additionalContext: want >=1 entry (focus reference), got %d", len(addl))
+	}
+	ref := addl[0].(map[string]any)
+	if ref["reference"] != "ServiceRequest/srF" {
+		t.Errorf("additionalContext[0].reference: got %v, want ServiceRequest/srF", ref["reference"])
+	}
+}
+
+// OP #234: full-resource with hydrated includes — additionalContext
+// MUST include references for each hydrated resource so the bundle's
+// included entries are spec-discoverable from the SubscriptionStatus.
+func TestBuildFullResourceAdditionalContextIncludesHydrated(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID: uuid.New(), TopicURL: "http://example.org/t", Status: repos.SubActive,
+		Content: "full-resource",
+	}
+	ev := repos.EhrEventRow{
+		ID:               uuid.New(),
+		EventNumber:      9,
+		TopicURL:         "http://example.org/t",
+		Focus:            "ServiceRequest/sr1",
+		ChangeKind:       repos.ChangeUpdate,
+		Resource:         []byte(`{"resourceType":"ServiceRequest","id":"sr1"}`),
+		CorrelationID:    uuid.New(),
+		OccurredAt:       time.Now().UTC(),
+		ResourceChangeID: uuid.New(),
+	}
+	hydrated := [][]byte{
+		[]byte(`{"resourceType":"Patient","id":"p1"}`),
+		[]byte(`{"resourceType":"Practitioner","id":"pr1"}`),
+	}
+	b := builder.New(builder.Config{})
+	env, err := b.Build(context.Background(), builder.Job{
+		Subscription:       sub,
+		NotificationType:   channel.BundleEventNotification,
+		Events:             []repos.EhrEventRow{ev},
+		PerSubEventNumbers: map[uuid.UUID]int64{ev.ID: 1},
+		Hydrated:           hydrated,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	bundle := unmarshalBundle(t, env.BundleBytes)
+	entries := bundle["entry"].([]any)
+	status := entries[0].(map[string]any)["resource"].(map[string]any)
+	notifEvents := status["notificationEvent"].([]any)
+	notif := notifEvents[0].(map[string]any)
+	addl, ok := notif["additionalContext"].([]any)
+	if !ok {
+		t.Fatalf("additionalContext: missing")
+	}
+	// 1 focus + 2 hydrated = 3 references.
+	if len(addl) != 3 {
+		t.Fatalf("additionalContext: want 3 (focus + 2 hydrated), got %d", len(addl))
+	}
+	gotRefs := make([]string, 0, len(addl))
+	for _, a := range addl {
+		ref := a.(map[string]any)["reference"].(string)
+		gotRefs = append(gotRefs, ref)
+	}
+	wantRefs := []string{"ServiceRequest/sr1", "Patient/p1", "Practitioner/pr1"}
+	for _, want := range wantRefs {
+		found := false
+		for _, got := range gotRefs {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("additionalContext missing reference %q (got %v)", want, gotRefs)
+		}
+	}
+}
+
+// OP #234 negative case: id-only payloads must NOT populate
+// additionalContext — that field is reserved for full-resource so
+// subscribers can distinguish "contract gives me bodies; references
+// here are the spec-discoverable pointers" from "contract is id-only;
+// no body is included."
+func TestBuildIDOnlyOmitsAdditionalContext(t *testing.T) {
+	t.Parallel()
+	sub := repos.SubscriptionRow{
+		ID: uuid.New(), TopicURL: "http://example.org/t", Status: repos.SubActive,
+		Content: "id-only",
+	}
+	ev := repos.EhrEventRow{
+		ID:               uuid.New(),
+		EventNumber:      1,
+		TopicURL:         "http://example.org/t",
+		Focus:            "ServiceRequest/abc",
+		ChangeKind:       repos.ChangeCreate,
+		Resource:         []byte(`{"resourceType":"ServiceRequest","id":"abc"}`),
+		CorrelationID:    uuid.New(),
+		OccurredAt:       time.Now().UTC(),
+		ResourceChangeID: uuid.New(),
+	}
+	b := builder.New(builder.Config{})
+	env, err := b.Build(context.Background(), builder.Job{
+		Subscription:       sub,
+		NotificationType:   channel.BundleEventNotification,
+		Events:             []repos.EhrEventRow{ev},
+		PerSubEventNumbers: map[uuid.UUID]int64{ev.ID: 1},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	bundle := unmarshalBundle(t, env.BundleBytes)
+	entries := bundle["entry"].([]any)
+	status := entries[0].(map[string]any)["resource"].(map[string]any)
+	notifEvents := status["notificationEvent"].([]any)
+	notif := notifEvents[0].(map[string]any)
+	if _, present := notif["additionalContext"]; present {
+		t.Errorf("id-only must omit additionalContext; got %#v", notif["additionalContext"])
+	}
+}
+
 // TestBuildBatchedTwoEventsOneSubscriptionStatus: two events on one
 // subscription render in a single Bundle with one SubscriptionStatus,
 // two notificationEvent entries (sorted ascending by eventNumber), and
