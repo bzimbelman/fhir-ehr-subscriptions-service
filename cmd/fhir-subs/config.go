@@ -971,6 +971,42 @@ func applySets(cfg *Config, sets []string) error {
 				return setParseErr(key, err)
 			}
 			cfg.Auth.AllowInsecure = b
+		case "auth.access_token_ttl":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.AccessTokenTTL = d
+		case "auth.jwks_cache_ttl":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.JWKSCacheTTL = d
+		case "auth.clock_skew":
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.ClockSkew = d
+		case "auth.jwks_allowed_hosts":
+			// Parsed as a YAML/JSON array literal. YAML accepts JSON
+			// (`["a","b"]`) AND a flow-style YAML (`[a, b]`); pick yaml
+			// so the operator surface matches the file syntax.
+			var hosts []string
+			if err := yaml.Unmarshal([]byte(val), &hosts); err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.JWKSAllowed = hosts
+		case "auth.trusted_issuers":
+			// YAML decode lets the operator pass either JSON or YAML
+			// flow syntax for the struct list. Field tags on
+			// TrustedIssue resolve issuer / audience / jwks_url.
+			var tis []TrustedIssue
+			if err := yaml.Unmarshal([]byte(val), &tis); err != nil {
+				return setParseErr(key, err)
+			}
+			cfg.Auth.TrustedIssuers = tis
 		case "topics.catalog_dir":
 			cfg.Topics.CatalogDir = val
 		case "codec.active_key_version":

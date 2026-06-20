@@ -42,12 +42,19 @@ surprised when they peek at `config.yaml`:
 
 ## Prerequisites
 
-- Docker 24+ with `docker compose` v2
+- Docker 24+ with `docker compose` v2 (Docker 23+ ships `docker buildx`,
+  which compose uses transparently when buildx is the active builder)
 - Go 1.22+ (only needed if you want to rebuild `demo-publisher` /
   `demo-subscriber` from source instead of using the binaries baked into the
   compose image)
 - Two terminals, or `tmux`. The publisher and subscriber each run in the
   foreground and stream output as messages flow.
+
+`docker compose build` only produces a multi-arch image when the active
+builder is buildx; on a stock Docker install it builds for the host arch
+only. To publish a manifest list that resolves on both `linux/amd64` and
+`linux/arm64`, use [`scripts/build-multi-arch.sh`](scripts/build-multi-arch.sh)
+(documented in [README-compose.md → Platform notes](README-compose.md#platform-notes)).
 
 A `curl` for poking at `/Subscription` and `jq` for pretty-printing payloads
 are nice-to-haves but not required.

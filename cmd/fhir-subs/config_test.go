@@ -216,6 +216,137 @@ func TestLoadConfig_ApplySetsBadFormat(t *testing.T) {
 	}
 }
 
+// TestApplySets_AuthKnobs covers OP #167: every auth.* knob the operator
+// might reach for during an incident MUST be settable via --set so the
+// rollout doesn't require a YAML edit + restart. The list is the union
+// of supplements #110 and #126 — fields the applySets allowlist
+// previously omitted.
+//
+// Duration fields are parsed with time.ParseDuration; lists are
+// JSON-decoded so an operator who needs to shorten a JWKS allowlist can
+// pass `--set auth.jwks_allowed_hosts=["a.example","b.example"]`
+// without touching a struct list shape via dotted keys.
+func TestApplySets_AuthKnobs(t *testing.T) {
+	t.Parallel()
+
+	type check struct {
+		set  string
+		want func(*Config) bool
+		why  string
+	}
+	cases := []check{
+		{
+			set:  "auth.access_token_ttl=15m",
+			want: func(c *Config) bool { return c.Auth.AccessTokenTTL == 15*time.Minute },
+			why:  "AccessTokenTTL = 15m",
+		},
+		{
+			set:  "auth.jwks_cache_ttl=2h30m",
+			want: func(c *Config) bool { return c.Auth.JWKSCacheTTL == 2*time.Hour+30*time.Minute },
+			why:  "JWKSCacheTTL = 2h30m",
+		},
+		{
+			set:  "auth.clock_skew=30s",
+			want: func(c *Config) bool { return c.Auth.ClockSkew == 30*time.Second },
+			why:  "ClockSkew = 30s",
+		},
+		{
+			set: `auth.jwks_allowed_hosts=["idp.example.com","backup-idp.example.com"]`,
+			want: func(c *Config) bool {
+				return len(c.Auth.JWKSAllowed) == 2 &&
+					c.Auth.JWKSAllowed[0] == "idp.example.com" &&
+					c.Auth.JWKSAllowed[1] == "backup-idp.example.com"
+			},
+			why: "JWKSAllowed = 2 hosts",
+		},
+		{
+			set: `auth.trusted_issuers=[{"issuer":"https://idp","audience":"sub","jwks_url":"https://idp/jwks"}]`,
+			want: func(c *Config) bool {
+				return len(c.Auth.TrustedIssuers) == 1 &&
+					c.Auth.TrustedIssuers[0].Issuer == "https://idp" &&
+					c.Auth.TrustedIssuers[0].Audience == "sub" &&
+					c.Auth.TrustedIssuers[0].JWKSURL == "https://idp/jwks"
+			},
+			why: "TrustedIssuers = 1 entry",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.why, func(t *testing.T) {
+			t.Parallel()
+			p := writeTempYAML(t, minimalValidYAML)
+			cfg, err := loadConfig(p)
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if err := applySets(cfg, []string{tc.set}); err != nil {
+				t.Fatalf("applySets %q: %v", tc.set, err)
+			}
+			if !tc.want(cfg) {
+				t.Fatalf("--set %q did not produce expected state (%s); cfg.Auth=%+v",
+					tc.set, tc.why, cfg.Auth)
+			}
+		})
+	}
+}
+
+// TestApplySets_AuthKnobs_BadDurationRedacts asserts the redacting
+// error path covers the new duration knobs. A misparsed duration must
+// not echo the operator's value because they may have appended a
+// secret-looking suffix.
+func TestApplySets_AuthKnobs_BadDurationRedacts(t *testing.T) {
+	t.Parallel()
+	p := writeTempYAML(t, minimalValidYAML)
+	cfg, _ := loadConfig(p)
+	for _, key := range []string{
+		"auth.access_token_ttl",
+		"auth.jwks_cache_ttl",
+		"auth.clock_skew",
+	} {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			err := applySets(cfg, []string{key + "=hunter2"})
+			if err == nil {
+				t.Fatalf("expected error for --set %s=hunter2", key)
+			}
+			if strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("error must not echo raw value for %s: %v", key, err)
+			}
+			if !strings.Contains(err.Error(), "<redacted>") {
+				t.Fatalf("error should indicate redaction for %s: %v", key, err)
+			}
+		})
+	}
+}
+
+// TestApplySets_AuthKnobs_BadJSONRedacts asserts list-typed knobs
+// reject malformed JSON without leaking the raw value.
+func TestApplySets_AuthKnobs_BadJSONRedacts(t *testing.T) {
+	t.Parallel()
+	p := writeTempYAML(t, minimalValidYAML)
+	cfg, _ := loadConfig(p)
+	for _, key := range []string{
+		"auth.jwks_allowed_hosts",
+		"auth.trusted_issuers",
+	} {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			err := applySets(cfg, []string{key + "=hunter2-bad-json"})
+			if err == nil {
+				t.Fatalf("expected error for --set %s=hunter2-bad-json", key)
+			}
+			if strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("error must not echo raw value for %s: %v", key, err)
+			}
+			if !strings.Contains(err.Error(), "<redacted>") {
+				t.Fatalf("error should indicate redaction for %s: %v", key, err)
+			}
+		})
+	}
+}
+
 // TestApplySets_RedactsValueOnError asserts that when --set fails parsing
 // (bad bool, bad duration, bad int) the error MUST NOT echo the raw RHS
 // because the value can carry a secret (e.g. `--set

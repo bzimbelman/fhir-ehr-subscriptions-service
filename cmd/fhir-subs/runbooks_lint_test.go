@@ -123,6 +123,33 @@ func TestDeadLettersRunbook_KindsMatchSchema(t *testing.T) {
 	}
 }
 
+// TestDeadLettersRunbook_NoUnwiredCLI asserts the runbook does NOT
+// promise a `fhir-subs dead-letters list|replay|forget` CLI that the
+// production binary does not register. OP #166 settled the open
+// question by committing to the SQL surface in v1; the runbook MUST
+// stay aligned so an operator scanning headings doesn't try a
+// command that 404s in main.go's subcommand dispatch.
+//
+// The check is narrow: a literal `fhir-subs dead-letters ` invocation
+// (verb after the binary name) is the failure mode operators copy-paste.
+// Discussions of why no such CLI exists are fine — the assertion only
+// flags the `fhir-subs <verb>` shape that suggests "run this".
+func TestDeadLettersRunbook_NoUnwiredCLI(t *testing.T) {
+	body, err := os.ReadFile(deadLettersPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", deadLettersPath, err)
+	}
+	// Match `fhir-subs dead-letters` (with optional surrounding
+	// backticks) anywhere — a positive hit means the runbook is
+	// telling operators to run a verb that main.go does not register.
+	bad := regexp.MustCompile("`?fhir-subs\\s+dead-letters`?")
+	if bad.MatchString(string(body)) {
+		t.Errorf("%s still references a `fhir-subs dead-letters` CLI invocation. "+
+			"Per OP #166 the runbook commits to SQL recipes; rephrase any remaining "+
+			"mentions so they do not look like a runnable command.", deadLettersPath)
+	}
+}
+
 // TestDeadLettersRunbook_MetricsEndpointPort asserts the runbook does
 // NOT advertise port 9090 for /metrics. The production binary mounts
 // /metrics on the chi router that serves the FHIR API at

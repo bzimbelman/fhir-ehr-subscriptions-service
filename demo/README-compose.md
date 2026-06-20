@@ -46,6 +46,16 @@ starts don't race (B-33).
 
 ## Platform notes
 
-- `postgres:16-alpine` is multi-arch (linux/amd64 + linux/arm64), and the bridge image is built from source via `../Dockerfile`, so this compose works on Apple Silicon and amd64 Linux/Mac without a `platform:` override.
-- `docker compose build bridge` rebuilds the bridge image after source changes; otherwise compose reuses the cached `fhir-subs:demo` tag.
+- `postgres:16-alpine` is multi-arch (linux/amd64 + linux/arm64), and the bridge image is built from source via `../Dockerfile`, so on a single host this compose works on Apple Silicon and amd64 Linux/Mac without a `platform:` override. The `Dockerfile` declares `--platform=$BUILDPLATFORM` and uses `TARGETOS` / `TARGETARCH` so a cross-compile produces a binary for the target arch when the active builder is buildx.
+- `docker compose build bridge` only produces a multi-arch image **when buildx is the active builder**. The plain `default` builder shipped with older Docker installs builds for the host arch only — pulling that image on a different arch silently fails to start. To publish a manifest list that resolves on both `linux/amd64` and `linux/arm64`, run [`demo/scripts/build-multi-arch.sh`](scripts/build-multi-arch.sh):
+  ```sh
+  # Build for the host arch and load into local docker (no push, fastest).
+  demo/scripts/build-multi-arch.sh
+
+  # Build the full manifest list and push to a registry.
+  PUSH=1 IMAGE=ghcr.io/<owner>/fhir-subs:demo \
+    demo/scripts/build-multi-arch.sh
+  ```
+  The script bootstraps a `fhir-subs-multiarch` buildx builder if one isn't already present (it requires `docker buildx`, included by default in Docker >= 23). Compose itself stays unchanged — once the image is loaded under the `fhir-subs:demo` tag, `docker compose up -d` reuses it without rebuilding.
+- After source changes, either re-run the buildx script (above) or, for a single-arch host-only rebuild, `docker compose build bridge`. Compose otherwise reuses the cached `fhir-subs:demo` tag.
 - The bridge container has no in-container healthcheck (the `gcr.io/distroless/static-debian12:nonroot` base ships no shell, curl, or wget). Operators verify readiness from the host with the `/readyz` curl above.
