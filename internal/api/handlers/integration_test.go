@@ -523,6 +523,10 @@ func TestIntegration_TokenEndpoint(t *testing.T) {
 		AccessTokenTTL:    5 * time.Minute,
 		ClientLookup:      handlers.NewAuthClientLookup(i.pool),
 		Now:               i.now,
+		// OP #126: see setupIntegration — the test JWKS server uses
+		// http://127.0.0.1; without the opt-in the policy rejects it
+		// and the assertion verification returns "jwks unavailable".
+		AllowInsecureJWKS: true,
 	})
 	if err != nil {
 		t.Fatalf("NewTokenEndpoint: %v", err)
