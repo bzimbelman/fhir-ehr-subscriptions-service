@@ -4,6 +4,7 @@
 package auth_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,25 +19,57 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 )
 
+// gatedClientLookup wraps a ClientLookup so each GetByID call signals
+// arrival on a WaitGroup and then blocks on a release channel. The
+// test uses it to deterministically synchronize the start of all N
+// concurrent Authenticate goroutines: every goroutine parks inside
+// GetByID until the test explicitly releases the gate. Once released,
+// the goroutines race through pure in-memory paths (parse JWT,
+// keyfuncFor cache check, singleflight.Do) while the leader is the
+// only one doing network I/O — by the time the leader's loopback HTTP
+// fetch completes, every follower has already joined the in-flight
+// singleflight group. This replaces the previous wall-clock 50ms
+// sleep barrier (#318), which was timing-dependent and flaked on
+// slow CI runners when the leader's fetch returned before stragglers
+// reached singleflight.Do.
+type gatedClientLookup struct {
+	inner   auth.ClientLookup
+	arrived *sync.WaitGroup
+	release chan struct{}
+}
+
+func (g *gatedClientLookup) GetByID(ctx context.Context, id string) (*auth.ClientRecord, error) {
+	g.arrived.Done()
+	<-g.release
+	return g.inner.GetByID(ctx, id)
+}
+
 // TestVerifier_JWKS_SingleflightDeduplicatesConcurrentFetches covers
 // OP #202: 1000 concurrent first-time Authenticate calls for the same
 // client (and hence the same JWKS URL) MUST trigger exactly one HTTP
 // fetch on the JWKS server and emit N-1 collisions on the
-// fhir_subs_jwks_singleflight_collisions_total counter (RecordJWKSSingleflightCollision).
+// fhir_subs_jwks_singleflight_collisions_total counter
+// (RecordJWKSSingleflightCollision).
 //
-// The JWKS server blocks on a release channel until every goroutine
-// has parked behind singleflight; without singleflight all N fetches
-// stamp the IdP simultaneously.
+// Synchronization is deterministic (no wall-clock sleeps): the test
+// gates ClientLookup.GetByID with a WaitGroup so every goroutine
+// parks inside the lookup until all N have arrived. Releasing the
+// gate lets every goroutine sprint forward through pure in-memory
+// code into singleflight.Do; only the elected leader proceeds to a
+// real loopback HTTP fetch. Loopback round-trip latency is orders of
+// magnitude larger than nanosecond-scale function dispatch, so every
+// follower reaches singleflight.Do and joins the in-flight group
+// before the leader's HTTP request reaches the JWKS handler.
 func TestVerifier_JWKS_SingleflightDeduplicatesConcurrentFetches(t *testing.T) {
 	t.Parallel()
 	k := newKey(t)
 
+	const N = 1000
+
 	var jwksHits int32
-	release := make(chan struct{})
 	jwksMux := http.NewServeMux()
 	jwksMux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&jwksHits, 1)
-		<-release
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(k.jwks())
 	})
@@ -46,13 +79,33 @@ func TestVerifier_JWKS_SingleflightDeduplicatesConcurrentFetches(t *testing.T) {
 	clientID := "stampede-client"
 	rec := newRecordingMetrics()
 	now := func() time.Time { return time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC) }
-	v, err := auth.NewVerifier(auth.VerifierConfig{
-		Audience: "aud",
-		ClientLookup: fakeClientLookup{clientID: {
+
+	var arrived sync.WaitGroup
+	arrived.Add(N)
+	gate := &gatedClientLookup{
+		inner: fakeClientLookup{clientID: {
 			ID:      clientID,
 			JwksURL: srv.URL + "/jwks",
 			Scopes:  []string{"system/Subscription.r"},
 		}},
+		arrived: &arrived,
+		release: make(chan struct{}),
+	}
+	t.Cleanup(func() {
+		// Defensive: if a test failure short-circuits before
+		// close(gate.release), unblock any parked goroutines so the
+		// runtime can collect them. Re-closing a closed channel panics,
+		// so guard with sync.Once via a local flag.
+		select {
+		case <-gate.release:
+		default:
+			close(gate.release)
+		}
+	})
+
+	v, err := auth.NewVerifier(auth.VerifierConfig{
+		Audience:          "aud",
+		ClientLookup:      gate,
 		ClockSkew:         60 * time.Second,
 		Now:               now,
 		AllowInsecureJWKS: true,
@@ -78,29 +131,26 @@ func TestVerifier_JWKS_SingleflightDeduplicatesConcurrentFetches(t *testing.T) {
 		return req
 	}
 
-	const N = 1000
 	var wg sync.WaitGroup
 	var oks int32
 	wg.Add(N)
-	start := make(chan struct{})
 	for i := 0; i < N; i++ {
 		go func() {
 			defer wg.Done()
-			<-start
 			_, status, _ := v.Authenticate(mkReq())
 			if status == 0 {
 				atomic.AddInt32(&oks, 1)
 			}
 		}()
 	}
-	close(start)
 
-	// Give every goroutine time to park behind singleflight before the
-	// leader proceeds. 50ms is generous on a developer laptop and short
-	// enough to keep the test fast; if the JWKS handler is hit more than
-	// once it means singleflight isn't deduplicating.
-	time.Sleep(50 * time.Millisecond)
-	close(release)
+	// Wait for every goroutine to be parked inside GetByID. Once
+	// arrived.Wait returns, all N callers are guaranteed to be
+	// blocked on `release`; closing the channel unblocks them
+	// simultaneously so they race forward through purely in-memory
+	// code paths into singleflight.Do.
+	arrived.Wait()
+	close(gate.release)
 	wg.Wait()
 
 	hits := atomic.LoadInt32(&jwksHits)
@@ -110,9 +160,11 @@ func TestVerifier_JWKS_SingleflightDeduplicatesConcurrentFetches(t *testing.T) {
 	// Followers that joined the in-flight singleflight group MUST be
 	// counted as collisions. Goroutines that arrive after the leader
 	// populates the cache short-circuit at the outer cache check and
-	// never reach singleflight — that's the intended hot-path. So the
-	// collision count is at least 1 (some followers parked behind the
-	// leader during the 50ms window) and at most N-1.
+	// never reach singleflight — that's the intended hot-path. The
+	// gated start synchronizes every goroutine to leave GetByID at
+	// the same instant, so we expect a high collision count, but we
+	// only assert the loose [1, N-1] band the metric semantics
+	// guarantee.
 	collisions := rec.jwksCollisionCount()
 	if collisions < 1 {
 		t.Errorf("singleflight collisions = %d; expected at least 1 (followers joined the in-flight group; OP #202 metric)", collisions)
