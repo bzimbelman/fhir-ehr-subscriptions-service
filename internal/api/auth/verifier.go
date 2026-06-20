@@ -357,10 +357,10 @@ func (v *Verifier) keyfuncFor(ctx context.Context, jwksURL string) (keyfunc.Keyf
 		// goroutine's pre-Do read above and the singleflight admitting
 		// us as leader.
 		v.jwksMu.Lock()
-		entry, ok := v.jwksCache[jwksURL]
+		fresh, freshOK := v.jwksCache[jwksURL]
 		v.jwksMu.Unlock()
-		if ok && v.cfg.Now().Before(entry.expires) {
-			return entry.keyfunc, nil
+		if freshOK && v.cfg.Now().Before(fresh.expires) {
+			return fresh.keyfunc, nil
 		}
 		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, jwksURL, http.NoBody)
 		if rerr != nil {

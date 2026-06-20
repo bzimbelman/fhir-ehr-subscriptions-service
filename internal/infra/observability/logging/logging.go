@@ -130,7 +130,7 @@ var phiValueRegexes = []*regexp.Regexp{
 	// on log timestamps because slog renders those under the `time`
 	// key as a slog.Time, not a string attribute, and never reaches
 	// the redactor's value walker.
-	regexp.MustCompile(`\b(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b`),
+	regexp.MustCompile(`\b(19|20)\d{2}-(0[1-9]|1[012])-(0[1-9]|[12]\d|3[01])\b`),
 }
 
 // redactPHIInValue runs the value-side regex sweep and returns the
