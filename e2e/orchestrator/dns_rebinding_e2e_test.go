@@ -107,7 +107,7 @@ func TestScenario_dns_rebinding(t *testing.T) {
 	// URLValidator (no validator passed via APIServerConfig), so the
 	// only Validate call against this resolver from production code
 	// will be from the rest-hook channel at delivery time.
-	if err := validator.Validate("http://flipper.example.com/hook/" + tag); err != nil {
+	if err := validator.Validate(ctx, "http://flipper.example.com/hook/"+tag); err != nil {
 		t.Fatalf("create-time Validate must accept public IP: %v", err)
 	}
 
