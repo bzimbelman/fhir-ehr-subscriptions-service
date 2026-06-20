@@ -238,12 +238,10 @@ func operatorFacingDoc(rel string) bool {
 // cliHint returns a more actionable message for the well-known set of verbs
 // the doc author may have intended.
 func cliHint(verb string) string {
-	suggested := "register the verb in cmd/fhir-subs/main.go's subcommand dispatch, OR mark it deferred via <!-- docs-lint:ignore-cli=" + verb + " -->"
-	switch verb {
-	case "dead-letters":
+	if verb == "dead-letters" {
 		return "the dead-letters subcommand is not yet wired (see C58 / Finding #40); use <!-- docs-lint:ignore-cli=dead-letters --> until then"
 	}
-	return suggested
+	return "register the verb in cmd/fhir-subs/main.go's subcommand dispatch, OR mark it deferred via <!-- docs-lint:ignore-cli=" + verb + " -->"
 }
 
 // registeredCLIVerbs scans cmd/fhir-subs/main.go for the canonical subcommand
