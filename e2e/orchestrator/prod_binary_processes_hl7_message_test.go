@@ -131,16 +131,23 @@ func TestE2E_ProdBinary_ProcessesHL7Message_VendorAdapters(t *testing.T) {
 			skipReason:      "OP #171 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
+			// OP #172: Meditech MapToFHIR shipped (unit-tested in
+			// adapters/meditech/mapping_test.go, including lowercase
+			// msh handling). E2e blocked on the same content=full-
+			// resource harness work as the rest.
 			adapterID:       "meditech",
 			facilityPrefix:  "e2e-prod-hl7-meditech",
 			bodyMustContain: []string{"PATID1234"},
-			skipReason:      "blocked on OP #172 (implement Meditech MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+			skipReason:      "OP #172 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 		{
+			// OP #173: Allscripts MapToFHIR shipped (unit-tested in
+			// adapters/allscripts/mapping_test.go, including pre-2014
+			// lowercase msh handling).
 			adapterID:       "allscripts",
 			facilityPrefix:  "e2e-prod-hl7-allscripts",
 			bodyMustContain: []string{"PATID1234"},
-			skipReason:      "blocked on OP #173 (implement Allscripts MapToFHIR HL7 v2 -> FHIR R4 mapping)",
+			skipReason:      "OP #173 mapping shipped; e2e blocked on content=full-resource harness work",
 		},
 	}
 

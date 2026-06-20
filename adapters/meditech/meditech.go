@@ -1,18 +1,21 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package meditechadapter is the P3.2 SPI scaffold for MEDITECH. It declares a
-// MEDITECH-specific manifest and constructs a passthrough Hl7MessageProcessor
-// whose vendor mapping is still a TODO.
+// Package meditechadapter is the SPI implementation for MEDITECH. It declares
+// a MEDITECH-specific manifest and a Hl7MessageProcessor that lexes HL7 v2
+// (including the lowercase "msh" header that MEDITECH MAGIC builds emit) via
+// the shared internal/adapter/hl7v2 parser, and maps to FHIR R4 (Patient,
+// Encounter, Observation, DiagnosticReport, ServiceRequest) per the MEDITECH
+// Greenfield FHIR API.
 //
-// Real MEDITECH mapping needs HL7 v2 ADT/ORM/ORU handling per MEDITECH's
-// "NPR Toolbox" + "Expanse Integration Engine" interface specs
-// (Z-segments differ between Magic, C/S, and Expanse releases) and FHIR R4
-// mapping per the MEDITECH Greenfield FHIR API
-// (https://home.meditech.com/en/d/restapiresources/).
+// MEDITECH-specific Z-segments and Magic vs. C/S vs. Expanse dialect
+// detection are out of scope for this base implementation.
 package meditechadapter
 
 import (
+	"strings"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/hl7v2"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
@@ -35,7 +38,7 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
 		ID:                   "meditech",
 		Vendor:               "MEDITECH",
-		Description:          "Scaffold adapter for MEDITECH (P3.2). HL7 v2 Magic/C-S/Expanse Z-segments and Greenfield FHIR R4 mapping are TODO.",
+		Description:          "Adapter for MEDITECH. HL7 v2 ADT/ORU/ORM (including lowercase msh from MAGIC builds) mapped to FHIR R4 per Greenfield API.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{
 			HL7Processor:     true,
@@ -48,11 +51,6 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	}
 }
 
-// BuildHl7Processor returns a passthrough. TODO(meditech): MEDITECH HL7 v2
-// segments differ across Magic, C/S, and Expanse releases; Lex must branch on
-// MSH-3/MSH-4 sender app/facility before parsing Z-segments. MapToFHIR targets
-// MEDITECH Greenfield FHIR R4 profiles per
-// https://home.meditech.com/en/d/restapiresources/.
 func (a *Adapter) BuildHl7Processor(_ spi.AdapterContext) spi.Hl7MessageProcessor {
 	return &hl7Processor{}
 }
@@ -70,16 +68,45 @@ type hl7Processor struct {
 func (h *hl7Processor) Lex(raw []byte) (spi.ParsedHL7Message, error) {
 	cp := make([]byte, len(raw))
 	copy(cp, raw)
-	return spi.ParsedHL7Message{Raw: cp}, nil
+	parsed, err := hl7v2.Parse(cp)
+	if err != nil {
+		return spi.ParsedHL7Message{Raw: cp}, err
+	}
+	return spi.ParsedHL7Message{Raw: cp, Segments: parsed}, nil
 }
 
-func (h *hl7Processor) Classify(_ spi.ParsedHL7Message) (spi.Classification, error) {
-	return spi.Classification{Kind: spi.ChangeCreate}, nil
+func (h *hl7Processor) Classify(parsed spi.ParsedHL7Message) (spi.Classification, error) {
+	msg := messageFrom(parsed)
+	if msg == nil {
+		return spi.Classification{Kind: spi.ChangeCreate}, nil
+	}
+	trigger := strings.ToUpper(msg.TriggerEvent())
+	return spi.Classification{Kind: classifyTrigger(trigger), CorrelationKey: msg.PatientID()}, nil
 }
 
-func (h *hl7Processor) MapToFHIR(_ spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
-	return spi.FhirResource{
-		ResourceType: "Bundle",
-		Body:         []byte(`{"resourceType":"Bundle","type":"collection"}`),
-	}, nil
+func classifyTrigger(trigger string) spi.ChangeKind {
+	switch trigger {
+	case "A03", "A23", "A29":
+		return spi.ChangeDelete
+	case "A02", "A08", "A11", "A13":
+		return spi.ChangeUpdate
+	}
+	return spi.ChangeCreate
+}
+
+func (h *hl7Processor) MapToFHIR(parsed spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
+	msg := messageFrom(parsed)
+	if msg == nil {
+		var err error
+		msg, err = hl7v2.Parse(parsed.Raw)
+		if err != nil {
+			return spi.FhirResource{}, err
+		}
+	}
+	return hl7v2.MapToFHIR(msg)
+}
+
+func messageFrom(parsed spi.ParsedHL7Message) *hl7v2.Message {
+	m, _ := parsed.Segments.(*hl7v2.Message)
+	return m
 }
