@@ -1,4 +1,4 @@
--- migrations/0015_partition_trigger_use_new_created_at.sql
+-- migrations/0016_partition_trigger_use_new_created_at.sql
 --
 -- Story #215 (OP #139): the resource_changes / ehr_events partition
 -- triggers introduced in 0001_init.sql derive `created_month` from
@@ -39,5 +39,5 @@ begin
 end;
 $$;
 
-insert into schema_migrations (version) values ('0015')
+insert into schema_migrations (version) values ('0016')
     on conflict (version) do nothing;

@@ -32,7 +32,7 @@ import (
 //   created_month = date_trunc('month', created_at)
 // is violated and any read path that filters by month sees ghosts.
 //
-// Post-fix: 0015_partition_trigger_use_new_created_at.sql replaces the
+// Post-fix: 0016_partition_trigger_use_new_created_at.sql replaces the
 // trigger function with date_trunc('month', NEW.created_at)::date so
 // the application-supplied created_at is authoritative.
 //
