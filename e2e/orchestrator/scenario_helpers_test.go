@@ -98,17 +98,27 @@ func newScenarioFixture(t *testing.T, ctx context.Context, h *Harness, cfg scena
 	// is left to StartAPIServer's auto-spin-up sink (api.go), which
 	// routes handshakes through a localhost 200-OK server so they don't
 	// pollute the mocksub journal that filter-drop scenarios assert on.
+	//
+	// OP #334: opt in to RestHookProbeOnlyHandshake so the activator
+	// posts handshakes to the auto-spun probe sink ALWAYS, even when
+	// the subscription row's endpoint points at the mocksub /hook/<tag>
+	// path. Without this, filter-drop's per-tag journal-empty assertion
+	// would see the handshake POST and fail. (The default activator
+	// behavior — prefer row.Endpoint — is restored for the helpers
+	// tests that explicitly set RestHookProbeURL to the mocksub root,
+	// which only journals POSTs landing at /hook/<id>.)
 	clientID := cfg.clientID
 	if clientID == "" {
 		clientID = "client-" + uuid.New().String()[:8]
 	}
 	smtpHost, smtpPort := mockSubSMTPHostPort(t, h)
 	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
-		Pool:              h.DB,
-		ClientID:          clientID,
-		SMTPHost:          smtpHost,
-		SMTPPort:          smtpPort,
-		WebsocketProbeURL: "ws://" + h.MockSub.HTTPAddr + "/ws/subscriptions",
+		Pool:                       h.DB,
+		ClientID:                   clientID,
+		SMTPHost:                   smtpHost,
+		SMTPPort:                   smtpPort,
+		WebsocketProbeURL:          "ws://" + h.MockSub.HTTPAddr + "/ws/subscriptions",
+		RestHookProbeOnlyHandshake: true,
 	})
 	if err != nil {
 		t.Fatalf("scenario: api: %v", err)

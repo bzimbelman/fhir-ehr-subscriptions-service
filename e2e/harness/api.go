@@ -61,6 +61,28 @@ type APIServerConfig struct {
 	// no-op stubChannelActivator that previously stood in here.
 	RestHookProbeURL string
 
+	// RestHookProbeOnlyHandshake selects the rest-hook activator's
+	// handshake-target policy. See harnessRestHookActivator's docstring
+	// for the full contract; the short version is:
+	//
+	//   - false (default): handshake against row.Endpoint when set,
+	//     fall back to RestHookProbeURL. Matches production behavior
+	//     (cmd/fhir-subs.restHookActivator). Tests that point
+	//     row.Endpoint at a localhost subscriber (e.g.
+	//     "http://"+mocksub+"/hook/<id>") rely on this default.
+	//   - true: ALWAYS handshake against RestHookProbeURL, ignoring
+	//     row.Endpoint. Used by scenarios that need handshake POSTs
+	//     diverted from the subscriber path so the mocksub journal
+	//     stays clean for journal-empty assertions
+	//     (e.g. TestScenario_subscription_filter_drop).
+	//
+	// Introduced by OP #334 to fix the regression PR #84 caused when
+	// it changed the activator to ALWAYS use probeURL — that broke 7
+	// pre-existing tests whose probeURL was the mocksub root (404 at
+	// "/") while still satisfying filter-drop. The flag makes the
+	// behavior split explicit and opt-in.
+	RestHookProbeOnlyHandshake bool
+
 	// SMTPHost / SMTPPort point the email activator's RCPT-TO probe at
 	// a localhost SMTP fake. Required when ExtraChannels does not
 	// override "email". OP #147 forbids the no-op stub.
