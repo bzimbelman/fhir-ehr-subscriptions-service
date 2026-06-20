@@ -67,11 +67,11 @@ func getSubRow(ctx context.Context, pool *pgxpool.Pool, id uuid.UUID) (*repos.Su
 	return row, nil
 }
 
-// getAuditCanonicals returns every audit_log canonical_form row
+// getAuditCanonicals returns every audit_log chain_input row
 // targeting the given subscription id, so tests can assert that the
 // stored body has been redacted (B-13).
 func getAuditCanonicals(ctx context.Context, pool *pgxpool.Pool, subID uuid.UUID) ([]string, error) {
-	const sql = `SELECT canonical_form FROM audit_log WHERE target_id = $1 ORDER BY seq`
+	const sql = `SELECT chain_input FROM audit_log WHERE target_id = $1 ORDER BY seq`
 	rows, err := pool.Query(ctx, sql, subID.String())
 	if err != nil {
 		return nil, err

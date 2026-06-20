@@ -33,12 +33,12 @@ func TestE2E_Retention_DoesNotDeleteAuditLog(t *testing.T) {
 		if _, err := h.DB.Exec(ctx, `
 			INSERT INTO audit_log
 				(occurred_at, actor_kind, actor_id, action, target_kind,
-				 target_id, outcome, correlation_id, canonical_form, hash, prev_hash)
+				 target_id, outcome, correlation_id, chain_input, chain_hash, prior_hash)
 			VALUES (now() - interval '90 days', 'system', 'retention-test', 'noop',
 			        'subscription', $1, 'success', $2,
 			        $3, $4, $5)`,
 			uuid.NewString(), corr,
-			[]byte(`{"a":1}`), []byte("hash"), []byte("prev"),
+			[]byte(`{"a":1}`), []byte("chain-hash"), []byte("prior-hash"),
 		); err != nil {
 			t.Fatalf("insert audit row %d: %v", i, err)
 		}
