@@ -164,13 +164,16 @@ func (a *harnessRestHookActivator) ActivateSubscription(ctx context.Context, row
 	if a == nil || a.probeURL == "" {
 		return handlers.HandshakeFailed, errors.New("harness rest-hook activator: empty probe url")
 	}
+	// OP #327: always handshake against the configured probe URL, never
+	// the row's endpoint. The probe URL is a dedicated localhost 200-OK
+	// sink owned by the harness; routing handshakes there keeps them
+	// out of the mocksub journal so scenarios like
+	// TestScenario_subscription_filter_drop can assert the journal is
+	// empty for filtered-out subscriptions. (Production
+	// cmd/fhir-subs.restHookActivator handshakes against row.Endpoint —
+	// the harness deliberately diverges so harness scenarios can
+	// distinguish handshake POSTs from notification POSTs.)
 	target := a.probeURL
-	// If the row points at its own per-subscription endpoint (most
-	// scenarios), prefer the row's endpoint so subscriber-side journals
-	// can correlate. Fall back to the probe URL otherwise.
-	if row.Endpoint != "" {
-		target = row.Endpoint
-	}
 	parsed, err := url.Parse(target)
 	if err != nil || parsed == nil || parsed.Host == "" {
 		return handlers.HandshakeFailed, nil

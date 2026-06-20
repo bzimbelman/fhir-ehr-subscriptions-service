@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -89,14 +91,24 @@ func newScenarioFixture(t *testing.T, ctx context.Context, h *Harness, cfg scena
 	fx.pipe = pipe
 	t.Cleanup(pipe.Stop)
 
-	// API.
+	// API. OP #327: plumb the harness's mocksub SMTP + websocket probe
+	// targets through to StartAPIServer so the email and websocket
+	// activators handshake against real localhost dependencies instead
+	// of falling through to failClosedActivator. The rest-hook channel
+	// is left to StartAPIServer's auto-spin-up sink (api.go), which
+	// routes handshakes through a localhost 200-OK server so they don't
+	// pollute the mocksub journal that filter-drop scenarios assert on.
 	clientID := cfg.clientID
 	if clientID == "" {
 		clientID = "client-" + uuid.New().String()[:8]
 	}
+	smtpHost, smtpPort := mockSubSMTPHostPort(t, h)
 	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
-		Pool:     h.DB,
-		ClientID: clientID,
+		Pool:              h.DB,
+		ClientID:          clientID,
+		SMTPHost:          smtpHost,
+		SMTPPort:          smtpPort,
+		WebsocketProbeURL: "ws://" + h.MockSub.HTTPAddr + "/ws/subscriptions",
 	})
 	if err != nil {
 		t.Fatalf("scenario: api: %v", err)
@@ -109,6 +121,25 @@ func newScenarioFixture(t *testing.T, ctx context.Context, h *Harness, cfg scena
 
 // pipeline returns the per-scenario Pipeline.
 func (fx *scenarioFixture) pipeline() *hpipe.Pipeline { return fx.pipe }
+
+// mockSubSMTPHostPort splits the harness's FakeSMTP listen address into
+// host + port. Failures are unexpected — the FakeSMTP listener is
+// always bound to 127.0.0.1:<ephemeral>.
+func mockSubSMTPHostPort(t *testing.T, h *Harness) (string, int) {
+	t.Helper()
+	if h == nil || h.MockSub == nil || h.MockSub.SMTP == nil {
+		t.Fatalf("scenario: harness mocksub SMTP not initialized")
+	}
+	host, portStr, err := net.SplitHostPort(h.MockSub.SMTP.Addr().String())
+	if err != nil {
+		t.Fatalf("scenario: split smtp addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("scenario: parse smtp port: %v", err)
+	}
+	return host, port
+}
 
 // createSubscription POSTs a Subscription via the API and synchronously
 // flips its status to active so the submatcher's claim sees it without
