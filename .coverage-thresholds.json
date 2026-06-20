@@ -29,7 +29,7 @@
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth": 78.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/fhirerror": 0.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers": 58.0,
-    "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics": 36.0,
+    "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics": 95.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/schemas": 78.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel": 41.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/email": 77.0,
