@@ -220,6 +220,9 @@ func operatorFacingDoc(rel string) bool {
 		"future-work.md",
 		"presentation.md",
 		"poc-completion-epic-coverage.md",
+		"e2e-coverage-strategy.md",
+		"e2e-coverage-gaps-snapshot-1.md",
+		"admin-tool-review.md",
 		"subscription-sidecar-demo.md":
 		return false
 	}

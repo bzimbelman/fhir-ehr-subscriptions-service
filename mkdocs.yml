@@ -131,6 +131,7 @@ nav:
       - E2E Harness: low-level-design/e2e-harness.md
   - Operations:
       - Operating Procedure: operating-procedure.md
+      - Admin Tool: admin-tool.md
       - Dead-letters Runbook: operations/dead-letters-runbook.md
       - Horizontal Scale: operations/horizontal-scale.md
       - OTel Exporter Recipes: operations/otel-exporter-recipes.md
@@ -147,3 +148,11 @@ nav:
       - Demo Walkthrough: subscription-sidecar-demo.md
       - Presentation: presentation.md
       - Future Work: future-work.md
+      - Admin Tool Review: admin-tool-review.md
+      - POC Completion Coverage: poc-completion-epic-coverage.md
+      - E2E Coverage Strategy: e2e-coverage-strategy.md
+      - E2E Coverage Gaps Snapshot: e2e-coverage-gaps-snapshot-1.md
+      - Honesty Audit (1): production-readiness-honesty-audit.md
+      - Honesty Audit (2): production-readiness-honesty-audit-supplement.md
+      - Honesty Audit (3): production-readiness-honesty-audit-supplement-2.md
+      - Honesty Audit (4): production-readiness-honesty-audit-supplement-3.md
