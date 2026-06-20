@@ -198,6 +198,22 @@ func (h *hl7Processor) MapToFHIR(parsed spi.ParsedHL7Message, _ spi.Classificati
 		"status":            statusFromOBX11(segs.field("OBX", 11)),
 		"subject":           map[string]string{"reference": "Patient/" + mrn},
 		"effectiveDateTime": effectiveISO,
+		// OP #154: stamp Observation.category=laboratory so the
+		// `lab-results` SubscriptionTopic's queryCriteria current
+		// `category=laboratory&status=final` is satisfied.  All ORU^R01
+		// messages the demo carries are lab results — labelling them
+		// as such is the matcher's only signal to gate on category.
+		"category": []map[string]any{
+			{
+				"coding": []map[string]string{
+					{
+						"system":  "http://terminology.hl7.org/CodeSystem/observation-category",
+						"code":    "laboratory",
+						"display": "Laboratory",
+					},
+				},
+			},
+		},
 		"code": map[string]any{
 			"coding": []map[string]string{
 				{

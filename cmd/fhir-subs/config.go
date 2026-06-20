@@ -175,12 +175,30 @@ type AuthConfig struct {
 	JWKSAllowed    []string       `yaml:"jwks_allowed_hosts"`
 	TrustedIssuers []TrustedIssue `yaml:"trusted_issuers"`
 
+	// AllowSubscriberHosts is the AllowHosts list piped through to the
+	// rest-hook URL validator (handlers.URLValidatorConfig.AllowHosts).
+	// Hostnames listed here bypass the loopback / RFC1918 / link-local
+	// SSRF policy at both create-time and delivery-time. Used only for
+	// operator-trusted internal hosts — for example, the demo's
+	// `demo-subscriber` compose service which lives on a private
+	// docker-compose network. Empty by default; production deployments
+	// MUST leave this empty unless they have an explicit reason to
+	// trust an internal hostname.
+	AllowSubscriberHosts []string `yaml:"allow_subscriber_hosts"`
+
 	// AllowDevBypass, when true, lets the binary run without
 	// auth.audience set — the dev / e2e path. Production deployments
 	// MUST leave this false. Story #117 made this an explicit opt-in
 	// so an empty audience field cannot silently install the no-op
 	// devPrincipalMiddleware that authorizes every caller.
 	AllowDevBypass bool `yaml:"allow_dev_bypass"`
+
+	// DevBypassClientIDs are the X-Client-Id values the dev-bypass
+	// middleware should accept. At startup the wiring upserts an
+	// auth_clients row for each one (with the scopes devPrincipalMiddleware
+	// grants) so the subscriptions.client_id FK passes when one of these
+	// clients POSTs a Subscription. Empty in production.
+	DevBypassClientIDs []string `yaml:"dev_bypass_client_ids"`
 
 	// SubscriptionCreateRateLimit configures the per-authenticated-client
 	// rate limit on POST /Subscription (S-3.3). Burst <= 0 disables.

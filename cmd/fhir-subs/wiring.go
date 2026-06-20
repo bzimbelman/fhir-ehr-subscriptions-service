@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -315,6 +316,11 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	// time re-check share one policy surface.
 	urlValidator := handlers.NewURLValidator(handlers.URLValidatorConfig{
 		AllowHTTP: cfg.Auth.AllowInsecure, // dev convenience: if insecure JWKS allowed, allow http endpoints too
+		// OP #154: pipe operator-trusted internal hostnames through.
+		// The demo uses this to allow `demo-subscriber` (a sibling
+		// compose service on a private network) past the RFC1918
+		// SSRF gate. Empty in production.
+		AllowHosts: cfg.Auth.AllowSubscriberHosts,
 	})
 	rhCh, err := chresthook.New(chresthook.Options{
 		UserAgent:      cfg.Channels.RestHook.UserAgent,
@@ -444,6 +450,23 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		authMiddleware = verif.Middleware
 	case cfg.Auth.AllowDevBypass:
 		authMiddleware = devPrincipalMiddleware()
+		// Seed an auth_clients row for each configured dev client id
+		// so the subscriptions.client_id FK passes when one of them
+		// POSTs a Subscription. Idempotent via ON CONFLICT.
+		for _, cid := range cfg.Auth.DevBypassClientIDs {
+			cid = strings.TrimSpace(cid)
+			if cid == "" {
+				continue
+			}
+			if _, serr := pool.Exec(ctx, `
+				INSERT INTO auth_clients (id, scopes, display_name)
+				VALUES ($1, ARRAY['system/Subscription.cruds']::text[], $1)
+				ON CONFLICT (id) DO NOTHING
+			`, cid); serr != nil {
+				rt.shutdown(context.Background())
+				return nil, fmt.Errorf("seed dev-bypass auth_clients %q: %w", cid, serr)
+			}
+		}
 	default:
 		// Validate guarantees we never reach this branch in
 		// production. The runtime guard exists so a future regression
@@ -594,6 +617,17 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		return nil, fmt.Errorf("catalog: %w", err)
 	}
 	logCatalogDiagnostics(logger, rt.topicsDir, initialCat)
+	// OP #154: persist every loaded catalog topic to subscription_topics
+	// so the API's createSubscription handler (which queries the DB via
+	// PgTopicsStore.ListActive) can find them.  Without this, the
+	// matcher sees the topic in memory but POST /Subscription returns
+	// 422 "topic not in catalog" — exactly the gap the demo
+	// walkthrough hit.  Idempotent: existing rows for (url, version)
+	// are skipped.
+	if perr := persistCatalogTopics(ctx, pool, repos.NewSubscriptionTopicsRepo(), initialCat.Catalog, logger); perr != nil {
+		rt.shutdown(context.Background())
+		return nil, fmt.Errorf("topics persist: %w", perr)
+	}
 	cp := matcher.NewAtomicCatalogProvider(initialCat.Catalog)
 	rt.catalogProv = cp
 	matchPoll := cfg.Pipeline.Matcher.IdlePollInterval
@@ -795,6 +829,52 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	})
 
 	return rt, nil
+}
+
+// persistCatalogTopics inserts each topic the catalog loaded from
+// catalog_dir into subscription_topics so the API's createSubscription
+// handler — which queries PgTopicsStore.ListActive against the DB —
+// finds them. Without this, a config-mounted topic directory is
+// matcher-visible but API-invisible: the bridge accepts MLLP messages
+// and produces resource_changes, but POST /Subscription returns 422
+// "topic not in catalog" because the API never sees a row.
+//
+// Idempotent: a topic whose (url, version) is already present in the
+// table is skipped (no error). The body column is the raw JSON bytes
+// from disk; compiled_form is the same bytes today (the matcher
+// re-compiles from the JSON on every reload anyway, and storing the
+// compiled form is a future optimization tracked separately).
+func persistCatalogTopics(ctx context.Context, pool *pgxpool.Pool, repo *repos.SubscriptionTopicsRepo, cat *catalog.Catalog, logger *slog.Logger) error {
+	if cat == nil {
+		return nil
+	}
+	inserted := 0
+	skipped := 0
+	for _, t := range cat.All() {
+		existing, err := repo.GetByURLVersion(ctx, pool, t.CanonicalURL, t.Version)
+		if err != nil {
+			return fmt.Errorf("lookup %s@%s: %w", t.CanonicalURL, t.Version, err)
+		}
+		if existing != nil {
+			skipped++
+			continue
+		}
+		row := repos.SubscriptionTopicRow{
+			URL:          t.CanonicalURL,
+			Version:      t.Version,
+			Title:        t.Title,
+			Status:       t.Status,
+			Source:       string(t.Source),
+			Body:         t.RawJSON,
+			CompiledForm: t.RawJSON,
+		}
+		if _, err := repo.Insert(ctx, pool, row); err != nil {
+			return fmt.Errorf("insert %s@%s: %w", t.CanonicalURL, t.Version, err)
+		}
+		inserted++
+	}
+	logger.Info("topic catalog persisted to db", "inserted", inserted, "skipped_existing", skipped)
+	return nil
 }
 
 // nonZeroInt32 returns v if v > 0, else fallback.

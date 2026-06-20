@@ -38,6 +38,31 @@ func main() {
 	}
 }
 
+// waitForReadyz polls url every 500ms until a 2xx response is observed
+// or deadline elapses. The polling honours ctx so SIGTERM /
+// docker-stop unblocks the wait. Used by the --wait-for-readyz flag
+// to ride out a slow bridge boot in compose.
+func waitForReadyz(ctx context.Context, url string, deadline time.Duration) error {
+	pollCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+	client := &http.Client{Timeout: 2 * time.Second}
+	for {
+		req, _ := http.NewRequestWithContext(pollCtx, http.MethodGet, url, http.NoBody)
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				return nil
+			}
+		}
+		select {
+		case <-pollCtx.Done():
+			return fmt.Errorf("timed out waiting for %s: last err=%v", url, err)
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
 type cliFlags struct {
 	bridge      string
 	listen      string
@@ -55,6 +80,18 @@ type cliFlags struct {
 	noColor     bool
 	pretty      bool
 	subscribeTO time.Duration
+
+	// waitForReadyz, when non-zero, polls a readyz URL before
+	// subscribing. Lets the demo subscriber survive a slow bridge
+	// boot (e.g. running under docker compose where the bridge needs
+	// to migrate the demo Postgres before /readyz flips to 200).
+	waitForReadyz time.Duration
+	// readyzURL is the URL to poll when waitForReadyz > 0. Defaults
+	// to <bridge>/readyz, but the bridge serves probes on a separate
+	// port from the FHIR API in production
+	// (cmd/fhir-subs/config.go ProbeBind defaults to :8081), so a
+	// caller using compose must override this.
+	readyzURL string
 }
 
 func parseFlags(args []string) (cliFlags, error) {
@@ -75,6 +112,8 @@ func parseFlags(args []string) (cliFlags, error) {
 	fs.BoolVar(&f.noColor, "no-color", false, "disable ANSI color (kept for backward compat; prefer NO_COLOR env)")
 	fs.BoolVar(&f.pretty, "pretty", true, "pretty-print colored, emoji-tagged transcript; --pretty=false emits JSON Lines")
 	fs.DurationVar(&f.subscribeTO, "subscribe-timeout", 10*time.Second, "timeout for the POST /Subscription request")
+	fs.DurationVar(&f.waitForReadyz, "wait-for-readyz", 0, "if >0, poll the readyz URL until 2xx or this duration elapses before subscribing (default 0 = no wait)")
+	fs.StringVar(&f.readyzURL, "readyz-url", "", "URL to poll for readiness (default <bridge>/readyz). Override when probes are served on a different port than the FHIR API.")
 
 	if err := fs.Parse(args); err != nil {
 		return f, err
@@ -186,6 +225,20 @@ func run(args []string, stdout *os.File) error {
 		logger.printInfo("minted access token (%d-byte JWT)", len(bearer))
 	}
 
+	// 3.5. Optionally wait for the bridge's /readyz to flip to 2xx so
+	//      a slow boot (compose: bridge migrates Postgres before
+	//      Subscription API serves) does not race the subscribe POST.
+	if f.waitForReadyz > 0 {
+		readyzURL := f.readyzURL
+		if readyzURL == "" {
+			readyzURL = strings.TrimRight(f.bridge, "/") + "/readyz"
+		}
+		if rerr := waitForReadyz(ctx, readyzURL, f.waitForReadyz); rerr != nil {
+			return fmt.Errorf("wait for bridge readyz: %w", rerr)
+		}
+		logger.printInfo("bridge readyz observed at %s", readyzURL)
+	}
+
 	// 4. POST the Subscription.
 	subCtx, cancel := context.WithTimeout(ctx, f.subscribeTO)
 	id, err := postSubscription(subCtx, SubscribeConfig{
@@ -195,6 +248,7 @@ func run(args []string, stdout *os.File) error {
 		Filter:        f.filter,
 		ChannelType:   f.channelType,
 		Endpoint:      endpoint,
+		ClientID:      f.clientID,
 	})
 	cancel()
 	if err != nil {
