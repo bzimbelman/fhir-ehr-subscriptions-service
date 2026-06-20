@@ -16,6 +16,7 @@
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/demo-publisher": 58.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/demo-subscriber": 48.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/fhir-subs": 52.0,
+    "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/test-mllp-control-plane": 60.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/test-resthook-subscriber": 0.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/test-token-mint": 70.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/cmd/test-ws-subscriber": 0.0,
