@@ -338,10 +338,12 @@ type RateLimitConfig struct {
 	MaxKeys int `yaml:"max_keys"`
 }
 
-// TrustedIssue models one entry under auth.trusted_issuers[]. Today the
-// fields are advisory: per-client trust is stored in the auth_clients
-// table; this list pins which issuers' tokens the verifier will load
-// JWKS for. Future revisions may filter the verifier's keyfunc lookup.
+// TrustedIssue models one entry under auth.trusted_issuers[]. When
+// the list is non-empty, the verifier rejects tokens whose iss is not
+// pinned here (OP #226); when an entry has a non-empty jwks_url, the
+// verifier additionally requires the resolved client JWKS URL to
+// match. Empty list disables the filter (legacy / unmanaged-trust
+// path) and per-client JWKS pinning still applies.
 type TrustedIssue struct {
 	Issuer   string `yaml:"issuer"`
 	Audience string `yaml:"audience"`

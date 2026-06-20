@@ -94,6 +94,91 @@ func TestUpdate_IfMatch_CurrentETag_200(t *testing.T) {
 	}
 }
 
+// OP #233: If-Match also accepts the strong ETag form `"<id>"` per
+// FHIR R5 (RFC 7232 strong/weak comparison rules). FHIR R5 only
+// requires the server to honor SOMETHING that round-trips with the
+// resource id; clients that strip the `W/` prefix (a valid practice
+// when the server emits the same opaque value as both strong and
+// weak validators) must not be locked out with 409.
+func TestUpdate_IfMatch_StrongETag_200(t *testing.T) {
+	t.Parallel()
+	deps := defaultDeps(t)
+	subs := deps.Subscriptions.(*memSubs)
+	id, _ := subs.Insert(context.Background(), repos.SubscriptionRow{
+		ClientID:    "client-A",
+		Status:      repos.SubActive,
+		TopicURL:    "http://example.org/topics/orders",
+		ChannelType: "rest-hook",
+		Endpoint:    "https://example.org/wh",
+		Content:     "id-only",
+		MaxCount:    1,
+	})
+	srv := newTestServer(t, defaultPrincipal(), deps)
+	body := `{
+		"resourceType": "Subscription",
+		"status": "active",
+		"topic": "http://example.org/topics/orders",
+		"channelType": {"code": "rest-hook"},
+		"endpoint": "https://example.org/wh",
+		"content": "id-only",
+		"channel": {"type": "rest-hook"}
+	}`
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/Subscription/"+id.String(), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/fhir+json")
+	// Strong ETag form — quoted, no `W/` prefix.
+	req.Header.Set("If-Match", `"`+id.String()+`"`)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d; want 200; body=%s", resp.StatusCode, respBody)
+	}
+}
+
+// OP #233: a strong ETag with the WRONG id is still a stale match and
+// must be rejected with 409. Confirms the strong-form parsing did not
+// silently turn into "any quoted string passes."
+func TestUpdate_IfMatch_StrongETag_Stale_409(t *testing.T) {
+	t.Parallel()
+	deps := defaultDeps(t)
+	subs := deps.Subscriptions.(*memSubs)
+	id, _ := subs.Insert(context.Background(), repos.SubscriptionRow{
+		ClientID:    "client-A",
+		Status:      repos.SubActive,
+		TopicURL:    "http://example.org/topics/orders",
+		ChannelType: "rest-hook",
+		Endpoint:    "https://example.org/wh",
+		Content:     "id-only",
+		MaxCount:    1,
+	})
+	srv := newTestServer(t, defaultPrincipal(), deps)
+	body := `{
+		"resourceType": "Subscription",
+		"status": "active",
+		"topic": "http://example.org/topics/orders",
+		"channelType": {"code": "rest-hook"},
+		"endpoint": "https://example.org/wh",
+		"content": "id-only",
+		"channel": {"type": "rest-hook"}
+	}`
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/Subscription/"+id.String(), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/fhir+json")
+	// Strong ETag, but the id-inside is NOT this resource's id.
+	req.Header.Set("If-Match", `"00000000-0000-0000-0000-000000000000"`)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d; want 409; body=%s", resp.StatusCode, respBody)
+	}
+}
+
 // LLD §4.1: If-None-Exist must enforce ambiguous-result detection. When
 // the search criteria match an existing subscription the server returns
 // 412 Precondition Failed.
