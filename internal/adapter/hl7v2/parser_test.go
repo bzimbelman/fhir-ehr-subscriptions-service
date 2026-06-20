@@ -129,3 +129,69 @@ func TestParseHandlesLFOnlyLineEndings(t *testing.T) {
 		t.Errorf("PatientID under LF endings = %q", msg.PatientID())
 	}
 }
+
+func TestParseRejectsTooShortMSH(t *testing.T) {
+	t.Parallel()
+	if _, err := hl7v2.Parse([]byte("MSH|\r")); err == nil {
+		t.Error("Parse on short MSH succeeded; want error")
+	}
+}
+
+func TestParseHandlesCRLFLineEndings(t *testing.T) {
+	t.Parallel()
+	crlf := strings.ReplaceAll(sampleADT, "\r", "\r\n")
+	msg, err := hl7v2.Parse([]byte(crlf))
+	if err != nil {
+		t.Fatalf("Parse CRLF: %v", err)
+	}
+	if msg.PatientID() != "PATID1234" {
+		t.Errorf("PatientID under CRLF endings = %q", msg.PatientID())
+	}
+}
+
+func TestMessageOnEmptyDocReturnsBlanks(t *testing.T) {
+	t.Parallel()
+	// Sanity: Parse on an MSH-only doc returns an empty patient id and no
+	// segments other than MSH — exercises the zero-value paths in the
+	// Message accessors.
+	msg, err := hl7v2.Parse([]byte("MSH|^~\\&|A|B|C|D|20260618120000||SIU^S12|MSGID|P|2.5\r"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if msg.PatientID() != "" {
+		t.Errorf("PatientID on PID-less doc = %q", msg.PatientID())
+	}
+	if msg.MessageType() != "SIU^S12" {
+		t.Errorf("MessageType = %q", msg.MessageType())
+	}
+	if msg.MessageCode() != "SIU" {
+		t.Errorf("MessageCode = %q", msg.MessageCode())
+	}
+	if msg.TriggerEvent() != "S12" {
+		t.Errorf("TriggerEvent = %q", msg.TriggerEvent())
+	}
+	if _, ok := msg.Segment("MISSING"); ok {
+		t.Error("Segment(MISSING) returned ok=true")
+	}
+}
+
+func TestSegmentFieldOutOfRange(t *testing.T) {
+	t.Parallel()
+	msg, _ := hl7v2.Parse([]byte(sampleADT))
+	pid, _ := msg.Segment("PID")
+	if v := pid.Field(99); v != "" {
+		t.Errorf("Field(99) = %q, want empty", v)
+	}
+	if v := pid.Field(-1); v != "" {
+		t.Errorf("Field(-1) = %q, want empty", v)
+	}
+	if v := pid.Component(99, 1); v != "" {
+		t.Errorf("Component(99,1) = %q, want empty", v)
+	}
+	if v := pid.Component(5, 99); v != "" {
+		t.Errorf("Component(5,99) = %q, want empty", v)
+	}
+	if v := pid.Component(5, 0); v != "" {
+		t.Errorf("Component(5,0) = %q, want empty", v)
+	}
+}

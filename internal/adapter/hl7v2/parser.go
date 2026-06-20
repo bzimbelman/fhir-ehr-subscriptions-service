@@ -212,9 +212,6 @@ func (m *Message) Segments(id string) []Segment {
 	return out
 }
 
-// AllSegments returns every parsed segment.
-func (m *Message) AllSegments() []Segment { return m.segments }
-
 // Field returns the n-th field of the segment using HL7 1-based indexing.
 // Returns "" if the field is absent.
 func (s Segment) Field(n int) string {

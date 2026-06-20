@@ -156,6 +156,115 @@ func TestMapUnknownMessageType_ReturnsBundleWithPatient(t *testing.T) {
 	}
 }
 
+func TestMapADT_PatientGenderFromPID8(t *testing.T) {
+	t.Parallel()
+	// Cover gender variants and the date-of-birth formatter.
+	cases := []struct {
+		name       string
+		hl7        string
+		wantGender string
+		wantDOB    string
+	}{
+		{"male", "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\rPID|1||PMA||X^Y||19620320|M\r", "male", "1962-03-20"},
+		{"female", "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\rPID|1||PMA||X^Y||19620320|F\r", "female", "1962-03-20"},
+		{"other", "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\rPID|1||PMA||X^Y||19620320|O\r", "other", "1962-03-20"},
+		{"unknown", "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\rPID|1||PMA||X^Y||19620320|U\r", "unknown", "1962-03-20"},
+		{"weird", "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\rPID|1||PMA||X^Y||19620320|Z\r", "unknown", "1962-03-20"},
+		{"empty_dob", "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\rPID|1||PMA||X^Y|||F\r", "female", ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg, _ := hl7v2.Parse([]byte(tc.hl7))
+			res, err := hl7v2.MapToFHIR(msg)
+			if err != nil {
+				t.Fatalf("MapToFHIR: %v", err)
+			}
+			if !contains(res.Body, `"gender":"`+tc.wantGender+`"`) {
+				t.Errorf("body missing gender %q:\n%s", tc.wantGender, res.Body)
+			}
+			if tc.wantDOB != "" && !contains(res.Body, `"birthDate":"`+tc.wantDOB+`"`) {
+				t.Errorf("body missing birthDate %q:\n%s", tc.wantDOB, res.Body)
+			}
+		})
+	}
+}
+
+func TestMapADT_EncounterPatientClasses(t *testing.T) {
+	t.Parallel()
+	// Cover every PV1-2 patient-class mapping branch.
+	cases := []struct {
+		class string
+		want  string
+	}{
+		{"I", "inpatient"},
+		{"O", "outpatient"},
+		{"E", "emergency"},
+		{"P", "preadmit"},
+		{"R", "recurring"},
+		{"X", "X"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.class, func(t *testing.T) {
+			t.Parallel()
+			hl7 := "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\r" +
+				"PID|1||CLASSPID||A^B||19800101|F\r" +
+				"PV1|1|" + tc.class + "|2000\r"
+			msg, _ := hl7v2.Parse([]byte(hl7))
+			res, err := hl7v2.MapToFHIR(msg)
+			if err != nil {
+				t.Fatalf("MapToFHIR: %v", err)
+			}
+			if !contains(res.Body, `"display":"`+tc.want+`"`) {
+				t.Errorf("body missing class display %q:\n%s", tc.want, res.Body)
+			}
+		})
+	}
+}
+
+func TestMapNilMessageReturnsError(t *testing.T) {
+	t.Parallel()
+	if _, err := hl7v2.MapToFHIR(nil); err == nil {
+		t.Error("MapToFHIR(nil) succeeded; want error")
+	}
+}
+
+func TestMapADTWithoutPV1OmitsEncounter(t *testing.T) {
+	t.Parallel()
+	hl7 := "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A04|M|P|2.5\r" +
+		"PID|1||PIDONLY||A^B||19800101|F\r"
+	msg, _ := hl7v2.Parse([]byte(hl7))
+	res, err := hl7v2.MapToFHIR(msg)
+	if err != nil {
+		t.Fatalf("MapToFHIR: %v", err)
+	}
+	// Encounter resource is built without PV1 fields filled in but
+	// still present (per the spec: an admission without PV1 is rare
+	// but the framework still wants the placeholder).
+	if !contains(res.Body, `"resourceType":"Encounter"`) {
+		t.Errorf("body missing Encounter:\n%s", res.Body)
+	}
+}
+
+func TestFormatDateUnchangedWhenShort(t *testing.T) {
+	t.Parallel()
+	// Indirect: feed a malformed PID-7 and confirm body still parses
+	// (the bad date is passed through verbatim).
+	hl7 := "MSH|^~\\&|EHR|F|R|F|20260618120000||ADT^A01|M|P|2.5\r" +
+		"PID|1||SHORTDOB||A^B||19|F\r" +
+		"PV1|1|O|2000\r"
+	msg, _ := hl7v2.Parse([]byte(hl7))
+	res, err := hl7v2.MapToFHIR(msg)
+	if err != nil {
+		t.Fatalf("MapToFHIR: %v", err)
+	}
+	if !contains(res.Body, `"birthDate":"19"`) {
+		t.Errorf("body missing short birthDate:\n%s", res.Body)
+	}
+}
+
 func contains(b []byte, s string) bool {
 	return indexOf(b, s) >= 0
 }
