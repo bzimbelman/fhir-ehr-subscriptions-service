@@ -14,21 +14,37 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-// defaultHTTPTimeout is the per-request timeout the demo CLIs apply
-// when the caller does not pass an HTTPClient. It is a package-level
-// var so tests can shorten it; production runs leave the 30s default
-// alone (overridable via --http-timeout).
+// defaultHTTPTimeoutNanos holds the per-request timeout the demo CLIs
+// apply when the caller does not pass an HTTPClient. Nanoseconds in an
+// atomic int64 because parallel tests legitimately mutate the value.
 //
 // OP #161: never fall back to http.DefaultClient (zero timeout) — a
 // stalled bridge or token endpoint would otherwise block the demo
 // forever, and copy-pasters would inherit the same hazard.
-var defaultHTTPTimeout = 30 * time.Second
+var defaultHTTPTimeoutNanos atomic.Int64
+
+func init() {
+	defaultHTTPTimeoutNanos.Store(int64(30 * time.Second))
+}
+
+// httpTimeout returns the current default HTTP timeout, safe for
+// concurrent reads while tests overwrite it.
+func httpTimeout() time.Duration {
+	return time.Duration(defaultHTTPTimeoutNanos.Load())
+}
+
+// setHTTPTimeoutForTest sets the default; only the demo-subscriber
+// CLI flag and tests should call this.
+func setHTTPTimeoutForTest(d time.Duration) {
+	defaultHTTPTimeoutNanos.Store(int64(d))
+}
 
 // SubscribeConfig parameterizes postSubscription.
 type SubscribeConfig struct {
@@ -133,7 +149,7 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 		// OP #161: bounded-timeout default so a stalled bridge does
 		// not block the demo forever. http.DefaultClient is zero-
 		// timeout and unsafe to copy into operator code.
-		client = &http.Client{Timeout: defaultHTTPTimeout}
+		client = &http.Client{Timeout: httpTimeout()}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -189,8 +205,8 @@ func mintToken(ctx context.Context, cfg MintConfig) (string, error) {
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
 		// OP #161: bounded-timeout default. See note on
-		// defaultHTTPTimeout — http.DefaultClient is unsafe here.
-		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
+		// httpTimeout() — http.DefaultClient is unsafe here.
+		httpClient = &http.Client{Timeout: httpTimeout()}
 	}
 
 	t := now()

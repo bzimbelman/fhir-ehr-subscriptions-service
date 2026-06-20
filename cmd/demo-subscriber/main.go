@@ -180,7 +180,7 @@ func run(args []string, stdout *os.File) error {
 	// bounded client when SubscribeConfig / MintConfig do not pass
 	// their own HTTPClient.
 	if f.httpTimeout > 0 {
-		defaultHTTPTimeout = f.httpTimeout
+		setHTTPTimeoutForTest(f.httpTimeout)
 	}
 
 	rcv := newReceiver(stdout, f.pretty, f.noColor)

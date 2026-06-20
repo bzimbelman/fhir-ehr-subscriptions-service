@@ -138,8 +138,11 @@ func stallingHandler(ctx context.Context) http.HandlerFunc {
 // SubscribeConfig.HTTPClient is nil, postSubscription MUST use a
 // bounded-timeout HTTP client (NOT http.DefaultClient, which has
 // zero timeout). Otherwise a stalled bridge blocks the demo forever.
+//
+// Not Parallel because it mutates the package-level
+// defaultHTTPTimeoutNanos that TestMintToken_HonoursDefaultTimeout
+// also sets — running the two in parallel would race on the value.
 func TestPostSubscription_HonoursDefaultTimeout(t *testing.T) {
-	t.Parallel()
 
 	stallCtx, cancel := context.WithCancel(context.Background())
 	srv := httptest.NewServer(stallingHandler(stallCtx))
@@ -155,9 +158,9 @@ func TestPostSubscription_HonoursDefaultTimeout(t *testing.T) {
 	// of the package-level default timeout. The test plumbs the
 	// override via a helper so we don't have to wait 30s on every
 	// CI run.
-	prev := defaultHTTPTimeout
-	defaultHTTPTimeout = 250 * time.Millisecond
-	t.Cleanup(func() { defaultHTTPTimeout = prev })
+	prev := httpTimeout()
+	setHTTPTimeoutForTest(250 * time.Millisecond)
+	t.Cleanup(func() { setHTTPTimeoutForTest(prev) })
 
 	cfg := SubscribeConfig{
 		BridgeBaseURL: srv.URL,
@@ -179,8 +182,9 @@ func TestPostSubscription_HonoursDefaultTimeout(t *testing.T) {
 
 // TestMintToken_HonoursDefaultTimeout asserts OP #161: mintToken's
 // fallback HTTP client must also be timeout-bounded.
+//
+// Not Parallel — see TestPostSubscription_HonoursDefaultTimeout note.
 func TestMintToken_HonoursDefaultTimeout(t *testing.T) {
-	t.Parallel()
 
 	stallCtx, cancel := context.WithCancel(context.Background())
 	srv := httptest.NewServer(stallingHandler(stallCtx))
@@ -190,9 +194,9 @@ func TestMintToken_HonoursDefaultTimeout(t *testing.T) {
 		srv.Close()
 	})
 
-	prev := defaultHTTPTimeout
-	defaultHTTPTimeout = 250 * time.Millisecond
-	t.Cleanup(func() { defaultHTTPTimeout = prev })
+	prev := httpTimeout()
+	setHTTPTimeoutForTest(250 * time.Millisecond)
+	t.Cleanup(func() { setHTTPTimeoutForTest(prev) })
 
 	priv, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
