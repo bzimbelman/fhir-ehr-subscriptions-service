@@ -570,14 +570,14 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		// Logger threads through to handlers' activation-side error
 		// path so failures the API can't surface to the client land in
 		// structured logs instead of being silently dropped (story #177).
-		Logger:              logger.With("component", "api"),
-		Now:                 func() time.Time { return time.Now().UTC() },
-		WSBindingTTL:        wsBindingTTL,
-		BaseURL:             baseURL,
-		WSBaseURL:           wsBaseURL,
-		ServerVersion:       GetVersion(),
-		URLValidator:        urlValidator,
-		LifecycleCtx:        ctx,
+		Logger:        logger.With("component", "api"),
+		Now:           func() time.Time { return time.Now().UTC() },
+		WSBindingTTL:  wsBindingTTL,
+		BaseURL:       baseURL,
+		WSBaseURL:     wsBaseURL,
+		ServerVersion: GetVersion(),
+		URLValidator:  urlValidator,
+		LifecycleCtx:  ctx,
 		// Story #217 (OP #42): activation timeout is now operator-tunable
 		// via auth.activation_timeout. defaultConfig + loadConfig pin a
 		// 30s default so configs that omit the key keep legacy behavior.

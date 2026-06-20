@@ -26,10 +26,14 @@ import (
 //
 // Pre-fix: 0001_init.sql's set_resource_changes_created_month and
 // set_ehr_events_created_month both set
-//   NEW.created_month := date_trunc('month', now())::date
+//
+//	NEW.created_month := date_trunc('month', now())::date
+//
 // which silently re-stamps every backfill/replay row to the current
 // month — schema invariant
-//   created_month = date_trunc('month', created_at)
+//
+//	created_month = date_trunc('month', created_at)
+//
 // is violated and any read path that filters by month sees ghosts.
 //
 // Post-fix: 0016_partition_trigger_use_new_created_at.sql replaces the

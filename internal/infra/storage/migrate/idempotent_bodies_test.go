@@ -78,10 +78,9 @@ func TestMigrationsAreIdempotent(t *testing.T) {
 	}
 
 	type guard struct {
-		re      *regexp.Regexp
-		marker  string
-		ddl     string
-		require func(string) bool
+		re     *regexp.Regexp
+		marker string
+		ddl    string
 	}
 	guards := []guard{
 		{re: reCreateTable, marker: "if not exists", ddl: "CREATE TABLE"},

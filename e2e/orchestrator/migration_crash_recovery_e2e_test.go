@@ -28,18 +28,18 @@ import (
 //
 // The simulation models the three failure modes #214 calls out:
 //
-//   1. Partial body apply with no version row recorded. The next pod
-//      sees the version absent and re-runs the whole body. The body
-//      MUST be a no-op the second time around.
+//  1. Partial body apply with no version row recorded. The next pod
+//     sees the version absent and re-runs the whole body. The body
+//     MUST be a no-op the second time around.
 //
-//   2. INSERT INTO schema_migrations after a partial body. The next
-//      pod sees the version present and skips. The body MUST have
-//      been idempotent so any earlier failed-mid-body apply is
-//      harmless on retry.
+//  2. INSERT INTO schema_migrations after a partial body. The next
+//     pod sees the version present and skips. The body MUST have
+//     been idempotent so any earlier failed-mid-body apply is
+//     harmless on retry.
 //
-//   3. The migration runner's session-level advisory lock dropping on
-//      crash. Two simulated pods running migrate.Up after the
-//      simulated partial apply both succeed.
+//  3. The migration runner's session-level advisory lock dropping on
+//     crash. Two simulated pods running migrate.Up after the
+//     simulated partial apply both succeed.
 //
 // Implementation: rather than try to actually kill a pod between
 // statements (no portable signal exists), we directly execute every

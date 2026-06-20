@@ -19,18 +19,18 @@ import (
 //
 // We assert two things:
 //
-//   1. The CREATE-OR-REPLACE for set_resource_changes_created_month
-//      and set_ehr_events_created_month MUST appear in some migration
-//      with the body
-//        new.created_month := date_trunc('month', new.created_at)::date;
-//      and MUST NOT appear with date_trunc('month', now()) anywhere
-//      AFTER the corrective migration. Migrations earlier in the
-//      sequence are allowed to use now() — that's the bug the fix
-//      replaces — so we look at the LAST CREATE OR REPLACE for each
-//      function to determine the deployed behavior.
+//  1. The CREATE-OR-REPLACE for set_resource_changes_created_month
+//     and set_ehr_events_created_month MUST appear in some migration
+//     with the body
+//     new.created_month := date_trunc('month', new.created_at)::date;
+//     and MUST NOT appear with date_trunc('month', now()) anywhere
+//     AFTER the corrective migration. Migrations earlier in the
+//     sequence are allowed to use now() — that's the bug the fix
+//     replaces — so we look at the LAST CREATE OR REPLACE for each
+//     function to determine the deployed behavior.
 //
-//   2. No new migration introduced after the corrective migration may
-//      regress the function back to now()-based derivation.
+//  2. No new migration introduced after the corrective migration may
+//     regress the function back to now()-based derivation.
 func TestPartitionTriggerUsesNewCreatedAt(t *testing.T) {
 	t.Parallel()
 
@@ -43,8 +43,8 @@ func TestPartitionTriggerUsesNewCreatedAt(t *testing.T) {
 	// the one whose behavior the database ends up with after a clean
 	// apply. Migrations are sorted by version in Embedded().
 	type fnState struct {
-		body  string
-		mig   string
+		body string
+		mig  string
 	}
 	last := map[string]*fnState{
 		"set_resource_changes_created_month": nil,
