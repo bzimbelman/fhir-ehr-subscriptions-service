@@ -24,12 +24,13 @@ import (
 // prodBinaryHandle wraps the running fhir-subs binary so a test can poke
 // it (HTTP, MLLP) and shut it down at test end.
 type prodBinaryHandle struct {
-	cmd      *exec.Cmd
-	httpAddr string
-	mllpAddr string
-	cancel   func()
-	stdout   *prefixWriter
-	stderr   *prefixWriter
+	cmd       *exec.Cmd
+	httpAddr  string
+	probeAddr string
+	mllpAddr  string
+	cancel    func()
+	stdout    *prefixWriter
+	stderr    *prefixWriter
 }
 
 // Stderr returns the captured-line collector for the binary's stderr
@@ -48,6 +49,10 @@ func (h *prodBinaryHandle) SignalHUP(t *testing.T) {
 
 // HTTPURL returns the full http base URL the test should hit.
 func (h *prodBinaryHandle) HTTPURL() string { return "http://" + h.httpAddr }
+
+// ProbeURL returns the unauthenticated probe-listener base URL where
+// /healthz, /readyz, /startup are served (S-118 split-listener layout).
+func (h *prodBinaryHandle) ProbeURL() string { return "http://" + h.probeAddr }
 
 // MLLPAddr returns the bound MLLP host:port (empty when no MLLP
 // listener was configured).
@@ -175,6 +180,11 @@ func startProdBinary(t *testing.T, ctx context.Context, cfg prodBinaryConfig) *p
 	if cfg.HTTPBind == "" {
 		cfg.HTTPBind = "127.0.0.1:" + freePort(t)
 	}
+	// Story #290: /healthz, /readyz, /startup live on a separate
+	// probe listener (S-118). Pick a per-test ephemeral port so the
+	// default 0.0.0.0:8081 doesn't collide when tests run in parallel
+	// or when leftover binaries are still bound.
+	probeBind := "127.0.0.1:" + freePort(t)
 	if cfg.GracePeriod == 0 {
 		cfg.GracePeriod = 5 * time.Second
 	}
@@ -219,6 +229,16 @@ mllp:
 		mllpAddrPlaceholder = cfg.MLLPBind
 	}
 
+	// Story #290: production mode requires topics.catalog_dir. Tests
+	// that configure MLLP (e.g. the graceful-shutdown smoke that does
+	// not actually drive a topic) historically left this empty and
+	// relied on probe-only mode to skip the check. Now that MLLP forces
+	// production mode (probe-only Validate() rejects mllp.listeners),
+	// stage an empty directory so the production check passes without
+	// requiring every MLLP-using test to write boilerplate.
+	if cfg.TopicsCatalogDir == "" && cfg.MLLPBind != "" {
+		cfg.TopicsCatalogDir = t.TempDir()
+	}
 	topicsBlock := ""
 	if cfg.TopicsCatalogDir != "" {
 		topicsBlock = fmt.Sprintf(`
@@ -230,6 +250,13 @@ topics:
 	authInsecureLine := ""
 	if cfg.AuthAllowInsecureJWKS {
 		authInsecureLine = "\n  allow_insecure_jwks: true"
+		// Story #290: e2e rest-hook receivers bind to 127.0.0.1. The
+		// URL validator's loopback / private-IP rejection (B-11) would
+		// reject those endpoints at create-time. Pair AllowInsecureJWKS
+		// (allow http://) with an AllowSubscriberHosts entry for the
+		// loopback IP literals so the test's harness rest-hook URL
+		// passes both gates. Production leaves both empty.
+		authInsecureLine += "\n  allow_subscriber_hosts: [\"127.0.0.1\", \"::1\"]"
 	}
 	// Story #117: an empty AuthAudience means "skip the bearer
 	// middleware in this e2e". Validate() will reject an empty
@@ -265,6 +292,21 @@ topics:
 			cfg.AuthTokenURL, cfg.AuthIssuedSecret, cfg.AuthIssuedIssuer, ttl.String())
 	}
 
+	// Story #290: production mode requires auth.trusted_issuers when
+	// auth.audience is set. The actual JWKS-key trust is stored per
+	// client in auth_clients (see TrustedIssue doc), so the contents
+	// are advisory in tests — we just need a non-empty entry that
+	// matches the binary-issued iss claim so the verifier loads the
+	// signing keys when a real bearer arrives.
+	if cfg.AuthAudience != "" {
+		issuer := cfg.AuthIssuedIssuer
+		if issuer == "" {
+			issuer = cfg.AuthAudience
+		}
+		authInsecureLine += fmt.Sprintf("\n  trusted_issuers:\n    - issuer: %s\n      audience: %s",
+			issuer, cfg.AuthAudience)
+	}
+
 	tracingBlock := ""
 	if cfg.TracingOTLPEndpoint != "" {
 		sampleRate := cfg.TracingSampleRate
@@ -289,13 +331,15 @@ tracing:
 	// Render mode=probe-only so the production-mode strict checks do
 	// not reject the test config; the production runtime still builds
 	// because cfg.Database.URL is set.
+	//
+	// Story #290: probe-only Validate() rejects mllp.listeners
+	// (operators cannot persist HL7 without DB guarantees there). A
+	// test that DOES configure MLLP must therefore boot in production
+	// mode. AuthAudience may be empty — allow_dev_bypass: true (set
+	// above when AuthAudience == "") is the documented opt-out for the
+	// bearer audience requirement under production mode.
 	deploymentMode := "probe-only"
-	if cfg.AuthAudience != "" && cfg.TopicsCatalogDir != "" && cfg.MLLPBind != "" {
-		// A test that supplies the full production posture explicitly
-		// wants to assert the production-mode validation path. Today
-		// no e2e takes this branch; the field is left here so the
-		// future check-config story can flip a single test over
-		// without re-renaming the helper.
+	if cfg.MLLPBind != "" {
 		deploymentMode = "production"
 	}
 
@@ -310,6 +354,7 @@ adapter:
 server:
   http:
     bind: %s
+    probe_bind: %s
     insecure: %t
 lifecycle:
   shutdown_grace_period: %s
@@ -338,7 +383,7 @@ pipeline:
   correlation_hold_window: 1s
 %s%s%s
 `,
-		cfg.FacilityID, deploymentMode, cfg.AdapterID, cfg.HTTPBind, cfg.Insecure,
+		cfg.FacilityID, deploymentMode, cfg.AdapterID, cfg.HTTPBind, probeBind, cfg.Insecure,
 		cfg.GracePeriod.String(),
 		cfg.DatabaseURL, keyB64, cfg.AuthAudience, authInsecureLine, mllpBlock, topicsBlock, tracingBlock,
 	)
@@ -360,18 +405,22 @@ pipeline:
 	}
 
 	h := &prodBinaryHandle{
-		cmd:      cmd,
-		httpAddr: cfg.HTTPBind,
-		mllpAddr: mllpAddrPlaceholder,
-		cancel:   cancel,
-		stdout:   stdoutW,
-		stderr:   stderrW,
+		cmd:       cmd,
+		httpAddr:  cfg.HTTPBind,
+		probeAddr: probeBind,
+		mllpAddr:  mllpAddrPlaceholder,
+		cancel:    cancel,
+		stdout:    stdoutW,
+		stderr:    stderrW,
 	}
 
-	// Wait for /healthz to flip green.
+	// Wait for /healthz to flip green. /healthz lives on the probe
+	// listener (S-118 split); the main listener serves only the auth-
+	// gated FHIR routes. Polling the probe address ensures the wait
+	// reflects the probe semantics the kubelet will see.
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(h.HTTPURL() + "/healthz")
+		resp, err := http.Get(h.ProbeURL() + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {

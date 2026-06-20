@@ -92,8 +92,12 @@ func TestE2E_ProdBinary_ProcessesHL7Message(t *testing.T) {
 	t.Cleanup(jwksSrv.Close)
 
 	clientID := "e2e-prod-hl7-" + uuid.New().String()[:8]
+	// Story #290: handlers gate POST /Subscription on a literal
+	// system/Subscription.c scope and GET /Subscription/{id} on .r;
+	// scope strings are not expanded from "cruds" letters. Grant the
+	// per-letter scopes alongside "cruds" so both gates fire green.
 	if _, seedErr := h.DB.Exec(ctx, `INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
-		VALUES ($1, $2, ARRAY['system/Subscription.cruds']::text[], $1)`,
+		VALUES ($1, $2, ARRAY['system/Subscription.cruds','system/Subscription.c','system/Subscription.r','system/Subscription.u','system/Subscription.d']::text[], $1)`,
 		clientID, jwksSrv.URL+"/jwks"); seedErr != nil {
 		t.Fatalf("seed auth_clients: %v", seedErr)
 	}

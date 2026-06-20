@@ -100,7 +100,7 @@ func TestE2E_ProdBinary_ServesSubscriptionAPI(t *testing.T) {
 
 	// Sanity: probe must say ready.
 	{
-		resp, err := http.Get(bin.HTTPURL() + "/readyz")
+		resp, err := http.Get(bin.ProbeURL() + "/readyz")
 		if err != nil {
 			t.Fatalf("readyz: %v", err)
 		}
@@ -225,7 +225,12 @@ func mintRealBearer(t *testing.T, ctx context.Context, binURL, audience, clientI
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer")
 	form.Set("client_assertion", signed)
-	form.Set("scope", "system/Subscription.cruds")
+	// Story #290: handlers check literal CRUD letters
+	// (system/Subscription.c / .r / .u / .d), so request both the
+	// composite "cruds" alias AND the per-letter scopes. The token
+	// endpoint intersects with auth_clients.scopes; tests that seed
+	// only "cruds" still get just "cruds" back.
+	form.Set("scope", "system/Subscription.cruds system/Subscription.c system/Subscription.r system/Subscription.u system/Subscription.d")
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, binURL+"/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatalf("build /token req: %v", err)
