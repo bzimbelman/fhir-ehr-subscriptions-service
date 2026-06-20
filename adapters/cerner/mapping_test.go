@@ -12,31 +12,30 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
-// TestCernerMapToFHIRRoundTripsRealHL7 covers OP #149 acceptance criterion
-// that every vendor adapter's MapToFHIR exercises the parsed HL7 input —
-// not the hardcoded `{"resourceType":"Bundle","type":"collection"}` stub.
+// TestCernerMapToFHIRRoundTripsRealHL7 covers OP #168: Cerner MapToFHIR
+// must use the parsed HL7 v2 input, not the hardcoded
+// `{"resourceType":"Bundle","type":"collection"}` stub the scaffold
+// shipped with.
 //
-// The test loads a real-shape HL7 v2 message (ADT^A01, ORU^R01, ORM^O01),
-// runs Lex + MapToFHIR, and asserts:
-//   - the resulting FhirResource has a vendor-appropriate ResourceType, and
-//   - the Body bytes carry evidence of the input (the patient identifier
-//     PATID1234 present in every fixture).
-//
-// Today MapToFHIR returns a hardcoded Bundle with no patient data, so this
-// test would fail RED. It is t.Skip'd until OP #168 (Cerner MapToFHIR
-// implementation) lands; that story removes the skip.
+// The test loads real-shape HL7 v2 messages (ADT^A01, ORU^R01, ORM^O01),
+// runs Lex + Classify + MapToFHIR, and asserts:
+//   - ResourceType is "Bundle"
+//   - Body carries the PATID1234 identifier from PID-3.1
+//   - Body carries an ADT^A01 -> Patient + Encounter, ORU^R01 ->
+//     DiagnosticReport + Observation(s), ORM^O01 -> ServiceRequest
+//     resource as appropriate.
 func TestCernerMapToFHIRRoundTripsRealHL7(t *testing.T) {
 	t.Parallel()
-	t.Skip("blocked on OP #168 (implement Cerner MapToFHIR HL7 v2 -> FHIR R4 mapping)")
 
 	cases := []struct {
 		name             string
 		hl7              string
 		wantResourceType string
+		wantContains     []string
 	}{
-		{"ADT_A01", sampleADTA01, "Bundle"},
-		{"ORU_R01", sampleORUR01, "Bundle"},
-		{"ORM_O01", sampleORMO01, "Bundle"},
+		{"ADT_A01", sampleADTA01, "Bundle", []string{"PATID1234", "Patient", "Encounter"}},
+		{"ORU_R01", sampleORUR01, "Bundle", []string{"PATID1234", "DiagnosticReport", "Observation", "Sodium"}},
+		{"ORM_O01", sampleORMO01, "Bundle", []string{"PATID1234", "ServiceRequest", "ORD-1"}},
 	}
 
 	p := cerneradapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
@@ -62,8 +61,45 @@ func TestCernerMapToFHIRRoundTripsRealHL7(t *testing.T) {
 			if len(res.Body) == 0 {
 				t.Fatal("Body is empty; MapToFHIR produced no payload")
 			}
-			if !bytes.Contains(res.Body, []byte("PATID1234")) {
-				t.Errorf("Body missing patient identifier PATID1234 — MapToFHIR ignored its input.\n got: %s", res.Body)
+			for _, want := range tc.wantContains {
+				if !bytes.Contains(res.Body, []byte(want)) {
+					t.Errorf("Body missing %q — MapToFHIR ignored its input.\n got: %s",
+						want, res.Body)
+				}
+			}
+			if bytes.Equal(res.Body, []byte(`{"resourceType":"Bundle","type":"collection"}`)) {
+				t.Fatal("MapToFHIR returned the legacy hardcoded passthrough Bundle")
+			}
+		})
+	}
+}
+
+func TestCernerClassifyMapsADTTriggers(t *testing.T) {
+	t.Parallel()
+	p := cerneradapter.New().BuildHl7Processor(spi.AdapterContext{Now: time.Now})
+	cases := []struct {
+		name string
+		hl7  string
+		want spi.ChangeKind
+	}{
+		{"A01_create", sampleADTA01, spi.ChangeCreate},
+		{"A03_delete", "MSH|^~\\&|CERNER|FAC|REC|FAC|20260618120000||ADT^A03|M|P|2.5\rPID|1||PATID9999\r", spi.ChangeDelete},
+		{"A08_update", "MSH|^~\\&|CERNER|FAC|REC|FAC|20260618120000||ADT^A08|M|P|2.5\rPID|1||PATID9999\r", spi.ChangeUpdate},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := p.Lex([]byte(tc.hl7))
+			if err != nil {
+				t.Fatalf("Lex: %v", err)
+			}
+			c, err := p.Classify(parsed)
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			if c.Kind != tc.want {
+				t.Errorf("Kind = %q, want %q", c.Kind, tc.want)
 			}
 		})
 	}

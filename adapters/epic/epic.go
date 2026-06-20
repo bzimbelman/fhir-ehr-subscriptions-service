@@ -1,25 +1,26 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package epicadapter is the P3.2 SPI scaffold for Epic Systems. It declares
-// an Epic-specific manifest and constructs a passthrough Hl7MessageProcessor
-// whose Lex / Classify / MapToFHIR delegate to the framework defaults until a
-// real Z-segment + Interconnect FHIR mapping is contributed.
+// Package epicadapter is the SPI implementation for Epic Systems. It declares
+// an Epic-specific manifest and a Hl7MessageProcessor that lexes HL7 v2 with
+// the shared internal/adapter/hl7v2 parser, classifies per Epic Bridges
+// trigger conventions, and maps to FHIR R4 (Patient, Encounter, Observation,
+// DiagnosticReport, ServiceRequest) per the Epic Interconnect FHIR R4 IG.
 //
-// The point of this stub is to prove the SPI is a genuine plug-in surface:
-// every interface is implementable from outside the default adapter, the
-// registry can load us, and the manifest validates. Real translation
-// (HL7 v2.5+ Z-segments per Epic's chapter "Bridges Specification" / Z*Note,
-// Interconnect FHIR R4 Patient/Encounter/Observation profiles) is intentionally
-// left as a TODO so vendor SMEs can pick it up without disturbing scaffolding.
+// Epic-specific Z-segments (Z*Notes, ZPV, ZBR, etc.) are out of scope for
+// this base implementation and are tracked under follow-on stories per Epic
+// deployment.
 package epicadapter
 
 import (
+	"strings"
+
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/hl7v2"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/registry"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/adapter/spi"
 )
 
-// Adapter is the Epic Systems EHR adapter scaffold.
+// Adapter is the Epic Systems EHR adapter.
 type Adapter struct {
 	spi.BaseEhrAdapter
 }
@@ -36,14 +37,12 @@ func NewRegistered() *registry.Registry {
 	return r
 }
 
-// Manifest declares Epic-specific identifiers. SupportedEhrVersions is "*"
-// until version-pinned profiles are contributed.
+// Manifest declares Epic-specific identifiers.
 func (a *Adapter) Manifest() spi.AdapterManifest {
 	return spi.AdapterManifest{
-		ID:          "epic",
-		Vendor:      "Epic Systems",
-		Description: "Scaffold adapter for Epic Systems (P3.2). HL7 v2 Z-segments and Interconnect FHIR profile mapping are TODO.",
-		// TODO(epic): pin to ">=2.5" once Z-segment lex covers Bridges Spec.
+		ID:                   "epic",
+		Vendor:               "Epic Systems",
+		Description:          "Adapter for Epic Systems. HL7 v2 ADT/ORU/ORM mapped to FHIR R4 per Interconnect IG.",
 		SupportedEhrVersions: spi.VersionSpec("*"),
 		Capabilities: spi.Capabilities{
 			HL7Processor:     true,
@@ -56,28 +55,16 @@ func (a *Adapter) Manifest() spi.AdapterManifest {
 	}
 }
 
-// BuildHl7Processor returns a passthrough processor. TODO(epic): replace with
-// a Z-segment-aware lex + ORU/ADT classification per Epic Bridges Specification
-// (HL7 v2.5+ Z*Notes, Z-segments for problem and result detail).
 func (a *Adapter) BuildHl7Processor(_ spi.AdapterContext) spi.Hl7MessageProcessor {
 	return &hl7Processor{}
 }
 
-// BuildFhirScanRunner returns nil — capability is not declared. Wiring an
-// Interconnect-FHIR R4 scan plan is a separate follow-up.
-func (a *Adapter) BuildFhirScanRunner(_ spi.AdapterContext) spi.FhirScanRunner { return nil }
-
-// BuildVendorAPIClient returns nil — Epic Interconnect feed integration is TODO.
+func (a *Adapter) BuildFhirScanRunner(_ spi.AdapterContext) spi.FhirScanRunner   { return nil }
 func (a *Adapter) BuildVendorAPIClient(_ spi.AdapterContext) spi.VendorAPIClient { return nil }
+func (a *Adapter) BuildHydrationService(_ spi.AdapterContext) spi.HydrationService {
+	return nil
+}
 
-// BuildHydrationService returns nil — capability is not declared.
-func (a *Adapter) BuildHydrationService(_ spi.AdapterContext) spi.HydrationService { return nil }
-
-// hl7Processor is a TODO passthrough. Real Epic mapping needs:
-//   - Z-segment parsing (Z*Notes / ZBR / ZPV / Bridges-Spec custom segments)
-//   - ORM/ORU/ADT trigger-event handling per HL7 v2.5+ Chapter 4 + Epic spec
-//   - FHIR R4 Patient/Encounter/Observation/Procedure mapping per Interconnect
-//     profiles
 type hl7Processor struct {
 	spi.BaseHl7MessageProcessor
 }
@@ -85,14 +72,45 @@ type hl7Processor struct {
 func (h *hl7Processor) Lex(raw []byte) (spi.ParsedHL7Message, error) {
 	cp := make([]byte, len(raw))
 	copy(cp, raw)
-	return spi.ParsedHL7Message{Raw: cp, Segments: nil}, nil
+	parsed, err := hl7v2.Parse(cp)
+	if err != nil {
+		return spi.ParsedHL7Message{Raw: cp}, err
+	}
+	return spi.ParsedHL7Message{Raw: cp, Segments: parsed}, nil
 }
 
-func (h *hl7Processor) Classify(_ spi.ParsedHL7Message) (spi.Classification, error) {
-	return spi.Classification{Kind: spi.ChangeCreate, CorrelationKey: ""}, nil
+func (h *hl7Processor) Classify(parsed spi.ParsedHL7Message) (spi.Classification, error) {
+	msg := messageFrom(parsed)
+	if msg == nil {
+		return spi.Classification{Kind: spi.ChangeCreate}, nil
+	}
+	trigger := strings.ToUpper(msg.TriggerEvent())
+	return spi.Classification{Kind: classifyTrigger(trigger), CorrelationKey: msg.PatientID()}, nil
 }
 
-func (h *hl7Processor) MapToFHIR(_ spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
-	body := []byte(`{"resourceType":"Bundle","type":"collection"}`)
-	return spi.FhirResource{ResourceType: "Bundle", Body: body}, nil
+func classifyTrigger(trigger string) spi.ChangeKind {
+	switch trigger {
+	case "A03", "A23", "A29":
+		return spi.ChangeDelete
+	case "A02", "A08", "A11", "A13":
+		return spi.ChangeUpdate
+	}
+	return spi.ChangeCreate
+}
+
+func (h *hl7Processor) MapToFHIR(parsed spi.ParsedHL7Message, _ spi.Classification) (spi.FhirResource, error) {
+	msg := messageFrom(parsed)
+	if msg == nil {
+		var err error
+		msg, err = hl7v2.Parse(parsed.Raw)
+		if err != nil {
+			return spi.FhirResource{}, err
+		}
+	}
+	return hl7v2.MapToFHIR(msg)
+}
+
+func messageFrom(parsed spi.ParsedHL7Message) *hl7v2.Message {
+	m, _ := parsed.Segments.(*hl7v2.Message)
+	return m
 }
