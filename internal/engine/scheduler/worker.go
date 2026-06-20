@@ -421,19 +421,33 @@ func (w *Worker) RecoverStuckForTest(ctx context.Context) int64 {
 // recoverStuck flips 'delivering' rows whose updated_at is older than
 // StuckThreshold back to 'pending', incrementing attempts so the
 // re-attempt is recorded. Returns the number of rows reset.
+//
+// OP #200: the row-targeting subquery uses `FOR UPDATE SKIP LOCKED`
+// so two scheduler workers running the recovery sweep concurrently
+// cannot both reclaim the same row and double-increment attempts.
+// Each row is locked-and-claimed by exactly one sweep; the other
+// sweep's subquery skips it. (Postgres advisory locks would also
+// work but this avoids the per-row advisory_xact_lock round-trip
+// and keeps the lock scope to the single statement.)
 func (w *Worker) recoverStuck(ctx context.Context) int64 {
 	if ctx.Err() != nil {
 		return 0
 	}
 	cutoff := w.clock().Add(-w.cfg.StuckThreshold)
 	const sql = `
+		WITH locked AS (
+		  SELECT id
+		    FROM deliveries
+		   WHERE status = 'delivering' AND updated_at < $1
+		   FOR UPDATE SKIP LOCKED
+		)
 		UPDATE deliveries
 		   SET status = 'pending',
 		       attempts = attempts + 1,
 		       next_attempt_at = now(),
 		       last_error = COALESCE(last_error, '') || CASE WHEN COALESCE(last_error,'')='' THEN '' ELSE '; ' END || 'recovery_sweep:stuck_in_delivering',
 		       updated_at = now()
-		 WHERE status = 'delivering' AND updated_at < $1`
+		 WHERE id IN (SELECT id FROM locked)`
 	tag, err := w.pool.Exec(ctx, sql, cutoff)
 	if err != nil {
 		w.logger.WarnContext(ctx, "scheduler: recovery sweep failed", slog.Any("err", err))
