@@ -517,6 +517,20 @@ func (s *PgWsBindingTokensStore) Insert(ctx context.Context, row repos.WsBinding
 	return nil
 }
 
+// FindUnexpiredBySubscriptionAndClient delegates to the repo for the
+// OP #241 idempotency lookup. Read-side timeout applies.
+func (s *PgWsBindingTokensStore) FindUnexpiredBySubscriptionAndClient(
+	ctx context.Context, subscriptionID uuid.UUID, clientID string, now time.Time,
+) (*repos.WsBindingTokenRow, error) {
+	qctx, cancel := s.Timeouts.withRead(ctx)
+	defer cancel()
+	row, err := s.Repo.FindUnexpiredBySubscriptionAndClient(qctx, s.Pool, subscriptionID, clientID, now)
+	if err != nil {
+		return nil, TranslateQueryErr(ctx, qctx, err, "ws_binding_tokens: find unexpired")
+	}
+	return row, nil
+}
+
 // ChainedAuditStore adapts an *audit.Writer to the handlers.AuditStore
 // contract. It is the production wiring slot for Deps.Audit (story #105):
 // every API handler call to Deps.Audit.Append flows into the same

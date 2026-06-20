@@ -278,6 +278,19 @@ func (r *productionRuntime) shutdown(ctx context.Context) {
 	if r == nil {
 		return
 	}
+	// OP #242: stop the ws-binding-token cache sweeper goroutine
+	// before we tear down the rest. The sweeper is cheap to halt
+	// (selects on its own context) so a stuck shutdown elsewhere
+	// can't pin it.
+	if r.wsTokenSweeperStop != nil {
+		r.wsTokenSweeperStop()
+	}
+	if r.wsTokenSweeperDone != nil {
+		select {
+		case <-r.wsTokenSweeperDone:
+		case <-time.After(2 * time.Second):
+		}
+	}
 	if r.pipeline != nil {
 		_ = r.pipeline.Stop(ctx)
 	}

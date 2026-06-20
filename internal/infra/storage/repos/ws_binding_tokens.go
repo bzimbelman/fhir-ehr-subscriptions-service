@@ -67,6 +67,60 @@ func (r *WsBindingTokensRepo) Insert(ctx context.Context, q Querier, row WsBindi
 	return nil
 }
 
+// FindUnexpiredBySubscriptionAndClient returns the most recently
+// issued unexpired (and unconsumed) row for (subscriptionID, clientID),
+// or nil when no such row exists. It is the OP #241 idempotency
+// lookup: $get-ws-binding-token consults this BEFORE mint so a
+// repeat call from the same client within TTL returns the existing
+// token instead of generating a fresh one.
+//
+// Notes:
+//
+//   - We hash-on-disk so we cannot return the cleartext token. The
+//     caller is responsible for short-circuiting the response with
+//     the token it already holds (the only recipient of the cleartext
+//     was the original mint caller, who is the same caller again
+//     under reuse). The handler does NOT short-circuit the cleartext
+//     return — it falls through to the cache+DB path and rebuilds
+//     the response from the cached cleartext token. The repo result
+//     is therefore primarily for: (a) telling the handler "yes a
+//     row exists", and (b) returning the row's expires_at so the
+//     handler can compose the response with the original expiry.
+//   - consumed_at is treated as terminal: a token that has been
+//     bound is no longer reusable for fresh handshakes. This matches
+//     the LLD §6 single-use redemption semantic.
+//   - ORDER BY expires_at DESC, created_at DESC keeps the newest
+//     row first so a caller that issued multiple unexpired tokens
+//     gets the latest one (the cache typically only ever sees one).
+func (r *WsBindingTokensRepo) FindUnexpiredBySubscriptionAndClient(
+	ctx context.Context, q Querier, subscriptionID uuid.UUID, clientID string, now time.Time,
+) (*WsBindingTokenRow, error) {
+	const sql = `
+		SELECT token, subscription_id, client_id, expires_at, created_at
+		FROM ws_binding_tokens
+		WHERE subscription_id = $1
+		  AND client_id = $2
+		  AND expires_at > $3
+		  AND consumed_at IS NULL
+		ORDER BY expires_at DESC, created_at DESC
+		LIMIT 1`
+	var row WsBindingTokenRow
+	err := q.QueryRow(ctx, sql, subscriptionID, clientID, now).Scan(
+		&row.Token,
+		&row.SubscriptionID,
+		&row.ClientID,
+		&row.ExpiresAt,
+		&row.CreatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ws_binding_tokens: find unexpired: %w", err)
+	}
+	return &row, nil
+}
+
 // Consume atomically marks a single-use token as consumed and returns the
 // bound subscription. The redemption is fail-closed: if the token has been
 // consumed before, has expired, or does not exist, the outcome reflects

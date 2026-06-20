@@ -11,6 +11,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/observability/audit"
@@ -93,6 +94,12 @@ func parseAuditVerifyFlags(args []string, stderr io.Writer) (*auditVerifyOptions
 	return out, nil
 }
 
+// defaultAuditVerifyProgressInterval is how often (in rows) the
+// progress reporter emits a heartbeat line. 1000 keeps the noise
+// below ~100 lines for typical 100K-row chains while remaining
+// responsive enough that an operator can tell the walk is moving.
+const defaultAuditVerifyProgressInterval = 1000
+
 // runAuditVerify is the production entry point for `fhir-subs audit verify`.
 // It returns an exit code: 0 on a verified-clean chain, 1 on any reported
 // break (or an operational error), 2 on flag-parsing problems.
@@ -131,6 +138,24 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 	}
 	defer pool.Close()
 
+	// OP #231 AC #2: refuse to run if the audit chain hasn't been
+	// initialized. We probe with a short-deadline context so an
+	// unreachable DB fails loudly here instead of silently returning
+	// `result: clean` after a zero-row IterateRows. The probe runs
+	// against a pool-side connection (no transaction) so it doesn't
+	// need the chain advisory lock.
+	probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
+	rows, probeErr := auditChainPrecheck(probeCtx, pool)
+	probeCancel()
+	if probeErr != nil {
+		fmt.Fprintln(stderr, "error: audit chain pre-check:", probeErr)
+		return 1
+	}
+	if rows == 0 {
+		fmt.Fprintln(stderr, "error: audit_log is empty — chain not initialized; refusing to verify")
+		return 1
+	}
+
 	// Empty schema means "use the connection's default search_path", which
 	// is what the production wiring at observability.Start uses today.
 	// If the deployment ever moves the audit_log table to a non-default
@@ -142,19 +167,106 @@ func runAuditVerify(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// The production writer at observability.Start does not override
-	// WriterOptions.GenesisLiteral, so the chain seed is always the
-	// package default. Verify with the same default to match what the
-	// rows were written under.
-	res, err := audit.VerifyChainReport(ctx, store, audit.VerifyOptions{
+	// OP #231 AC #3: report walk progress so an operator running
+	// against a 100K-row chain can see the verifier is making
+	// progress instead of staring at a silent terminal for minutes.
+	res, err := verifyChainWithProgress(ctx, store, audit.VerifyOptions{
 		From: opts.From,
 		To:   opts.To,
-	})
+	}, stdout, defaultAuditVerifyProgressInterval)
 	if err != nil {
 		fmt.Fprintln(stderr, "error: verify:", err)
 		return 1
 	}
+	return reportVerifyResult(res, stdout)
+}
 
+// auditChainPrecheck returns the row count of audit_log. It is the
+// OP #231 AC #2 refusal pre-check: if no rows exist (or the table
+// doesn't exist at all) the CLI must fail closed rather than report
+// `result: clean`.
+//
+// The probe uses to_regclass so a missing table surfaces as
+// `audit_log: not initialized` instead of a generic "relation does
+// not exist" error — operators reading the line should be able to
+// tell whether they pointed the CLI at the wrong DB or whether
+// migrations haven't run.
+func auditChainPrecheck(ctx context.Context, pool auditCountQuerier) (int64, error) {
+	var oid *string
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('audit_log')::text`).Scan(&oid); err != nil {
+		return 0, fmt.Errorf("to_regclass: %w", err)
+	}
+	if oid == nil {
+		return 0, fmt.Errorf("audit_log: not initialized (table does not exist; run migrations)")
+	}
+	var n int64
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit_log`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count audit_log: %w", err)
+	}
+	return n, nil
+}
+
+// auditCountQuerier is the minimal pgxpool surface auditChainPrecheck
+// uses. Defined here so tests can stub it without a real pool.
+type auditCountQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// verifyChainWithProgress wraps audit.VerifyChainReport with periodic
+// progress emission. The verifier itself remains in the audit
+// package; we install a counting Store wrapper that ticks every
+// `interval` rows and emits a `progress: <N>` line to stdout. The
+// final summary is emitted by reportVerifyResult.
+//
+// `interval` <= 0 disables progress (used by short-chain unit tests).
+func verifyChainWithProgress(
+	ctx context.Context,
+	store audit.Store,
+	opts audit.VerifyOptions,
+	stdout io.Writer,
+	interval int,
+) (audit.VerifyResult, error) {
+	if interval > 0 {
+		store = &progressEmittingStore{inner: store, interval: interval, w: stdout}
+	}
+	return audit.VerifyChainReport(ctx, store, opts)
+}
+
+// progressEmittingStore wraps an audit.Store and writes a
+// `progress: <N>` line to its writer every `interval` rows during
+// IterateRows. AcquireChainLock / LastChainHash / InsertAuditRow are
+// passed through verbatim — the verifier never calls those, but
+// keeping the contract intact lets the wrapper substitute for a
+// real store in mixed call paths.
+type progressEmittingStore struct {
+	inner    audit.Store
+	interval int
+	w        io.Writer
+}
+
+func (s *progressEmittingStore) AcquireChainLock(ctx context.Context) (func() error, error) {
+	return s.inner.AcquireChainLock(ctx)
+}
+func (s *progressEmittingStore) LastChainHash(ctx context.Context) ([]byte, error) {
+	return s.inner.LastChainHash(ctx)
+}
+func (s *progressEmittingStore) InsertAuditRow(ctx context.Context, row audit.Row) error {
+	return s.inner.InsertAuditRow(ctx, row)
+}
+func (s *progressEmittingStore) IterateRows(ctx context.Context, fn func(audit.Row) error) error {
+	count := 0
+	return s.inner.IterateRows(ctx, func(r audit.Row) error {
+		count++
+		if s.interval > 0 && count%s.interval == 0 {
+			fmt.Fprintf(s.w, "progress: %d\n", count)
+		}
+		return fn(r)
+	})
+}
+
+// reportVerifyResult emits the final summary lines and returns the
+// CLI exit code: 0 on a clean chain, 1 on any break.
+func reportVerifyResult(res audit.VerifyResult, stdout io.Writer) int {
 	fmt.Fprintf(stdout, "rows: %d\n", res.RowsSeen)
 	fmt.Fprintf(stdout, "head_hash: %s\n", res.HeadHash)
 	if len(res.Breaks) == 0 {
