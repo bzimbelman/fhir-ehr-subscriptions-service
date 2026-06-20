@@ -49,15 +49,22 @@ func wrap(err error) error      { return wrapErr{inner: err} }
 // TestS9_4_FramerPendingBoundedByMaxBody — S-9.4: pending was unbounded
 // across calls; large slowloris-style streams without a 0x0B start byte
 // could grow it without limit. Validate the framer rejects pending
-// growth past 2× maxBody as Malformed (Oversized) and resets state.
+// growth past 2× maxBody — post-OP-#227, Append rejects up front via
+// ErrPendingExceeded; pre-fix, Next surfaced MalformedEvent{Oversized}.
+// Both paths preserve the same connection-level outcome (drop the peer)
+// so we accept either signal.
 func TestS9_4_FramerPendingBoundedByMaxBody(t *testing.T) {
 	t.Parallel()
 	const maxBody = 1024
 	f := NewFramer(maxBody)
-	// Feed 4× the cap of pre-VT noise (no 0x0B). The framer should
-	// surface MalformedEvent{Oversized} once pending exceeds 2× cap.
+	// Feed 4× the cap of pre-VT noise (no 0x0B). Post-#227 Append
+	// returns ErrPendingExceeded eagerly.
 	noise := strings.Repeat("X", 4*maxBody)
-	f.Append([]byte(noise))
+	if err := f.Append([]byte(noise)); err != nil {
+		// Eager rejection path — accepted.
+		return
+	}
+	// Legacy fallback: framer accepted but Next() must surface oversized.
 	ev := f.Next()
 	mal, ok := ev.(MalformedEvent)
 	if !ok {

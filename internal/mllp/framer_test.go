@@ -28,7 +28,12 @@ type framerOutcome struct {
 func drainFramer(t *testing.T, f *Framer, input []byte) []framerOutcome {
 	t.Helper()
 	if len(input) > 0 {
-		f.Append(input)
+		if err := f.Append(input); err != nil {
+			// OP #227: Append now rejects pending overflow eagerly.
+			// Surface as a synthetic Malformed(Oversized) for the
+			// existing test contract.
+			return []framerOutcome{{kind: "malformed", reason: ReasonOversizedMessage}}
+		}
 	}
 	out := []framerOutcome{}
 	for {
@@ -225,7 +230,9 @@ func TestFramer_StartWithoutEnd_Finalize(t *testing.T) {
 	f := NewFramer(1024)
 	body := []byte("MSH|^~\\&|S|F|||20240101||ADT^A01|MID|P|2.5\r")
 	wire := append([]byte{startByte}, body...)
-	f.Append(wire)
+	if err := f.Append(wire); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
 	for {
 		ev := f.Next()
 		if _, ok := ev.(NeedMoreEvent); ok {
@@ -260,7 +267,9 @@ func TestFramer_ByteByByte(t *testing.T) {
 	wire := makeFrame(body)
 	var firstFrame []byte
 	for i := 0; i < len(wire); i++ {
-		f.Append(wire[i : i+1])
+		if err := f.Append(wire[i : i+1]); err != nil {
+			t.Fatalf("Append byte %d: %v", i, err)
+		}
 		for {
 			ev := f.Next()
 			switch e := ev.(type) {

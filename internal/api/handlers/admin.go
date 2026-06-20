@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -330,31 +329,54 @@ func (a *adminServer) listDeadLetters(w http.ResponseWriter, r *http.Request) {
 // permissive form (e.g. "+42" parses fine in some langs but signals an
 // attacker who's mapping out the parser).
 //
+// OP #223: clamp at MaxAdminDeadLetterLimit BEFORE any parsing-overflow
+// can occur. A raw string strictly longer than the digit width of
+// MaxAdminDeadLetterLimit is rejected on length alone — the parser never
+// runs strconv.Atoi on a candidate that could overflow int64 (or the
+// admin handler's int return). The digit-only loop is preserved so a
+// length-fitting input still rejects sign chars, unicode digits, hex
+// prefixes, and trailing garbage.
+//
 // Surrounding whitespace is trimmed by the caller for operator
 // convenience; this function sees only the trimmed value and rejects
-// anything but [0-9]+.
+// anything but [0-9]+ within the maxDigits length budget.
 func parseAdminLimit(raw string) (int, error) {
 	if raw == "" {
 		return 0, errors.New("admin limit: empty")
 	}
+	maxDigits := admimDeadLetterLimitDigits
+	if len(raw) > maxDigits {
+		return 0, fmt.Errorf("admin limit: too long (max %d digits)", maxDigits)
+	}
+	v := 0
 	for _, r := range raw {
 		if r < '0' || r > '9' {
 			// Rejects sign characters, unicode digits, hex prefix,
 			// internal whitespace, and trailing garbage in one pass.
 			return 0, errors.New("admin limit: non-ascii-digit byte (value redacted)")
 		}
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		// strconv.Atoi.Err propagates ErrRange for int64 overflow; the
-		// digit-only loop above guarantees ErrSyntax never fires here.
-		return 0, fmt.Errorf("admin limit: %w", err)
+		v = v*10 + int(r-'0')
 	}
 	if v <= 0 {
 		return 0, errors.New("admin limit: non-positive")
 	}
 	return v, nil
 }
+
+// admimDeadLetterLimitDigits is the digit width of MaxAdminDeadLetterLimit.
+// Computed once at init so parseAdminLimit's hot path stays
+// allocation-free.
+var admimDeadLetterLimitDigits = func() int {
+	d, n := 0, MaxAdminDeadLetterLimit
+	for n > 0 {
+		d++
+		n /= 10
+	}
+	if d == 0 {
+		d = 1
+	}
+	return d
+}()
 
 func adminInternalError(w http.ResponseWriter, code string) {
 	writeAdminJSON(w, http.StatusInternalServerError, map[string]any{

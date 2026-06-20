@@ -42,7 +42,12 @@ func TestProperty_Framer_NeverPanics(t *testing.T) {
 		f := NewFramer(maxBody)
 		// Feed all chunks, draining events between feeds.
 		for _, ch := range chunks {
-			f.Append(ch)
+			if err := f.Append(ch); err != nil {
+				// OP #227: Append's pending cap is a legitimate
+				// terminal classification — treat identically to a
+				// Malformed(Oversized) event for the property check.
+				return
+			}
 			for {
 				ev := f.Next()
 				switch e := ev.(type) {
@@ -116,7 +121,9 @@ func TestProperty_Framer_RoundTripPreservesBody(t *testing.T) {
 		f := NewFramer(8192)
 		var got [][]byte
 		for _, ch := range chunks {
-			f.Append(ch)
+			if err := f.Append(ch); err != nil {
+				rt.Fatalf("Append: %v", err)
+			}
 			for {
 				ev := f.Next()
 				if _, ok := ev.(NeedMoreEvent); ok {
