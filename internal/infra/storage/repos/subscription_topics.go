@@ -38,14 +38,14 @@ func (r *SubscriptionTopicsRepo) Insert(ctx context.Context, q Querier, row Subs
 func (r *SubscriptionTopicsRepo) GetByURLVersion(ctx context.Context, q Querier, url, version string) (*SubscriptionTopicRow, error) {
 	const sql = `
 		SELECT id, url, version, COALESCE(title, ''), COALESCE(description, ''),
-		       status, date, source, body, compiled_form, created_at, retired_at
+		       status, date, source, body, compiled_form, created_at
 		FROM subscription_topics
 		WHERE url = $1 AND version = $2`
 	var rec SubscriptionTopicRow
 	if err := q.QueryRow(ctx, sql, url, version).Scan(
 		&rec.ID, &rec.URL, &rec.Version, &rec.Title, &rec.Description,
 		&rec.Status, &rec.Date, &rec.Source, &rec.Body, &rec.CompiledForm,
-		&rec.CreatedAt, &rec.RetiredAt,
+		&rec.CreatedAt,
 	); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -84,7 +84,7 @@ func (r *SubscriptionTopicsRepo) ListByStatusPage(ctx context.Context, q Querier
 	}
 	const sql = `
 		SELECT id, url, version, COALESCE(title, ''), COALESCE(description, ''),
-		       status, date, source, body, compiled_form, created_at, retired_at
+		       status, date, source, body, compiled_form, created_at
 		FROM subscription_topics
 		WHERE status = $1
 		ORDER BY url, version, id
@@ -100,7 +100,7 @@ func (r *SubscriptionTopicsRepo) ListByStatusPage(ctx context.Context, q Querier
 		if err := rows.Scan(
 			&rec.ID, &rec.URL, &rec.Version, &rec.Title, &rec.Description,
 			&rec.Status, &rec.Date, &rec.Source, &rec.Body, &rec.CompiledForm,
-			&rec.CreatedAt, &rec.RetiredAt,
+			&rec.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("subscription_topics: scan: %w", err)
 		}

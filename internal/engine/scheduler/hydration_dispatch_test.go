@@ -213,6 +213,13 @@ func TestIntegrationSchedulerInvokesHydratorForFullResource(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert deliveries: %v", err)
 	}
+	// Mirror the submatcher: next_event_number must be at least the
+	// delivery's event_number for OP #144 CHECK invariant.
+	if _, err := s.Pool().Pgx().Exec(ctx,
+		`UPDATE subscriptions SET next_event_number = GREATEST(next_event_number, 1) WHERE id=$1`,
+		subID); err != nil {
+		t.Fatalf("seed next_event_number: %v", err)
+	}
 
 	processed, err := w.TickOnce(ctx)
 	if err != nil {

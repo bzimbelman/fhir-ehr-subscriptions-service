@@ -23,9 +23,10 @@ func (r *SubscriptionsRepo) Insert(ctx context.Context, q Querier, row Subscript
 		INSERT INTO subscriptions
 			(client_id, status, topic_url, channel_type, endpoint, header,
 			 filter_by, content, heartbeat_period, timeout, max_count,
-			 events_since_subscription_start, reason, end_time, error,
+			 events_since_subscription_start, next_event_number,
+			 reason, end_time, error,
 			 contact, last_handshake_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		RETURNING id`
 	maxCount := row.MaxCount
 	if maxCount == 0 {
@@ -35,12 +36,20 @@ func (r *SubscriptionsRepo) Insert(ctx context.Context, q Querier, row Subscript
 	if content == "" {
 		content = "id-only"
 	}
+	nextEventNumber := row.NextEventNumber
+	if nextEventNumber < row.EventsSinceSubscriptionStart {
+		// Maintain the OP #144 invariant on insert: a caller that only
+		// sets EventsSinceSubscriptionStart should not violate the
+		// `next_event_number >= events_since_subscription_start` CHECK.
+		nextEventNumber = row.EventsSinceSubscriptionStart
+	}
 	var id uuid.UUID
 	if err := q.QueryRow(ctx, sql,
 		row.ClientID, string(row.Status), row.TopicURL, row.ChannelType,
 		row.Endpoint, row.Header, row.FilterBy, content,
 		row.HeartbeatPeriod, row.Timeout, maxCount,
-		row.EventsSinceSubscriptionStart, row.Reason, row.EndTime,
+		row.EventsSinceSubscriptionStart, nextEventNumber,
+		row.Reason, row.EndTime,
 		row.Error, row.Contact, row.LastHandshakeAt,
 	).Scan(&id); err != nil {
 		return uuid.Nil, fmt.Errorf("subscriptions: insert: %w", err)
@@ -54,7 +63,8 @@ func (r *SubscriptionsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
-		       events_since_subscription_start, COALESCE(reason, ''),
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
@@ -65,7 +75,8 @@ func (r *SubscriptionsRepo) GetByID(ctx context.Context, q Querier, id uuid.UUID
 		&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
 		&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
 		&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
-		&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+		&rec.EventsSinceSubscriptionStart, &rec.NextEventNumber,
+		&rec.Reason, &rec.EndTime,
 		&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
 		&rec.CreatedAt, &rec.UpdatedAt,
 	); err != nil {
@@ -107,7 +118,8 @@ func (r *SubscriptionsRepo) StreamActiveByTopic(
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
-		       events_since_subscription_start, COALESCE(reason, ''),
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
@@ -125,7 +137,8 @@ func (r *SubscriptionsRepo) StreamActiveByTopic(
 			&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
 			&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
 			&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
-			&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+			&rec.EventsSinceSubscriptionStart, &rec.NextEventNumber,
+			&rec.Reason, &rec.EndTime,
 			&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
 			&rec.CreatedAt, &rec.UpdatedAt,
 		); err != nil {
@@ -157,7 +170,8 @@ func (r *SubscriptionsRepo) ListActiveByTopicPage(
 		SELECT id, client_id, status, topic_url, channel_type,
 		       COALESCE(endpoint, ''), header, filter_by, content,
 		       heartbeat_period, timeout, max_count,
-		       events_since_subscription_start, COALESCE(reason, ''),
+		       events_since_subscription_start, next_event_number,
+		       COALESCE(reason, ''),
 		       end_time, COALESCE(error, ''), contact, last_handshake_at,
 		       created_at, updated_at
 		FROM subscriptions
@@ -177,7 +191,8 @@ func (r *SubscriptionsRepo) ListActiveByTopicPage(
 			&rec.ID, &rec.ClientID, &status, &rec.TopicURL, &rec.ChannelType,
 			&rec.Endpoint, &rec.Header, &rec.FilterBy, &rec.Content,
 			&rec.HeartbeatPeriod, &rec.Timeout, &rec.MaxCount,
-			&rec.EventsSinceSubscriptionStart, &rec.Reason, &rec.EndTime,
+			&rec.EventsSinceSubscriptionStart, &rec.NextEventNumber,
+			&rec.Reason, &rec.EndTime,
 			&rec.Error, &rec.Contact, &rec.LastHandshakeAt,
 			&rec.CreatedAt, &rec.UpdatedAt,
 		); err != nil {

@@ -40,7 +40,7 @@ func TestDeadLettersReporterFires(t *testing.T) {
 	id := uuid.New()
 	srcID := uuid.New()
 	pool.ExpectQuery("INSERT INTO dead_letters").
-		WithArgs(anyArgs(9)...).
+		WithArgs(anyArgs(10)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 
 	var (
@@ -95,7 +95,7 @@ func TestDeadLettersInsert(t *testing.T) {
 	srcID := uuid.New()
 
 	pool.ExpectQuery("INSERT INTO dead_letters").
-		WithArgs(anyArgs(9)...).
+		WithArgs(anyArgs(10)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 
 	repo := repos.NewDeadLettersRepo(newCodec(t))
@@ -256,11 +256,11 @@ func TestSubscriptionTopicsInsertAndList(t *testing.T) {
 		WithArgs("active", repos.DefaultListByStatusCap, 0).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "url", "version", "title", "description", "status",
-			"date", "source", "body", "compiled_form", "created_at", "retired_at",
+			"date", "source", "body", "compiled_form", "created_at",
 		}).AddRow(id, "http://example.org/order-changed", "1.0", "Order Changed",
 			"desc", "active", &now, "builtin",
 			[]byte(`{"resourceType":"SubscriptionTopic"}`),
-			[]byte(nil), now, (*time.Time)(nil)))
+			[]byte(nil), now))
 
 	repo := repos.NewSubscriptionTopicsRepo()
 	got, err := repo.Insert(ctx, pool, repos.SubscriptionTopicRow{
@@ -301,18 +301,19 @@ func TestSubscriptionsInsertAndGet(t *testing.T) {
 
 	id := uuid.New()
 	pool.ExpectQuery("INSERT INTO subscriptions").
-		WithArgs(anyArgs(17)...).
+		WithArgs(anyArgs(18)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(id))
 	pool.ExpectQuery("SELECT (.+) FROM subscriptions WHERE id").
 		WithArgs(id).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "client_id", "status", "topic_url", "channel_type", "endpoint",
 			"header", "filter_by", "content", "heartbeat_period", "timeout",
-			"max_count", "events_since_subscription_start", "reason", "end_time",
+			"max_count", "events_since_subscription_start", "next_event_number",
+			"reason", "end_time",
 			"error", "contact", "last_handshake_at", "created_at", "updated_at",
 		}).AddRow(id, "client-a", "requested", "http://example.org/topic", "rest-hook",
 			"https://sub", []byte(nil), []byte(nil), "id-only", nil, nil,
-			int32(1), int64(0), "", nil, "", []byte(nil), nil, time.Now(), time.Now()))
+			int32(1), int64(0), int64(0), "", nil, "", []byte(nil), nil, time.Now(), time.Now()))
 
 	repo := repos.NewSubscriptionsRepo()
 	got, err := repo.Insert(ctx, pool, repos.SubscriptionRow{
