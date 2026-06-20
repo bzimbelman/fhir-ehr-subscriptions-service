@@ -1,6 +1,7 @@
 {
   "default": 80,
   "packages": {
+    "github.com/bzimbelman/fhir-ehr-subscriptions-service/tools/docs-lint": 70.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/allscripts": 47.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/athena": 47.0,
     "github.com/bzimbelman/fhir-ehr-subscriptions-service/adapters/cerner": 47.0,
