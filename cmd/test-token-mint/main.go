@@ -181,8 +181,8 @@ func main() {
 			return
 		}
 		if len(body) > 0 {
-			if err := json.Unmarshal(body, &req); err != nil {
-				http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+			if uerr := json.Unmarshal(body, &req); uerr != nil {
+				http.Error(w, "decode body: "+uerr.Error(), http.StatusBadRequest)
 				return
 			}
 		}

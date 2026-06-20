@@ -57,8 +57,8 @@ func TestJWKSDocument_RoundTripsAsRealKey(t *testing.T) {
 			E   string `json:"e"`
 		} `json:"keys"`
 	}
-	if err := json.Unmarshal(doc, &jwks); err != nil {
-		t.Fatalf("decode JWKS: %v\n%s", err, doc)
+	if uerr := json.Unmarshal(doc, &jwks); uerr != nil {
+		t.Fatalf("decode JWKS: %v\n%s", uerr, doc)
 	}
 	if len(jwks.Keys) != 1 {
 		t.Fatalf("JWKS has %d keys; want 1", len(jwks.Keys))
