@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -105,12 +106,21 @@ func TestScenario_wss_delivery_and_reconnect(t *testing.T) {
 	t.Cleanup(pipe.Stop)
 	pipe.Registry().Register("websocket", channel.Channel(wsCh))
 
+	// Stand up a probe target for the harness's websocket activator —
+	// any endpoint that completes a real WS handshake (or returns 101)
+	// satisfies the OP #147 fail-closed activator. Using the same wsCh
+	// handler keeps the probe surface identical to production.
+	probeSrv := httptest.NewServer(wsCh.Handler())
+	t.Cleanup(probeSrv.Close)
+	wsProbeURL := strings.Replace(probeSrv.URL, "http://", "ws://", 1) + "/ws/subscriptions"
+
 	// API server with the WS upgrade handler mounted at /ws/subscriptions.
 	api, err := hpipe.StartAPIServer(ctx, hpipe.APIServerConfig{
-		Pool:          h.DB,
-		ClientID:      "client-wss-" + uuid.New().String()[:8],
-		WSHandler:     wsCh.Handler(),
-		WSHandlerPath: "/ws/subscriptions",
+		Pool:              h.DB,
+		ClientID:          "client-wss-" + uuid.New().String()[:8],
+		WSHandler:         wsCh.Handler(),
+		WSHandlerPath:     "/ws/subscriptions",
+		WebsocketProbeURL: wsProbeURL,
 	})
 	if err != nil {
 		t.Fatalf("api start: %v", err)
@@ -137,7 +147,7 @@ func TestScenario_wss_delivery_and_reconnect(t *testing.T) {
 	// Get a binding token via the API.
 	tokURL := fmt.Sprintf("%s/Subscription/%s/$get-ws-binding-token", api.URL, subID)
 	tokReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, tokURL, nil)
-	tokResp, err := http.DefaultClient.Do(tokReq)
+	tokResp, err := api.Client().Do(tokReq)
 	if err != nil {
 		t.Fatalf("$get-ws-binding-token: %v", err)
 	}
