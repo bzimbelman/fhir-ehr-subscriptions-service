@@ -30,6 +30,12 @@ else
     # Fallback: /dev/urandom + base64 (mac/linux both ship base64).
     head -c 32 /dev/urandom | base64 | tr -d '\n' > "${key_path}"
 fi
-chmod 600 "${key_path}"
+# Mode 0644 (NOT 0600) so the bridge container's nonroot user can read
+# the bind-mounted file. docker-compose mounts the host file in
+# read-only mode (`./secrets:...:ro`), and the demo key is not a real
+# secret — `demo/secrets/.gitignore` keeps the bytes out of VCS, but
+# anyone with shell access to the host can already read demo/config.yaml
+# itself. Production deployments should use a proper secret manager.
+chmod 644 "${key_path}"
 
 echo "demo: generated at_rest_key at ${key_path}" >&2
