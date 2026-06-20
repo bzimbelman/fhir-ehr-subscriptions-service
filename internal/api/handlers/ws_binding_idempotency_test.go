@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/wsbindingcache"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
@@ -78,6 +80,9 @@ func TestGetWsBindingToken_Idempotent_WithinTTL(t *testing.T) {
 	deps := defaultDeps(t)
 	wsTok := newMemWsTokensIdem()
 	deps.WsTokens = wsTok
+	cache := wsbindingcache.New(wsbindingcache.Options{MaxKeys: 16, Now: deps.Now})
+	t.Cleanup(cache.Close)
+	deps.WsTokenCache = handlers.WrapWsBindingTokenCache(cache)
 
 	subs := deps.Subscriptions.(*memSubs)
 	id, _ := subs.Insert(context.Background(), repos.SubscriptionRow{
@@ -122,6 +127,9 @@ func TestGetWsBindingToken_FreshAfterExpiry(t *testing.T) {
 		defer clockMu.Unlock()
 		return current
 	}
+	cache := wsbindingcache.New(wsbindingcache.Options{MaxKeys: 16, Now: deps.Now})
+	t.Cleanup(cache.Close)
+	deps.WsTokenCache = handlers.WrapWsBindingTokenCache(cache)
 
 	subs := deps.Subscriptions.(*memSubs)
 	id, _ := subs.Insert(context.Background(), repos.SubscriptionRow{
@@ -156,15 +164,13 @@ func TestGetWsBindingToken_FreshAfterExpiry(t *testing.T) {
 // not subscription_id alone.
 func TestGetWsBindingToken_PerClientScoping(t *testing.T) {
 	t.Parallel()
-	deps := defaultDeps(t)
 	wsTok := newMemWsTokensIdem()
-	deps.WsTokens = wsTok
 
 	// Subscription is owned by client-A; the test asserts that the
 	// store-level lookup is per-client even when the handler limits
 	// access to the owner. We exercise this directly at the store.
 	subID := uuid.New()
-	now := deps.Now()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
 
 	if err := wsTok.Insert(context.Background(), repos.WsBindingTokenRow{
 		Token: "tok-a", SubscriptionID: subID, ClientID: "client-A",
@@ -200,6 +206,9 @@ func TestGetWsBindingToken_ReuseEmitsReuseAuditAction(t *testing.T) {
 	deps.WsTokens = wsTok
 	audit := &memAudit{}
 	deps.Audit = audit
+	cache := wsbindingcache.New(wsbindingcache.Options{MaxKeys: 16, Now: deps.Now})
+	t.Cleanup(cache.Close)
+	deps.WsTokenCache = handlers.WrapWsBindingTokenCache(cache)
 
 	subs := deps.Subscriptions.(*memSubs)
 	id, _ := subs.Insert(context.Background(), repos.SubscriptionRow{

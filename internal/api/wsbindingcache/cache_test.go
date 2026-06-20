@@ -213,6 +213,61 @@ func TestStartSweeper_RunsOnTickAndStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestPut_OverwritesExistingEntry: calling Put under an existing key
+// updates the resident entry and bumps it to MRU.
+func TestPut_OverwritesExistingEntry(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	c := wsbindingcache.New(wsbindingcache.Options{MaxKeys: 4, Now: func() time.Time { return now }})
+	defer c.Close()
+
+	subID := uuid.New()
+	c.Put("client-A", subID, "tok-1", now.Add(time.Minute))
+	c.Put("client-A", subID, "tok-2", now.Add(2*time.Minute))
+
+	got, ok := c.Get("client-A", subID)
+	if !ok || got.Token != "tok-2" {
+		t.Errorf("overwrite did not take effect; got %+v ok=%v", got, ok)
+	}
+	if c.Len() != 1 {
+		t.Errorf("Len = %d; want 1 (overwrite must not duplicate)", c.Len())
+	}
+}
+
+// TestStartSweeper_NilCacheReturnsClosedDone: the sweeper helper
+// short-circuits cleanly when no cache is supplied.
+func TestStartSweeper_NilCacheReturnsClosedDone(t *testing.T) {
+	t.Parallel()
+	done := wsbindingcache.StartSweeper(context.Background(), nil, time.Second, nil)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("expected nil-cache sweeper to close done immediately")
+	}
+}
+
+// TestClose_IsIdempotent: Close is allowed to be called repeatedly.
+func TestClose_IsIdempotent(t *testing.T) {
+	t.Parallel()
+	c := wsbindingcache.New(wsbindingcache.Options{MaxKeys: 1})
+	c.Close()
+	c.Close()
+}
+
+// TestNew_DefaultClock: omitting Options.Now uses time.Now without
+// panicking. Smoke check — the package's other tests inject a clock,
+// so this verifies the fallback path.
+func TestNew_DefaultClock(t *testing.T) {
+	t.Parallel()
+	c := wsbindingcache.New(wsbindingcache.Options{MaxKeys: 1})
+	defer c.Close()
+	subID := uuid.New()
+	c.Put("client-A", subID, "tok", time.Now().Add(time.Minute))
+	if _, ok := c.Get("client-A", subID); !ok {
+		t.Errorf("expected hit under default clock")
+	}
+}
+
 // TestNilCache_BypassFallsThrough: a nil *Cache is safe — Get returns
 // miss without panicking. The handler short-circuit code path must
 // remain inert when the cache is unconfigured.

@@ -116,8 +116,18 @@ type DeliveriesStore interface {
 }
 
 // WsBindingTokensStore is the narrow interface for $get-ws-binding-token.
+//
+// FindUnexpiredBySubscriptionAndClient is the OP #241 reuse lookup:
+// the handler short-circuits before mint when an unexpired row
+// already exists for (subscriptionID, clientID). Implementations
+// MUST treat ExpiresAt as exclusive (strictly in the future relative
+// to the supplied `now`). A nil result with nil error means "no row
+// — go ahead and mint".
 type WsBindingTokensStore interface {
 	Insert(ctx context.Context, row repos.WsBindingTokenRow) error
+	FindUnexpiredBySubscriptionAndClient(
+		ctx context.Context, subscriptionID uuid.UUID, clientID string, now time.Time,
+	) (*repos.WsBindingTokenRow, error)
 }
 
 // AuditStore writes one audit_log row. Audit hash chaining is delegated
@@ -125,3 +135,35 @@ type WsBindingTokensStore interface {
 type AuditStore interface {
 	Append(ctx context.Context, action, target, outcome string, correlationID *uuid.UUID, canonical []byte) error
 }
+
+// WsBindingTokenCacheEntry is the OP #242 cache hit payload returned
+// by WsBindingTokenCache.Get. The fields are token cleartext +
+// expiry; the cache stores them together so the handler can
+// reconstruct the response without re-deriving the expiry.
+type WsBindingTokenCacheEntry struct {
+	Token     string
+	ExpiresAt time.Time
+}
+
+// WsBindingTokenCache is the OP #242 fast-path contract.
+// NoopWsBindingTokenCache is the zero-cost default; consumers that
+// don't wire a real cache get the bypass behavior with no special
+// handling at the call site.
+type WsBindingTokenCache interface {
+	Get(clientID string, subscriptionID uuid.UUID) (WsBindingTokenCacheEntry, bool)
+	Put(clientID string, subscriptionID uuid.UUID, token string, expiresAt time.Time)
+}
+
+// NoopWsBindingTokenCache is the OP #242 bypass implementation. It
+// satisfies WsBindingTokenCache but never caches anything. Use it
+// when a deployment has the cache disabled or in tests that want to
+// exercise the DB-only reuse path.
+type NoopWsBindingTokenCache struct{}
+
+// Get always reports miss.
+func (NoopWsBindingTokenCache) Get(_ string, _ uuid.UUID) (WsBindingTokenCacheEntry, bool) {
+	return WsBindingTokenCacheEntry{}, false
+}
+
+// Put is a no-op.
+func (NoopWsBindingTokenCache) Put(_ string, _ uuid.UUID, _ string, _ time.Time) {}

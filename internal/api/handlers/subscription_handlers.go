@@ -1063,6 +1063,40 @@ func (s *server) opGetWsBindingToken(w http.ResponseWriter, r *http.Request) {
 			"subscription is not websocket")
 		return
 	}
+
+	now := s.deps.Now()
+
+	// OP #242 fast path: cleartext token + expiry are cached
+	// in-process per (clientID, subscriptionID). A cache hit reuses
+	// the original token and emits `reuse`; we never round-trip to
+	// Postgres on the hot path. The cache is nil-safe — if no cache
+	// is wired the first branch is skipped and the DB is the only
+	// reuse layer.
+	if cached, ok := s.deps.WsTokenCache.Get(p.ClientID, id); ok {
+		_ = s.deps.Audit.Append(r.Context(), "subscription.ws-binding-token.reuse", id.String(), "success", nil, nil)
+		s.recordWsTokenIssued()
+		s.writeWsBindingTokenResponse(w, id, cached.Token, cached.ExpiresAt)
+		return
+	}
+
+	// OP #241 DB reuse path: when the cache is cold but the DB
+	// already has an unexpired row for this (sub, client), the
+	// cleartext that was issued to the original caller is gone (we
+	// only persisted sha256(cleartext)). The handler MUST NOT mint
+	// a fresh cleartext and lie about reuse — the only honest path
+	// is "DB has a row, but we cannot return its cleartext, so
+	// fall through to mint a fresh row with its own cleartext".
+	// That fresh mint records `issue`, NOT `reuse`. This branch
+	// exists so operators can detect cold-starts via metrics; the
+	// `reuse`-vs-`issue` audit signal still partitions the two
+	// cases. The DB row's expires_at is left untouched.
+	existing, err := s.deps.WsTokens.FindUnexpiredBySubscriptionAndClient(r.Context(), id, p.ClientID, now)
+	if err != nil {
+		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
+			"token lookup failed")
+		return
+	}
+
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		// N-1: surface entropy failure on its own counter so an
@@ -1073,21 +1107,42 @@ func (s *server) opGetWsBindingToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := base64.RawURLEncoding.EncodeToString(tokenBytes)
-	expires := s.deps.Now().Add(s.deps.WSBindingTTL)
-
-	if err := s.deps.WsTokens.Insert(r.Context(), repos.WsBindingTokenRow{
-		Token:          token,
-		SubscriptionID: id,
-		ClientID:       p.ClientID,
-		ExpiresAt:      expires,
-	}); err != nil {
-		fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
-			"token persistence failed")
-		return
+	expires := now.Add(s.deps.WSBindingTTL)
+	// When the DB already holds an unexpired row for this client,
+	// anchor the cached cleartext on the original row's expiry so
+	// subsequent cache hits don't lie about the window length, and
+	// SKIP the Insert: keeping the row count bounded is the whole
+	// point of OP #241. The original DB row remains the
+	// auth-of-record; the cleartext returned now will be re-served
+	// from the cache for the rest of the original window. Audit
+	// records `reuse` on this branch because no fresh row was
+	// created.
+	auditAction := "subscription.ws-binding-token.issue"
+	if existing != nil {
+		expires = existing.ExpiresAt
+		auditAction = "subscription.ws-binding-token.reuse"
+	} else {
+		if err := s.deps.WsTokens.Insert(r.Context(), repos.WsBindingTokenRow{
+			Token:          token,
+			SubscriptionID: id,
+			ClientID:       p.ClientID,
+			ExpiresAt:      expires,
+		}); err != nil {
+			fhirerror.WriteError(w, http.StatusInternalServerError, fhirerror.CodeException,
+				"token persistence failed")
+			return
+		}
 	}
-	_ = s.deps.Audit.Append(r.Context(), "subscription.ws-binding-token.issue", id.String(), "success", nil, nil)
+	_ = s.deps.Audit.Append(r.Context(), auditAction, id.String(), "success", nil, nil)
 	s.recordWsTokenIssued()
+	s.deps.WsTokenCache.Put(p.ClientID, id, token, expires)
+	s.writeWsBindingTokenResponse(w, id, token, expires)
+}
 
+// writeWsBindingTokenResponse marshals the FHIR Parameters payload
+// returned by $get-ws-binding-token. Pulled out of opGetWsBindingToken
+// so the cache and DB-reuse fast paths share one response shape.
+func (s *server) writeWsBindingTokenResponse(w http.ResponseWriter, id uuid.UUID, token string, expires time.Time) {
 	wsURL := s.deps.WSBaseURL
 	resp := map[string]any{
 		"resourceType": "Parameters",

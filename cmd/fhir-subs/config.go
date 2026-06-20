@@ -321,6 +321,14 @@ type AuthConfig struct {
 	// rate limit on the $get-ws-binding-token operation (S-3.3).
 	// Burst <= 0 disables.
 	WSBindingTokenRateLimit RateLimitConfig `yaml:"ws_binding_token_rate_limit"`
+
+	// WSBindingTokenCacheMaxKeys caps the OP #242 in-process cache
+	// that fronts the $get-ws-binding-token DB lookup. Zero or
+	// negative falls back to a 65536-entry default — generous enough
+	// for typical multi-tenant deployments and small enough to fit
+	// in a few MB of process RSS. Operators with many distinct
+	// (client, subscription) pairs SHOULD raise this.
+	WSBindingTokenCacheMaxKeys int `yaml:"ws_binding_token_cache_max_keys"`
 }
 
 // RateLimitConfig is the operator-facing shape for a per-client token

@@ -297,6 +297,31 @@ func (m *memWsTokens) Insert(_ context.Context, row repos.WsBindingTokenRow) err
 	return nil
 }
 
+// FindUnexpiredBySubscriptionAndClient satisfies the WsBindingTokensStore
+// extension added in OP #241. The map-keyed-by-token shape this default
+// double uses isn't optimal for the (sub, client) lookup; we walk the
+// values to keep the test double dependency-free.
+func (m *memWsTokens) FindUnexpiredBySubscriptionAndClient(
+	_ context.Context, subscriptionID uuid.UUID, clientID string, now time.Time,
+) (*repos.WsBindingTokenRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best *repos.WsBindingTokenRow
+	for k, r := range m.row {
+		if r.SubscriptionID != subscriptionID || r.ClientID != clientID {
+			continue
+		}
+		if !r.ExpiresAt.After(now) {
+			continue
+		}
+		if best == nil || r.ExpiresAt.After(best.ExpiresAt) {
+			row := m.row[k]
+			best = &row
+		}
+	}
+	return best, nil
+}
+
 // memAuth: not exercised by handlers tests since principal is preset.
 
 // memAudit captures audit events.

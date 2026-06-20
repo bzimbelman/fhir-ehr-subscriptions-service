@@ -22,6 +22,7 @@ import (
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/auth"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/handlers"
 	apimetrics "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/metrics"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/api/wsbindingcache"
 	chemail "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/email"
 	chmessage "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/message"
 	chresthook "github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/channel/resthook"
@@ -129,6 +130,15 @@ type productionRuntime struct {
 	// here so the lifecycle module can call OnShutdown later if a
 	// future adapter uses that hook.
 	loadedAdapter adapterspi.EhrAdapter
+
+	// wsTokenCache is the OP #242 in-process per-client cache that
+	// fronts $get-ws-binding-token. Stored on the runtime so the
+	// lifecycle module can join the background sweeper goroutine
+	// during graceful shutdown.
+	wsTokenCache       handlers.WsBindingTokenCache
+	wsTokenCacheRaw    *wsbindingcache.Cache
+	wsTokenSweeperStop context.CancelFunc
+	wsTokenSweeperDone <-chan struct{}
 
 	logger *slog.Logger
 }
@@ -520,6 +530,23 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 	}
 
 	baseURL, wsBaseURL := derivePublicURLs(cfg)
+	// OP #242: per-client ws-binding-token cache + 30s sweeper.
+	// MaxKeys defaults to 65536 entries; the sweeper goroutine joins
+	// shutdown via the lifecycle module.
+	wsCacheMax := cfg.Auth.WSBindingTokenCacheMaxKeys
+	if wsCacheMax <= 0 {
+		wsCacheMax = 65536
+	}
+	wsCache := wsbindingcache.New(wsbindingcache.Options{
+		MaxKeys: wsCacheMax,
+		Now:     func() time.Time { return time.Now().UTC() },
+	})
+	rt.wsTokenCacheRaw = wsCache
+	rt.wsTokenCache = handlers.WrapWsBindingTokenCache(wsCache)
+	sweeperCtx, sweeperCancel := context.WithCancel(ctx)
+	rt.wsTokenSweeperStop = sweeperCancel
+	rt.wsTokenSweeperDone = wsbindingcache.StartSweeper(sweeperCtx, wsCache, 30*time.Second, nil)
+
 	wsBindingTTL := cfg.API.WSBindingTTL
 	if wsBindingTTL == 0 {
 		wsBindingTTL = 5 * time.Minute
@@ -536,6 +563,7 @@ func buildProductionRuntime(ctx context.Context, cfg *Config, logger *slog.Logge
 		Events:        handlers.NewPgEventsStore(pool),
 		Deliveries:    handlers.NewPgDeliveriesStore(pool),
 		WsTokens:      handlers.NewPgWsBindingTokensStore(pool),
+		WsTokenCache:  rt.wsTokenCache,
 		Audit:         handlers.NewChainedAuditStore(obsMod.AuditWriter()),
 		Channels:      channels,
 		Metrics:       apiMetrics,

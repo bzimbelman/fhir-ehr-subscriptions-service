@@ -99,8 +99,12 @@ type Deps struct {
 	Events        EhrEventsStore
 	Deliveries    DeliveriesStore
 	WsTokens      WsBindingTokensStore
-	Audit         AuditStore
-	Channels      ChannelRegistry
+	// WsTokenCache is the OP #242 in-process cache that fronts the
+	// DB-backed reuse lookup. Nil is fine — the handler degrades
+	// to the DB-only path with no fast cache.
+	WsTokenCache WsBindingTokenCache
+	Audit        AuditStore
+	Channels     ChannelRegistry
 
 	// Metrics is the optional recorder used to emit per-action
 	// subscription / ws / validation metrics. Nil is fine.
@@ -297,6 +301,9 @@ func RegisterRoutes(r chi.Router, d Deps) {
 	}
 	if d.WSBindingTTL == 0 {
 		d.WSBindingTTL = 5 * time.Minute
+	}
+	if d.WsTokenCache == nil {
+		d.WsTokenCache = NoopWsBindingTokenCache{}
 	}
 	if d.LifecycleCtx == nil {
 		d.LifecycleCtx = context.Background()

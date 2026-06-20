@@ -233,4 +233,3 @@ func (m *memAuditStore) IterateRows(_ context.Context, fn func(audit.Row) error)
 	}
 	return nil
 }
-
