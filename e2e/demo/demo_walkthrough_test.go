@@ -167,6 +167,15 @@ func TestDemoWalkthroughDeliversNotifications(t *testing.T) {
 	project := projectName(t)
 	t.Cleanup(func() { composeDownAll(t, project) })
 
+	// 0. OP #155: generate the at-rest AES key on demand. The demo
+	//    config now references ${file:/etc/fhir-subs/secrets/at_rest_key}
+	//    which docker-compose mounts from demo/secrets/. The script is
+	//    idempotent — re-runs are no-ops if the key already exists.
+	keyScript := filepath.Join(repoRoot(t), "demo", "scripts", "generate-keys.sh")
+	if out, err := exec.Command("bash", keyScript).CombinedOutput(); err != nil {
+		t.Fatalf("generate-keys.sh failed: %v\n%s", err, string(out))
+	}
+
 	// 1. Build + bring up the stack. --build ensures the Dockerfile
 	//    we're testing is the one that runs (AC #3: Dockerfile MUST
 	//    build all three binaries).

@@ -71,9 +71,10 @@ func TestPostSubscription_BuildsRestHookBody(t *testing.T) {
 	if sub["topic"] != "http://demo.org/topics/lab-results" {
 		t.Errorf("topic: got %v", sub["topic"])
 	}
-	if sub["endpoint"] != "http://127.0.0.1:9000/hook/sub-1" {
-		t.Errorf("endpoint: got %v", sub["endpoint"])
-	}
+	// OP #157: single channel-spec shape — the bridge schema
+	// requires the R4B `channel` block, so that is the only shape
+	// the body emits. Top-level R5 `channelType`/`endpoint` are
+	// absent (the duplicate state was the hazard the OP called out).
 	channel, ok := sub["channel"].(map[string]any)
 	if !ok {
 		t.Fatalf("channel missing or wrong type: %v", sub["channel"])
@@ -83,6 +84,12 @@ func TestPostSubscription_BuildsRestHookBody(t *testing.T) {
 	}
 	if channel["endpoint"] != "http://127.0.0.1:9000/hook/sub-1" {
 		t.Errorf("channel.endpoint: got %v", channel["endpoint"])
+	}
+	if _, present := sub["channelType"]; present {
+		t.Errorf("OP #157: top-level channelType must not duplicate the `channel` block; got %v", sub["channelType"])
+	}
+	if _, present := sub["endpoint"]; present {
+		t.Errorf("OP #157: top-level endpoint must not duplicate the `channel` block; got %v", sub["endpoint"])
 	}
 	// Filter is preserved in filterBy[].value with name=patient.
 	filterBy, ok := sub["filterBy"].([]any)

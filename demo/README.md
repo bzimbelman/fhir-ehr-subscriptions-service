@@ -52,12 +52,31 @@ surprised when they peek at `config.yaml`:
 A `curl` for poking at `/Subscription` and `jq` for pretty-printing payloads
 are nice-to-haves but not required.
 
+## First-time setup — generate the at-rest key
+
+OP #155: the bridge encrypts sensitive columns with an AES-GCM key the
+demo loads from `demo/secrets/at_rest_key`. The previous demo checked
+a literal key into source — that is a hazard for anyone copying the
+demo as a template, so the key now lives outside VCS. Generate it
+once:
+
+```sh
+cd demo
+./scripts/generate-keys.sh
+```
+
+The script writes 32 random bytes (base64) to
+`demo/secrets/at_rest_key` (mode `0600`), is idempotent (re-running
+does nothing if the file already exists), and is gitignored via
+`demo/secrets/.gitignore`. To rotate, delete the file and re-run.
+
 ## Spin up the bridge
 
 From the repository root:
 
 ```sh
 cd demo
+./scripts/generate-keys.sh   # idempotent; first-time setup only
 docker compose up -d
 ```
 
@@ -199,9 +218,12 @@ walks each stage in more detail, including which tables get written.
 on. Confirm `demo/config.yaml` has no `audience:` set — that's what causes
 the no-op middleware to mount.
 
-**The subscriber prints `listen 127.0.0.1:0: bind: address already in use`.**
-Pass `--listen 127.0.0.1:9090` (or any free port) instead of relying on the
-default ephemeral bind.
+**The subscriber prints `listen 0.0.0.0:9090: bind: address already in use`.**
+Some other process on the host already owns 9090. Pass
+`--listen 0.0.0.0:9091` (or any free port) and update
+`--advertise http://demo-subscriber:9091` to match. OP #156 fixed the
+previous default of `127.0.0.1:0` — an ephemeral loopback port
+unreachable from the docker compose bridge network.
 
 **The publisher prints `dial tcp 127.0.0.1:2575: connect: connection
 refused`.** The bridge's MLLP listener is not up yet. `docker compose ps`

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mockehr"
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/cliprint"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/demosupport/mllp"
 )
 
 // publisher walks a Catalog and emits each MessageEntry over MLLP,
@@ -40,7 +40,7 @@ func (p *publisher) run(ctx context.Context, cat *Catalog) error {
 	if p.idFn == nil {
 		p.idFn = defaultIDGen()
 	}
-	client := mockehr.NewMLLPClient(p.addr)
+	client := mllp.NewClient(p.addr)
 	for i, entry := range cat.Messages {
 		if entry.Delay > 0 {
 			select {
@@ -61,7 +61,7 @@ func (p *publisher) run(ctx context.Context, cat *Catalog) error {
 
 // sendOne builds, sends, and prints one entry. It is the unit operators
 // see in the terminal: arrival lines flush before the next entry begins.
-func (p *publisher) sendOne(ctx context.Context, client *mockehr.MLLPClient, entry MessageEntry) error {
+func (p *publisher) sendOne(ctx context.Context, client *mllp.Client, entry MessageEntry) error {
 	ctrlID := p.idFn()
 	body, _, err := buildMessage(entry, ctrlID)
 	if err != nil {

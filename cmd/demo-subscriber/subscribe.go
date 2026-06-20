@@ -14,11 +14,37 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
+
+// defaultHTTPTimeoutNanos holds the per-request timeout the demo CLIs
+// apply when the caller does not pass an HTTPClient. Nanoseconds in an
+// atomic int64 because parallel tests legitimately mutate the value.
+//
+// OP #161: never fall back to http.DefaultClient (zero timeout) — a
+// stalled bridge or token endpoint would otherwise block the demo
+// forever, and copy-pasters would inherit the same hazard.
+var defaultHTTPTimeoutNanos atomic.Int64
+
+func init() {
+	defaultHTTPTimeoutNanos.Store(int64(30 * time.Second))
+}
+
+// httpTimeout returns the current default HTTP timeout, safe for
+// concurrent reads while tests overwrite it.
+func httpTimeout() time.Duration {
+	return time.Duration(defaultHTTPTimeoutNanos.Load())
+}
+
+// setHTTPTimeoutForTest sets the default; only the demo-subscriber
+// CLI flag and tests should call this.
+func setHTTPTimeoutForTest(d time.Duration) {
+	defaultHTTPTimeoutNanos.Store(int64(d))
+}
 
 // SubscribeConfig parameterizes postSubscription.
 type SubscribeConfig struct {
@@ -70,12 +96,20 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 		channelType = "rest-hook"
 	}
 
+	// OP #157: emit a single channel-spec shape.
+	// The bridge's Subscription JSON schema (internal/api/schemas/
+	// subscription.schema.json) requires the R4B/DSTU `channel`
+	// object — that is the production-supported path today. Future
+	// schema work to add full R5 support is tracked separately;
+	// when that lands, flip the demo CLI to top-level `channelType`
+	// + `endpoint`. Until then, picking the legacy block as the
+	// single source of truth keeps the demo working AND removes
+	// the brittle "both shapes at once" the original bug
+	// (inventory line 118) called out.
 	body := map[string]any{
 		"resourceType": "Subscription",
 		"status":       "requested",
 		"topic":        cfg.Topic,
-		"channelType":  map[string]any{"code": channelType},
-		"endpoint":     cfg.Endpoint,
 		"content":      "full-resource",
 		"channel": map[string]any{
 			"type":     channelType,
@@ -114,7 +148,10 @@ func postSubscription(ctx context.Context, cfg SubscribeConfig) (string, error) 
 
 	client := cfg.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		// OP #161: bounded-timeout default so a stalled bridge does
+		// not block the demo forever. http.DefaultClient is zero-
+		// timeout and unsafe to copy into operator code.
+		client = &http.Client{Timeout: httpTimeout()}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -169,7 +206,9 @@ func mintToken(ctx context.Context, cfg MintConfig) (string, error) {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		// OP #161: bounded-timeout default. See note on
+		// httpTimeout() — http.DefaultClient is unsafe here.
+		httpClient = &http.Client{Timeout: httpTimeout()}
 	}
 
 	t := now()

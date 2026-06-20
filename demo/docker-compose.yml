@@ -74,8 +74,15 @@ services:
     volumes:
       # Demo config — points the bridge at the postgres service hostname,
       # binds plaintext on :8443, opens an MLLP listener on :2575, and
-      # supplies a pinned demo AES-GCM codec key.
+      # references the AES-GCM codec key via
+      # ${file:/etc/fhir-subs/secrets/at_rest_key} (OP #155).
       - ./config.yaml:/etc/fhir-subs/config.yaml:ro
+      # OP #155: at-rest key directory. The bridge reads
+      # /etc/fhir-subs/secrets/at_rest_key at config-load time. Run
+      # demo/scripts/generate-keys.sh once before `docker compose up`
+      # to materialise the key locally. demo/secrets/.gitignore keeps
+      # the generated material out of VCS.
+      - ./secrets:/etc/fhir-subs/secrets:ro
       # Topic catalog volume. Mirrors the SubscriptionTopic JSON seeded
       # by Demo gap-6 (#83). The bridge hot-reloads on SIGHUP (B-35).
       - ./topics:/etc/fhir-subs/topics:ro

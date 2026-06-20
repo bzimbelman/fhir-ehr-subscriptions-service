@@ -8,20 +8,25 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/bzimbelman/fhir-ehr-subscriptions-service/e2e/mocksub"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/demosupport/resthook"
 )
 
-// receiver is the demo's rest-hook listener. It wraps the e2e mocksub
-// receiver (which journals deliveries) and tees each inbound POST
-// through a printer so the operator sees one line per Bundle.
+// receiver is the demo's rest-hook listener. It wraps the
+// internal/demosupport/resthook receiver (which journals deliveries)
+// and tees each inbound POST through a printer so the operator sees
+// one line per Bundle.
+//
+// OP #158: this binary is operator-facing and intentionally avoids
+// importing e2e/* packages so a future build tag on test scaffolding
+// does not break the demo CLI build.
 type receiver struct {
-	hook    *mocksub.RestHookReceiver
+	hook    *resthook.Receiver
 	printer *printer
 }
 
 func newReceiver(w io.Writer, pretty, noColor bool) *receiver {
 	return &receiver{
-		hook:    mocksub.NewRestHookReceiver(),
+		hook:    resthook.NewReceiver(),
 		printer: newPrinter(w, pretty, noColor),
 	}
 }
