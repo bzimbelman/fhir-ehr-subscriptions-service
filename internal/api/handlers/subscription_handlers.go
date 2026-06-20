@@ -390,11 +390,17 @@ func (s *server) activate(ctx context.Context, id uuid.UUID) {
 		// fallback to context.Background() left the bookkeeping ctx
 		// uncancellable: a shutdown could not pre-empt a stuck
 		// UpdateStatus call.
+		//
+		// OP #332: when LifecycleCtx itself is already cancelled, the
+		// shutdown path still needs to flip the row off `requested` so
+		// the goroutine doesn't leak its row state. Fall through to a
+		// short Background-rooted ctx so the final bookkeeping write
+		// succeeds even mid-shutdown.
 		bookkeepingCtx := ctx
 		var bkCancel context.CancelFunc
 		if bookkeepingCtx.Err() != nil {
 			parent := s.deps.LifecycleCtx
-			if parent == nil {
+			if parent == nil || parent.Err() != nil {
 				parent = context.Background()
 			}
 			bookkeepingCtx, bkCancel = context.WithTimeout(parent, 30*time.Second)
