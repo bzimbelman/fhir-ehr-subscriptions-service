@@ -188,14 +188,16 @@ func TestE2E_ProdBinary_OTLPExporterSendsSpan(t *testing.T) {
 	})
 	defer bin.Stop(t, 5*time.Second)
 
-	// Trigger spans by hitting a few endpoints.
+	// Trigger spans by hitting endpoints on the main HTTP listener,
+	// which is wrapped with handlers.TracingMiddleware in run.go. The
+	// probe listener (/healthz, /readyz, /startup) is intentionally NOT
+	// wrapped — a buggy tracer must never block kubelet probes — so it
+	// emits no spans. Hit the unauthenticated /metadata endpoint which
+	// always returns 200 even without a bearer token (story #93).
 	for i := 0; i < 5; i++ {
-		resp, err := http.Get(bin.ProbeURL() + "/healthz")
+		resp, err := http.Get(bin.HTTPURL() + "/metadata")
 		if err == nil {
-			_ = resp.Body.Close()
-		}
-		resp, err = http.Get(bin.ProbeURL() + "/readyz")
-		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 		}
 		time.Sleep(50 * time.Millisecond)
