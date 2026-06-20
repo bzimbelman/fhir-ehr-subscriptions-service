@@ -1,6 +1,6 @@
 module github.com/bzimbelman/fhir-ehr-subscriptions-service
 
-go 1.22.0
+go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.4.0
@@ -23,8 +23,8 @@ require (
 	go.opentelemetry.io/otel/trace v1.35.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/net v0.32.0
-	golang.org/x/sync v0.10.0
-	golang.org/x/text v0.21.0
+	golang.org/x/sync v0.21.0
+	golang.org/x/text v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
 	pgregory.net/rapid v1.1.0
 )
