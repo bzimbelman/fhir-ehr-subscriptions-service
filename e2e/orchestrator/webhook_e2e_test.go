@@ -78,6 +78,7 @@ func TestE2E_ProdBinary_WebhookIngressMatchesAndDelivers(t *testing.T) {
 
 	const adapterID = "default"
 	const secret = "e2e-webhook-secret-v1"
+	const observationTopicURL = "http://example.org/topic/observation"
 
 	// Seed the per-adapter HMAC secret in adapter_state so the
 	// production binary's resolver picks it up. AC #2: rotation is via
@@ -90,6 +91,44 @@ func TestE2E_ProdBinary_WebhookIngressMatchesAndDelivers(t *testing.T) {
 		adapterID, []byte(secret),
 	); err != nil {
 		t.Fatalf("seed adapter_state.webhook.secret: %v", err)
+	}
+
+	// Story #337: OP #272 made the matcher fan-out tenant-aware — the
+	// worker SELECTs distinct active client_ids per matched topic and
+	// inserts one ehr_events row per (match × client_id). Without an
+	// active subscription bound to the topic, the worker writes zero
+	// ehr_events and this test's wait below times out at
+	// resource_changes=1, ehr_events=0.
+	//
+	// This test's purpose is to pin webhook → matcher pipeline wiring
+	// (AC #4: "the matcher saw the row and the topic catalog matched"),
+	// NOT to also exercise the subscription create path or the
+	// submatcher → scheduler → channel chain. Seed an auth_clients row
+	// (subscriptions.client_id has an FK to auth_clients(id)) plus an
+	// active subscription directly in the production storage layer so
+	// the matcher has a target tenant to fan out to. The endpoint is
+	// https:// to satisfy the URL validator's default https-only
+	// policy — production posture, no SSRF opt-out needed for this row
+	// since the test never drives a delivery.
+	const tenantID = "e2e-webhook-tenant"
+	if _, err := h.DB.Exec(ctx,
+		`INSERT INTO auth_clients (id, jwks_url, scopes, display_name)
+		 VALUES ($1, $2, ARRAY[]::text[], $1)
+		 ON CONFLICT (id) DO NOTHING`,
+		tenantID, "https://issuer.test.local/jwks",
+	); err != nil {
+		t.Fatalf("seed auth_clients: %v", err)
+	}
+	if _, err := h.DB.Exec(ctx,
+		`INSERT INTO subscriptions
+			(client_id, status, topic_url, channel_type, endpoint,
+			 content, max_count, events_since_subscription_start,
+			 next_event_number)
+		 VALUES ($1, 'active', $2, 'rest-hook', $3, 'id-only', 1, 0, 0)`,
+		tenantID, observationTopicURL,
+		"https://subscriber.test.local/hook",
+	); err != nil {
+		t.Fatalf("seed active subscription: %v", err)
 	}
 
 	// 1. Stage a topic catalog directory so the matcher has a
@@ -152,7 +191,7 @@ func TestE2E_ProdBinary_WebhookIngressMatchesAndDelivers(t *testing.T) {
 	for time.Now().Before(deadline) {
 		var rcCount, ehrCount int64
 		_ = h.DB.QueryRow(ctx, `SELECT count(*) FROM resource_changes WHERE adapter_id=$1 AND resource_type='Observation'`, adapterID).Scan(&rcCount)
-		_ = h.DB.QueryRow(ctx, `SELECT count(*) FROM ehr_events WHERE topic_url='http://example.org/topic/observation'`).Scan(&ehrCount)
+		_ = h.DB.QueryRow(ctx, `SELECT count(*) FROM ehr_events WHERE topic_url=$1`, observationTopicURL).Scan(&ehrCount)
 		if rcCount >= 1 && ehrCount >= 1 {
 			return
 		}
