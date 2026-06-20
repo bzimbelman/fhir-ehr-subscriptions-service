@@ -8,7 +8,7 @@
 # OP #134: pin Go toolchain exactly. The wildcard '1.22-alpine' tag
 # silently rolls forward; an exact patch keeps image builds reproducible
 # and aligned with the .github/workflows/ pin and go.mod.
-FROM --platform=$BUILDPLATFORM golang:1.22.10-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS build
 
 ARG TARGETOS
 ARG TARGETARCH
