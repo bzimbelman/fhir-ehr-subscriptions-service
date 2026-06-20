@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/engine/scheduler"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/codec"
+	"github.com/bzimbelman/fhir-ehr-subscriptions-service/internal/infra/storage/repos"
 )
 
 // TestE2E_Scheduler_RunDrainsThenReturns pins the shutdown-grace half
@@ -79,8 +81,17 @@ func TestE2E_Scheduler_RecoverySweepRunsPeriodically(t *testing.T) {
 		t.Fatalf("insert stuck: %v", err)
 	}
 
+	cd, cerr := codec.New(codec.NewStaticKeyProvider(map[int32][]byte{1: harnessCodecKey()}, 1))
+	if cerr != nil {
+		t.Fatalf("codec: %v", cerr)
+	}
 	w := scheduler.NewWorker(
-		h.DB, nil, nil, nil, nil, nil, nil,
+		h.DB,
+		repos.NewSubscriptionsRepo(),
+		repos.NewEhrEventsRepo(cd),
+		repos.NewDeliveriesRepo(),
+		repos.NewDeadLettersRepo(cd),
+		nil, nil,
 		scheduler.Config{
 			ClaimBatchSize:   1,
 			IdlePollInterval: 50 * time.Millisecond,
@@ -96,16 +107,21 @@ func TestE2E_Scheduler_RecoverySweepRunsPeriodically(t *testing.T) {
 	go func() { done <- w.Run(runCtx) }()
 
 	// Wait long enough for at least two recovery ticks to fire.
+	// The recovery sweep flips status from 'delivering' to 'pending';
+	// once flipped, the dispatcher may immediately claim the row and
+	// (since the test stubs the row with a non-existent ehr_event id)
+	// transition it to 'dead'. Either terminal state proves the sweep
+	// reclaimed the stuck row, which is what this test pins.
 	deadline := time.Now().Add(2 * time.Second)
 	var status string
 	for time.Now().Before(deadline) {
 		_ = h.DB.QueryRow(ctx, `SELECT status FROM deliveries WHERE id=$1`, deliveryID).Scan(&status)
-		if status == "pending" {
+		if status != "delivering" && status != "" {
 			break
 		}
 		time.Sleep(75 * time.Millisecond)
 	}
-	if status != "pending" {
+	if status == "delivering" || status == "" {
 		t.Fatalf("recovery sweep did not flip status; got %q", status)
 	}
 
