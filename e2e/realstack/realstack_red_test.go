@@ -88,6 +88,9 @@ func TestRealStack_ExposesEveryServiceEndpoint(t *testing.T) {
 	stack := realstack.Boot(ctx, t, realstack.Options{})
 	t.Cleanup(stack.Close)
 
+	// OP #344: prometheus / otel-collector / coredns / nginx /
+	// mitmproxy services were deleted; their assertions live in the
+	// proper unit/integration tests (see e2e/realstack/doc.go).
 	cases := []struct {
 		name string
 		addr string
@@ -97,11 +100,6 @@ func TestRealStack_ExposesEveryServiceEndpoint(t *testing.T) {
 		{"hapi_fhir", stack.HAPIFHIR.Addr},
 		{"mailpit_smtp", stack.Mailpit.SMTPAddr},
 		{"mailpit_api", stack.Mailpit.APIAddr},
-		{"prometheus", stack.Prometheus.Addr},
-		{"otel_collector_otlp", stack.OTel.OTLPAddr},
-		{"coredns", stack.CoreDNS.Addr},
-		{"nginx", stack.Nginx.Addr},
-		{"mitmproxy", stack.Mitmproxy.Addr},
 		{"resthook_subscriber", stack.RestHookSubscriber.Addr},
 		{"ws_subscriber", stack.WSSubscriber.Addr},
 	}
@@ -154,9 +152,13 @@ func TestRealStack_ProdBinaryConnectedToRealDeps(t *testing.T) {
 	if !strings.Contains(cfg, stack.Keycloak.IssuerURL) {
 		t.Errorf("rendered binary config does not reference real Keycloak issuer %q", stack.Keycloak.IssuerURL)
 	}
-	if !strings.Contains(cfg, stack.OTel.OTLPEndpoint) {
-		t.Errorf("rendered binary config does not reference real OTLP endpoint %q", stack.OTel.OTLPEndpoint)
-	}
+	// OP #344: the OTel-endpoint assertion was removed alongside the
+	// otel-collector compose service; tracing pipeline coverage lives
+	// in internal/api/handlers/tracing_test.go and
+	// internal/infra/observability/tracing/tracing_test.go (the latter
+	// drives the production Module through tracetest.NewInMemoryExporter,
+	// which is the same exporter seam the realstack test used to assert
+	// against by way of a docker container).
 }
 
 // TestRealStack_TeardownIsClean asserts Close() actually runs `docker

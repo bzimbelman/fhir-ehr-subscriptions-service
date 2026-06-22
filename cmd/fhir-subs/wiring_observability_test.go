@@ -392,8 +392,15 @@ func TestBuildObservabilityConfig_TargetShapeIsAvailable(t *testing.T) {
 // the env var is unset, Skip keeps `go test` fast while leaving the
 // CI assertion path live.
 //
-// FAILS today (when run with TEST_PG_URL set): handlers.RegisterRoutes
-// mounts no /metrics route, so a GET against the router yields 404.
+// OP #344: this test took over the assertion the deleted realstack
+// observability test (boots binary, scrapes /metrics, asserts named
+// fhir_subs_api_* counters appear) used to make against a docker
+// prometheus container. The realstack version went through a real
+// prometheus container; this version drives the production runtime
+// directly through httptest.Recorder, which is the same /metrics
+// surface promhttp serves. No prometheus container is required to pin
+// "binary emits the documented counters" — the assertion is on the
+// exposition the binary serves, not on a scraper's downstream parse.
 func TestProductionRuntime_MountsMetricsEndpoint(t *testing.T) {
 	dbURL := os.Getenv("TEST_PG_URL")
 	if dbURL == "" {
@@ -412,6 +419,13 @@ func TestProductionRuntime_MountsMetricsEndpoint(t *testing.T) {
 				{Version: 1, Material: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
 			},
 		},
+		// OP #344: post-#336, buildProductionRuntime refuses to
+		// install no-op auth when neither auth.audience nor
+		// allow_dev_bypass is set. This is a dev/e2e fixture; flip
+		// the documented opt-out so wiring proceeds and the /metrics
+		// assertion below actually runs (matches the test-fixture
+		// pattern wiring_deps_batch_test.go uses).
+		Auth: AuthConfig{AllowDevBypass: true},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -437,9 +451,39 @@ func TestProductionRuntime_MountsMetricsEndpoint(t *testing.T) {
 		t.Fatalf("/metrics: status %d, want 200; body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "fhir_subs_") && !strings.Contains(body, "# HELP") {
-		t.Errorf("/metrics body does not look like Prometheus exposition: %q", body)
+	if !strings.Contains(body, "# HELP") {
+		t.Fatalf("/metrics body does not look like Prometheus exposition (no `# HELP` line); first 1KB:\n%s",
+			body[:minInt(len(body), 1024)])
 	}
+	// OP #344: assert each fhir_subs_api_* counter the metrics package
+	// declares actually appears in the exposition. This is the
+	// assertion the deleted realstack observability test made against a
+	// scraped docker prometheus; it belongs here against the binary's
+	// /metrics surface itself.
+	wantCounters := []string{
+		"fhir_subs_api_requests_total",
+		"fhir_subs_api_request_duration_seconds",
+		"fhir_subs_api_auth_failures_total",
+		"fhir_subs_api_subscription_created_total",
+		"fhir_subs_api_subscription_updated_total",
+		"fhir_subs_api_subscription_deleted_total",
+		"fhir_subs_api_validation_failures_total",
+		"fhir_subs_api_token_issued_total",
+		"fhir_subs_api_ws_binding_token_issued_total",
+	}
+	for _, name := range wantCounters {
+		if !strings.Contains(body, name) {
+			t.Errorf("/metrics is missing counter %q; first 4KB of body:\n%s",
+				name, body[:minInt(len(body), 4096)])
+		}
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // TestProductionRuntime_ObservabilityModuleStored pins the contract
@@ -470,6 +514,11 @@ func TestProductionRuntime_ObservabilityModuleStored(t *testing.T) {
 				{Version: 1, Material: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
 			},
 		},
+		// OP #344: same documented dev/e2e opt-out as
+		// TestProductionRuntime_MountsMetricsEndpoint above —
+		// post-#336 buildProductionRuntime refuses no-op auth without
+		// it.
+		Auth: AuthConfig{AllowDevBypass: true},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
