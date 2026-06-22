@@ -12,6 +12,12 @@ HAPI FHIR, Mailpit, plus a pair of subscriber binaries) and runs the
 e2e tests under build tag `e2e_realstack`. Two modes are supported,
 selected at boot time by environment variables.
 
+> **CI gate (OP #347):** the `realstack` job in
+> `.github/workflows/integration.yml` runs this harness on every push
+> to `main`, on `workflow_dispatch`, and on PRs that carry the
+> `full-e2e` label. Local-containers mode is used in CI (no
+> `FHIR_SUBS_TEST_*` env vars are set on the runner).
+
 This document is the operator-facing walkthrough for both modes. The
 internal architecture is documented in
 [`e2e/realstack/doc.go`](../e2e/realstack/doc.go); the per-finding

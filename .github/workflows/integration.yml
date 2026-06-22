@@ -105,3 +105,58 @@ jobs:
       - run: go mod download
       - name: go test -tags e2e ./e2e/demo/...
         run: go test -tags e2e -count=1 -timeout 8m ./e2e/demo/...
+
+  # OP #347: the realstack harness boots the production `cmd/fhir-subs`
+  # binary against a stack of real-software dependencies (Postgres,
+  # Keycloak, HAPI FHIR, Mailpit, plus the consolidated test-receivers
+  # binary from #345) and exercises the full notification path end to
+  # end. After #344/#345/#346 it is the strongest regression seal we
+  # have for the production binary, which is why it is wired here.
+  #
+  # Gating mirrors the `e2e` job above: pushes to main + manual
+  # dispatch always run it; PRs only run it when the author opts in
+  # via the `full-e2e` label, since each test is ~30-60s of compose
+  # boot and the full file set takes minutes.
+  #
+  # No proxy/CA workarounds — GHA's `ubuntu-latest` runner has direct
+  # internet, so the `external-local` compose profile (Postgres +
+  # Keycloak + HAPI FHIR brought up locally per #346) works as-is.
+  # We deliberately do NOT export FHIR_SUBS_TEST_DB_URL /
+  # FHIR_SUBS_TEST_FHIR_URL / FHIR_SUBS_TEST_OIDC_ISSUER_URL here:
+  # leaving them unset selects the local-containers mode.
+  #
+  # WIRED-BUT-NOT-REQUIRED-FOR-MERGE — see OP #350.
+  # The job is intentionally NOT marked `continue-on-error`: when it
+  # fails, it should fail loudly so PRs that opt in via the `full-e2e`
+  # label see the truth. But until OP #350 lands, the gate is not
+  # green on origin/main HEAD and therefore should NOT be added to the
+  # branch-protection required-status-checks list. OP #350 traces the
+  # underlying harness defect: each test in `e2e/realstack/` calls
+  # Boot() with a unique compose project name, so BuildKit can't share
+  # the test-receivers image build across tests, and on a 7GB
+  # ubuntu-latest the rebuild-per-test plus concurrent stack
+  # containers exhausts memory before the suite finishes. Once #350
+  # lands (image build hoisted out of per-test Boot, or shared via a
+  # named target / pre-built tag), the realstack job will go green on
+  # main and can be promoted to required-for-merge.
+  #
+  # See OP #347 for the wiring history (this job) and OP #350 for the
+  # follow-up that unblocks promotion.
+  realstack:
+    name: e2e realstack (full)
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'full-e2e')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: docker/setup-buildx-action@v3
+      - run: go mod download
+      - name: go test -tags e2e_realstack ./e2e/realstack/...
+        run: go test -tags e2e_realstack -count=1 -timeout 50m ./e2e/realstack/...
