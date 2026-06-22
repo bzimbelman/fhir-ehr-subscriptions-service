@@ -419,6 +419,13 @@ func TestProductionRuntime_MountsMetricsEndpoint(t *testing.T) {
 				{Version: 1, Material: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
 			},
 		},
+		// OP #344: post-#336, buildProductionRuntime refuses to
+		// install no-op auth when neither auth.audience nor
+		// allow_dev_bypass is set. This is a dev/e2e fixture; flip
+		// the documented opt-out so wiring proceeds and the /metrics
+		// assertion below actually runs (matches the test-fixture
+		// pattern wiring_deps_batch_test.go uses).
+		Auth: AuthConfig{AllowDevBypass: true},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -507,6 +514,11 @@ func TestProductionRuntime_ObservabilityModuleStored(t *testing.T) {
 				{Version: 1, Material: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
 			},
 		},
+		// OP #344: same documented dev/e2e opt-out as
+		// TestProductionRuntime_MountsMetricsEndpoint above —
+		// post-#336 buildProductionRuntime refuses no-op auth without
+		// it.
+		Auth: AuthConfig{AllowDevBypass: true},
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
