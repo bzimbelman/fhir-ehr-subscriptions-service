@@ -28,10 +28,17 @@ type PostgresHandle struct {
 
 // KeycloakHandle exposes the real Keycloak 24 container.
 type KeycloakHandle struct {
-	// Addr is host:port for the Keycloak admin/REST endpoints.
+	// Addr is host:port for the Keycloak admin/REST endpoints when
+	// running locally. Empty in OP #346 external mode (the harness was
+	// pointed at an externally-managed Keycloak via
+	// FHIR_SUBS_TEST_OIDC_ISSUER_URL); use BaseURL there.
 	Addr string
+	// BaseURL is the scheme+host root of the Keycloak deployment
+	// (e.g. https://keycloak.bzonfhir.com). The harness builds admin
+	// API URLs from this; populated in both local and external modes.
+	BaseURL string
 	// IssuerURL is the OIDC issuer the prod binary's verifier fetches
-	// JWKS from. Format: http://<addr>/realms/fhir-subs.
+	// JWKS from. Format: <BaseURL>/realms/<Realm>.
 	IssuerURL string
 	// JWKSURL is the full JWKS endpoint URL.
 	JWKSURL string

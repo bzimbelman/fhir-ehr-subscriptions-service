@@ -34,7 +34,16 @@
 
 services:
   # PostgreSQL 16 — the database. migrate.Up runs against this.
+  #
+  # OP #346: gated behind the "external-local" compose profile so a
+  # plain `docker compose up` brings up only the test receivers + the
+  # prod binary. The realstack harness activates this profile when the
+  # operator has NOT supplied FHIR_SUBS_TEST_DB_URL (and the matching
+  # FHIR + OIDC env vars). When all three external-system env vars are
+  # set, the harness skips the profile entirely and points the binary
+  # at the externally-managed Postgres.
   postgres:
+    profiles: ["external-local"]
     image: ${REALSTACK_POSTGRES_IMAGE:-postgres:16-alpine}
     environment:
       POSTGRES_USER: fhirsubs
@@ -57,7 +66,12 @@ services:
   # speed (no production cluster bootstrap). The realm is provisioned
   # by the harness via Keycloak's REST API after the container reports
   # ready (see boot.go).
+  #
+  # OP #346: gated behind the "external-local" profile (see postgres
+  # service above). FHIR_SUBS_TEST_OIDC_ISSUER_URL points the harness
+  # at an externally-managed Keycloak when set.
   keycloak:
+    profiles: ["external-local"]
     image: ${REALSTACK_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:24.0}
     command: ["start-dev", "--http-port=8080"]
     environment:
@@ -77,7 +91,13 @@ services:
   # HAPI FHIR JPA Server — real R4/R4B/R5 reference FHIR server. The
   # FHIR scan runner and vendor change-feed runner point at this for
   # real Bundle hydration and resource lookup.
+  #
+  # OP #346: gated behind the "external-local" profile (see postgres
+  # service above). FHIR_SUBS_TEST_FHIR_URL points the harness at an
+  # externally-managed HAPI FHIR (or any conformant FHIR server) when
+  # set.
   hapi-fhir:
+    profiles: ["external-local"]
     image: ${REALSTACK_HAPI_IMAGE:-hapiproject/hapi:latest}
     environment:
       hapi.fhir.fhir_version: R4

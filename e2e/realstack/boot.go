@@ -108,6 +108,13 @@ type Stack struct {
 	closed     bool
 	closeMu    sync.Mutex
 
+	// external is the parsed external-system env-var snapshot Boot
+	// captured at start. UseExternal=true means Boot skipped the
+	// docker-compose "external-local" profile and pointed the binary
+	// at the supplied URLs. Non-default state, so accessor methods on
+	// Stack consult it before falling back to compose-resolved values.
+	external ExternalSystemConfig
+
 	// keycloakClientID and keycloakClientSecret are the credentials
 	// provisionKeycloak created on the realm. MintClientToken uses
 	// them with the client_credentials grant to mint real bearer
@@ -116,6 +123,20 @@ type Stack struct {
 	keycloakClientID     string
 	keycloakClientSecret string
 }
+
+// profileExternalLocal is the docker-compose profile name that gates
+// the postgres, keycloak, and hapi-fhir services. Boot activates it
+// when the operator has NOT supplied the three external-system env
+// vars (FHIR_SUBS_TEST_DB_URL / FHIR_SUBS_TEST_FHIR_URL /
+// FHIR_SUBS_TEST_OIDC_ISSUER_URL). See OP #346 for context.
+const profileExternalLocal = "external-local"
+
+// UsesExternalSystems reports whether Boot is pointing the production
+// binary at externally-managed Postgres, HAPI FHIR, and Keycloak (true
+// when all three env vars were set at Boot time). Tests assert against
+// this to verify the env-gate landed without spinning up local
+// containers for those services.
+func (s *Stack) UsesExternalSystems() bool { return s.external.UseExternal }
 
 // ProjectName returns the docker-compose project name the Stack is
 // running under. Tests that need to address containers directly (for
@@ -169,11 +190,24 @@ func CheckDocker() error {
 // Boot brings up the full real-stack and the production binary. It
 // fails the test with t.Fatalf on any setup error; the returned Stack
 // is always non-nil and fully populated.
+//
+// OP #346: Boot reads three external-system env vars at start
+// (FHIR_SUBS_TEST_DB_URL, FHIR_SUBS_TEST_FHIR_URL,
+// FHIR_SUBS_TEST_OIDC_ISSUER_URL). When all three are set the harness
+// skips the docker-compose "external-local" profile and uses the
+// supplied URLs; when any are unset the profile is activated so
+// Postgres, Keycloak, and HAPI FHIR come up locally. See
+// docs/test-harness-realstack.md for the operator-facing walkthrough.
 func Boot(ctx context.Context, t *testing.T, opts Options) *Stack {
 	t.Helper()
 	if err := CheckDocker(); err != nil {
 		// OP #259: env-gated skip — docker unavailable, real-stack harness is testcontainers-driven.
 		t.Skipf("docker unavailable: %v", err)
+	}
+
+	extCfg, err := ParseExternalSystemConfig(os.Getenv)
+	if err != nil {
+		t.Fatalf("parse external-system env vars: %v", err)
 	}
 
 	if opts.BootTimeout == 0 {
@@ -193,26 +227,54 @@ func Boot(ctx context.Context, t *testing.T, opts Options) *Stack {
 	s := &Stack{
 		project:    project,
 		composeDir: composeDir,
+		external:   extCfg,
 	}
 
 	// `docker compose up -d --build --wait` brings every service to
 	// healthy. --build rebuilds the in-repo subscriber binaries when
 	// their source changes; --wait blocks until every healthcheck
 	// reports up.
-	upArgs := []string{"up", "-d", "--build", "--wait", "--wait-timeout", strconv.Itoa(int(opts.BootTimeout.Seconds()))}
+	//
+	// OP #346: when the operator has NOT supplied the three external-
+	// system env vars, activate the "external-local" profile so
+	// postgres/keycloak/hapi-fhir come up locally alongside the
+	// receivers. When the env vars ARE set, skip the profile — the
+	// harness will point the binary at the externally-managed services.
+	upArgs := []string{}
+	if !extCfg.UseExternal {
+		upArgs = append(upArgs, "--profile", profileExternalLocal)
+	}
+	upArgs = append(upArgs, "up", "-d", "--build", "--wait", "--wait-timeout", strconv.Itoa(int(opts.BootTimeout.Seconds())))
 	upOut, err := composeCommand(bootCtx, composeDir, project, upArgs...).CombinedOutput()
 	if err != nil {
 		t.Cleanup(s.Close)
 		t.Fatalf("docker compose up failed for project %s: %v\n%s", project, err, upOut)
 	}
 
-	// Resolve every host-side port mapping.
+	// Populate Postgres / Keycloak / HAPI FHIR handles from env vars
+	// when the operator has chosen the external path; otherwise resolve
+	// them from the locally-spawned compose services. Mailpit and the
+	// receivers are always local — they are not in scope for OP #346
+	// and are too test-specific to relocate.
+	if extCfg.UseExternal {
+		if err := s.populateExternalSystemHandles(bootCtx); err != nil {
+			t.Cleanup(s.Close)
+			t.Fatalf("populate external system handles: %v", err)
+		}
+	}
+
+	// Resolve every host-side port mapping for the services that are
+	// actually running locally (mailpit, receivers, and — only when the
+	// "external-local" profile is active — postgres/keycloak/hapi-fhir).
 	if err := s.populateServiceEndpoints(bootCtx); err != nil {
 		t.Cleanup(s.Close)
 		t.Fatalf("resolve service endpoints: %v", err)
 	}
 
 	// Provision the Keycloak realm/client and capture the issuer URL.
+	// Works against both local and external Keycloaks: the admin API
+	// path is identical and "realm already exists" is treated as a
+	// no-op (see provisionKeycloak's 409 handling).
 	if err := s.provisionKeycloak(bootCtx); err != nil {
 		t.Cleanup(s.Close)
 		t.Fatalf("provision keycloak: %v", err)
@@ -298,26 +360,122 @@ func (s *Stack) provisionKeycloakAuthClient(ctx context.Context) error {
 	return nil
 }
 
+// populateExternalSystemHandles fills the Postgres, Keycloak, and
+// HAPI FHIR handles from the operator-supplied env vars (Boot's
+// extCfg.UseExternal=true path). The harness skips the
+// "external-local" compose profile in this mode so there are no
+// docker-published ports to read for these three services; everything
+// is sourced from the env-supplied URLs.
+//
+// The OIDC issuer is parsed into a base URL + realm name so the
+// existing provisionKeycloak admin-API code works unchanged against an
+// externally-managed Keycloak (works for both http://keycloak:8080 and
+// https://keycloak.bzonfhir.com style hosts).
+func (s *Stack) populateExternalSystemHandles(ctx context.Context) error {
+	cfg := s.external
+
+	// Postgres: the operator hands us a full DSN. We don't have a
+	// host:port we can advertise via Postgres.Addr (the URL may
+	// embed user:pass and use TLS), so leave Addr empty and rely on
+	// callers using URL.
+	s.Postgres.URL = cfg.DBURL
+
+	// HAPI FHIR: BaseURL is exactly what the env var supplied.
+	s.HAPIFHIR.BaseURL = cfg.FHIRBaseURL
+
+	// Keycloak: split <scheme>://<authority>/realms/<realm> into base
+	// URL and realm name. provisionKeycloak then uses BaseURL +
+	// /realms/master/... for the admin token.
+	parsed, err := url.Parse(cfg.OIDCIssuerURL)
+	if err != nil {
+		return fmt.Errorf("parse FHIR_SUBS_TEST_OIDC_ISSUER_URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("FHIR_SUBS_TEST_OIDC_ISSUER_URL=%q is missing scheme or host", cfg.OIDCIssuerURL)
+	}
+	// Path should be /realms/<realm-name>; pull out the realm so the
+	// harness uses the operator-supplied name (not the hardcoded
+	// "fhir-subs"). Tolerate trailing slashes.
+	trimmed := strings.Trim(parsed.Path, "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || parts[0] != "realms" || parts[1] == "" {
+		return fmt.Errorf("FHIR_SUBS_TEST_OIDC_ISSUER_URL=%q does not match scheme://host/realms/<name>", cfg.OIDCIssuerURL)
+	}
+	realm := parts[1]
+	baseURL := parsed.Scheme + "://" + parsed.Host
+	s.Keycloak.BaseURL = baseURL
+	s.Keycloak.Realm = realm
+	// IssuerURL/JWKSURL/TokenURL are the public values the prod binary
+	// receives via the rendered config; we set them here so the rest
+	// of Boot can rely on them being non-empty in both modes.
+	// provisionKeycloak overwrites these with the same values once the
+	// realm is provisioned — idempotent.
+	s.Keycloak.IssuerURL = baseURL + "/realms/" + realm
+	s.Keycloak.JWKSURL = s.Keycloak.IssuerURL + "/protocol/openid-connect/certs"
+	s.Keycloak.TokenURL = s.Keycloak.IssuerURL + "/protocol/openid-connect/token"
+
+	// Defensive ping so tests fail fast with a clear error when the
+	// operator misconfigures the env vars (e.g. tunnel down).
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := pingTCP(pingCtx, parsed.Host, parsed.Scheme); err != nil {
+		return fmt.Errorf("dial external Keycloak %s: %w", parsed.Host, err)
+	}
+	return nil
+}
+
+// pingTCP opens a single TCP dial against host:<scheme-port>. host may
+// or may not include an explicit port — when missing, scheme defaults
+// to 443 (https) or 80 (http).
+func pingTCP(ctx context.Context, host, scheme string) error {
+	if !strings.Contains(host, ":") {
+		switch scheme {
+		case "https":
+			host += ":443"
+		default:
+			host += ":80"
+		}
+	}
+	d := net.Dialer{}
+	conn, err := d.DialContext(ctx, "tcp", host)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
 // populateServiceEndpoints reads host-side port bindings from `docker
 // compose port` for every service and fills the Stack handles.
+//
+// OP #346: when external mode is active, postgres/keycloak/hapi-fhir
+// are NOT brought up locally (the "external-local" profile is skipped)
+// and the corresponding handles were already filled by
+// populateExternalSystemHandles from the env-supplied URLs. Skip those
+// three services here; mailpit and the receivers always run locally.
 func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 	type binding struct {
 		service       string
 		containerPort string
 		setAddr       func(string)
 	}
-	bindings := []binding{
-		{"postgres", "5432/tcp", func(addr string) {
-			s.Postgres.Addr = addr
-			s.Postgres.URL = fmt.Sprintf("postgres://fhirsubs:fhirsubs@%s/fhirsubs?sslmode=disable", addr)
-		}},
-		{"keycloak", "8080/tcp", func(addr string) {
-			s.Keycloak.Addr = addr
-		}},
-		{"hapi-fhir", "8080/tcp", func(addr string) {
-			s.HAPIFHIR.Addr = addr
-			s.HAPIFHIR.BaseURL = "http://" + addr + "/fhir"
-		}},
+	bindings := []binding{}
+	if !s.external.UseExternal {
+		bindings = append(bindings,
+			binding{"postgres", "5432/tcp", func(addr string) {
+				s.Postgres.Addr = addr
+				s.Postgres.URL = fmt.Sprintf("postgres://fhirsubs:fhirsubs@%s/fhirsubs?sslmode=disable", addr)
+			}},
+			binding{"keycloak", "8080/tcp", func(addr string) {
+				s.Keycloak.Addr = addr
+				s.Keycloak.BaseURL = "http://" + addr
+			}},
+			binding{"hapi-fhir", "8080/tcp", func(addr string) {
+				s.HAPIFHIR.Addr = addr
+				s.HAPIFHIR.BaseURL = "http://" + addr + "/fhir"
+			}},
+		)
+	}
+	bindings = append(bindings, []binding{
 		{"mailpit", "1025/tcp", func(addr string) {
 			s.Mailpit.SMTPAddr = addr
 		}},
@@ -341,7 +499,7 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 		// OP #344: test-token-mint binding deleted alongside the
 		// docker service. Realstack tests that need a positive-path
 		// bearer token call Stack.MintClientToken (Keycloak grant).
-	}
+	}...)
 
 	for _, b := range bindings {
 		addr, err := composeServiceAddr(ctx, s.composeDir, s.project, b.service, b.containerPort)
@@ -356,9 +514,23 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 // provisionKeycloak waits for Keycloak to report ready, then creates a
 // realm + client + service-account user via Keycloak's REST API. Sets
 // IssuerURL/JWKSURL/TokenURL on the Keycloak handle.
+//
+// OP #346: works against both local (BaseURL=http://<addr>) and
+// external (BaseURL=https://keycloak.bzonfhir.com) Keycloaks. The
+// realm name comes from s.Keycloak.Realm when populateExternalSystem
+// Handles already set it (so the operator's chosen realm is honored);
+// otherwise defaults to "fhir-subs".
 func (s *Stack) provisionKeycloak(ctx context.Context) error {
-	base := "http://" + s.Keycloak.Addr
-	realm := "fhir-subs"
+	base := s.Keycloak.BaseURL
+	if base == "" {
+		// Defensive — populateServiceEndpoints / populateExternalSystem
+		// Handles must always set BaseURL before this runs.
+		return fmt.Errorf("keycloak BaseURL is empty; was Boot's endpoint resolution skipped?")
+	}
+	realm := s.Keycloak.Realm
+	if realm == "" {
+		realm = "fhir-subs"
+	}
 
 	// Get an admin token via the master realm. Default credentials are
 	// admin/admin (set in docker-compose.yml).
