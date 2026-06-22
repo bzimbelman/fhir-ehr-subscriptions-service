@@ -14,6 +14,13 @@
 // chain walker, load driver, cert fixture, DNS adversary, observability
 // rig, docs lint, prod-stub lint) consumes this harness.
 //
+// # Operator quick-start
+//
+// docs/test-harness-realstack.md is the operator-facing walkthrough —
+// it covers both the default "everything in docker locally" mode and
+// the OP #346 env-gated path that points the harness at externally-
+// managed Postgres/Keycloak/HAPI (e.g. zdock or a dev cluster).
+//
 // # OP #344 simplification (2026)
 //
 // The earlier shape of this harness booted 14 services. Half of them
@@ -66,6 +73,19 @@
 // code they pin. Story-B and story-C continue the simplification by
 // combining the four receivers and env-gating external systems; this
 // story is the structural deletion pass.
+//
+// # OP #346 simplification (2026)
+//
+// Story-C of the realstack simplification thread env-gated the three
+// shared infrastructure dependencies (postgres, keycloak, hapi-fhir).
+// They now live behind the docker-compose "external-local" profile so
+// they are NOT brought up by a default `docker compose up`. The
+// realstack harness activates the profile when the operator has not
+// supplied the three FHIR_SUBS_TEST_* env vars; when all three are
+// supplied the harness skips the profile and points the production
+// binary at the externally-managed services. See ParseExternalSystem
+// Config and docs/test-harness-realstack.md for the operator-facing
+// walkthrough.
 //
 // # No fakes
 //

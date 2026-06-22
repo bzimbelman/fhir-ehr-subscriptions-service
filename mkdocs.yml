@@ -172,6 +172,7 @@ nav:
       - E2E Coverage Strategy: e2e-coverage-strategy.md
       - E2E Coverage Gaps Snapshot: e2e-coverage-gaps-snapshot-1.md
       - Open Story Audit: open-story-audit.md
+      - Realstack Test Harness: test-harness-realstack.md
       - Honesty Audit (1): production-readiness-honesty-audit.md
       - Honesty Audit (2): production-readiness-honesty-audit-supplement.md
       - Honesty Audit (3): production-readiness-honesty-audit-supplement-2.md
