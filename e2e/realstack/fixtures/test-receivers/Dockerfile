@@ -66,7 +66,15 @@ func main() {
 	}
 }
 EOF
-RUN cd /healthcheck && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/test-receivers-healthcheck .
+# `go build .` needs a module; the heredoc above only writes main.go,
+# so initialize a throwaway module first. Standard library only — no
+# deps to fetch, no go.sum needed. (OP #347 surfaced this on a clean
+# GHA runner where the original `go build .` failed with "go.mod file
+# not found in current directory or any parent directory"; #345's
+# local builds short-circuited higher up the Dockerfile and never
+# exercised this RUN.)
+RUN cd /healthcheck && go mod init test-receivers-healthcheck \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/test-receivers-healthcheck .
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/test-receivers /usr/local/bin/test-receivers
