@@ -17,6 +17,22 @@
 #     (against the in-process testrelay that can opt out of advertising STARTTLS)
 # See e2e/realstack/doc.go for the full simplification rationale.
 #
+# OP #345 (Realstack simplification B) merged the four legacy receiver
+# fixtures (test-resthook-subscriber, test-ws-subscriber,
+# test-mllp-control-plane, mailpit) into a single test-receivers
+# service. One binary (cmd/test-receivers), one Dockerfile, one
+# compose service exposing every receiver port concurrently:
+#
+#	:8090   rest-hook subscriber HTTP listener
+#	:8091   websocket subscriber query API
+#	:8093   MLLP control plane HTTP API (only when MLLP profile active)
+#	:1025   SMTP receiver (real github.com/emersion/go-smtp server,
+#	        replaces mailpit container)
+#	:1080   SMTP query API (replaces mailpit's REST UI)
+#
+# The MLLP subsystem inside test-receivers stays under the "mllp"
+# profile so non-MLLP test runs skip the FHIRSUBS_MLLP_TARGET wiring.
+#
 # Pinned image versions are deliberate: the harness binds the test
 # matrix to a single reproducible upstream. Bump pins via a separate MR
 # so a stack regression is bisectable.
@@ -114,96 +130,40 @@ services:
       retries: 60
       start_period: 30s
 
-  # Mailpit — real SMTP relay with REST API for captured-message
-  # assertions. Replaces every in-process SMTP fake in the email
-  # channel test path.
-  mailpit:
-    image: ${REALSTACK_MAILPIT_IMAGE:-axllent/mailpit:latest}
-    ports:
-      - "1025"   # SMTP
-      - "8025"   # REST API + UI
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8025/api/v1/info >/dev/null || exit 1"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
+  # OP #345: mailpit, test-resthook-subscriber, test-ws-subscriber, and
+  # test-mllp-control-plane (mllp profile) merged into the single
+  # test-receivers service below.
 
-  # OP #344: prometheus, otel-collector, coredns, nginx, mitmproxy
-  # services were deleted from this compose file. Their assertions are
-  # exercised by unit/integration tests against the production binary's
-  # in-process seams (see header comment for pointers).
-
-  # Real test rest-hook subscriber binary — built from
-  # cmd/test-resthook-subscriber. Captures every notification request
-  # the binary's rest-hook channel sends and exposes a query API at
-  # /notifications for the test process. No in-process channel fake.
-  test-resthook-subscriber:
-    build:
-      context: ../..
-      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.resthook
-    image: fhir-subs-test-resthook-subscriber:dev
-    ports:
-      - "8090"
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/test-resthook-subscriber-healthcheck"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
-
-  # Real test websocket subscriber binary — built from
-  # cmd/test-ws-subscriber. Connects to the binary's WSS endpoint as a
-  # real client, captures every event, exposes a query API at /events
-  # for the test process. No in-process WS fake.
-  test-ws-subscriber:
-    build:
-      context: ../..
-      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.ws
-    image: fhir-subs-test-ws-subscriber:dev
-    ports:
-      - "8091"
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/test-ws-subscriber-healthcheck"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
-
-  # OP #344: test-token-mint service deleted. Adversarial-auth claim-
-  # override coverage moved to internal/api/auth/verifier_test.go (which
-  # already covers expired, audience-mismatch, replayed-jti, unknown-
-  # client, and revoked-client paths via in-process key generation).
-  # Realstack tests that need a positive-path bearer token now use the
-  # Keycloak client_credentials grant via Stack.MintClientToken.
-
-  # Real test MLLP scripted control plane — built from
-  # cmd/test-mllp-control-plane. Replaces the legacy
-  # e2e/mockehr.ControlPlane in-process fake. Accepts POST /scenarios/*
-  # JSON requests, synthesizes HL7 v2 frames (ADT/ORM/ORU), and emits
-  # them over a real TCP socket to the prod binary's MLLP listener.
-  # FHIRSUBS_MLLP_TARGET is set by the realstack harness once the prod
-  # binary's MLLP port is allocated; the container can reach the host
-  # via host.docker.internal (host-gateway alias for Linux runners).
+  # Consolidated test-receivers fixture — built from cmd/test-receivers.
+  # One binary exposes every receiver port concurrently:
   #
-  # The "mllp" compose profile keeps this service out of the default
-  # `up --wait` cycle so non-MLLP test runs do not pay the build cost.
-  # The harness brings it up explicitly when Boot is called with
-  # EnableMLLP=true.
-  test-mllp-control-plane:
-    profiles: ["mllp"]
+  #   :8090  rest-hook subscriber (HTTP /hook/{sub}, programmable control plane)
+  #   :8091  websocket subscriber query API (/events, /reset, /healthz)
+  #   :8093  MLLP control plane HTTP API (only with mllp profile +
+  #          FHIRSUBS_MLLP_TARGET set; see launchMLLPControlPlane in boot.go)
+  #   :1025  SMTP receiver (real github.com/emersion/go-smtp, replaces mailpit)
+  #   :1080  SMTP query API (/messages, /reset, /healthz)
+  #
+  # The MLLP subsystem is gated by FHIRSUBS_MLLP_TARGET being non-empty;
+  # the binary skips opening :8093 when it's empty so non-MLLP runs do
+  # not depend on the host-gateway plumbing.
+  test-receivers:
     build:
       context: ../..
-      dockerfile: e2e/realstack/fixtures/subscribers/Dockerfile.mllp_controlplane
-    image: fhir-subs-test-mllp-control-plane:dev
+      dockerfile: e2e/realstack/fixtures/test-receivers/Dockerfile
+    image: fhir-subs-test-receivers:dev
     environment:
       FHIRSUBS_MLLP_TARGET: ${FHIRSUBS_MLLP_TARGET:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
+      - "8090"
+      - "8091"
       - "8093"
+      - "1025"
+      - "1080"
     healthcheck:
-      test: ["CMD", "/usr/local/bin/test-mllp-control-plane-healthcheck"]
+      test: ["CMD", "/usr/local/bin/test-receivers-healthcheck"]
       interval: 2s
       timeout: 2s
       retries: 30

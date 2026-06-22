@@ -1,57 +1,23 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command test-resthook-subscriber is a real HTTP service that the
-// fhir-subs binary's rest-hook channel can deliver to. It runs inside
-// the H1 realstack docker-compose stack and replaces the in-process
-// e2e/mocksub/RestHookReceiver fake plus the legacy harness's
-// hpipe.StartTLSRestHookServer wrapper.
+// resthook subsystem of cmd/test-receivers — captures POST deliveries
+// the prod binary's rest-hook channel sends, exposes a query API for
+// realstack tests to assert on observed deliveries, and runs a
+// programmable control plane (POST /program/{tag}) that lets tests
+// install per-subscription response programs (status sequences,
+// header injection, latency injection, mid-body close).
 //
-// The binary captures every inbound request (method, path, header,
-// body) and exposes a query API tests use to assert on observed
-// deliveries. It also exposes a control-plane API tests use to install
-// per-subscription response programs (status sequences, header
-// injection, latency injection, mid-body close) — replacing the legacy
-// harness's "wire your own http.Handler" pattern with a JSON DSL the
-// docker-compose-deployed binary can execute.
-//
-// Routes:
-//
-//	POST   /program/{tag}                — install a response program for tag.
-//	DELETE /program/{tag}                — clear the program for tag.
-//	POST   /notify/{subscription_id}     — delivery target. Returns 200 by default.
-//	POST   /hook/{subscription_id}       — alias for /notify/{id}.
-//	GET    /notifications                — JSON array of every captured request.
-//	GET    /notifications/{subscription_id} — JSON array filtered by sub id.
-//	POST   /reset                        — clears the journal (per-test isolation).
-//	GET    /healthz                      — liveness probe.
-//
-// The binary also emits the captured journal on stdout as JSON Lines
-// so a test that prefers tail-following over the query API can do so
-// without needing a sidecar.
-//
-// DSL — POST /program/{tag} body:
-//
-//	{
-//	  "sequence": [
-//	    { "status": 503, "headers": {"Retry-After": "1"}, "latency_ms": 0, "body": "" },
-//	    { "status": 200 }
-//	  ],
-//	  "default_status": 200
-//	}
-//
-// When `sequence` exhausts, requests fall back to `default_status` (200
-// when omitted). `close_after_bytes` on a step truncates the response
-// body mid-write — the connection is hijacked and aborted so the
-// channel sees a partial write.
+// Lifted unchanged in behaviour from cmd/test-resthook-subscriber/main.go.
+// OP #345 collapses the four receivers into one process so this code
+// no longer carries the main() entrypoint; buildRestHookMux is used by
+// the consolidated binary's startup path.
 package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -69,24 +35,25 @@ type ReceivedRequest struct {
 	Body           string      `json:"body"`
 }
 
-// journal holds every captured request plus per-tag response programs.
-// The mutex guards mutation during concurrent inbound deliveries; reads
-// return a copy so callers can iterate without racing further appends.
-type journal struct {
+// resthookJournal holds every captured request plus per-tag response
+// programs. The mutex guards mutation during concurrent inbound
+// deliveries; reads return a copy so callers can iterate without
+// racing further appends.
+type resthookJournal struct {
 	mu       sync.Mutex
 	all      []ReceivedRequest
 	wire     io.Writer
 	programs map[string]*programState
 }
 
-func newJournal() *journal {
-	return &journal{
+func newJournal() *resthookJournal {
+	return &resthookJournal{
 		wire:     os.Stdout,
 		programs: make(map[string]*programState),
 	}
 }
 
-func (j *journal) append(r ReceivedRequest) {
+func (j *resthookJournal) append(r ReceivedRequest) {
 	j.mu.Lock()
 	j.all = append(j.all, r)
 	j.mu.Unlock()
@@ -95,7 +62,7 @@ func (j *journal) append(r ReceivedRequest) {
 	}
 }
 
-func (j *journal) snapshot() []ReceivedRequest {
+func (j *resthookJournal) snapshot() []ReceivedRequest {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	out := make([]ReceivedRequest, len(j.all))
@@ -103,7 +70,7 @@ func (j *journal) snapshot() []ReceivedRequest {
 	return out
 }
 
-func (j *journal) reset() {
+func (j *resthookJournal) reset() {
 	j.mu.Lock()
 	j.all = nil
 	j.mu.Unlock()
@@ -130,13 +97,13 @@ type programState struct {
 	cursor int
 }
 
-func (j *journal) installProgram(tag string, p program) {
+func (j *resthookJournal) installProgram(tag string, p program) {
 	j.mu.Lock()
 	j.programs[tag] = &programState{prog: p}
 	j.mu.Unlock()
 }
 
-func (j *journal) clearProgram(tag string) {
+func (j *resthookJournal) clearProgram(tag string) {
 	j.mu.Lock()
 	delete(j.programs, tag)
 	j.mu.Unlock()
@@ -144,7 +111,7 @@ func (j *journal) clearProgram(tag string) {
 
 // nextStep advances the cursor for tag and returns the step to play
 // plus a bool indicating whether a program is installed at all.
-func (j *journal) nextStep(tag string) (programStep, bool) {
+func (j *resthookJournal) nextStep(tag string) (programStep, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	st, ok := j.programs[tag]
@@ -187,10 +154,10 @@ func extractSubID(path string) string {
 	return ""
 }
 
-// buildMux assembles the HTTP routes for the binary. Exposed so tests
-// can drive the server through httptest without reaching for the live
-// listener.
-func buildMux(jr *journal) http.Handler {
+// buildMux assembles the HTTP routes for the rest-hook subsystem.
+// Exposed so tests can drive the server through httptest without
+// reaching for the live listener.
+func buildMux(jr *resthookJournal) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -341,22 +308,5 @@ func playStep(w http.ResponseWriter, r *http.Request, step programStep) {
 	w.WriteHeader(status)
 	if step.Body != "" {
 		_, _ = io.WriteString(w, step.Body)
-	}
-}
-
-func main() {
-	addr := flag.String("addr", ":8090", "HTTP listener address")
-	flag.Parse()
-
-	jr := newJournal()
-
-	log.Printf("test-resthook-subscriber listening on %s", *addr)
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           buildMux(jr),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Fatalf("listen: %v", err)
 	}
 }

@@ -1,30 +1,16 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command test-mllp-control-plane is a real HTTP service that
-// synthesizes HL7 v2 frames and emits them over MLLP, on real TCP
-// sockets, to a target MLLP listener. It runs inside the H1
-// realstack docker-compose stack and replaces the in-process
-// e2e/mockehr.ControlPlane fake.
+// mllp subsystem of cmd/test-receivers — synthesizes HL7 v2 frames
+// and emits them over MLLP (real TCP sockets) to a target listener.
+// Tests POST /scenarios/* to install per-scenario emissions; the
+// HTTP response carries the listener's ACK so tests can assert on
+// real round-trips.
 //
-// The binary's HTTP control surface is identical to the legacy
-// in-process ControlPlane so existing legacy-harness scenarios port
-// cleanly: each scenario is a POST endpoint that decodes a small
-// JSON config and emits one or more HL7 messages over MLLP.
-//
-//	POST /scenarios/admit_patient            — emits ADT^Axx
-//	POST /scenarios/place_order              — emits ORM^O01 (NW)
-//	POST /scenarios/finalize_lab             — emits ORU^R01
-//	POST /scenarios/cancel_and_replace_order — emits CA + NW pair
-//	POST /scenarios/burst_messages           — emits N ADT frames in one call
-//	GET  /healthz                            — liveness probe
-//	GET  /target                             — returns the configured MLLP target
-//
-// MLLP target is configured via -target host:port or
-// FHIRSUBS_MLLP_TARGET env. The service does not retain any per-scenario
-// state — every request opens a new TCP connection to target, writes one
-// MLLP-framed body, reads the listener's ACK, and returns it on the
-// HTTP response.
+// Lifted unchanged in behaviour from cmd/test-mllp-control-plane/main.go.
+// OP #345 collapses the four receivers into one process; this file
+// holds the HTTP control plane + MLLP client only. HL7 builders live
+// in hl7.go for parity with the legacy split.
 package main
 
 import (
@@ -32,57 +18,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
-	"os"
-	"strings"
 	"sync"
 	"time"
 )
-
-func main() {
-	addr := flag.String("addr", ":8093", "HTTP listen address")
-	target := flag.String("target", os.Getenv("FHIRSUBS_MLLP_TARGET"), "MLLP target host:port")
-	flag.Parse()
-
-	if *target == "" {
-		log.Fatalf("test-mllp-control-plane: no MLLP target configured (set -target or FHIRSUBS_MLLP_TARGET)")
-	}
-
-	cp := &controlPlane{
-		target: *target,
-		client: newMLLPClient(*target),
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("/target", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"target": *target})
-	})
-	mux.HandleFunc("/scenarios/admit_patient", cp.handleAdmitPatient)
-	mux.HandleFunc("/scenarios/place_order", cp.handlePlaceOrder)
-	mux.HandleFunc("/scenarios/finalize_lab", cp.handleFinalizeLab)
-	mux.HandleFunc("/scenarios/cancel_and_replace_order", cp.handleCancelAndReplace)
-	mux.HandleFunc("/scenarios/burst_messages", cp.handleBurstMessages)
-
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-	log.Printf("test-mllp-control-plane: listening on %s, MLLP target %s", *addr, *target)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("ListenAndServe: %v", err)
-	}
-}
 
 // controlPlane is the HTTP handler set. Each scenario method decodes a
 // small JSON body, builds the HL7 frame, and rounds it through the MLLP
@@ -275,6 +217,27 @@ func (c *controlPlane) send(w http.ResponseWriter, req *http.Request, body []byt
 	})
 }
 
+// buildMLLPMux assembles the HTTP control-plane routes for the MLLP
+// subsystem. /scenarios/* + /healthz + /target. Mirrors
+// cmd/test-mllp-control-plane's mux 1:1.
+func buildMLLPMux(c *controlPlane) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok\n")
+	})
+	mux.HandleFunc("/target", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"target": c.target})
+	})
+	mux.HandleFunc("/scenarios/admit_patient", c.handleAdmitPatient)
+	mux.HandleFunc("/scenarios/place_order", c.handlePlaceOrder)
+	mux.HandleFunc("/scenarios/finalize_lab", c.handleFinalizeLab)
+	mux.HandleFunc("/scenarios/cancel_and_replace_order", c.handleCancelAndReplace)
+	mux.HandleFunc("/scenarios/burst_messages", c.handleBurstMessages)
+	return mux
+}
+
 // MLLP framing constants per HL7 LLD.
 const (
 	mllpStartBlock byte = 0x0B
@@ -349,115 +312,4 @@ func (c *mllpClient) send(ctx context.Context, body []byte) ([]byte, error) {
 		return nil, errors.New("missing or misordered MLLP end block")
 	}
 	return acc.Bytes()[startIdx+1 : endIdx], nil
-}
-
-// HL7 v2 builder constants.
-const (
-	defaultSendingApp      = "MOCKEHR"
-	defaultSendingFacility = "E2E"
-	defaultReceivingApp    = "FHIRSUBS"
-	defaultReceiving       = "TEST"
-	defaultProcessingID    = "T"
-	defaultVersionID       = "2.5.1"
-	segTerm                = "\r"
-)
-
-type adtOptions struct {
-	TriggerEvent  string
-	MessageID     string
-	PatientID     string
-	PatientFamily string
-	PatientGiven  string
-}
-
-func buildADT(o adtOptions) string {
-	if o.TriggerEvent == "" {
-		o.TriggerEvent = "A01"
-	}
-	now := time.Now().UTC()
-	msh := buildMSH("ADT^"+o.TriggerEvent, o.MessageID, now)
-	evn := fmt.Sprintf("EVN|%s|%s", o.TriggerEvent, fmtTS(now))
-	family := orDefault(o.PatientFamily, "Doe")
-	given := orDefault(o.PatientGiven, "Jane")
-	pid := fmt.Sprintf("PID|1||%s^^^%s^MR||%s^%s", o.PatientID, defaultSendingFacility, family, given)
-	return joinSegments(msh, evn, pid)
-}
-
-type ormOptions struct {
-	ControlCode    string
-	MessageID      string
-	PlacerOrderID  string
-	FillerOrderID  string
-	PatientID      string
-	UniversalSvcID string
-}
-
-func buildORM(o ormOptions) string {
-	if o.ControlCode == "" {
-		o.ControlCode = "NW"
-	}
-	now := time.Now().UTC()
-	msh := buildMSH("ORM^O01", o.MessageID, now)
-	pid := fmt.Sprintf("PID|1||%s^^^%s^MR||Doe^Jane", orDefault(o.PatientID, "MRN0"), defaultSendingFacility)
-	orc := fmt.Sprintf("ORC|%s|%s|%s|||%s", o.ControlCode, o.PlacerOrderID, o.FillerOrderID, fmtTS(now))
-	universal := orDefault(o.UniversalSvcID, "TEST^Test Order^L")
-	obr := fmt.Sprintf("OBR|1|%s|%s|%s|||%s", o.PlacerOrderID, o.FillerOrderID, universal, fmtTS(now))
-	return joinSegments(msh, pid, orc, obr)
-}
-
-type oruOptions struct {
-	MessageID     string
-	PatientID     string
-	ObservationID string
-	Value         string
-	Unit          string
-	RefRange      string
-	AbnormalFlag  string
-}
-
-func buildORU(o oruOptions) string {
-	now := time.Now().UTC()
-	msh := buildMSH("ORU^R01", o.MessageID, now)
-	pid := fmt.Sprintf("PID|1||%s^^^%s^MR||Doe^Jane", o.PatientID, defaultSendingFacility)
-	obr := fmt.Sprintf("OBR|1|||%s|||%s", o.ObservationID, fmtTS(now))
-	obx := fmt.Sprintf("OBX|1|NM|%s||%s|%s|%s|%s|||F",
-		o.ObservationID, o.Value, o.Unit, o.RefRange, o.AbnormalFlag)
-	return joinSegments(msh, pid, obr, obx)
-}
-
-func buildMSH(messageType, controlID string, now time.Time) string {
-	return strings.Join([]string{
-		"MSH",
-		"^~\\&",
-		defaultSendingApp,
-		defaultSendingFacility,
-		defaultReceivingApp,
-		defaultReceiving,
-		fmtTS(now),
-		"",
-		messageType,
-		controlID,
-		defaultProcessingID,
-		defaultVersionID,
-	}, "|")
-}
-
-func joinSegments(segs ...string) string {
-	var sb strings.Builder
-	for _, s := range segs {
-		sb.WriteString(s)
-		sb.WriteString(segTerm)
-	}
-	return sb.String()
-}
-
-func orDefault(v, def string) string {
-	if v == "" {
-		return def
-	}
-	return v
-}
-
-func fmtTS(t time.Time) string {
-	return t.UTC().Format("20060102150405")
 }

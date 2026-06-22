@@ -342,28 +342,36 @@ func TestRealStack_MLLPControlPlane_AllScenariosRouted(t *testing.T) {
 }
 
 // TestRealStack_MLLPControlPlane_BinaryDirRendered asserts the in-repo
-// cmd/test-mllp-control-plane source exists and follows the same shape
-// as cmd/test-resthook-subscriber: a main.go and a Dockerfile in
-// e2e/realstack/fixtures/subscribers/. The test works from source on
-// disk so it runs without docker.
+// cmd/test-receivers source exists and ships the consolidated binary
+// the harness uses for every channel-receiver fixture. OP #345 merged
+// the previous per-channel binaries (test-resthook-subscriber,
+// test-ws-subscriber, test-mllp-control-plane) and the third-party
+// mailpit container into one cmd/test-receivers binary + one
+// e2e/realstack/fixtures/test-receivers/Dockerfile. The test works
+// from source on disk so it runs without docker.
 func TestRealStack_MLLPControlPlane_BinaryDirRendered(t *testing.T) {
 	repoRoot := findRepoRootForMLLPTest(t)
 
-	mainGo := filepath.Join(repoRoot, "cmd", "test-mllp-control-plane", "main.go")
+	mainGo := filepath.Join(repoRoot, "cmd", "test-receivers", "main.go")
 	if _, err := os.Stat(mainGo); err != nil {
-		t.Fatalf("cmd/test-mllp-control-plane/main.go missing: %v — harness MUST ship a real in-repo binary", err)
+		t.Fatalf("cmd/test-receivers/main.go missing: %v — harness MUST ship a real in-repo binary", err)
+	}
+	mllpGo := filepath.Join(repoRoot, "cmd", "test-receivers", "mllp.go")
+	if _, err := os.Stat(mllpGo); err != nil {
+		t.Fatalf("cmd/test-receivers/mllp.go missing: %v — MLLP subsystem MUST live in the consolidated binary", err)
 	}
 
-	dockerfile := filepath.Join(repoRoot, "e2e", "realstack", "fixtures", "subscribers", "Dockerfile.mllp_controlplane")
+	dockerfile := filepath.Join(repoRoot, "e2e", "realstack", "fixtures", "test-receivers", "Dockerfile")
 	if _, err := os.Stat(dockerfile); err != nil {
-		t.Fatalf("Dockerfile.mllp_controlplane missing: %v — harness MUST build the control plane from a real image", err)
+		t.Fatalf("test-receivers Dockerfile missing: %v — harness MUST build the receivers from a real image", err)
 	}
 }
 
 // TestRealStack_MLLPControlPlane_ComposeServiceWired asserts the
-// docker-compose.yml file declares the test-mllp-control-plane service
-// alongside the rest-hook and ws subscriber services. We grep the file
-// directly so the assertion runs with or without docker.
+// docker-compose.yml file declares the consolidated test-receivers
+// service that exposes the MLLP control plane on :8093 alongside the
+// other receiver subsystems. We grep the file directly so the
+// assertion runs with or without docker.
 func TestRealStack_MLLPControlPlane_ComposeServiceWired(t *testing.T) {
 	repoRoot := findRepoRootForMLLPTest(t)
 	composeFile := filepath.Join(repoRoot, "e2e", "realstack", "docker-compose.yml")
@@ -373,11 +381,12 @@ func TestRealStack_MLLPControlPlane_ComposeServiceWired(t *testing.T) {
 	}
 	text := string(body)
 	for _, want := range []string{
-		"test-mllp-control-plane",
-		"Dockerfile.mllp_controlplane",
+		"test-receivers",
+		"e2e/realstack/fixtures/test-receivers/Dockerfile",
+		"\"8093\"",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("docker-compose.yml does not reference %q — control plane MUST be a real container", want)
+			t.Errorf("docker-compose.yml does not reference %q — receivers MUST be a real container exposing :8093", want)
 		}
 	}
 }
