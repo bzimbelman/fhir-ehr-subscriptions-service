@@ -59,45 +59,28 @@ type MailpitHandle struct {
 	APIBaseURL string
 }
 
-// PrometheusHandle exposes the real Prometheus container.
-type PrometheusHandle struct {
-	// Addr is host:port for the Prometheus HTTP API.
-	Addr string
-	// BaseURL is http://<addr> — used for promtool query instant invocations.
-	BaseURL string
-}
-
-// OTelHandle exposes the real OTel Collector Contrib container.
-type OTelHandle struct {
-	// OTLPAddr is the host:port the binary's OTLP exporter dials.
-	OTLPAddr string
-	// OTLPEndpoint is the full URL form (e.g. http://<addr>) used in the binary's tracing.otlp_endpoint config.
-	OTLPEndpoint string
-	// SpanFile is the host-side path to the file-exporter pipeline output.
-	// Tests read this to assert on captured spans.
-	SpanFile string
-}
-
-// CoreDNSHandle exposes the real CoreDNS container used for SSRF /
-// DNS-rebinding scenarios.
-type CoreDNSHandle struct {
-	// Addr is host:port of the DNS listener (UDP+TCP).
-	Addr string
-}
-
-// NginxHandle exposes the real nginx reverse proxy used for
-// TLS-terminated topology tests.
-type NginxHandle struct {
-	// Addr is host:port for the proxy frontend.
-	Addr string
-}
-
-// MitmproxyHandle exposes the real mitmproxy container used for
-// strip-STARTTLS scenarios.
-type MitmproxyHandle struct {
-	// Addr is host:port of the mitmproxy listener.
-	Addr string
-}
+// OP #344: PrometheusHandle, OTelHandle, CoreDNSHandle, NginxHandle, and
+// MitmproxyHandle were deleted alongside the corresponding compose
+// services. Their assertions live in proper unit/integration tests:
+//
+//   - /metrics surfacing named counters: cmd/fhir-subs/wiring_observability_test.go
+//     (boots the real productionRuntime, scrapes /metrics, asserts the
+//     fhir_subs_api_* counter set is registered)
+//   - tracing pipeline span emission: internal/api/handlers/tracing_test.go
+//     (TracingMiddleware against tracetest.SpanRecorder) +
+//     internal/infra/observability/tracing/tracing_test.go (Module wired
+//     through tracetest.NewInMemoryExporter)
+//   - SSRF / DNS-rebinding / IDN / metadata-IP / CG-NAT:
+//     internal/api/handlers/url_validator_test.go (against the existing
+//     handlers.Resolver seam — staticResolver, blockingResolver)
+//   - STARTTLS-strip: internal/channel/email/email_test.go
+//     (TestSTARTTLSRequiredButUnsupported drives an in-process testrelay
+//     that does not advertise STARTTLS — the production policy refuses
+//     to send when STARTTLS=required is asked for and the relay strips
+//     the upgrade, which is exactly the strip-STARTTLS surface mitmproxy
+//     used to simulate)
+//   - TLS-terminator topology: deleted entirely; testing nginx is not
+//     testing the binary.
 
 // SubscriberHandle is shared by the rest-hook and websocket test
 // subscriber binaries. Each runs as a real container; the harness
@@ -123,28 +106,15 @@ type SubscriberHandle struct {
 	ControlAPIURL string
 }
 
-// TokenMintHandle exposes the real cmd/test-token-mint binary that runs
-// inside docker-compose. Adversarial-auth tests use it to mint RS256
-// JWTs with arbitrary claim overrides without round-tripping through
-// Keycloak. The harness wires its JWKS URL into an auth_clients row so
-// the prod fhir-subs verifier trusts tokens it signs.
-type TokenMintHandle struct {
-	// Addr is host:port the test process can reach the binary on.
-	Addr string
-	// TokenAPIURL is the http base URL the test process POSTs /mint
-	// requests to (e.g. http://<addr>). Stack.MintTestToken wraps it.
-	TokenAPIURL string
-	// JWKSURL is the full JWKS endpoint (http://<addr>/jwks.json) the
-	// prod binary's verifier fetches via the per-client lookup.
-	JWKSURL string
-	// Issuer is the iss claim the binary stamps on default-minted
-	// tokens. Distinct from Keycloak.IssuerURL.
-	Issuer string
-	// ClientID is the auth_clients id the harness provisioned and
-	// pointed at this binary's JWKS URL. Default-minted tokens carry
-	// this value as client_id and sub so the verifier can resolve.
-	ClientID string
-}
+// OP #344: TokenMintHandle was deleted alongside cmd/test-token-mint.
+// Adversarial-auth claim-override coverage lives in
+// internal/api/auth/verifier_test.go (which generates real RSA keys
+// in-process and exercises expired, audience-mismatch, replayed-jti,
+// unknown-client, and revoked-client paths against the real verifier).
+// Realstack-level tests that need a positive-path bearer token call
+// Stack.MintClientToken, which goes through Keycloak's
+// client_credentials grant — already covered by Stack.Keycloak +
+// provisionKeycloak.
 
 // BinaryHandle is the running cmd/fhir-subs process plus its primary
 // HTTP/MLLP listeners.

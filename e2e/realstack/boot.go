@@ -6,7 +6,6 @@
 package realstack
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -86,19 +85,18 @@ type Options struct {
 // Stack is the handle Boot returns. Field naming mirrors the docker
 // service names so tests read top-down: stack.Postgres.Addr,
 // stack.Keycloak.IssuerURL, stack.RestHookSubscriber.QueryAPIURL.
+//
+// OP #344: Prometheus / OTel / CoreDNS / Nginx / Mitmproxy / TokenMint
+// fields were removed alongside their docker-compose services. Their
+// assertions are exercised by proper unit/integration tests against the
+// production binary's in-process seams; see services.go for pointers.
 type Stack struct {
 	Postgres           PostgresHandle
 	Keycloak           KeycloakHandle
 	HAPIFHIR           HAPIFHIRHandle
 	Mailpit            MailpitHandle
-	Prometheus         PrometheusHandle
-	OTel               OTelHandle
-	CoreDNS            CoreDNSHandle
-	Nginx              NginxHandle
-	Mitmproxy          MitmproxyHandle
 	RestHookSubscriber SubscriberHandle
 	WSSubscriber       SubscriberHandle
-	TokenMint          TokenMintHandle
 	Binary             BinaryHandle
 	MLLPControlPlane   MLLPControlPlaneHandle
 
@@ -113,7 +111,8 @@ type Stack struct {
 	// keycloakClientID and keycloakClientSecret are the credentials
 	// provisionKeycloak created on the realm. MintClientToken uses
 	// them with the client_credentials grant to mint real bearer
-	// tokens for load tests.
+	// tokens for load tests AND positive-path realstack tests (OP
+	// #344 removed the test-token-mint helper).
 	keycloakClientID     string
 	keycloakClientSecret string
 }
@@ -226,12 +225,15 @@ func Boot(ctx context.Context, t *testing.T, opts Options) *Stack {
 			t.Fatalf("launch binary: %v", err)
 		}
 		// After the binary has run its migrations, seed an auth_clients
-		// row that points the verifier at the test-token-mint JWKS URL.
-		// This is what makes tokens minted by cmd/test-token-mint
-		// trustworthy to the prod binary's per-client verifier path.
-		if err := s.provisionTestMintClient(bootCtx); err != nil {
+		// row that points the verifier at the Keycloak realm's JWKS
+		// URL with the test client_id. This is what makes tokens
+		// minted by Stack.MintClientToken (Keycloak client_credentials
+		// grant) trustworthy to the prod binary's per-client verifier
+		// path. OP #344 replaced the cmd/test-token-mint provisioning
+		// with this Keycloak-only seam.
+		if err := s.provisionKeycloakAuthClient(bootCtx); err != nil {
 			t.Cleanup(s.Close)
-			t.Fatalf("provision test-token-mint client: %v", err)
+			t.Fatalf("provision keycloak auth_clients row: %v", err)
 		}
 		// Bring up the MLLP scripted control plane container after the
 		// prod binary's MLLP listener has a host-side address. The
@@ -249,16 +251,21 @@ func Boot(ctx context.Context, t *testing.T, opts Options) *Stack {
 	return s
 }
 
-// provisionTestMintClient inserts (or updates) the auth_clients row the
-// prod binary's verifier resolves when it sees a token bearing the
-// realstack-test-mint client_id. The row's jwks_url points at the
-// test-token-mint container's host-published JWKS endpoint.
+// provisionKeycloakAuthClient inserts (or updates) the auth_clients row
+// the prod binary's verifier resolves when it sees a token bearing the
+// Keycloak client's client_id. The row's jwks_url points at the
+// Keycloak realm's JWKS endpoint (Stack.Keycloak.JWKSURL).
+//
+// OP #344 replaced the cmd/test-token-mint helper with this Keycloak-
+// only seam: realstack tests that need a positive-path bearer token
+// call Stack.MintClientToken (Keycloak client_credentials grant) and
+// the verifier accepts it because this row exists.
 //
 // Idempotent — re-running Boot with a reused project name (rare; the
 // default generates fresh names) updates the URL in place.
-func (s *Stack) provisionTestMintClient(ctx context.Context) error {
-	if s.TokenMint.JWKSURL == "" || s.TokenMint.ClientID == "" {
-		return fmt.Errorf("test-token-mint handle not populated")
+func (s *Stack) provisionKeycloakAuthClient(ctx context.Context) error {
+	if s.Keycloak.JWKSURL == "" || s.keycloakClientID == "" {
+		return fmt.Errorf("keycloak handle not populated (JWKSURL=%q clientID=%q)", s.Keycloak.JWKSURL, s.keycloakClientID)
 	}
 	conn, err := pgx.Connect(ctx, s.Postgres.URL)
 	if err != nil {
@@ -285,49 +292,10 @@ func (s *Stack) provisionTestMintClient(ctx context.Context) error {
 		"system/Subscription.$events",
 		"system/Subscription.$get-ws-binding-token",
 	}
-	if _, err := conn.Exec(ctx, sql, s.TokenMint.ClientID, s.TokenMint.JWKSURL, scopes, "realstack test-token-mint helper"); err != nil {
+	if _, err := conn.Exec(ctx, sql, s.keycloakClientID, s.Keycloak.JWKSURL, scopes, "realstack keycloak client_credentials"); err != nil {
 		return fmt.Errorf("upsert auth_clients: %w", err)
 	}
 	return nil
-}
-
-// MintTestToken POSTs to the test-token-mint binary's /mint endpoint
-// with the given claim overrides and returns the signed JWT. Pass nil
-// to use the helper's default claim set (which the prod binary
-// accepts). Pass {"exp": <past>} to mint an expired token, etc.
-func (s *Stack) MintTestToken(ctx context.Context, overrides map[string]any) (string, error) {
-	if s.TokenMint.TokenAPIURL == "" {
-		return "", fmt.Errorf("realstack: TokenMint.TokenAPIURL is empty; was the stack booted?")
-	}
-	body, err := json.Marshal(map[string]any{"overrides": overrides})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.TokenMint.TokenAPIURL+"/mint", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("test-token-mint /mint: %d %s", resp.StatusCode, string(respBody))
-	}
-	var out struct {
-		Token string `json:"token"`
-		Kid   string `json:"kid"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if out.Token == "" {
-		return "", fmt.Errorf("test-token-mint /mint: empty token")
-	}
-	return out.Token, nil
 }
 
 // populateServiceEndpoints reads host-side port bindings from `docker
@@ -357,19 +325,8 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 			s.Mailpit.APIAddr = addr
 			s.Mailpit.APIBaseURL = "http://" + addr
 		}},
-		{"prometheus", "9090/tcp", func(addr string) {
-			s.Prometheus.Addr = addr
-			s.Prometheus.BaseURL = "http://" + addr
-		}},
-		{"otel-collector", "4317/tcp", func(addr string) {
-			s.OTel.OTLPAddr = addr
-			s.OTel.OTLPEndpoint = "http://" + addr
-		}},
-		{"coredns", "53/udp", func(addr string) {
-			s.CoreDNS.Addr = addr
-		}},
-		{"nginx", "8443/tcp", func(addr string) { s.Nginx.Addr = addr }},
-		{"mitmproxy", "2525/tcp", func(addr string) { s.Mitmproxy.Addr = addr }},
+		// OP #344: prometheus / otel-collector / coredns / nginx /
+		// mitmproxy bindings deleted alongside their docker services.
 		{"test-resthook-subscriber", "8090/tcp", func(addr string) {
 			s.RestHookSubscriber.Addr = addr
 			s.RestHookSubscriber.EndpointURL = "http://" + addr + "/notify"
@@ -381,19 +338,9 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 			s.WSSubscriber.EndpointURL = "ws://" + addr + "/ws"
 			s.WSSubscriber.QueryAPIURL = "http://" + addr
 		}},
-		{"test-token-mint", "8092/tcp", func(addr string) {
-			s.TokenMint.Addr = addr
-			s.TokenMint.TokenAPIURL = "http://" + addr
-			s.TokenMint.JWKSURL = "http://" + addr + "/jwks.json"
-			// Issuer matches the -issuer flag the Dockerfile passes in
-			// (the binary stamps this on default-minted tokens). The
-			// hostname is the docker network name, which the prod
-			// binary inside compose resolves via DNS — but here Issuer
-			// is informational; the JWKS-resolution path uses
-			// JWKSURL above (a host:port reachable from the binary).
-			s.TokenMint.Issuer = "http://test-token-mint:8092/"
-			s.TokenMint.ClientID = "realstack-test-mint"
-		}},
+		// OP #344: test-token-mint binding deleted alongside the
+		// docker service. Realstack tests that need a positive-path
+		// bearer token call Stack.MintClientToken (Keycloak grant).
 	}
 
 	for _, b := range bindings {
@@ -519,15 +466,17 @@ mllp:
 `, mllpAddr)
 	}
 
+	// OP #344: the otel-collector service was deleted; the rendered
+	// config no longer sets tracing.otlp_endpoint here. The tracing
+	// pipeline's wiring + span emission are pinned by
+	// internal/api/handlers/tracing_test.go and
+	// internal/infra/observability/tracing/tracing_test.go (in-memory
+	// exporter via tracetest). Options.EnableTracing is preserved as a
+	// no-op flag so existing call sites compile; future stories can
+	// re-attach an in-process OTLP listener if cross-binary tracing
+	// coverage is wanted.
+	_ = opts.EnableTracing
 	tracingBlock := ""
-	if opts.EnableTracing {
-		tracingBlock = fmt.Sprintf(`
-tracing:
-  otlp_endpoint: %s
-  insecure: true
-  sample_rate: 1.0
-`, s.OTel.OTLPEndpoint)
-	}
 
 	codecKey := make([]byte, 32)
 	if _, err := rand.Read(codecKey); err != nil {
@@ -538,6 +487,9 @@ tracing:
 	rateLimitBlock := renderRateLimitBlock(opts.SubscriptionCreateRateLimit, opts.WSBindingTokenRateLimit)
 	urlValidatorBlock := renderURLValidatorBlock(opts.URLValidatorAllowHTTP, opts.URLValidatorAllowHosts)
 
+	// OP #344: trusted_issuers used to carry an additional entry for
+	// the cmd/test-token-mint helper alongside Keycloak. With the
+	// helper deleted, only Keycloak remains.
 	cfgYAML := fmt.Sprintf(`
 deployment:
   facility_id: realstack
@@ -568,15 +520,11 @@ auth:
   trusted_issuers:
     - issuer: %s
       audience: fhir-subs-test
-      jwks_url: %s
-    - issuer: %s
-      audience: fhir-subs-test
       jwks_url: %s%s%s
 %s%s
 `, httpAddr, s.Postgres.URL, keyB64,
 		s.Keycloak.IssuerURL, s.Keycloak.JWKSURL,
 		s.Keycloak.IssuerURL, s.Keycloak.JWKSURL,
-		s.TokenMint.Issuer, s.TokenMint.JWKSURL,
 		rateLimitBlock, urlValidatorBlock, tracingBlock, mllpBlock)
 
 	configFile := filepath.Join(binDir, "config.yaml")

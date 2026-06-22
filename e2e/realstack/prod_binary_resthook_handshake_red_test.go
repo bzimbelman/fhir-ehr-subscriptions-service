@@ -38,7 +38,9 @@ import (
 //  1. Boots the realstack with HTTP-allowed url validator so the
 //     activator can dial the test-resthook-subscriber's plain-HTTP
 //     127.0.0.1:<port> address.
-//  2. Mints a real bearer token via the test-token-mint helper.
+//  2. Mints a real bearer token via Stack.MintClientToken (Keycloak
+//     client_credentials grant; OP #344 deleted the test-token-mint
+//     helper and moved positive-path tokens to this path).
 //  3. POSTs a Subscription whose channel.endpoint points at the
 //     test-resthook-subscriber's /notify/{id} URL.
 //  4. Waits for the binary's activator goroutine to perform the
@@ -62,9 +64,11 @@ func TestRealStack_ProdBinary_RestHookHandshake_PostAndActivate(t *testing.T) {
 	})
 	t.Cleanup(stack.Close)
 
-	tok, err := stack.MintTestToken(ctx, nil)
+	// OP #344: positive-path bearer token now comes from the Keycloak
+	// client_credentials grant (cmd/test-token-mint deleted).
+	tok, err := stack.MintClientToken(ctx)
 	if err != nil {
-		t.Fatalf("MintTestToken: %v", err)
+		t.Fatalf("MintClientToken: %v", err)
 	}
 
 	// The endpoint the bridge will POST the handshake to. We tag the
@@ -168,9 +172,11 @@ func TestRealStack_ProdBinary_RestHookHandshake_FailedFlipsToError(t *testing.T)
 	})
 	t.Cleanup(stack.Close)
 
-	tok, err := stack.MintTestToken(ctx, nil)
+	// OP #344: positive-path bearer token via Keycloak (test-token-mint
+	// deleted).
+	tok, err := stack.MintClientToken(ctx)
 	if err != nil {
-		t.Fatalf("MintTestToken: %v", err)
+		t.Fatalf("MintClientToken: %v", err)
 	}
 
 	tag := fmt.Sprintf("h236-fail-%d", time.Now().UnixNano())
