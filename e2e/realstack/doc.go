@@ -5,9 +5,9 @@
 // driven foundation of the fhir-subs e2e suite. Tests use it to boot
 // the production cmd/fhir-subs binary as an OS process against a stack
 // of real-software dependencies (Postgres 16, Keycloak, HAPI FHIR JPA
-// Server, Mailpit) plus three real test subscriber binaries
-// (cmd/test-resthook-subscriber, cmd/test-ws-subscriber, and the
-// MLLP-profile cmd/test-mllp-control-plane).
+// Server) plus the consolidated cmd/test-receivers binary that
+// surfaces every channel-receiver fixture (rest-hook, websocket,
+// MLLP, SMTP) on its own port inside one container.
 //
 // This package is the implementation of docs/e2e-coverage-strategy.md
 // §3.H1 and the OpenProject story #256. Every other H component (audit
@@ -73,6 +73,25 @@
 // code they pin. Story-B and story-C continue the simplification by
 // combining the four receivers and env-gating external systems; this
 // story is the structural deletion pass.
+//
+// # OP #345 simplification (2026)
+//
+// OP #345 collapsed mailpit + the three per-channel receiver
+// fixtures (cmd/test-resthook-subscriber, cmd/test-ws-subscriber,
+// cmd/test-mllp-control-plane) into one cmd/test-receivers binary
+// and one docker-compose service. The new fixture exposes:
+//
+//	:8090   rest-hook subscriber (HTTP /hook/{sub}, programmable control plane)
+//	:8091   websocket subscriber query API (/events, /reset, /healthz)
+//	:8093   MLLP control plane HTTP API (gated by FHIRSUBS_MLLP_TARGET)
+//	:1025   SMTP receiver (real github.com/emersion/go-smtp, replaces mailpit)
+//	:1080   SMTP query API (/messages, /reset, /healthz)
+//
+// The harness keeps Stack.RestHookSubscriber, Stack.WSSubscriber,
+// Stack.Mailpit, and Stack.MLLPControlPlane as distinct handles so
+// existing realstack tests don't have to change call sites; the
+// addresses now resolve to different ports on the same consolidated
+// container.
 //
 // # OP #346 simplification (2026)
 //

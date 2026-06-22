@@ -1,42 +1,21 @@
 // Copyright the fhir-ehr-subscriptions-service authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command test-ws-subscriber is a real WebSocket client that connects
-// to the fhir-subs binary's WSS endpoint, captures every event the
-// binary pushes, and exposes a query API tests use to assert on
-// observed deliveries.
+// websocket subsystem of cmd/test-receivers — opens a real WS
+// connection to the prod binary's /ws/subscriptions endpoint, captures
+// every event, and exposes a query API at /events for realstack
+// tests to assert on observed deliveries.
 //
-// Configuration is environment-driven (the docker-compose service
-// passes them in):
-//
-//	WS_URL                  — wss://fhir-subs:8443/ws/subscriptions, set per test
-//	WS_BINDING_TOKEN        — bearer token minted by the binary's $get-ws-binding-token
-//	WS_SUBSCRIPTION_TOPIC   — topic URL to bind to
-//	QUERY_API_ADDR          — bind addr for the query API (default :8091)
-//
-// Query API:
-//
-//	GET  /events                    — JSON array of every captured event
-//	GET  /events/{subscription_id}  — filtered by id
-//	POST /reset                     — clears the journal
-//	GET  /healthz                   — liveness probe (returns 200 even pre-connect)
-//
-// Captured events are also emitted on stdout as JSON Lines so tests
-// that prefer tail-following can do so without the query API.
-//
-// Designed to run as a real container in docker-compose; replaces the
-// in-process e2e/mocksub WS client fake.
+// Lifted unchanged in behaviour from cmd/test-ws-subscriber/main.go.
+// OP #345 collapses the four receivers into one process.
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"flag"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -52,13 +31,13 @@ type Event struct {
 	Body           string    `json:"body"`
 }
 
-type journal struct {
+type wsJournal struct {
 	mu   sync.Mutex
 	all  []Event
 	wire io.Writer
 }
 
-func (j *journal) append(e Event) {
+func (j *wsJournal) append(e Event) {
 	j.mu.Lock()
 	j.all = append(j.all, e)
 	j.mu.Unlock()
@@ -67,7 +46,7 @@ func (j *journal) append(e Event) {
 	}
 }
 
-func (j *journal) snapshot() []Event {
+func (j *wsJournal) snapshot() []Event {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	out := make([]Event, len(j.all))
@@ -75,7 +54,7 @@ func (j *journal) snapshot() []Event {
 	return out
 }
 
-func (j *journal) reset() {
+func (j *wsJournal) reset() {
 	j.mu.Lock()
 	j.all = nil
 	j.mu.Unlock()
@@ -86,7 +65,7 @@ func (j *journal) reset() {
 // simple: log the close, wait one second, retry. Tests that exercise
 // reconnect semantics drive the reconnect via the binary, not via
 // killing the subscriber.
-func connectAndReceive(ctx context.Context, url, token, topic string, jr *journal) {
+func connectAndReceive(ctx context.Context, url, token, topic string, jr *wsJournal) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return
@@ -141,27 +120,10 @@ func connectAndReceive(ctx context.Context, url, token, topic string, jr *journa
 	}
 }
 
-func main() {
-	addr := flag.String("addr", ":8091", "query API listener address")
-	flag.Parse()
-
-	wsURL := os.Getenv("WS_URL")
-	wsToken := os.Getenv("WS_BINDING_TOKEN")
-	wsTopic := os.Getenv("WS_SUBSCRIPTION_TOPIC")
-	if v := os.Getenv("QUERY_API_ADDR"); v != "" {
-		*addr = v
-	}
-
-	jr := &journal{wire: os.Stdout}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	if wsURL != "" {
-		go connectAndReceive(ctx, wsURL, wsToken, wsTopic, jr)
-	} else {
-		log.Printf("WS_URL not set; subscriber idle (query API only)")
-	}
-
+// buildWSMux returns the HTTP query API for the websocket subsystem.
+// /events, /events/{id}, /reset, /healthz mirror the legacy
+// cmd/test-ws-subscriber routes 1:1.
+func buildWSMux(jr *wsJournal) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -200,17 +162,5 @@ func main() {
 		http.Error(w, "use /events or /healthz", http.StatusNotFound)
 	})
 
-	log.Printf("test-ws-subscriber query API listening on %s", *addr)
-	srv := &http.Server{
-		Addr:              *addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	err := srv.ListenAndServe()
-	cancel()
-	if err != nil {
-		log.Printf("listen: %v", err)
-		os.Exit(1)
-	}
-	_ = fmt.Sprint
+	return mux
 }

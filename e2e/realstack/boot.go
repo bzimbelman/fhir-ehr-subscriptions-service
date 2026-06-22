@@ -90,6 +90,12 @@ type Options struct {
 // fields were removed alongside their docker-compose services. Their
 // assertions are exercised by proper unit/integration tests against the
 // production binary's in-process seams; see services.go for pointers.
+//
+// OP #345: RestHookSubscriber / WSSubscriber / Mailpit / MLLPControlPlane
+// are still surfaced as distinct handles, but their addresses now resolve
+// to different ports on the SAME consolidated test-receivers container.
+// The compatibility shim keeps the harness contract intact for tests
+// already pointing at these handles.
 type Stack struct {
 	Postgres           PostgresHandle
 	Keycloak           KeycloakHandle
@@ -458,6 +464,10 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 		containerPort string
 		setAddr       func(string)
 	}
+	// OP #346: postgres/keycloak/hapi-fhir are gated behind the
+	// "external-local" compose profile. When external mode is active,
+	// skip those three bindings — populateExternalSystemHandles
+	// already filled the corresponding handles from env-supplied URLs.
 	bindings := []binding{}
 	if !s.external.UseExternal {
 		bindings = append(bindings,
@@ -475,23 +485,28 @@ func (s *Stack) populateServiceEndpoints(ctx context.Context) error {
 			}},
 		)
 	}
+	// OP #345: mailpit, test-resthook-subscriber, test-ws-subscriber,
+	// and test-mllp-control-plane (mllp profile) merged into a single
+	// test-receivers service. The four handles still surface as
+	// distinct handles for harness-contract compatibility; every Addr
+	// resolves to a different port on the SAME consolidated container.
 	bindings = append(bindings, []binding{
-		{"mailpit", "1025/tcp", func(addr string) {
+		// SMTP listener (replaces mailpit:1025).
+		{"test-receivers", "1025/tcp", func(addr string) {
 			s.Mailpit.SMTPAddr = addr
 		}},
-		{"mailpit", "8025/tcp", func(addr string) {
+		// SMTP query API (replaces mailpit:8025/api/v1/).
+		{"test-receivers", "1080/tcp", func(addr string) {
 			s.Mailpit.APIAddr = addr
 			s.Mailpit.APIBaseURL = "http://" + addr
 		}},
-		// OP #344: prometheus / otel-collector / coredns / nginx /
-		// mitmproxy bindings deleted alongside their docker services.
-		{"test-resthook-subscriber", "8090/tcp", func(addr string) {
+		{"test-receivers", "8090/tcp", func(addr string) {
 			s.RestHookSubscriber.Addr = addr
 			s.RestHookSubscriber.EndpointURL = "http://" + addr + "/notify"
 			s.RestHookSubscriber.QueryAPIURL = "http://" + addr
 			s.RestHookSubscriber.ControlAPIURL = "http://" + addr
 		}},
-		{"test-ws-subscriber", "8091/tcp", func(addr string) {
+		{"test-receivers", "8091/tcp", func(addr string) {
 			s.WSSubscriber.Addr = addr
 			s.WSSubscriber.EndpointURL = "ws://" + addr + "/ws"
 			s.WSSubscriber.QueryAPIURL = "http://" + addr
@@ -737,11 +752,16 @@ auth:
 	return nil
 }
 
-// launchMLLPControlPlane brings up the test-mllp-control-plane
-// container and resolves its host-published port. The container is
-// declared under the "mllp" compose profile so the default
-// `up --build --wait` cycle skips it; this function is the explicit
-// opt-in path.
+// launchMLLPControlPlane recreates the consolidated test-receivers
+// container with FHIRSUBS_MLLP_TARGET set so the binary's MLLP
+// subsystem opens its :8093 listener.
+//
+// OP #345 collapsed the legacy test-mllp-control-plane container into
+// the consolidated test-receivers binary. The MLLP subsystem inside
+// that binary stays dormant until the container is started with
+// FHIRSUBS_MLLP_TARGET pointing at the prod binary's MLLP listener.
+// We achieve that by `docker compose up --force-recreate` of the
+// test-receivers service with the target env-var pre-staged.
 //
 // The container reaches the prod binary's MLLP listener on the host
 // via host.docker.internal:<port> — the docker-compose service entry
@@ -758,27 +778,34 @@ func (s *Stack) launchMLLPControlPlane(ctx context.Context) error {
 	}
 	target := "host.docker.internal:" + port
 
-	// Bring the service up via the "mllp" profile with the resolved
-	// target injected as env. --build ensures the image exists; --wait
-	// blocks on the healthcheck.
-	args := []string{"--profile", "mllp", "up", "-d", "--build", "--wait", "--wait-timeout", "60", "test-mllp-control-plane"}
+	// Recreate the test-receivers service with FHIRSUBS_MLLP_TARGET
+	// set. --force-recreate ensures the new env is applied (docker
+	// compose env-var substitution is read at up time, not at
+	// container start). --wait blocks on the healthcheck so the
+	// container only returns once the MLLP listener is accepting.
+	args := []string{"up", "-d", "--force-recreate", "--wait", "--wait-timeout", "60", "test-receivers"}
 	cmd := composeCommand(ctx, s.composeDir, s.project, args...)
 	cmd.Env = append(cmd.Env, "FHIRSUBS_MLLP_TARGET="+target)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("docker compose up test-mllp-control-plane: %v\n%s", err, out)
+		return fmt.Errorf("docker compose up test-receivers (mllp recreate): %v\n%s", err, out)
 	}
 
-	// Resolve the host port for the control plane.
-	addr, err := composeServiceAddr(ctx, s.composeDir, s.project, "test-mllp-control-plane", "8093/tcp")
+	// Resolve the (possibly-new) host ports after recreate. force-
+	// recreate gives the container a fresh ephemeral port mapping;
+	// re-populate the receiver-handle addresses to match.
+	if err := s.populateServiceEndpoints(ctx); err != nil {
+		return fmt.Errorf("re-resolve test-receivers ports after MLLP recreate: %w", err)
+	}
+	addr, err := composeServiceAddr(ctx, s.composeDir, s.project, "test-receivers", "8093/tcp")
 	if err != nil {
-		return fmt.Errorf("resolve test-mllp-control-plane port: %w", err)
+		return fmt.Errorf("resolve test-receivers MLLP port: %w", err)
 	}
 	s.MLLPControlPlane.HTTPAddr = addr
 	s.MLLPControlPlane.URL = "http://" + addr
 
 	// Sanity probe — the healthcheck already waited, but a final dial
 	// gives a clearer error when the env injection failed and the
-	// binary exited at startup.
+	// MLLP subsystem refused to start.
 	if err := retryUntil(ctx, 15*time.Second, func() error {
 		resp, herr := http.Get(s.MLLPControlPlane.URL + "/healthz")
 		if herr != nil {
@@ -790,7 +817,7 @@ func (s *Stack) launchMLLPControlPlane(ctx context.Context) error {
 		}
 		return nil
 	}); err != nil {
-		return fmt.Errorf("test-mllp-control-plane /healthz never returned 200: %w", err)
+		return fmt.Errorf("test-receivers MLLP /healthz never returned 200: %w", err)
 	}
 	return nil
 }
