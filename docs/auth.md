@@ -1,8 +1,9 @@
 # Authentication & authorization
 
-> Status: Draft, ticket #358. This document defines the *identity* infrastructure
-> for the subscription-service FHIR API. JWT validation and scope-based
-> authorization inside HAPI itself are deferred to ticket #359.
+> Status: Updated, ticket #359 (JWT enforcement landed). This document
+> defines both the *identity* infrastructure (ticket #358 — Keycloak realm,
+> clients, scopes) AND the *enforcement* layer inside HAPI itself
+> (ticket #359 — JWT validation + SMART scope mapping to HAPI auth rules).
 
 ## Overview
 
@@ -163,20 +164,101 @@ If that does not return JSON, the Cloudflare tunnel to zdock is down — see
 `~/.claude/projects/-Users-bzimbelman-cz/memory/infrastructure.md` for the
 tunnel troubleshooting runbook.
 
-## What ticket #358 does NOT do (deferred to #359)
+## How the FHIR API enforces tokens (ticket #359)
 
-This ticket delivers the identity *infrastructure*: a realm, scopes, an
-example client, a provisioning script, and documentation. It does **not**:
+HAPI itself doesn't know anything about Keycloak. The enforcement layer is
+a small Spring Boot auto-configuration JAR built from `hapi/auth/` and
+layered onto the upstream HAPI image (see `hapi/Dockerfile`). At runtime
+the auto-configuration registers two HAPI server interceptors:
 
-- Wire HAPI's `AuthorizationInterceptor` to validate JWTs against this realm's
-  JWKS.
-- Map SMART scopes (`system/Subscription.crus`, etc.) to HAPI authorization
-  rules.
-- Reject unauthenticated traffic at the FHIR endpoint.
-- Configure HAPI's `tenant` partition mapping from JWT claims (multi-tenancy).
-- Set up audit logging of token introspection failures.
+1. **`KeycloakJwtAuthenticationInterceptor`** —
+   `@Hook(SERVER_INCOMING_REQUEST_POST_PROCESSED)`. For every request:
+   - If the path is on the anonymous allow-list (`/metadata`,
+     `/.well-known/smart-configuration` by default), pass through.
+   - Otherwise, require an `Authorization: Bearer <jwt>` header.
+   - Parse and verify the JWS signature against the realm's JWKS using
+     Nimbus JOSE+JWT (already shipped inside the HAPI image — no new
+     transitive deps). Only RS256 / RS384 / RS512 are accepted; HS\*
+     ("none" + symmetric) tokens are refused.
+   - Verify `iss` matches the configured issuer; verify `exp` is in the
+     future and `nbf` (if present) is in the past.
+   - On success, stash the verified `JWTClaimsSet` and the parsed
+     `Set<SmartScope>` on `RequestDetails.userData` so downstream
+     interceptors can read them without re-parsing.
+   - On any failure, throw `AuthenticationException` → HTTP 401 +
+     `OperationOutcome`. The message describes the failure (`Token
+     rejected: Expired JWT` etc.) but never leaks the token contents.
 
-Until #359 lands, the FHIR endpoint will still serve unauthenticated requests
-(or whatever HAPI's default is). Treat the gap as a temporary state: import
-the realm now so the issuer URL is stable, then wire HAPI in #359 with
-confidence that the tokens already exist.
+2. **`ScopeAuthorizationInterceptor`** — extends HAPI's
+   `AuthorizationInterceptor` with default policy `DENY`. `buildRuleList`
+   reads the stashed scopes and produces a HAPI `IAuthRule` list. The
+   catalog above maps to rules as follows:
+
+   | SMART scope                  | HAPI rules produced                                                            |
+   | ---------------------------- | ------------------------------------------------------------------------------ |
+   | `system/Subscription.crus`   | `create`, `read`, `write` (update), `search` on `Subscription`                 |
+   | `system/Subscription.r`      | `read`, `search` on `Subscription`                                             |
+   | `system/Patient.r`           | `read`, `search` on `Patient`                                                  |
+   | `system/Patient.cruds`       | `create`, `read`, `write` (update), `delete`, `search` on `Patient`            |
+   | `system/Observation.r`       | `read`, `search` on `Observation`                                              |
+
+   Plus an always-allow rule for `/metadata` and a terminating deny-all
+   ("operation not permitted by SMART scopes") that turns any
+   unrecognized request into a 403.
+
+### Configuration
+
+All knobs live under `subscription_service.auth.*` and are bindable via
+either `application.yaml` or environment variables (Spring Boot's relaxed
+binding maps `SUBSCRIPTION_SERVICE_AUTH_*` env vars onto the property
+tree).
+
+| Property                                            | Env var                                | Default                                                                                  |
+| --------------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `subscription-service.auth.enabled`                 | `SUBSCRIPTION_SERVICE_AUTH_ENABLED`    | `true`                                                                                   |
+| `subscription-service.auth.issuer`                  | `SUBSCRIPTION_SERVICE_AUTH_ISSUER`     | `https://keycloak.bzonfhir.com/auth/realms/subscription-service`                          |
+| `subscription-service.auth.jwks-url`                | `SUBSCRIPTION_SERVICE_AUTH_JWKS_URL`   | derived from issuer: `${issuer}/protocol/openid-connect/certs`                            |
+| `subscription-service.auth.allow-anonymous-paths`   | (yaml list only)                       | `[/metadata, /.well-known/smart-configuration]`                                          |
+
+### Disabling for local development
+
+Set `SUBSCRIPTION_SERVICE_AUTH_ENABLED=false` in `.env`. The whole
+auto-configuration is gated by `@ConditionalOnProperty`, so disabling it
+makes HAPI behave exactly like the upstream image — useful when running
+the docker-compose stack without a Keycloak instance available.
+
+```bash
+# In deploy/docker/.env
+SUBSCRIPTION_SERVICE_AUTH_ENABLED=false
+```
+
+### Source layout
+
+```
+hapi/
+├── Dockerfile              ← multi-stage; builds auth JAR + layers it onto upstream
+├── auth/                   ← Maven project; produces the JAR
+│   ├── pom.xml
+│   └── src/
+│       ├── main/java/com/bzonfhir/subscription_service/auth/
+│       │   ├── AuthAutoConfiguration.java     ← Spring Boot @AutoConfiguration entry
+│       │   ├── AuthProperties.java            ← @ConfigurationProperties bound from yaml/env
+│       │   ├── JwtValidator.java              ← Nimbus-backed JWT validation
+│       │   ├── KeycloakJwtAuthenticationInterceptor.java
+│       │   ├── ScopeAuthorizationInterceptor.java
+│       │   └── SmartScope.java                ← SMART scope parser
+│       ├── main/resources/META-INF/spring/
+│       │   └── org.springframework.boot.autoconfigure.AutoConfiguration.imports
+│       └── test/...        ← JUnit 5 tests; mock JWKS via Wiremock
+```
+
+### What ticket #359 does NOT do (deferred)
+
+- **Multi-tenancy partition mapping** — HAPI's partition context is set
+  from the `tenant` claim, but tenant claim → partition wiring is its own
+  ticket (#369).
+- **Audit logging** of authentication failures beyond Spring INFO logs.
+- **SMART user/ and patient/ scopes** — only `system/` is recognized in
+  v1 (matches the realm catalog above).
+- **JWT introspection** as a fallback for opaque tokens — Keycloak issues
+  JWTs natively so no introspection round-trip is needed.
