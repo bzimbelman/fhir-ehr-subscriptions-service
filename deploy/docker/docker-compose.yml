@@ -1,0 +1,64 @@
+# subscription-service — reference Docker Compose stack.
+#
+# Ticket #354: HAPI FHIR R4 on Postgres. Matchbox and the v2-to-FHIR pipeline
+# come in subsequent commits. See deploy/docker/README.md.
+
+services:
+  hapi-db:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: subscription-service-hapi-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hapi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      POSTGRES_DB: ${POSTGRES_DB:-hapi}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hapi} -d ${POSTGRES_DB:-hapi}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - subscription-service
+
+  hapi:
+    image: ${HAPI_IMAGE:-hapiproject/hapi:v7.6.0}
+    container_name: subscription-service-hapi
+    restart: unless-stopped
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    environment:
+      # Spring picks up /app/config/application.yaml automatically because /app
+      # is the working dir; we mount the file in below.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://hapi-db:5432/${POSTGRES_DB:-hapi}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-hapi}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+      # Feature toggles — stubs today, wired up in follow-up tickets (#367-#369).
+      SUBSCRIPTION_SERVICE_VALIDATION_MODE: ${SUBSCRIPTION_SERVICE_VALIDATION_MODE:-off}
+      SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: ${SUBSCRIPTION_SERVICE_CHANNEL_SECURITY:-strict}
+      SUBSCRIPTION_SERVICE_MULTITENANCY: ${SUBSCRIPTION_SERVICE_MULTITENANCY:-disabled}
+    volumes:
+      - ../../hapi/application.yaml:/app/config/application.yaml:ro
+    ports:
+      - "${HAPI_HOST_PORT:-18080}:8080"
+    healthcheck:
+      # /fhir/metadata is the FHIR CapabilityStatement; if it returns, HAPI is
+      # ready to serve traffic.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    networks:
+      - subscription-service
+
+networks:
+  subscription-service:
+    name: subscription-service
+    driver: bridge
