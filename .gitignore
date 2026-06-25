@@ -5,6 +5,8 @@ out/
 dist/
 *.jar
 *.war
+# ...but the gradle wrapper jar is checked in (required for `./gradlew`).
+!**/gradle/wrapper/gradle-wrapper.jar
 
 # IDE
 .idea/
@@ -44,3 +46,10 @@ node_modules/
 
 # CDS plugin state (per-worktree, never committed)
 .cds/
+
+# Local Docker-build CA injection (corporate MITM workaround). Never committed.
+ipf-app/ca-cert/cert.pem
+
+# Gradle local state and HAPI runtime droppings.
+**/.gradle/
+ipf-app/id_file

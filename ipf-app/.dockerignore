@@ -1,0 +1,27 @@
+# Build outputs
+build/
+out/
+.gradle/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local logs / runtime
+*.log
+logs/
+
+# Keep gradlew + wrapper; drop everything else extraneous.
+README.md
+compose-snippet.yml
+
+# ca-cert/ is included in the build context (Dockerfile expects it), but the
+# placeholder .gitkeep is dropped here so the COPY ... ca-cert/ instruction
+# never picks it up as a cert file.
+ca-cert/.gitkeep
+

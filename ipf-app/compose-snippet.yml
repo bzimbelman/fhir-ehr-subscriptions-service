@@ -1,0 +1,55 @@
+# compose-snippet.yml
+#
+# Service block for ipf-app. To be merged into deploy/docker/docker-compose.yml
+# by the integrator. NOT a standalone compose file — it is missing the top-level
+# `services:`, `networks:`, and `volumes:` keys that the consolidated compose
+# file owns.
+#
+# Required environment variables:
+#   HAPI_BASE      Base URL of the HAPI FHIR server, e.g. http://hapi:8080/fhir
+#                  (plumbed through application.yaml; not yet read by the route
+#                  — ticket #361 will wire it).
+#   MATCHBOX_BASE  Base URL of the Matchbox $transform endpoint, e.g.
+#                  http://matchbox:8080/matchboxv3/fhir
+#                  (same status: plumbed, not yet read).
+#   MLLP_PORT      MLLP listen port inside the container. Defaults to 2575.
+#                  Override only if you also remap the container port below.
+#
+# Port mappings:
+#   8090:8090  Spring Boot HTTP — actuator and (later) admin endpoints.
+#   2575:2575  MLLP listener for HL7 v2 over TCP.
+#
+# Build context:
+#   Built from the repo root with `ipf-app/Dockerfile` so the Dockerfile can
+#   reference the gradle wrapper and src/ tree without ".." escapes.
+
+ipf-app:
+  build:
+    context: ../../ipf-app
+    dockerfile: Dockerfile
+  image: subscription-service/ipf-app:dev
+  container_name: subscription-ipf-app
+  restart: unless-stopped
+  environment:
+    HAPI_BASE: http://hapi:8080/fhir
+    MATCHBOX_BASE: http://matchbox:8080/matchboxv3/fhir
+    MLLP_PORT: "2575"
+    # Spring profile hook for environment-specific overrides (e.g. enable
+    # debug logging in dev). Defaults to no profile.
+    SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+  ports:
+    - "8090:8090"
+    - "2575:2575"
+  depends_on:
+    hapi:
+      condition: service_healthy
+    matchbox:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8090/actuator/health"]
+    interval: 15s
+    timeout: 3s
+    retries: 4
+    start_period: 30s
+  networks:
+    - subscription-net
