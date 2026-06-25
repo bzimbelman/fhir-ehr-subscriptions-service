@@ -1,0 +1,14 @@
+# Keep the Docker build context small. The Dockerfile only needs:
+#   - auth/pom.xml + auth/src/  (to build the JAR)
+#   - ca-cert/cert.pem          (optional, for corporate MITM)
+#
+# Everything else under hapi/ (igs/, application.yaml, etc.) is mounted
+# into the container at runtime by docker-compose, not baked into the
+# image.
+
+igs/
+application.yaml
+README.md
+auth/target/
+auth/.idea/
+auth/*.iml

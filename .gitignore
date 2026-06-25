@@ -49,6 +49,7 @@ node_modules/
 
 # Local Docker-build CA injection (corporate MITM workaround). Never committed.
 ipf-app/ca-cert/cert.pem
+hapi/ca-cert/cert.pem
 
 # Gradle local state and HAPI runtime droppings.
 **/.gradle/

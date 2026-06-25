@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  subscription-service-hapi-auth
+  ==============================
+
+  A Spring Boot auto-configuration JAR that layers Keycloak JWT bearer-token
+  authentication and SMART-scope authorization onto the upstream
+  hapiproject/hapi:v7.6.0 image.
+
+  Build artifact: target/subscription-service-hapi-auth-<version>.jar.
+  The derived image at hapi/Dockerfile copies it into /app/extra-classes/
+  where the upstream entrypoint's `-Dloader.path=...,/app/extra-classes`
+  picks it up. Auto-configuration is wired via
+  META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+  so the interceptor beans appear in the HAPI Spring context automatically.
+
+  Versions are pinned to match the libraries already inside the upstream
+  HAPI image; this JAR therefore brings NO new transitive runtime
+  dependencies — we mark every runtime dep `provided` so Maven only uses
+  them for compilation/tests, not for packaging into the JAR.
+
+  Ticket: #359 (HAPI JWT enforcement).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.bzonfhir.subscription-service</groupId>
+  <artifactId>subscription-service-hapi-auth</artifactId>
+  <version>0.1.0</version>
+  <packaging>jar</packaging>
+
+  <name>subscription-service hapi-auth</name>
+  <description>Keycloak JWT + SMART scope authz for HAPI FHIR JPA starter (ticket #359).</description>
+
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+
+    <!--
+      Versions matched to what hapiproject/hapi:v7.6.0 already bundles.
+      Confirmed by inspecting the layers: hapi-fhir-* 7.6.0, Spring Boot
+      3.2.6, Spring 6.1.14, nimbus-jose-jwt 9.37.3, slf4j 2.x.
+
+      Anything we declare `provided` is NOT in the produced JAR; the
+      runtime classpath gets it from the upstream image's main.war.
+    -->
+    <hapi.version>7.6.0</hapi.version>
+    <spring.boot.version>3.2.6</spring.boot.version>
+    <spring.version>6.1.14</spring.version>
+    <nimbus.version>9.37.3</nimbus.version>
+    <slf4j.version>2.0.16</slf4j.version>
+    <jackson.version>2.17.2</jackson.version>
+    <servlet.version>6.0.0</servlet.version>
+
+    <!-- Test-only deps; not packaged. -->
+    <junit.version>5.10.2</junit.version>
+    <assertj.version>3.25.3</assertj.version>
+    <mockito.version>5.11.0</mockito.version>
+    <wiremock.version>3.5.4</wiremock.version>
+  </properties>
+
+  <dependencies>
+    <!-- ============================================================
+         Runtime dependencies — every one is `provided` because the
+         HAPI image already ships them on the classpath.
+         ============================================================ -->
+
+    <!-- HAPI FHIR server (Interceptor / Pointcut / Hook / authz rules). -->
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-server</artifactId>
+      <version>${hapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-base</artifactId>
+      <version>${hapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-structures-r4</artifactId>
+      <version>${hapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Spring Boot autoconfig + properties binding. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-autoconfigure</artifactId>
+      <version>${spring.boot.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot</artifactId>
+      <version>${spring.boot.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-context</artifactId>
+      <version>${spring.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-core</artifactId>
+      <version>${spring.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- JWT validation: Nimbus JOSE + JWT. Already in main.war. -->
+    <dependency>
+      <groupId>com.nimbusds</groupId>
+      <artifactId>nimbus-jose-jwt</artifactId>
+      <version>${nimbus.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Servlet API for HttpServletRequest access in the interceptor. -->
+    <dependency>
+      <groupId>jakarta.servlet</groupId>
+      <artifactId>jakarta.servlet-api</artifactId>
+      <version>${servlet.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- Logging. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!-- ============================================================
+         Test-only — pulled in for unit tests only.
+         ============================================================ -->
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <version>${assertj.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-core</artifactId>
+      <version>${mockito.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-junit-jupiter</artifactId>
+      <version>${mockito.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.wiremock</groupId>
+      <artifactId>wiremock-standalone</artifactId>
+      <version>${wiremock.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      `provided`-scope deps above are already on the compile AND test
+      classpaths (per Maven's scope table). No duplicate declarations
+      needed.
+    -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <version>${slf4j.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <finalName>${project.artifactId}-${project.version}</finalName>
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration>
+          <!--
+            Force classpath mode, not modulepath. Several of our transitive
+            deps (wiremock-standalone, jcip-annotations, nimbus-jose-jwt) are
+            "automatic modules" with overlapping package names, which the
+            JPMS compiler rejects with confusing "package does not exist"
+            errors. We don't ship a module-info, so classpath is correct.
+          -->
+          <useModulePath>false</useModulePath>
+        </configuration>
+      </plugin>
+      <plugin>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+      </plugin>
+      <plugin>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.1</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Implementation-Title>${project.name}</Implementation-Title>
+              <Implementation-Version>${project.version}</Implementation-Version>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
