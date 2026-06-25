@@ -52,12 +52,44 @@ hapi:
     fhir_version: R4
     openapi_enabled: true
 
+    # Don't auto-install transitive IG dependencies. US Core 7.0.0 lists
+    # `hl7.fhir.uv.extensions@5.1.0-snapshot1` as a dep, which declares
+    # fhirVersions: ["4.3.0"] (R4B) and HAPI's PackageInstaller refuses it
+    # against this R4 (4.0.1) server. We don't need that transitive package
+    # for the profiles US Core actually uses, so skip it.
+    install_transitive_ig_dependencies: false
+
     # Enable the legacy criteria-based REST-hook + WebSocket subscription
-    # channels. The R5 Subscriptions Backport IG (loaded in #356) adds the
+    # channels. The R5 Subscriptions Backport IG (loaded below) adds the
     # topic-based model on top of these.
     subscription:
       resthook_enabled: true
       websocket_enabled: true
+
+    # IG packages to install at boot. The hapi-fhir-jpaserver-starter image
+    # accepts either a registry coordinate (name + version) or a packageUrl
+    # pointing at a tarball. We use packageUrl pointing at the bind-mounted
+    # files in /app/igs so the deploy works air-gapped and so the exact
+    # bytes loaded are pinned by the file in this repo.
+    #
+    # Files are placed in hapi/igs/ by scripts/fetch-igs.sh; see hapi/igs/README.md.
+    implementationguides:
+      us_core:
+        name: hl7.fhir.us.core
+        version: 7.0.0
+        packageUrl: file:///app/igs/hl7.fhir.us.core-7.0.0.tgz
+        reloadExisting: false
+        installMode: STORE_AND_INSTALL
+      # The unsuffixed `hl7.fhir.uv.subscriptions-backport@1.1.0` package
+      # declares fhirVersions: ["4.3.0"] (R4B) and won't install on a 4.0.1
+      # server. The R4 variant — same content, different metadata —
+      # installs cleanly.
+      subscriptions_backport:
+        name: hl7.fhir.uv.subscriptions-backport.r4
+        version: 1.1.0
+        packageUrl: file:///app/igs/hl7.fhir.uv.subscriptions-backport.r4-1.1.0.tgz
+        reloadExisting: false
+        installMode: STORE_AND_INSTALL
 
     cors:
       allow_Credentials: true

@@ -31,6 +31,10 @@ deploy/docker/postgres/
 deploy/docker/postgres-data/
 deploy/docker/data/
 
+# IG package tarballs (fetched by scripts/fetch-igs.sh, never committed)
+hapi/igs/*.tgz
+matchbox/igs/*.tgz
+
 # Helm
 deploy/k8s/charts/*/charts/
 deploy/k8s/charts/*/Chart.lock

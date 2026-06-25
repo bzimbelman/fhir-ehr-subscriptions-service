@@ -18,13 +18,18 @@ The Compose file references config files outside this directory:
 
 ```
 hapi/application.yaml    ← mounted into the HAPI container
+hapi/igs/*.tgz           ← IG packages loaded at boot (not committed)
 matchbox/igs/*.tgz       ← Matchbox IG packages (not committed)
 ```
+
+`scripts/fetch-igs.sh` at the repo root downloads the IG tarballs from
+<https://packages.fhir.org>. Run it once after cloning.
 
 ## Stand up (local dev)
 
 ```bash
 cp .env.example .env             # then edit if you want non-defaults
+../../scripts/fetch-igs.sh       # fetch IG packages into hapi/igs/, matchbox/igs/
 docker compose up -d
 docker compose ps                # confirm all services healthy
 
@@ -67,8 +72,6 @@ via bind-mount, so a plain `down` never destroys it. To wipe local state,
 
 ## What's not here yet
 
-- **IG packages** (US Core 7.0 + R5 Subscriptions Backport) loaded into
-  HAPI — added in ticket #356.
 - **IPF Spring Boot app** (HL7 v2 MLLP ingestion) — separate ticket.
 - **Keycloak wiring** (JWT auth on `/fhir/*`) — separate ticket.
 - **Feature toggles** referenced in `.env.example`
