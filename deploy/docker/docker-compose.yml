@@ -50,16 +50,31 @@ services:
     volumes:
       - ../../hapi/application.yaml:/app/config/application.yaml:ro
       - ../../hapi/igs:/app/igs:ro
+      # Single-file Java healthcheck probe — see `healthcheck:` block below.
+      - ../../hapi/healthcheck:/app/healthcheck:ro
     ports:
       - "${HAPI_HOST_PORT:-18080}:8080"
     healthcheck:
-      # /fhir/metadata is the FHIR CapabilityStatement; if it returns, HAPI is
-      # ready to serve traffic.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      # hapiproject/hapi:v7.6.0 is a distroless image — no shell, no curl, no
+      # wget, no busybox; only the JRE (`java`). The original CMD-SHELL probe
+      # from #354 was non-functional because Docker requires `/bin/sh` to run
+      # CMD-SHELL entries and that binary isn't in the image.
+      #
+      # Workaround: a minimal JEP 330 single-file Java probe that connects to
+      # localhost:8080 and exits 0 on success. The file is baked into the
+      # `hapi/healthcheck` bind-mount below. This is a #354 follow-up; the
+      # right long-term answer is either:
+      #   (a) build our own HAPI image FROM eclipse-temurin:21-jre-jammy which
+      #       has a real shell + curl, or
+      #   (b) wait for hapiproject/hapi to add a `/actuator/health` probe.
+      test:
+        - CMD
+        - java
+        - /app/healthcheck/HapiHealthCheck.java
       interval: 10s
       timeout: 10s
       retries: 30
-      start_period: 90s
+      start_period: 120s
     networks:
       - subscription-service
 
