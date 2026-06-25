@@ -1,0 +1,6 @@
+# Drop `cert.pem` (PEM-encoded CA certificate or chain) into this directory to
+# inject a corporate MITM root into the Docker build's trust stores. See the
+# Dockerfile comment near `ca-cert/` for the full procedure.
+#
+# Files other than cert.pem are ignored. cert.pem itself is gitignored so it
+# never accidentally lands in a public repo.
