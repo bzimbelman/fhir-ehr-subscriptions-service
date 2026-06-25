@@ -1,10 +1,10 @@
 # subscription-service — reference Docker Compose stack.
 #
-# Brings up HAPI FHIR R4 on Postgres plus Matchbox for HL7 v2-to-FHIR
-# transforms. The v2-to-FHIR pipeline (IPF Spring Boot app) lands in a
-# subsequent ticket. See deploy/docker/README.md.
+# Brings up HAPI FHIR R4 on Postgres with US Core 7.0 + the R5 Subscriptions
+# Backport IG loaded at boot, plus Matchbox for HL7 v2-to-FHIR transforms.
+# See deploy/docker/README.md for stand-up/tear-down. Env vars: .env.example.
 #
-# Tickets: #354 (HAPI + Postgres), #355 (Matchbox).
+# Tickets: #354 (HAPI + Postgres), #355 (Matchbox), #356 (IGs + config).
 
 services:
   hapi-db:
@@ -48,6 +48,7 @@ services:
       SUBSCRIPTION_SERVICE_MULTITENANCY: ${SUBSCRIPTION_SERVICE_MULTITENANCY:-disabled}
     volumes:
       - ../../hapi/application.yaml:/app/config/application.yaml:ro
+      - ../../hapi/igs:/app/igs:ro
     ports:
       - "${HAPI_HOST_PORT:-18080}:8080"
     healthcheck:
