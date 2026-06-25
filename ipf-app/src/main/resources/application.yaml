@@ -33,14 +33,45 @@ subscription-service:
   # default for HL7v2 MLLP in the IPF / hapi-test-panel community.
   mllp:
     port: ${MLLP_PORT:2575}
-  # Downstream services. NOT used by the route yet — wired in for ticket #361.
+  # Downstream services. Wired into the route in ticket #361.
   hapi:
     base-url: ${HAPI_BASE:http://hapi:8080/fhir}
+    # IGenericClient socket/read timeout for the HAPI transaction POST.
+    timeout-ms: ${HAPI_TIMEOUT_MS:30000}
   matchbox:
     base-url: ${MATCHBOX_BASE:http://matchbox:8080/matchboxv3/fhir}
+    # HTTP timeouts for the $transform call. Applied via Camel's http
+    # component as connect-timeout / response-timeout. v2 → FHIR transforms
+    # are usually sub-second but matchbox loads IG packages lazily on the
+    # first hit, which can take 10+s on a cold container.
+    timeout-ms: ${MATCHBOX_TIMEOUT_MS:30000}
+    # StructureMap canonical URL for the ADT^A01 → Bundle map. Configurable so
+    # operators can swap in a project-specific map without rebuilding the IPF
+    # image. NOTE: the public v2-to-FHIR IG v1.0.0 ships ConceptMaps for the
+    # message-level mapping, not executable StructureMaps; this URL is the
+    # *expected* canonical URL once matchbox-loadable StructureMaps are
+    # published or added under matchbox/maps/. See docs/architecture.md
+    # "Mapping strategy" and matchbox/README.md.
+    structuremap:
+      adt-a01: ${MATCHBOX_SM_ADT_A01:http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01}
 
-# Camel autoconfig: name the context so the actuator endpoint is human-readable.
+# Camel autoconfig.
 camel:
   springboot:
     name: subscription-ingest
     main-run-controller: true
+  component:
+    # camel-http component-wide timeouts for the Matchbox $transform call.
+    # We can't append these to the toD URI in IngestRoutes because the
+    # dynamic URL already includes a `?source=…` query string and Camel
+    # would treat extra options as part of that downstream query string
+    # rather than as endpoint options. Setting them here applies them to
+    # every camel-http producer in the app, which is fine for v1 — we only
+    # call one external HTTP backend (matchbox). If/when we add a second
+    # HTTP target with different timeouts, switch this app to a named
+    # component (e.g. `matchbox-http`) and configure each separately.
+    http:
+      connect-timeout: ${MATCHBOX_TIMEOUT_MS:30000}
+      connection-request-timeout: ${MATCHBOX_TIMEOUT_MS:30000}
+      response-timeout: ${MATCHBOX_TIMEOUT_MS:30000}
+      so-timeout: ${MATCHBOX_TIMEOUT_MS:30000}

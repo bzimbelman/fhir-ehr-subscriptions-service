@@ -59,6 +59,12 @@ dependencies {
     // Camel components used directly by routes / tests.
     implementation("org.apache.camel.springboot:camel-mllp-starter")
     implementation("org.apache.camel.springboot:camel-hl7-starter")
+    // camel-http for the Matchbox $transform POST. We use Camel's HTTP
+    // component (Apache HttpComponents v5 under the hood) instead of Spring's
+    // RestTemplate/WebClient so the call participates in Camel's error
+    // handler, retries, and timeouts — and so the same Exchange carries the
+    // HL7 v2 control id, message type, etc. straight through to ACK logic.
+    implementation("org.apache.camel.springboot:camel-http-starter")
 
     // HAPI HL7v2 structures (v2.5 covers ADT^A01 used here).
     implementation("ca.uhn.hapi:hapi-base:$hapiHl7v2Version")
@@ -70,12 +76,11 @@ dependencies {
     implementation("ca.uhn.hapi.fhir:hapi-fhir-structures-r4:$hapiFhirVersion")
 
     // Tests.
-    testImplementation("org.springframework.boot:spring-boot-starter-test") {
-        exclude(group = "org.mockito", module = "mockito-core")
-    }
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.apache.camel:camel-test-spring-junit5:$camelVersion")
     testImplementation("org.apache.camel:camel-test-junit5:$camelVersion")
     testImplementation("org.awaitility:awaitility:4.2.2")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
