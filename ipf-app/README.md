@@ -1,6 +1,10 @@
 # ipf-app
 
-Spring Boot + Apache Camel + IPF + HAPI HL7v2 application. Listens for HL7 v2 over MLLP, parses, logs, and ACKs (ticket #360). Transform-to-FHIR via Matchbox + POST to HAPI is ticket #361.
+Spring Boot + Apache Camel + IPF + HAPI HL7v2 application. Listens for HL7 v2 over MLLP, parses, and routes by `MSH-9` message type:
+
+- `ADT^A01` → POST to Matchbox `$transform` → parse resulting Bundle → POST as transaction to HAPI → ACK `AA`.
+- Everything else → log and ACK `AA` (pass-through; expansion path documented in `IngestRoutes.kt`).
+- Any failure in the transform/persist pipeline → ACK `AE` with a reason logged.
 
 See [../docs/architecture.md](../docs/architecture.md) for background on the stack.
 
@@ -65,11 +69,35 @@ The `cert.pem` file is gitignored. CI builds outside a corporate proxy don't nee
 
 ## Environment variables
 
-| Var             | Default                                | Used for                                        |
-|-----------------|----------------------------------------|-------------------------------------------------|
-| `MLLP_PORT`     | `2575`                                 | MLLP listener bind port.                        |
-| `HAPI_BASE`     | `http://hapi:8080/fhir`                | HAPI FHIR base URL (plumbed, not yet wired).    |
-| `MATCHBOX_BASE` | `http://matchbox:8080/matchboxv3/fhir` | Matchbox FHIR base URL (plumbed, not yet wired).|
+| Var                  | Default                                              | Used for                                                                                                       |
+|----------------------|------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| `MLLP_PORT`          | `2575`                                               | MLLP listener bind port.                                                                                       |
+| `HAPI_BASE`          | `http://hapi:8080/fhir`                              | HAPI FHIR base URL; target of the transaction POST.                                                            |
+| `HAPI_TIMEOUT_MS`    | `30000`                                              | Connect + socket timeout (ms) on the HAPI client.                                                              |
+| `MATCHBOX_BASE`      | `http://matchbox:8080/matchboxv3/fhir`               | Matchbox FHIR base URL; target of the `$transform` POST.                                                       |
+| `MATCHBOX_TIMEOUT_MS`| `30000`                                              | HTTP connect + response timeout (ms) on the Matchbox call.                                                     |
+| `MATCHBOX_SM_ADT_A01`| `http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01` | Canonical URL of the ADT^A01 → Bundle StructureMap. Override to swap in a project-owned map without rebuilding.|
+
+## Idempotency
+
+The route stamps every transformed Bundle with `Bundle.identifier = {system: urn:ietf:rfc:3986, value: urn:hl7-controlId:<MSH-10>}` before POSTing to HAPI. **HAPI does NOT de-duplicate on this field** — `Bundle.identifier` is metadata about the message, not the contained resources. The marker is currently a tracing aid only.
+
+For true idempotency, the StructureMap should emit conditional creates on the contained resources (e.g., `Patient.request.ifNoneExist=identifier=<MRN system>|<MRN>`). The committed test fixture (`src/test/resources/fixtures/adt-a01-bundle.json`) demonstrates this pattern; the published v2-to-FHIR IG ConceptMaps do not yet describe it.
+
+See `docs/architecture.md` → "Mapping strategy" for the longer-term plan.
+
+## Matchbox + v2-to-FHIR IG dependency state (as of ticket #361)
+
+The route POSTs raw HL7 v2 ER7 to `${MATCHBOX_BASE}/StructureMap/$transform?source=<StructureMap canonical URL>` with `Content-Type: x-application/hl7-v2+er7`. For that to produce a Bundle, Matchbox must have:
+
+1. An executable `StructureMap` resource with the matching canonical URL (e.g. `http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01`).
+2. The ability to interpret `x-application/hl7-v2+er7` request bodies.
+
+**Neither is true today against matchbox v3.9.13 + hl7.fhir.uv.v2mappings v1.0.0.** The published v1.0.0 IG ships ConceptMaps, not executable StructureMaps; matchbox v3's CapabilityStatement does not advertise `$transform` either. Until those land, ADT^A01 traffic will get ACK `AE` from the route and the rest of the stack works as designed.
+
+Routes for pass-through message types (everything other than ADT^A01) are unaffected — they ACK `AA` without contacting Matchbox or HAPI.
+
+To complete the end-to-end smoke test described in the ticket: drop a working `StructureMap` JSON under `matchbox/maps/` (or upgrade matchbox once `$transform` over ER7 ships), rerun `fetch-igs.sh`, restart Compose.
 
 ## Pinned versions
 

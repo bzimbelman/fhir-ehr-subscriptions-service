@@ -1,0 +1,50 @@
+{
+  "resourceType": "Bundle",
+  "type": "transaction",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:patient-1",
+      "resource": {
+        "resourceType": "Patient",
+        "identifier": [
+          {
+            "system": "http://hospital.example.org/mrn",
+            "value": "MRN12345"
+          }
+        ],
+        "name": [
+          {
+            "family": "DOE",
+            "given": ["JOHN", "Q"]
+          }
+        ],
+        "gender": "male",
+        "birthDate": "1980-01-01"
+      },
+      "request": {
+        "method": "POST",
+        "url": "Patient",
+        "ifNoneExist": "identifier=http://hospital.example.org/mrn|MRN12345"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:encounter-1",
+      "resource": {
+        "resourceType": "Encounter",
+        "status": "in-progress",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "IMP",
+          "display": "inpatient encounter"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-1"
+        }
+      },
+      "request": {
+        "method": "POST",
+        "url": "Encounter"
+      }
+    }
+  ]
+}

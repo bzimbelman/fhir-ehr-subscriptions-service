@@ -13,18 +13,24 @@ import java.net.Socket
 import java.time.Duration
 
 /**
- * End-to-end MLLP round-trip:
+ * End-to-end MLLP round-trip for the *pass-through* (no-transform) branch:
  *   1. Spring Boot brings up the Camel context with the IngestRoutes route.
  *   2. We bind it to a free port (so parallel test runs don't collide).
- *   3. We open a raw TCP socket and write an ADT^A01 framed with MLLP block
- *      markers (0x0B start, 0x1C 0x0D end) — exactly what `nc` would do.
+ *   3. We open a raw TCP socket and write an ADT^A04 (no transform mapped
+ *      for this trigger event yet) framed with MLLP block markers
+ *      (0x0B start, 0x1C 0x0D end) — exactly what `nc` would do.
  *   4. We assert the response back is an AA ACK with our MSH-10 control id.
  *
- * This is a deliberate choice over `producerTemplate.requestBody("mllp://...")`
- * because Camel's MLLP producer InOnly/InOut semantics complicate the assertion:
- * the producer can swallow the ACK into a header/property rather than returning
- * it as the result body, which makes a "what would nc see?" test brittle. The
- * raw socket approach mirrors the smoke-test step in the ticket exactly.
+ * This is the surviving #360 contract test: any message we don't have a
+ * StructureMap for is logged + ACKed AA without touching Matchbox or HAPI.
+ * For the ADT^A01 → transform → HAPI path see `TransformRouteTest`, which
+ * mocks Matchbox and HAPI via AdviceWith so it doesn't need a live stack.
+ *
+ * Raw socket vs. `producerTemplate.requestBody("mllp://...")` chosen because
+ * Camel's MLLP producer InOnly/InOut semantics complicate the assertion:
+ * the producer can swallow the ACK into a header/property rather than
+ * returning it as the result body, making a "what would nc see?" test
+ * brittle.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class IngestRoutesTest {
@@ -59,21 +65,23 @@ class IngestRoutesTest {
                 camelContext.routeController.getRouteStatus("mllp-ingest").isStarted
         }
 
-        // Canonical ADT^A01 from the HL7 v2.5 spec, slightly trimmed.
+        // Use an ADT^A04 — registered to no StructureMap, so the route's
+        // `otherwise()` clause logs + ACKs AA without contacting Matchbox.
+        // This is the surviving #360 contract: receive, parse, log, ACK.
         // \r-delimited per MLLP convention.
-        val adtA01 = listOf(
-            "MSH|^~\\&|EPIC|HOSP|RECEIVER|CDS|20260625120000||ADT^A01|MSGCTRL00001|P|2.5",
-            "EVN|A01|20260625120000",
+        val adtA04 = listOf(
+            "MSH|^~\\&|EPIC|HOSP|RECEIVER|CDS|20260625120000||ADT^A04|MSGCTRL00001|P|2.5",
+            "EVN|A04|20260625120000",
             "PID|1||MRN12345^^^HOSP^MR||DOE^JOHN^Q||19800101|M|||123 MAIN ST^^ANYTOWN^CA^94000",
-            "PV1|1|I|2000^2012^01||||NPI001^WELBY^MARCUS|||SUR||||ADM|A0",
+            "PV1|1|O|2000^2012^01||||NPI001^WELBY^MARCUS|||AMB||||REG|A0",
         ).joinToString("\r") + "\r"
 
-        val ackString = sendMllp(adtA01)
+        val ackString = sendMllp(adtA04)
 
         assertThat(ackString)
             .describedAs("ACK should be MSA|AA|MSGCTRL00001 echoing our control id")
             .contains("MSA|AA|MSGCTRL00001")
-            .contains("ACK^A01")
+            .contains("ACK^A04")
     }
 
     /**
