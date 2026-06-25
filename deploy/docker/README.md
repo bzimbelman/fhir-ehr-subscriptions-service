@@ -8,7 +8,7 @@ consume.
 
 ```
 deploy/docker/
-├── docker-compose.yml   ← all services (HAPI + Postgres for now)
+├── docker-compose.yml   ← HAPI, Postgres, Matchbox (IPF comes later)
 ├── .env.example         ← required environment variables
 ├── postgres-data/       ← bind-mount target for Postgres (gitignored data)
 └── README.md            ← you are here
@@ -18,6 +18,7 @@ The Compose file references config files outside this directory:
 
 ```
 hapi/application.yaml    ← mounted into the HAPI container
+matchbox/igs/*.tgz       ← Matchbox IG packages (not committed)
 ```
 
 ## Stand up (local dev)
@@ -27,11 +28,14 @@ cp .env.example .env             # then edit if you want non-defaults
 docker compose up -d
 docker compose ps                # confirm all services healthy
 
-# smoke check
+# smoke checks
 curl -fsS http://localhost:${HAPI_HOST_PORT:-18080}/fhir/metadata | head -c 400
+curl -fsS http://localhost:${MATCHBOX_HOST_PORT:-18081}/matchboxv3/fhir/metadata | head -c 400
 ```
 
-`HAPI_HOST_PORT` defaults to **18080**.
+`HAPI_HOST_PORT` defaults to **18080**; Matchbox to **18081**. Both run on
+8080 inside their containers — Matchbox v3 exposes FHIR under the
+`/matchboxv3/fhir` context path, NOT `/fhir`.
 
 ## Stand up (zdock)
 
@@ -63,7 +67,6 @@ via bind-mount, so a plain `down` never destroys it. To wipe local state,
 
 ## What's not here yet
 
-- **Matchbox** (HL7 v2-to-FHIR transforms) — added in ticket #355.
 - **IG packages** (US Core 7.0 + R5 Subscriptions Backport) loaded into
   HAPI — added in ticket #356.
 - **IPF Spring Boot app** (HL7 v2 MLLP ingestion) — separate ticket.
