@@ -4,7 +4,8 @@
 # Backport IG loaded at boot, plus Matchbox for HL7 v2-to-FHIR transforms.
 # See deploy/docker/README.md for stand-up/tear-down. Env vars: .env.example.
 #
-# Tickets: #354 (HAPI + Postgres), #355 (Matchbox), #356 (IGs + config).
+# Tickets: #354 (HAPI + Postgres), #355 (Matchbox), #356 (IGs + config),
+#          #360 (IPF MLLP scaffold).
 
 services:
   hapi-db:
@@ -83,6 +84,35 @@ services:
       timeout: 10s
       retries: 30
       start_period: 90s
+    networks:
+      - subscription-service
+
+  ipf-app:
+    build:
+      context: ../../ipf-app
+      dockerfile: Dockerfile
+    image: ${IPF_IMAGE:-subscription-service/ipf-app:dev}
+    container_name: subscription-service-ipf-app
+    restart: unless-stopped
+    depends_on:
+      hapi:
+        condition: service_healthy
+      matchbox:
+        condition: service_healthy
+    environment:
+      HAPI_BASE: http://hapi:8080/fhir
+      MATCHBOX_BASE: http://matchbox:8080/matchboxv3/fhir
+      MLLP_PORT: "2575"
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+    ports:
+      - "${IPF_HTTP_HOST_PORT:-18090}:8090"
+      - "${IPF_MLLP_HOST_PORT:-2575}:2575"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/actuator/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
     networks:
       - subscription-service
 
