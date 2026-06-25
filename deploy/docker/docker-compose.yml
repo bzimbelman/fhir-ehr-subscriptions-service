@@ -1,7 +1,10 @@
 # subscription-service — reference Docker Compose stack.
 #
-# Ticket #354: HAPI FHIR R4 on Postgres. Matchbox and the v2-to-FHIR pipeline
-# come in subsequent commits. See deploy/docker/README.md.
+# Brings up HAPI FHIR R4 on Postgres plus Matchbox for HL7 v2-to-FHIR
+# transforms. The v2-to-FHIR pipeline (IPF Spring Boot app) lands in a
+# subsequent ticket. See deploy/docker/README.md.
+#
+# Tickets: #354 (HAPI + Postgres), #355 (Matchbox).
 
 services:
   hapi-db:
@@ -51,6 +54,30 @@ services:
       # /fhir/metadata is the FHIR CapabilityStatement; if it returns, HAPI is
       # ready to serve traffic.
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/fhir/metadata >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    networks:
+      - subscription-service
+
+  matchbox:
+    image: ${MATCHBOX_IMAGE:-europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox:v3.9.13}
+    container_name: subscription-service-matchbox
+    restart: unless-stopped
+    environment:
+      MATCHBOX_FHIR_VERSION: R4
+      # Matchbox v3 ships under the /matchboxv3 context path; override the
+      # bundled healthcheck URL to point at the actuator under that prefix.
+      HEALTHCHECK_URL: http://localhost:8080/matchboxv3/fhir/metadata
+    volumes:
+      # Any *.tgz IG packages dropped here are loaded into Matchbox at boot.
+      - ../../matchbox/igs:/app/matchbox/igs:ro
+    ports:
+      - "${MATCHBOX_HOST_PORT:-18081}:8080"
+    healthcheck:
+      # Matchbox v3 mounts FHIR under /matchboxv3/fhir, NOT /fhir.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/matchboxv3/fhir/metadata >/dev/null || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 30
