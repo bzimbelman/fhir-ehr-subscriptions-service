@@ -31,6 +31,17 @@ PACKAGES=(
   # The unsuffixed `hl7.fhir.uv.subscriptions-backport` declares R4B
   # (fhirVersion 4.3.0) and won't install on HAPI configured for R4 (4.0.1).
   "${HAPI_IGS_DIR}|hl7.fhir.uv.subscriptions-backport.r4|1.1.0"
+  # HL7 v2-to-FHIR IG for Matchbox (ticket #361). The published v1.0.0 ships
+  # ConceptMaps describing the message-level v2 → FHIR mapping; executable
+  # StructureMaps for $transform on raw ER7 are NOT in this version of the
+  # IG (the build.fhir.org continuous build has WIP StructureMaps but no
+  # released package yet). The IPF app calls Matchbox $transform with the
+  # canonical URL "http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01".
+  # Operators should drop a project-owned or community-supplied StructureMap
+  # into matchbox/maps/, or bump this pin once HL7 publishes the executable
+  # maps. Until then ADT^A01 traffic gets ACK AE — by design, surfacing the
+  # missing dependency rather than silently dropping the message.
+  "${MATCHBOX_IGS_DIR}|hl7.fhir.uv.v2mappings|1.0.0"
 )
 
 download_one() {
