@@ -1,0 +1,46 @@
+spring:
+  application:
+    # Referenced by IPF's ATNA auto-config (auditMetadataProvider). Required.
+    name: subscription-service-ipf
+
+server:
+  # HAPI FHIR's bundled servers use 8080. Pick 8090 to avoid conflicts in
+  # docker-compose where everything binds to the same host network.
+  port: 8090
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Spring Boot 3.x exposes only /health by default; we add /info and /metrics
+        # so the Docker healthcheck + future Prometheus scrape both work.
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+logging:
+  level:
+    root: INFO
+    com.bzonfhir.subscription: INFO
+    org.apache.camel: INFO
+    org.openehealth.ipf: INFO
+
+subscription-service:
+  # MLLP listener port. Override with MLLP_PORT env var. 2575 is the de-facto
+  # default for HL7v2 MLLP in the IPF / hapi-test-panel community.
+  mllp:
+    port: ${MLLP_PORT:2575}
+  # Downstream services. NOT used by the route yet — wired in for ticket #361.
+  hapi:
+    base-url: ${HAPI_BASE:http://hapi:8080/fhir}
+  matchbox:
+    base-url: ${MATCHBOX_BASE:http://matchbox:8080/matchboxv3/fhir}
+
+# Camel autoconfig: name the context so the actuator endpoint is human-readable.
+camel:
+  springboot:
+    name: subscription-ingest
+    main-run-controller: true
