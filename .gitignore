@@ -1,0 +1,41 @@
+# Build output
+build/
+target/
+out/
+dist/
+*.jar
+*.war
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Local persistent data (bind-mounts under deploy/docker/)
+deploy/docker/postgres/
+deploy/docker/data/
+
+# Helm
+deploy/k8s/charts/*/charts/
+deploy/k8s/charts/*/Chart.lock
+
+# Node (for any tooling scripts)
+node_modules/
+
+# CDS plugin state (per-worktree, never committed)
+.cds/
