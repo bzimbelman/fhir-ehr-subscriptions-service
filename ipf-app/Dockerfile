@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1.7
+
+# --- Stage 1: build ----------------------------------------------------------
+# Pre-built Gradle 8.11.1 image on JDK 21 — using a pinned image avoids the
+# gradle wrapper having to download its distribution at build time. The
+# wrapper still works for local builds outside Docker.
+FROM gradle:8.11.1-jdk21 AS build
+
+WORKDIR /work
+
+# Optional corporate-MITM CA injection. Off by default. To use:
+#   cp ~/.netskope-ca/full-chain.pem ipf-app/ca-cert/cert.pem
+#   docker build -t subscription-service/ipf-app:dev ipf-app/
+# The COPY is conditional: if ca-cert/cert.pem is absent the import is a no-op.
+# The file may contain a CA chain (multiple PEM blocks); we split it and import
+# each cert into the JVM truststore individually because `keytool -importcert`
+# only reads the FIRST PEM block from a file. The OS truststore (`update-ca-
+# certificates`) handles chains correctly on its own.
+COPY ca-cert/ /tmp/ca-cert/
+RUN if [ -s /tmp/ca-cert/cert.pem ]; then \
+        cp /tmp/ca-cert/cert.pem /usr/local/share/ca-certificates/extra-ca.crt \
+        && update-ca-certificates ; \
+        awk '/-----BEGIN CERTIFICATE-----/{i++} {print > ("/tmp/cert-" i ".pem")}' /tmp/ca-cert/cert.pem ; \
+        for f in /tmp/cert-*.pem ; do \
+            alias="extra-ca-$(basename "$f" .pem)" ; \
+            keytool -importcert -noprompt -trustcacerts \
+                -alias "$alias" \
+                -file "$f" \
+                -keystore "$JAVA_HOME/lib/security/cacerts" \
+                -storepass changeit ; \
+        done ; \
+        echo "Corporate CA(s) installed." ; \
+    else \
+        echo "No corporate CA; using default trust store." ; \
+    fi
+
+# Copy only files that influence dependency resolution first; the Gradle layer
+# cache then survives unrelated source-code edits.
+COPY settings.gradle.kts build.gradle.kts ./
+RUN --mount=type=cache,target=/root/.gradle gradle --no-daemon --version
+
+# Now bring in the rest and build the executable jar.
+COPY src ./src
+RUN --mount=type=cache,target=/root/.gradle \
+    gradle --no-daemon clean bootJar -x test
+
+# --- Stage 2: runtime --------------------------------------------------------
+# JRE 21 base. `-jammy` over `-alpine` because Camel MLLP / HAPI HL7v2 are not
+# routinely tested against musl; sticking with glibc avoids subtle native bugs.
+FROM eclipse-temurin:21-jre-jammy AS runtime
+
+# curl for the HEALTHCHECK below.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Run as non-root.
+RUN useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin app
+WORKDIR /app
+
+COPY --from=build /work/build/libs/*.jar /app/app.jar
+
+# 8090 = Spring Boot HTTP / actuator. 2575 = MLLP listener.
+EXPOSE 8090 2575
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=4 \
+    CMD curl --fail --silent http://localhost:8090/actuator/health || exit 1
+
+USER app
+
+ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-jar", "/app/app.jar"]
