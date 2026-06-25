@@ -71,6 +71,11 @@ download_one() {
       return 1
     fi
     mv "${tmp}" "${out_file}"
+    # HAPI runs as a non-root user inside the container and reads these via
+    # a bind mount; the file must be world-readable. `mktemp` creates files
+    # mode 600 by default, so without this chmod the IG load fails at boot
+    # with "HAPI-2031: Error loading file:///app/igs/...".
+    chmod 644 "${out_file}"
     echo "ok     ${name}@${version} -> ${out_file#${REPO_ROOT}/} ($(wc -c <"${out_file}") bytes)"
   else
     rm -f "${tmp}"
