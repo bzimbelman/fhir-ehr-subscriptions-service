@@ -28,6 +28,7 @@ logs/
 
 # Local persistent data (bind-mounts under deploy/docker/)
 deploy/docker/postgres/
+deploy/docker/postgres-data/
 deploy/docker/data/
 
 # Helm

@@ -1,0 +1,82 @@
+# HAPI FHIR JPA server configuration for subscription-service.
+#
+# Mounted into the hapiproject/hapi container at /app/config/application.yaml
+# (see deploy/docker/docker-compose.yml). Spring Boot picks this up
+# automatically because /app is the working directory.
+#
+# Connection details (datasource URL, user, password) are intentionally NOT
+# hard-coded here — they come from the SPRING_DATASOURCE_* env vars wired up
+# in docker-compose.yml so the same config file works in Compose, Helm, and
+# local dev.
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    enabled-by-default: false
+    web:
+      exposure:
+        include: 'health'
+  endpoint:
+    health:
+      enabled: true
+      probes:
+        enabled: true
+
+spring:
+  main:
+    allow-circular-references: true
+  flyway:
+    enabled: false
+    baselineOnMigrate: true
+    fail-on-missing-locations: false
+  # datasource block stays minimal here. The url/username/password are pulled
+  # from SPRING_DATASOURCE_* env (see docker-compose.yml). We only need to fix
+  # the pool and pin the driver.
+  datasource:
+    driverClassName: org.postgresql.Driver
+    max-active: 15
+    hikari:
+      maximum-pool-size: 10
+  jpa:
+    properties:
+      hibernate.format_sql: false
+      hibernate.show_sql: false
+      hibernate.dialect: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+      hibernate.hbm2ddl.auto: update
+      hibernate.search.enabled: false
+
+hapi:
+  fhir:
+    fhir_version: R4
+    openapi_enabled: true
+
+    # Enable the legacy criteria-based REST-hook + WebSocket subscription
+    # channels. The R5 Subscriptions Backport IG (loaded in #356) adds the
+    # topic-based model on top of these.
+    subscription:
+      resthook_enabled: true
+      websocket_enabled: true
+
+    cors:
+      allow_Credentials: true
+      allowed_origin:
+        - '*'
+
+    tester:
+      home:
+        name: subscription-service (local)
+        server_address: 'http://localhost:8080/fhir'
+        refuse_to_fetch_third_party_urls: false
+        fhir_version: R4
+
+    logical_urls:
+      - http://terminology.hl7.org/*
+      - https://terminology.hl7.org/*
+      - http://snomed.info/*
+      - https://snomed.info/*
+      - http://unitsofmeasure.org/*
+      - https://unitsofmeasure.org/*
+      - http://loinc.org/*
+      - https://loinc.org/*
