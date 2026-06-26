@@ -3,12 +3,14 @@ package com.bzonfhir.subscriptionservice.interfaceengine.routes
 import ca.uhn.hl7v2.AcknowledgmentCode
 import ca.uhn.hl7v2.model.Message
 import ca.uhn.hl7v2.util.Terser
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
 import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestPersistService
 import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageSourceProtocol
 import org.apache.camel.Exchange
 import org.apache.camel.builder.RouteBuilder
 import org.apache.camel.component.mllp.MllpConstants
 import org.slf4j.LoggerFactory
+import org.slf4j.MDC
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Component
 
@@ -108,11 +110,24 @@ class IngestRoutes(
         // ---- Main MLLP ingest route ----
         //
         // The flow is deliberately linear — no `choice()` by message type
-        // anymore. Every message we receive takes the same path: parse,
-        // capture headers + raw text, persist, ACK. Type-specific behaviour
-        // belongs in the async worker (#382), not here.
+        // anymore. Every message we receive takes the same path: assign a
+        // correlation id → parse → capture headers + raw text → persist →
+        // ACK. Type-specific behaviour belongs in the async worker (#382),
+        // not here.
         from("mllp://0.0.0.0:$mllpPort?autoAck=false")
             .routeId(ROUTE_MLLP_INGEST)
+            // Establish the correlation id BEFORE we do any work, so every
+            // log line below (parse, persist, ACK) carries the same id and
+            // matches the id we'll persist on the row and send as
+            // X-Correlation-Id on downstream HTTP calls in the worker.
+            // HL7 v2 has no transport-level header; we generate UUID v4.
+            // The MDC is cleared on the way out (success OR failure) via
+            // an onCompletion processor, so we don't leak the id to a
+            // sibling exchange running on the same thread.
+            .process { exchange -> assignCorrelationId(exchange) }
+            .onCompletion()
+                .process { _ -> MDC.remove(CorrelationId.MDC_KEY) }
+                .end()
             .unmarshal().hl7()
             .process { exchange -> extractHeaders(exchange) }
             // Snapshot the original ER7 text NOW, while body is still the
@@ -125,6 +140,27 @@ class IngestRoutes(
             .setProperty(STAGE, constant("persist"))
             .process { exchange -> persistMessage(exchange) }
             .process { exchange -> setAckProperty(exchange, AcknowledgmentCode.AA) }
+    }
+
+    /**
+     * First processor in the route — generate (or accept inbound, when one
+     * exists on a future protocol) the correlation id and set the MDC. The
+     * value travels:
+     *
+     *   - in MDC so logs join the receive scope,
+     *   - on the Camel exchange property so [persistMessage] can write it
+     *     to the row,
+     *   - returned to the sender? — no, HL7 v2 has no slot for arbitrary
+     *     metadata in the ACK; the sender uses MSH-10 to correlate. The
+     *     correlation id is server-only and surfaces via the admin API.
+     *
+     * Sets the MDC up-front; the matching cleanup runs in `onCompletion`
+     * on the route (see [configure]).
+     */
+    private fun assignCorrelationId(exchange: Exchange) {
+        val id = CorrelationId.generate()
+        exchange.setProperty(PROP_CORRELATION_ID, id)
+        MDC.put(CorrelationId.MDC_KEY, id)
     }
 
     // -- Header extraction ------------------------------------------------
@@ -185,6 +221,9 @@ class IngestRoutes(
         require(controlId.isNotEmpty()) { "MSH-10 (message control id) is required" }
         require(messageType.isNotEmpty()) { "MSH-9 (message type) is required" }
 
+        val correlationId = exchange.getProperty(PROP_CORRELATION_ID, String::class.java)
+            ?: throw IllegalStateException("correlation_id missing from exchange — assignCorrelationId() did not run")
+
         val saved = persistService.persistReceived(
             sourceProtocol = IngestedMessageSourceProtocol.HL7V2_MLLP,
             sourceSystem = sendingApp,
@@ -192,8 +231,21 @@ class IngestRoutes(
             messageType = messageType,
             rawMessage = raw,
             rawContentType = RAW_CONTENT_TYPE_HL7V2,
+            correlationId = correlationId,
         )
         exchange.setProperty(PROP_PERSISTED_ID, saved.id)
+        // Idempotent-duplicate handling: persistReceived returns the
+        // previously-persisted row when the (source_system, source_id)
+        // unique constraint trips. That row's correlation_id is from the
+        // ORIGINAL receive; we discard the freshly-minted id and adopt
+        // the persisted one so the worker's log lines (and any downstream
+        // X-Correlation-Id headers) line up with the original trace
+        // rather than the duplicate one.
+        val effective = saved.correlationId ?: correlationId
+        if (effective != correlationId) {
+            MDC.put(CorrelationId.MDC_KEY, effective)
+            exchange.setProperty(PROP_CORRELATION_ID, effective)
+        }
         log.info(
             "received id={} type={} controlId={} sourceSystem={}",
             saved.id,
@@ -233,6 +285,7 @@ class IngestRoutes(
         // Exchange properties — internal to the route, not exposed in logs.
         const val PROP_RAW_MESSAGE = "hl7.rawMessage"
         const val PROP_PERSISTED_ID = "ingested.id"
+        const val PROP_CORRELATION_ID = "observability.correlationId"
         const val STAGE = "stage"
 
         // Stored verbatim in `ingested_messages.raw_content_type`. The async
