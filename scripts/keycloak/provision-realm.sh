@@ -5,7 +5,7 @@
 # `keycloak/realms/subscription-service.json`.
 #
 # Environment variables (required when actually running against a server):
-#   KEYCLOAK_URL              Base URL, e.g. https://keycloak.bzonfhir.com
+#   KEYCLOAK_URL              Base URL, e.g. https://your-keycloak.example.com
 #   KEYCLOAK_ADMIN_USER       Master-realm admin username (e.g. admin)
 #   KEYCLOAK_ADMIN_PASSWORD   Master-realm admin password
 #
@@ -14,13 +14,29 @@
 #                             Default: keycloak/realms/subscription-service.json
 #                             (resolved relative to the repo root)
 #   KEYCLOAK_PATH_PREFIX      Path prefix for the Keycloak server.
-#                             Default: "" (Keycloak >= 18 / quarkus default).
-#                             Set to "/auth" for legacy WildFly-based Keycloak.
+#                             Default: "" (Keycloak >= 17 / Quarkus default).
+#                             Set to "/auth" for legacy WildFly-based Keycloak
+#                             (Keycloak < 17, e.g. the historical the-deploy-host instance).
+#   KEYCLOAK_CLIENT_SECRET    When set, the placeholder
+#                             "CHANGE-ME-IN-DEPLOYMENT" inside the realm JSON
+#                             is rewritten to this value on a temp copy of
+#                             the file before import. The committed JSON is
+#                             never modified. When unset, the placeholder is
+#                             imported as-is and a warning is logged.
+#
+# Flags:
+#   --dry-run                 Authenticate against Keycloak (so the script
+#                             still requires valid admin credentials), print
+#                             the would-be requests, but DO NOT POST the
+#                             realm import. Useful for verifying connectivity
+#                             and path-prefix shape (e.g. legacy /auth/).
+#   -h, --help                Print usage and exit.
 #
 # Behavior:
 #   1. Validates env + the realm JSON parses.
-#   2. Logs into the master realm using password grant on admin-cli.
-#   3. GETs /admin/realms/<realm>. If 200 -> realm exists, exit 0 (no-op).
+#   2. Optionally substitutes the client secret on a temp file copy.
+#   3. Logs into the master realm using password grant on admin-cli.
+#   4. GETs /admin/realms/<realm>. If 200 -> realm exists, exit 0 (no-op).
 #                                  If 404 -> POST the export to /admin/realms.
 #                                  Any other -> error.
 #
@@ -34,44 +50,68 @@ REALM_FILE_DEFAULT="${REPO_ROOT}/keycloak/realms/subscription-service.json"
 
 REALM_FILE="${KEYCLOAK_REALM_FILE:-${REALM_FILE_DEFAULT}}"
 PATH_PREFIX="${KEYCLOAK_PATH_PREFIX-}"
+CLIENT_SECRET="${KEYCLOAK_CLIENT_SECRET-}"
+DRY_RUN=0
+
+# Placeholder shipped in the realm export. Substituted at import time when
+# KEYCLOAK_CLIENT_SECRET is provided; otherwise imported verbatim with a
+# loud warning.
+CLIENT_SECRET_PLACEHOLDER="CHANGE-ME-IN-DEPLOYMENT"
 
 usage() {
   cat <<EOF
 Usage: KEYCLOAK_URL=<url> KEYCLOAK_ADMIN_USER=<user> KEYCLOAK_ADMIN_PASSWORD=<pw> \\
        [KEYCLOAK_REALM_FILE=<path>] [KEYCLOAK_PATH_PREFIX=/auth] \\
-       $(basename "$0")
+       [KEYCLOAK_CLIENT_SECRET=<secret>] \\
+       $(basename "$0") [--dry-run]
 
 Idempotently imports the subscription-service realm into a Keycloak server.
 
 Required env:
   KEYCLOAK_URL              Base URL of the Keycloak server (no trailing slash).
-                            Example: https://keycloak.bzonfhir.com
+                            Example: https://your-keycloak.example.com
   KEYCLOAK_ADMIN_USER       Username with master-realm admin privileges.
   KEYCLOAK_ADMIN_PASSWORD   Password for that user.
 
 Optional env:
   KEYCLOAK_REALM_FILE       Realm export JSON path.
                             Default: ${REALM_FILE_DEFAULT}
-  KEYCLOAK_PATH_PREFIX      Server path prefix. Default empty. Use /auth for
-                            legacy WildFly-based Keycloak installations.
+  KEYCLOAK_PATH_PREFIX      Server path prefix. Default empty (modern Keycloak,
+                            Quarkus, >= 17). Use /auth for legacy WildFly-based
+                            Keycloak installations (Keycloak < 17).
+  KEYCLOAK_CLIENT_SECRET    Client secret to substitute for the
+                            ${CLIENT_SECRET_PLACEHOLDER} placeholder on a temp
+                            copy of the realm JSON. Strongly recommended for
+                            any non-dev import.
+
+Flags:
+  --dry-run                 Authenticate, print would-be requests, skip POST.
+  -h, --help                Print this help and exit.
 
 Examples:
-  # Quarkus Keycloak (>=18) at https://kc.example.com
+  # Modern (Quarkus) Keycloak at https://kc.example.com — no /auth/ prefix
   KEYCLOAK_URL=https://kc.example.com \\
+  KEYCLOAK_ADMIN_USER=admin KEYCLOAK_ADMIN_PASSWORD=secret \\
+  KEYCLOAK_CLIENT_SECRET=\$(openssl rand -hex 32) \\
+    $(basename "$0")
+
+  # Legacy WildFly Keycloak mounted at /auth (Keycloak < 17)
+  KEYCLOAK_URL=https://kc.example.com KEYCLOAK_PATH_PREFIX=/auth \\
   KEYCLOAK_ADMIN_USER=admin KEYCLOAK_ADMIN_PASSWORD=secret \\
     $(basename "$0")
 
-  # Legacy WildFly Keycloak mounted at /auth
+  # Dry-run against legacy the-deploy-host Keycloak to verify path-prefix handling
   KEYCLOAK_URL=https://keycloak.bzonfhir.com KEYCLOAK_PATH_PREFIX=/auth \\
   KEYCLOAK_ADMIN_USER=admin KEYCLOAK_ADMIN_PASSWORD=secret \\
-    $(basename "$0")
+    $(basename "$0") --dry-run
 
 Notes:
   - Existing realms are NOT modified. Re-running is a no-op when the realm
     already exists. To re-import, delete the realm in the admin UI first.
-  - The exported example client secret is the placeholder
-    "CHANGE-ME-IN-DEPLOYMENT". Rotate it (Admin UI -> Clients -> Credentials
-    or via API) immediately after import.
+  - When KEYCLOAK_CLIENT_SECRET is NOT set, the placeholder
+    "${CLIENT_SECRET_PLACEHOLDER}" is imported verbatim and a warning is
+    logged. Rotate it (Admin UI -> Clients -> Credentials or via API)
+    BEFORE giving the realm to any integrator.
 EOF
 }
 
@@ -83,6 +123,24 @@ die() {
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
+
+# Parse flags. Keeping it minimal — no getopts because we only have two.
+for arg in "$@"; do
+  case "${arg}" in
+    --dry-run)
+      DRY_RUN=1
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument: ${arg}" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
 
 # Pre-flight checks. If required env is missing, print usage and exit 0
 # (acceptance criterion: "helpful usage when run without env vars").
@@ -101,6 +159,39 @@ REALM_NAME="$(jq -r '.realm' "${REALM_FILE}")"
 [[ -n "${REALM_NAME}" && "${REALM_NAME}" != "null" ]] \
   || die "realm name not found in ${REALM_FILE} (.realm)"
 
+# Substitute the client secret on a temp copy of the realm JSON if requested.
+# The committed file is NEVER mutated — that file lives in git with the
+# placeholder so the example is reviewable; the import-time substitution is
+# automation glue.
+IMPORT_FILE="${REALM_FILE}"
+TEMP_FILE=""
+cleanup() {
+  if [[ -n "${TEMP_FILE}" && -f "${TEMP_FILE}" ]]; then
+    rm -f "${TEMP_FILE}"
+  fi
+}
+trap cleanup EXIT
+
+if [[ -n "${CLIENT_SECRET}" ]]; then
+  TEMP_FILE="$(mktemp -t provision-realm.XXXXXX.json)"
+  # Use jq's walk-the-tree (string replace via gsub) so we don't depend on the
+  # placeholder appearing in a specific JSON path. Anchored to the literal
+  # placeholder string to avoid clobbering anything else.
+  jq --arg placeholder "${CLIENT_SECRET_PLACEHOLDER}" \
+     --arg secret "${CLIENT_SECRET}" \
+     'walk(if type == "string" and . == $placeholder then $secret else . end)' \
+     "${REALM_FILE}" > "${TEMP_FILE}" \
+     || die "failed to substitute client secret on temp realm file"
+  jq -e . "${TEMP_FILE}" >/dev/null \
+     || die "client-secret substitution produced invalid JSON"
+  IMPORT_FILE="${TEMP_FILE}"
+  echo "==> Substituted client secret on temp file (${TEMP_FILE})."
+else
+  echo "==> WARNING: KEYCLOAK_CLIENT_SECRET not set. The placeholder"
+  echo "    '${CLIENT_SECRET_PLACEHOLDER}' will be imported verbatim. Rotate"
+  echo "    via the Keycloak admin UI BEFORE giving the realm to anyone."
+fi
+
 # Normalize URL pieces.
 BASE_URL="${KEYCLOAK_URL%/}${PATH_PREFIX}"
 TOKEN_URL="${BASE_URL}/realms/master/protocol/openid-connect/token"
@@ -109,6 +200,9 @@ ADMIN_URL="${BASE_URL}/admin/realms"
 echo "==> Keycloak base URL:  ${BASE_URL}"
 echo "==> Realm to provision: ${REALM_NAME}"
 echo "==> Realm file:         ${REALM_FILE}"
+if [[ "${DRY_RUN}" -eq 1 ]]; then
+  echo "==> DRY RUN: will authenticate and probe, but will NOT POST the import."
+fi
 
 echo "==> Authenticating to master realm as ${KEYCLOAK_ADMIN_USER}..."
 TOKEN_RESPONSE="$(
@@ -147,12 +241,19 @@ case "${CHECK_STATUS}" in
     ;;
 esac
 
+if [[ "${DRY_RUN}" -eq 1 ]]; then
+  echo "==> DRY RUN: would POST ${IMPORT_FILE} ($(wc -c <"${IMPORT_FILE}") bytes) to:"
+  echo "    ${ADMIN_URL}"
+  echo "==> DRY RUN: skipping the import. Auth + path-prefix verified."
+  exit 0
+fi
+
 IMPORT_STATUS="$(
   curl -sS -o /tmp/provision-realm.out -w "%{http_code}" \
     -X POST "${ADMIN_URL}" \
     -H "Authorization: Bearer ${ACCESS_TOKEN}" \
     -H "Content-Type: application/json" \
-    --data-binary "@${REALM_FILE}"
+    --data-binary "@${IMPORT_FILE}"
 )"
 
 case "${IMPORT_STATUS}" in
@@ -161,9 +262,11 @@ case "${IMPORT_STATUS}" in
     echo "    Issuer URL: ${BASE_URL}/realms/${REALM_NAME}"
     echo "    JWKS:       ${BASE_URL}/realms/${REALM_NAME}/protocol/openid-connect/certs"
     echo "    Token URL:  ${BASE_URL}/realms/${REALM_NAME}/protocol/openid-connect/token"
-    echo
-    echo "==> REMINDER: rotate the example client secret. The exported value"
-    echo "    'CHANGE-ME-IN-DEPLOYMENT' is a placeholder, not a credential."
+    if [[ -z "${CLIENT_SECRET}" ]]; then
+      echo
+      echo "==> REMINDER: rotate the example client secret. The exported value"
+      echo "    '${CLIENT_SECRET_PLACEHOLDER}' is a placeholder, not a credential."
+    fi
     ;;
   409)
     echo "==> Realm already exists (race with another import). No changes made."
