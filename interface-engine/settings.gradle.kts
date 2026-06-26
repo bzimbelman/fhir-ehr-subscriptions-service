@@ -1,1 +1,1 @@
-rootProject.name = "ipf-app"
+rootProject.name = "interface-engine"

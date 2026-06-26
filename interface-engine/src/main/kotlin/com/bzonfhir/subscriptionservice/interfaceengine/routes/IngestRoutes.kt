@@ -1,4 +1,4 @@
-package com.bzonfhir.subscriptionservice.ipf.routes
+package com.bzonfhir.subscriptionservice.interfaceengine.routes
 
 import ca.uhn.fhir.context.FhirContext
 import ca.uhn.fhir.rest.client.api.IGenericClient
