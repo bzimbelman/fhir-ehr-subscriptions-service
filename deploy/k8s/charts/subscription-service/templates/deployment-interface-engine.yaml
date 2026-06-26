@@ -115,17 +115,32 @@ spec:
             # local debugging; default is the compact prod layout.
             - name: SPRING_PROFILES_ACTIVE
               value: {{ .Values.interfaceEngine.profiles | default "" | quote }}
+          # Liveness vs readiness split (Epic #387, ticket #393).
+          #
+          # Liveness (kubelet restarts a DOWN pod): only JVM-internal stuff —
+          # `ping` + `db`. If Matchbox/HAPI are down that's NOT a liveness
+          # failure (restarting our pod won't fix the downstream). Slow and
+          # tolerant timings so a transient hiccup doesn't restart us.
+          #
+          # Readiness (kubelet removes a DOWN pod from Service endpoints
+          # but leaves it running): full health — `ping` + `db` +
+          # `matchbox` + `hapi` + `dlqBacklog`. Faster + stricter timings
+          # so a dead downstream takes us out of rotation in ~30s.
+          #
+          # The two groups are defined in
+          # interface-engine/.../application.yaml under
+          # `management.endpoint.health.group`.
           readinessProbe:
             httpGet:
-              path: /actuator/health
+              path: /actuator/health/readiness
               port: http
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 12
+            failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /actuator/health
+              path: /actuator/health/liveness
               port: http
             initialDelaySeconds: 60
             periodSeconds: 30
