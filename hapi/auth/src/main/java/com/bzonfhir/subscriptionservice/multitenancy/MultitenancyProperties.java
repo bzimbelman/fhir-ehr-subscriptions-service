@@ -53,8 +53,11 @@ public class MultitenancyProperties {
 
   /**
    * JWT claim name to read for the tenant identifier in {@link MultitenancyMode#ENABLED}.
-   * Default {@code "tenant"}. Operators can change this to match an existing Keycloak claim
-   * mapper (e.g. {@code "org_id"}, {@code "tenant_id"}, {@code "https://my-app/tenant"}).
+   * Default {@code "tenant"}. Operators can change this to match an existing IdP claim
+   * mapping (e.g. {@code "org_id"}, {@code "tenant_id"}, {@code "https://my-app/tenant"}).
+   * Every modern OIDC IdP supports configuring a custom claim on the access token —
+   * Keycloak via "Client scopes" or token mappers, Auth0 via Actions/Rules, Okta via
+   * "Token customization", etc.
    */
   private String tenantClaim = "tenant";
 
@@ -63,7 +66,7 @@ public class MultitenancyProperties {
    * header {@code X-Test-Tenant} INSTEAD of the JWT, bypassing the full JWT validation chain.
    *
    * <p><strong>NEVER enable this in production.</strong> It exists so the e2e suite can
-   * demonstrate tenant isolation without standing up a full Keycloak. Setting
+   * demonstrate tenant isolation without standing up a full OIDC IdP. Setting
    * {@code SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE=true} is enough to make any client
    * choose its own tenant by sending a header. The interceptor logs a loud warning on every
    * startup when it sees this flag set.

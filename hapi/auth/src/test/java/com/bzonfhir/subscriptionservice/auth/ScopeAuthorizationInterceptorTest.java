@@ -131,7 +131,7 @@ class ScopeAuthorizationInterceptorTest {
     RequestDetails rd = Mockito.mock(RequestDetails.class);
     Map<Object, Object> userData = new HashMap<>();
     userData.put(
-        KeycloakJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY, Set.<SmartScope>of());
+        OidcJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY, Set.<SmartScope>of());
     Mockito.when(rd.getUserData()).thenReturn(userData);
 
     List<IAuthRule> rules = newInterceptor(false).buildRuleList(rd);
@@ -147,7 +147,7 @@ class ScopeAuthorizationInterceptorTest {
     RequestDetails rd = Mockito.mock(RequestDetails.class);
     Map<Object, Object> userData = new HashMap<>();
     Set<SmartScope> scopes = Set.of(SmartScope.parse("system/Patient.cruds"));
-    userData.put(KeycloakJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY, scopes);
+    userData.put(OidcJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY, scopes);
     Mockito.when(rd.getUserData()).thenReturn(userData);
 
     List<IAuthRule> rules = newInterceptor(true).buildRuleList(rd);

@@ -68,14 +68,16 @@ public class JwtValidator {
 
     ConfigurableJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
     // Accept the three RS algorithms; reject HS* / none / EC unless explicitly asked.
-    // Keycloak uses RS256 by default; the realm bundles it as the default signing alg.
+    // RS256 is the OAuth2/OIDC default and is what every major IdP (Keycloak, Auth0,
+    // Okta, Azure AD, Cognito, Authentik) signs access tokens with out of the box.
     processor.setJWSKeySelector(
         new JWSVerificationKeySelector<>(
             java.util.Set.of(JWSAlgorithm.RS256, JWSAlgorithm.RS384, JWSAlgorithm.RS512),
             jwkSource));
-    // Verify iss + exp + nbf. Audience left unverified — Keycloak puts the client_id in
-    // `azp`, not `aud`, for client_credentials grants, so requiring `aud` would break
-    // every M2M caller.
+    // Verify iss + exp + nbf. Audience left unverified — many IdPs (Keycloak, Auth0,
+    // Okta) put the client_id in `azp`, not `aud`, for client_credentials grants, so
+    // requiring `aud` would break every M2M caller until audiences were configured
+    // per-IdP. Operators that need audience enforcement can add their own verifier.
     processor.setJWTClaimsSetVerifier(
         new DefaultJWTClaimsVerifier<>(
             new JWTClaimsSet.Builder().issuer(expectedIssuer).build(),
