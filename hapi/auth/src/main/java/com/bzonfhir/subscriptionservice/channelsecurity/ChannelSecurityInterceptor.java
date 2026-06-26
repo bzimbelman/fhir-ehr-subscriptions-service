@@ -25,7 +25,7 @@ import ca.uhn.fhir.rest.api.server.RequestDetails;
 import ca.uhn.fhir.rest.server.exceptions.UnprocessableEntityException;
 
 import com.bzonfhir.subscriptionservice.auth.AuthProperties;
-import com.bzonfhir.subscriptionservice.auth.KeycloakJwtAuthenticationInterceptor;
+import com.bzonfhir.subscriptionservice.auth.OidcJwtAuthenticationInterceptor;
 import com.bzonfhir.subscriptionservice.channelsecurity.ChannelSecurityProperties.ChannelSecurityMode;
 
 /**
@@ -178,7 +178,7 @@ public class ChannelSecurityInterceptor {
       return;
     }
     Object claims = request == null ? null : request.getUserData().get(
-        KeycloakJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY);
+        OidcJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY);
     if (claims == null) {
       violations.add(
           "WebSocket Subscriptions require an authenticated session in "

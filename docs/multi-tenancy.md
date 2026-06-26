@@ -63,10 +63,10 @@ The default claim name is `tenant`. It MUST be a non-empty string. Recommended s
 
 The claim value becomes the partition name verbatim (after trimming whitespace). Keep it
 DNS-label-friendly: ASCII letters, digits, hyphens. Examples: `acme-hospital`, `globex`,
-`memorial-east`. Avoid spaces, dots, slashes, or anything Keycloak might URL-encode
-en route.
+`memorial-east`. Avoid spaces, dots, slashes, or anything an IdP or HTTP layer might
+URL-encode en route.
 
-To change the claim name (e.g. to align with an existing Keycloak mapper), set:
+To change the claim name (e.g. to align with an existing claim mapping in your IdP), set:
 
 ```yaml
 subscription-service:
@@ -105,19 +105,24 @@ curl -X POST "https://subscription-service.bzonfhir.com/fhir/\$partition-managem
 The `id` is an internal integer key (HAPI assigns it; you choose any unused value above 0).
 The `name` is what the JWT claim must match.
 
-### 2. Create the Keycloak client + claim mapper
+### 2. Create the IdP client + claim mapper
 
-In the Keycloak realm:
+Configure your OIDC IdP to issue a `tenant` claim with the partition name on the access
+tokens it mints for this tenant's client. The exact mechanism is IdP-specific; the
+intent is the same across providers.
 
-1. Create a new client `subscription-service-${TENANT}` (Client Credentials flow).
-2. Add a hardcoded claim mapper:
-   - Mapper Type: **Hardcoded claim**
-   - Token claim name: `tenant`
-   - Claim value: `${TENANT}` (e.g. `acme-hospital`)
-   - Claim JSON Type: String
-   - Add to access token: ON
-3. Assign the client the SMART scopes it should have
-   (e.g. `system/Patient.cruds`, `system/Subscription.crus`).
+- **Keycloak**: create a client `subscription-service-${TENANT}` (Client Credentials
+  flow), add a "Hardcoded claim" client mapper with Token claim name `tenant` and Claim
+  value `${TENANT}`, Claim JSON Type String, Add to access token ON. Assign the SMART
+  scopes (`system/Patient.cruds`, `system/Subscription.crus`, etc.) that this tenant
+  should have.
+- **Auth0**: create a Machine-to-Machine application, then use an Action on the
+  Client Credentials Exchange flow to call
+  `api.accessToken.setCustomClaim('tenant', '${TENANT}')`. Grant the scopes via the
+  API's permissions.
+- **Okta**: create an API Services Integration, add a token-claim customization on the
+  authorization server with a literal value for `${TENANT}`, and grant the SMART scopes.
+- **Authentik / others**: use the IdP's equivalent of a "static claim mapper".
 
 The client's tokens will now include `"tenant": "acme-hospital"` automatically, and every
 FHIR request signed with one of those tokens will land in the `acme-hospital` partition.
@@ -125,7 +130,7 @@ FHIR request signed with one of those tokens will land in the `acme-hospital` pa
 ## Worked example: tenant isolation
 
 Suppose two tenants `acme` and `globex` are provisioned per the steps above. Each has its
-own Keycloak client and matching `tenant` claim.
+own IdP client/application and matching `tenant` claim.
 
 ```bash
 # Token A: tenant=acme
@@ -184,7 +189,7 @@ and turn a "switch from disabled to enabled" into a data migration.
 `SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE=true` (or `subscription-service.multitenancy.test-mode: true`)
 makes the interceptor read the tenant from the `X-Test-Tenant` HTTP header instead of the
 JWT. This exists exclusively so the e2e test suite can demonstrate tenant isolation
-without spinning up a full Keycloak; setting it on a production deployment lets any client
+without spinning up a full OIDC IdP; setting it on a production deployment lets any client
 choose its own tenant by sending a header.
 
 **NEVER enable this in production.**

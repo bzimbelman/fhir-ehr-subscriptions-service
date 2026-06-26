@@ -17,7 +17,7 @@ import ca.uhn.fhir.rest.server.interceptor.auth.RuleBuilder;
 
 /**
  * Translates SMART scopes (already parsed and stashed by
- * {@link KeycloakJwtAuthenticationInterceptor}) into HAPI {@link IAuthRule}s for the current
+ * {@link OidcJwtAuthenticationInterceptor}) into HAPI {@link IAuthRule}s for the current
  * request.
  *
  * <p>The default policy is {@link PolicyEnum#DENY}: any operation NOT explicitly granted by
@@ -25,7 +25,7 @@ import ca.uhn.fhir.rest.server.interceptor.auth.RuleBuilder;
  * authorization interceptor converts unmatched-deny verdicts to that exception class).
  *
  * <p>Anonymous paths (CapabilityStatement / SMART config) never reach this interceptor
- * because {@link KeycloakJwtAuthenticationInterceptor} short-circuits them earlier — but if
+ * because {@link OidcJwtAuthenticationInterceptor} short-circuits them earlier — but if
  * the upstream interceptor is disabled and a request lands here with no scopes, we ALLOW
  * read of the {@code /metadata} endpoint so HAPI's tester UI stays usable.
  */
@@ -109,7 +109,7 @@ public class ScopeAuthorizationInterceptor extends AuthorizationInterceptor {
   @SuppressWarnings("unchecked")
   static Set<SmartScope> extractScopes(RequestDetails requestDetails) {
     Object stashed =
-        requestDetails.getUserData().get(KeycloakJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY);
+        requestDetails.getUserData().get(OidcJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY);
     if (stashed instanceof Set<?> set) {
       // Defensive copy as an immutable collection of SmartScope.
       List<SmartScope> out = new ArrayList<>();

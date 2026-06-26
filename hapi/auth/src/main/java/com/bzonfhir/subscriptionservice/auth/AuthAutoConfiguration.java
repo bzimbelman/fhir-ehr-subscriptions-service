@@ -22,7 +22,7 @@ import ca.uhn.fhir.rest.server.RestfulServer;
  * {@code subscription-service.auth.enabled=true} (the default). Setting that property to
  * {@code false} (or env {@code SUBSCRIPTION_SERVICE_AUTH_ENABLED=false}) causes Spring to
  * skip this class entirely, leaving HAPI in its unauthenticated upstream state — useful
- * for local development against the docker-compose stack without a Keycloak running.
+ * for local development against the docker-compose stack without any OIDC IdP running.
  */
 @AutoConfiguration
 @ConditionalOnProperty(
@@ -43,12 +43,14 @@ public class AuthAutoConfiguration {
    */
   static final String ISSUER_REQUIRED_MESSAGE =
       "subscription-service.auth.issuer is required when auth is enabled. "
-          + "Set SUBSCRIPTION_SERVICE_AUTH_ISSUER "
-          + "(e.g., https://your-keycloak.example.com/realms/subscription-service) "
+          + "Set SUBSCRIPTION_SERVICE_AUTH_ISSUER to your OIDC provider's issuer URL "
+          + "(e.g., https://your-idp.example.com/realms/<realm> for Keycloak, "
+          + "https://<tenant>.us.auth0.com/ for Auth0, "
+          + "https://<org>.okta.com/oauth2/default for Okta) "
           + "or set SUBSCRIPTION_SERVICE_AUTH_ENABLED=false for local dev.";
 
   /**
-   * Validates incoming JWTs against the configured Keycloak realm's JWKS. Singleton: the
+   * Validates incoming JWTs against the configured OIDC provider's JWKS. Singleton: the
    * underlying Nimbus {@code JWKSource} caches the JWKS and refreshes it on its own
    * schedule, so reusing one instance across requests is correct and cheap.
    *
@@ -56,7 +58,7 @@ public class AuthAutoConfiguration {
    * (ticket #370). Throwing here aborts Spring's context refresh, which in turn causes
    * the Spring Boot launcher to exit non-zero — so the HAPI container restarts in a loop
    * with the documented error in its logs, instead of starting up against the wrong
-   * Keycloak realm.
+   * issuer (which would silently 401 every request from the configured IdP).
    */
   @Bean
   public JwtValidator jwtValidator(AuthProperties props) {
@@ -80,9 +82,9 @@ public class AuthAutoConfiguration {
   }
 
   @Bean
-  public KeycloakJwtAuthenticationInterceptor keycloakJwtAuthenticationInterceptor(
+  public OidcJwtAuthenticationInterceptor oidcJwtAuthenticationInterceptor(
       AuthProperties props, JwtValidator validator) {
-    return new KeycloakJwtAuthenticationInterceptor(props, validator);
+    return new OidcJwtAuthenticationInterceptor(props, validator);
   }
 
   @Bean
@@ -101,7 +103,7 @@ public class AuthAutoConfiguration {
   @Bean
   public SmartInitializingSingleton subscriptionServiceAuthInterceptorRegistrar(
       @Autowired(required = false) RestfulServer restfulServer,
-      KeycloakJwtAuthenticationInterceptor authInterceptor,
+      OidcJwtAuthenticationInterceptor authInterceptor,
       ScopeAuthorizationInterceptor authzInterceptor) {
     return () -> {
       if (restfulServer == null) {

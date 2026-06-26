@@ -16,8 +16,14 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.JWTClaimsSet.Builder;
 
 /**
- * HAPI interceptor that requires a valid Keycloak-issued JWT on every FHIR request, with
- * a small allow-list of anonymous paths (CapabilityStatement, SMART config discovery).
+ * HAPI interceptor that requires a valid OIDC-issued JWT on every FHIR request, with a
+ * small allow-list of anonymous paths (CapabilityStatement, SMART config discovery).
+ *
+ * <p>Provider-agnostic: any OpenID Connect identity provider that publishes a JWKS
+ * endpoint and issues RS256/RS384/RS512-signed access tokens works here — Keycloak,
+ * Auth0, Okta, Azure AD, AWS Cognito, Authentik, etc. The interceptor consumes only the
+ * standard OIDC artifacts (issuer, JWKS, {@code scope} claim); no provider-specific code
+ * paths.
  *
  * <p>Hooks into {@link Pointcut#SERVER_INCOMING_REQUEST_POST_PROCESSED} so HAPI has parsed
  * the request path but not yet dispatched to a provider. On success, the decoded
@@ -31,7 +37,7 @@ import com.nimbusds.jwt.JWTClaimsSet.Builder;
  * {@link JwtValidator} — safe to surface, no secrets leaked.
  */
 @Interceptor
-public class KeycloakJwtAuthenticationInterceptor {
+public class OidcJwtAuthenticationInterceptor {
 
   /** Key under which the validated claims set is stashed in {@code RequestDetails.userData}. */
   public static final String USER_DATA_CLAIMS_KEY = "subscription-service.auth.claims";
@@ -44,13 +50,13 @@ public class KeycloakJwtAuthenticationInterceptor {
   public static final String USER_DATA_SCOPES_KEY = "subscription-service.auth.scopes";
 
   private static final Logger log =
-      LoggerFactory.getLogger(KeycloakJwtAuthenticationInterceptor.class);
+      LoggerFactory.getLogger(OidcJwtAuthenticationInterceptor.class);
   private static final String BEARER_PREFIX = "bearer ";
 
   private final AuthProperties props;
   private final JwtValidator validator;
 
-  public KeycloakJwtAuthenticationInterceptor(AuthProperties props, JwtValidator validator) {
+  public OidcJwtAuthenticationInterceptor(AuthProperties props, JwtValidator validator) {
     this.props = props;
     this.validator = validator;
   }
@@ -116,8 +122,9 @@ public class KeycloakJwtAuthenticationInterceptor {
   }
 
   /**
-   * Keycloak places the scope list in a string-valued {@code scope} claim by default; some
-   * deployments configure it as a list. Handle both.
+   * The {@code scope} claim is a space-delimited string under OAuth 2.0 / OIDC. Some IdPs
+   * (and some custom mappers) emit it as a JSON array instead. Handle both shapes so the
+   * downstream scope parser always sees a single space-delimited string.
    */
   static String extractScopeClaim(JWTClaimsSet claims) {
     Object raw = claims.getClaim("scope");
