@@ -72,6 +72,23 @@ SPRING_DATASOURCE_URL points at the postgres service by DNS name).
 {{- end }}
 
 {{/*
+External Postgres validation (ticket #416). When externalPostgres.enabled
+is true, both host and passwordSecret must be set — otherwise rendering
+would produce a Deployment that immediately CrashLoops on JDBC connect.
+Invoked from a standalone validation template so it fires at every render.
+*/}}
+{{- define "subscription-service.externalPostgres.validate" -}}
+{{- if .Values.externalPostgres.enabled -}}
+  {{- if not .Values.externalPostgres.host -}}
+    {{- fail "externalPostgres.enabled is true but externalPostgres.host is empty. Set it to your managed Postgres hostname." -}}
+  {{- end -}}
+  {{- if not .Values.externalPostgres.passwordSecret -}}
+    {{- fail "externalPostgres.enabled is true but externalPostgres.passwordSecret is empty. Pre-create a Secret in the release namespace and reference it here." -}}
+  {{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
 Resolved JWKS URL: explicit override wins; otherwise derive from the issuer.
 Returns empty string when auth is off.
 */}}
