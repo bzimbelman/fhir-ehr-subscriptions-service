@@ -176,6 +176,15 @@ services:
       IPF_WORKER_POLL_MS: ${IPF_WORKER_POLL_MS:-1000}
       IPF_WORKER_BATCH_SIZE: ${IPF_WORKER_BATCH_SIZE:-10}
       IPF_WORKER_TRANSFORMING_STALE_SECONDS: ${IPF_WORKER_TRANSFORMING_STALE_SECONDS:-60}
+      # Retry policy (#383). See deploy/docker/.env.example for the
+      # backoff formula + worked defaults. The whole worker subsystem is
+      # @ConditionalOnProperty-gated, so when IPF_WORKER_ENABLED=false
+      # these have no effect.
+      IPF_MAX_ATTEMPTS: ${IPF_MAX_ATTEMPTS:-5}
+      IPF_BACKOFF_BASE_MS: ${IPF_BACKOFF_BASE_MS:-1000}
+      IPF_BACKOFF_MAX_MS: ${IPF_BACKOFF_MAX_MS:-300000}
+      IPF_BACKOFF_FACTOR: ${IPF_BACKOFF_FACTOR:-2.0}
+      IPF_DLQ_LOG_LEVEL: ${IPF_DLQ_LOG_LEVEL:-WARN}
     ports:
       - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
       - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
