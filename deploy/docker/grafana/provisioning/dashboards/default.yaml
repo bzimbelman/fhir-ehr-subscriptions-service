@@ -1,0 +1,19 @@
+# Grafana dashboard provider — auto-loads every *.json under
+# /var/lib/grafana/dashboards on boot, then watches for changes every
+# 30s so an operator can `docker compose cp` an updated dashboard in
+# without restarting Grafana.
+#
+# See https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards
+apiVersion: 1
+
+providers:
+  - name: subscription-service
+    orgId: 1
+    folder: subscription-service
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false
