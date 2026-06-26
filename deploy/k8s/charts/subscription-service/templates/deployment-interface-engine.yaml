@@ -55,6 +55,56 @@ spec:
               value: http://{{ include "subscription-service.matchbox.fullname" . }}:{{ .Values.matchbox.service.port }}/matchboxv3/fhir
             - name: MLLP_PORT
               value: "2575"
+            {{- if not .Values.externalPostgres.enabled }}
+            # Interface-engine's own Postgres (Epic #378). Same Postgres
+            # server as HAPI; separate database. When externalPostgres is
+            # enabled, the in-cluster IPF DB doesn't exist — operators
+            # provisioning a fully-external setup must supply IPF_DB_URL,
+            # IPF_DB_USER, and IPF_DB_PASSWORD via their own mechanism
+            # (envFrom a pre-created Secret, etc.).
+            - name: IPF_DB_URL
+              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.interfaceEngineDb.database }}
+            - name: IPF_DB_USER
+              value: {{ .Values.interfaceEngineDb.user | quote }}
+            - name: IPF_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "subscription-service.fullname" . }}-ipf-db
+                  key: password
+            {{- end }}
+            # Admin REST API bearer token (Epic #378, ticket #384). Empty
+            # value = unauthenticated admin endpoints (dev only — the app
+            # logs a WARN at startup). Set
+            # `interfaceEngine.admin.authToken` in values to enable.
+            - name: IPF_ADMIN_AUTH_TOKEN
+              value: {{ .Values.interfaceEngine.admin.authToken | default "" | quote }}
+            # Async worker (Epic #378, ticket #382). See
+            # `interfaceEngine.worker` in values.yaml for the meaning of
+            # each knob. The bean is @ConditionalOnProperty-gated, so
+            # setting enabled=false produces a truly inert worker
+            # subsystem (no scheduled task, no @PostConstruct, nothing).
+            - name: IPF_WORKER_ENABLED
+              value: {{ .Values.interfaceEngine.worker.enabled | default true | quote }}
+            - name: IPF_WORKER_POLL_MS
+              value: {{ .Values.interfaceEngine.worker.pollIntervalMs | default 1000 | quote }}
+            - name: IPF_WORKER_BATCH_SIZE
+              value: {{ .Values.interfaceEngine.worker.batchSize | default 10 | quote }}
+            - name: IPF_WORKER_TRANSFORMING_STALE_SECONDS
+              value: {{ .Values.interfaceEngine.worker.transformingStaleSeconds | default 60 | quote }}
+            # Retry policy (Epic #378, ticket #383). After
+            # `retry.maxAttempts` failures a row hits DEAD_LETTER; until
+            # then each failure schedules a backoff retry. See
+            # interfaceEngine.worker.retry in values.yaml.
+            - name: IPF_MAX_ATTEMPTS
+              value: {{ .Values.interfaceEngine.worker.retry.maxAttempts | default 5 | quote }}
+            - name: IPF_BACKOFF_BASE_MS
+              value: {{ .Values.interfaceEngine.worker.retry.backoffBaseMs | default 1000 | quote }}
+            - name: IPF_BACKOFF_MAX_MS
+              value: {{ .Values.interfaceEngine.worker.retry.backoffMaxMs | default 300000 | quote }}
+            - name: IPF_BACKOFF_FACTOR
+              value: {{ .Values.interfaceEngine.worker.retry.backoffFactor | default "2.0" | quote }}
+            - name: IPF_DLQ_LOG_LEVEL
+              value: {{ .Values.interfaceEngine.worker.retry.dlqLogLevel | default "WARN" | quote }}
           readinessProbe:
             httpGet:
               path: /actuator/health

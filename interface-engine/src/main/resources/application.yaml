@@ -2,6 +2,43 @@ spring:
   application:
     # Referenced by IPF's ATNA auto-config (auditMetadataProvider). Required.
     name: subscription-service-interface-engine
+  # ---------------------------------------------------------------------------
+  # Datasource for the interface-engine's own Postgres database (Epic #378).
+  # SEPARATE from HAPI's database — separate DB name, separate user, separate
+  # Flyway migration history — so HAPI schema changes can't break us and
+  # vice versa. In Compose / k8s, both DBs live on the same Postgres server
+  # (one container) for v1; can be split later without app changes.
+  #
+  # The IPF database is optional at the JVM level: when the
+  # `subscription-service.ipf-db.enabled` toggle is `false` (set by unit
+  # tests via @TestPropertySource), Spring Boot's datasource autoconfig is
+  # excluded entirely and tests don't need a Postgres available. Production
+  # always runs with this on.
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: ${IPF_DB_URL:jdbc:postgresql://hapi-db:5432/ipf}
+    username: ${IPF_DB_USER:ipf}
+    password: ${IPF_DB_PASSWORD:ipf}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 10000
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Flyway owns the schema; Hibernate must not touch it.
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: false
+    validate-on-migrate: true
 
 server:
   # HAPI FHIR's bundled servers use 8080. Pick 8090 to avoid conflicts in
@@ -54,8 +91,59 @@ subscription-service:
     # "Mapping strategy" and matchbox/README.md.
     structuremap:
       adt-a01: ${MATCHBOX_SM_ADT_A01:http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01}
+  # ---------------------------------------------------------------------------
+  # Async worker (Epic #378, ticket #382). The worker polls `ingested_messages`
+  # for RECEIVED (or retry-ready FAILED) rows, drives the matchbox transform,
+  # POSTs the resulting Bundle to HAPI, and updates the row's status.
+  #
+  # Implementation note: uses Spring's `@Scheduled` rather than a Camel
+  # `timer:` route. The IngestedMessageWorker class comment explains the
+  # tradeoffs; the short version is that this whole story is one bounded
+  # piece of work driven by SELECT … FOR UPDATE SKIP LOCKED, and plain
+  # Spring scheduling keeps the moving parts minimal + the test harness
+  # is just @SpringBootTest + Awaitility (no Camel AdviceWith needed).
+  #
+  # `enabled: false` turns the @Scheduled loop off entirely — used by the
+  # existing IngestRoutesTest / AdminMessagesControllerTest so they don't
+  # have a worker chewing on their seed rows mid-test.
+  # ---------------------------------------------------------------------------
+  worker:
+    enabled: ${IPF_WORKER_ENABLED:true}
+    poll-interval-ms: ${IPF_WORKER_POLL_MS:1000}
+    batch-size: ${IPF_WORKER_BATCH_SIZE:10}
+    # Rows stuck in TRANSFORMING for longer than this on startup are
+    # considered orphans from a previous JVM that died mid-process and
+    # are reset to FAILED so the worker retries them on the next poll.
+    transforming-stale-seconds: ${IPF_WORKER_TRANSFORMING_STALE_SECONDS:60}
+    # -------------------------------------------------------------------------
+    # Retry policy (Epic #378, ticket #383). When the matchbox transform or
+    # HAPI POST fails for a row, the worker schedules a retry with
+    # exponential backoff: `next_attempt_at = now() + min(base * factor^(N-1), max)`
+    # for the new attempt count N. After max-attempts failures the row
+    # transitions to DEAD_LETTER (next_attempt_at = NULL) and one log line
+    # at `dlq-log-level` is emitted. The admin retry endpoint (#384) resets
+    # the row's attempt_count to 0 and clears next_attempt_at, so a retried
+    # message starts the backoff sequence from scratch.
+    #
+    # Defaults: 1s, 2s, 4s, 8s, 16s (capped at 5 min) before DLQ at attempt 5.
+    # -------------------------------------------------------------------------
+    retry:
+      max-attempts: ${IPF_MAX_ATTEMPTS:5}
+      backoff-base-ms: ${IPF_BACKOFF_BASE_MS:1000}
+      backoff-max-ms: ${IPF_BACKOFF_MAX_MS:300000}
+      backoff-factor: ${IPF_BACKOFF_FACTOR:2.0}
+      dlq-log-level: ${IPF_DLQ_LOG_LEVEL:WARN}
 
 # Camel autoconfig.
+# ---------------------------------------------------------------------------
+# Admin REST API (Epic #378, ticket #384). The bearer token gates the
+# `/admin/**` endpoints. When empty/unset the endpoints are unauthenticated
+# (dev convenience); a WARN is logged at startup. Override per-environment.
+# ---------------------------------------------------------------------------
+ipf:
+  admin:
+    auth-token: ${IPF_ADMIN_AUTH_TOKEN:}
+
 camel:
   springboot:
     name: subscription-ingest
