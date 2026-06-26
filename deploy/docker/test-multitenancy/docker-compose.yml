@@ -1,0 +1,93 @@
+# Isolated test stack for ticket #369 multi-tenancy e2e verification.
+#
+# Brings up a copy of just hapi-db + hapi (auth+multitenancy JAR) on a
+# dedicated Docker network and on host ports that don't collide with the
+# main subscription-service-* stack on the-deploy-host.
+#
+# Multi-tenancy is ENABLED, JWT auth is DISABLED, and TEST_MODE is on —
+# meaning the tenant comes from the `X-Test-Tenant` HTTP header. This
+# lets the e2e prove tenant isolation without standing up a Keycloak.
+#
+# Compose project: `subsvc-multitenancy-test`
+# Host port map (chosen to NOT collide with the prod stack's 18080/18081/18090/2575,
+# and chosen <= 65535 because the OS won't let docker bind anything else):
+#   hapi-db host port 65432   -> hapi-db:5432
+#   hapi    host port 28080   -> hapi:8080
+#
+# The ticket originally specified 68080/68081/68090/62575 — those are out of the
+# valid TCP port range. We reuse the 28xxx band instead. Only the HAPI port is
+# actually used by the e2e (db is internal); the other prod ports (matchbox/IPF)
+# aren't needed for the multi-tenancy check.
+#
+# Bring up:
+#   docker compose -p subsvc-multitenancy-test \
+#                  -f deploy/docker/test-multitenancy/docker-compose.yml up -d --build
+# Tear down:
+#   docker compose -p subsvc-multitenancy-test \
+#                  -f deploy/docker/test-multitenancy/docker-compose.yml down -v
+
+services:
+  hapi-db:
+    image: postgres:16-alpine
+    container_name: subsvc-multitenancy-test-db
+    restart: "no"
+    environment:
+      POSTGRES_USER: hapi
+      POSTGRES_PASSWORD: hapi
+      POSTGRES_DB: hapi
+      PGDATA: /var/lib/postgresql/data/pgdata
+    # No bind-mount: ephemeral container-local data — tear down with -v
+    # to nuke the whole partition state between runs.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hapi -d hapi"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - subsvc-mt-test
+
+  hapi:
+    build:
+      context: ../../../hapi
+      dockerfile: Dockerfile
+    image: subscription-service/hapi:mt-test
+    container_name: subsvc-multitenancy-test-hapi
+    restart: "no"
+    depends_on:
+      hapi-db:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://hapi-db:5432/hapi
+      SPRING_DATASOURCE_USERNAME: hapi
+      SPRING_DATASOURCE_PASSWORD: hapi
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+      # The point of the test: multi-tenancy on, JWT off, header-based tenant.
+      # All three are overridable via shell env at `docker-compose up` time so
+      # the same stack can be flipped through DISABLED for spot checks.
+      SUBSCRIPTION_SERVICE_AUTH_ENABLED: ${SUBSCRIPTION_SERVICE_AUTH_ENABLED:-false}
+      SUBSCRIPTION_SERVICE_MULTITENANCY: ${SUBSCRIPTION_SERVICE_MULTITENANCY:-enabled}
+      SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE:-true}
+    volumes:
+      - ../../../hapi/application.yaml:/app/config/application.yaml:ro
+      - ../../../hapi/igs:/app/igs:ro
+      - ../../../hapi/healthcheck:/app/healthcheck:ro
+    ports:
+      - "28080:8080"
+    healthcheck:
+      test:
+        - CMD
+        - java
+        - /app/healthcheck/HapiHealthCheck.java
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+    networks:
+      - subsvc-mt-test
+
+networks:
+  subsvc-mt-test:
+    name: subsvc-multitenancy-test
+    driver: bridge

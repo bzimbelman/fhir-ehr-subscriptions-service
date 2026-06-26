@@ -138,15 +138,18 @@ Matchbox is stateless. The IPF app is stateless. Only Postgres holds durable sta
 
 **Decision: Build HAPI partition-based multi-tenancy in from day one, configurable per deployment.**
 
+**Status (ticket #369): IMPLEMENTED.** The interceptor, properties, and HAPI `partitioning` block are merged. See [`multi-tenancy.md`](multi-tenancy.md) for the operator workflow.
+
 The cost of building this in up-front is small (a config toggle, a small auth interceptor that maps a JWT claim to a HAPI partition, ~3 HAPI config flags). The cost of retrofitting it later — migrating existing resources into partitions, changing URLs subscribers depend on — is large enough to rule it out.
 
 Approach:
 
 - Environment variable `SUBSCRIPTION_SERVICE_MULTITENANCY` switches between `disabled` (default) and `enabled`.
 - **Disabled mode** — all requests resolve to HAPI's `DEFAULT` partition. URLs look like `/fhir/Patient/123`. From a subscriber's perspective the server is single-tenant and partitions are invisible. This is the model (1) and (4) shape.
-- **Enabled mode** — a small `Interceptor` reads a `tenant` claim from the validated JWT and sets the HAPI partition context for the request. Resources, Subscriptions, and notifications are partition-scoped automatically — HAPI does the work. Tenants cannot see each other's resources, period. This is the model (2) and (3) shape.
+- **Enabled mode** — a small `Interceptor` (`TenantPartitionInterceptor` in `com.bzonfhir.subscriptionservice.multitenancy`) reads a `tenant` claim from the validated JWT and sets the HAPI partition context for the request. Resources, Subscriptions, and notifications are partition-scoped automatically — HAPI does the work. Tenants cannot see each other's resources, period. This is the model (2) and (3) shape.
+- The FHIR base URL shape is the same in both modes (`/fhir/Patient/123`). The starter's URL-based tenant strategy (`/fhir/{tenant}/Patient/...`) is explicitly unregistered at boot; the partition comes from the JWT, never from the URL path.
 - Tenant provisioning is operator-driven: a new tenant means a new HAPI partition (one API call) plus a Keycloak client that issues tokens with the matching `tenant` claim. No DDL, no schema changes.
-- The Postgres schema gets HAPI's `partition_id` column whether multi-tenancy is enabled or not. This is what makes retrofitting unnecessary later — if a single-tenant deployment later wants to become multi-tenant, every existing resource is already in `DEFAULT` and stays there while new tenants get their own partitions.
+- The Postgres schema gets HAPI's `partition_id` column whether multi-tenancy is enabled or not — `hapi.fhir.partitioning` is configured in `application.yaml` regardless of mode. This is what makes retrofitting unnecessary later — if a single-tenant deployment later wants to become multi-tenant, every existing resource is already in `DEFAULT` and stays there while new tenants get their own partitions.
 
 What this explicitly does NOT include in the first cut:
 
