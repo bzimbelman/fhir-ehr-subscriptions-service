@@ -64,6 +64,15 @@ logging:
     com.bzonfhir.subscriptionservice: INFO
     org.apache.camel: INFO
     org.openehealth.ipf: INFO
+  # JSON log layout via Logback (Epic #387, ticket #388). The actual encoder
+  # is configured in `logback-spring.xml` on the classpath; Spring Boot
+  # picks that file up automatically when it's present. We keep the
+  # `logging.level.*` block here so SPRING_PROFILES_ACTIVE, env-var
+  # overrides, and the rest of Spring Boot's logging-property handling
+  # still work — only the appender/encoder is replaced.
+  #
+  # To run with pretty-printed logs locally: SPRING_PROFILES_ACTIVE=dev.
+  # The `dev` profile is wired in logback-spring.xml.
 
 subscription-service:
   # MLLP listener port. Override with MLLP_PORT env var. 2575 is the de-facto

@@ -86,7 +86,7 @@ open class WorkerJdbcGateway(
     open fun loadRow(id: Long): ClaimedRow? {
         val rows = jdbc.queryForList(
             """
-            SELECT id, source_system, source_id, message_type, raw_message, attempt_count
+            SELECT id, source_system, source_id, message_type, raw_message, attempt_count, correlation_id
               FROM ingested_messages
              WHERE id = ?
             """.trimIndent(),
@@ -100,6 +100,31 @@ open class WorkerJdbcGateway(
             messageType = row["message_type"] as String,
             rawMessage = row["raw_message"] as String,
             attemptCount = (row["attempt_count"] as Number).toInt(),
+            correlationId = row["correlation_id"] as String?,
+        )
+    }
+
+    /**
+     * Backfill helper (#388): set `correlation_id` on a row that didn't
+     * have one (pre-migration rows, or future protocols that didn't carry
+     * one in). Used by the worker's first-time-processing-of-legacy-row
+     * path so the value persists for subsequent retries.
+     *
+     * No-op when the row already has a non-null correlation_id — the
+     * WHERE clause keeps this idempotent so a concurrent worker doesn't
+     * clobber a value another replica just wrote.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    open fun backfillCorrelationId(id: Long, correlationId: String) {
+        jdbc.update(
+            """
+            UPDATE ingested_messages
+               SET correlation_id = ?
+             WHERE id = ?
+               AND correlation_id IS NULL
+            """.trimIndent(),
+            correlationId,
+            id,
         )
     }
 
@@ -234,4 +259,12 @@ data class ClaimedRow(
     val messageType: String,
     val rawMessage: String,
     val attemptCount: Int,
+    /**
+     * Correlation id for the message (Epic #387, ticket #388).
+     *
+     * Nullable to tolerate rows persisted before the V003 migration,
+     * which have no value. The worker mints one and back-fills it
+     * before the first log line about this row is emitted.
+     */
+    val correlationId: String? = null,
 )

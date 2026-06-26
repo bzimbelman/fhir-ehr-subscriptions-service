@@ -152,6 +152,10 @@ interfaceEngineDb:
 # ---------------------------------------------------------------------------
 hapi:
   replicaCount: 1
+  # Spring profiles to activate. Default is empty (compact JSON logs). Set to
+  # `dev` for pretty-printed JSON in non-prod clusters — see
+  # docs/observability/log-schema.md.
+  profiles: ""
   service:
     type: ClusterIP
     port: 8080
@@ -244,6 +248,9 @@ matchbox:
 # ---------------------------------------------------------------------------
 interfaceEngine:
   replicaCount: 1
+  # Spring profiles. Default empty (compact JSON logs). `dev` enables
+  # pretty-printed JSON — see docs/observability/log-schema.md.
+  profiles: ""
   http:
     service:
       type: ClusterIP

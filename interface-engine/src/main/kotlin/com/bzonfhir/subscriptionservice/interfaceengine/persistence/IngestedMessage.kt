@@ -101,6 +101,36 @@ class IngestedMessage(
 
     @Column(name = "delivered_at")
     var deliveredAt: OffsetDateTime? = null,
+
+    /**
+     * Correlation id for the message (Epic #387, ticket #388).
+     *
+     * Server-assigned (UUID v4) by [com.bzonfhir.subscriptionservice
+     * .interfaceengine.routes.IngestRoutes] when an MLLP message lands.
+     * HL7 v2 has no transport-level correlation header, so every inbound
+     * row gets a fresh id at receive time. The same value is then:
+     *
+     *   - written to MDC for every log line emitted while the row is
+     *     being received / persisted / worked,
+     *   - sent as the `X-Correlation-Id` header on the matchbox
+     *     `$transform` and HAPI Bundle POST,
+     *   - exposed by the admin /messages/{id} endpoint so an operator
+     *     can paste it into `kubectl logs ... | grep` and pull the full
+     *     pipeline trace.
+     *
+     * Nullable because:
+     *
+     *   1. Rows persisted before this migration (V003) have no value.
+     *      The worker tolerates that by treating "no correlation_id" as
+     *      "generate one on first processing".
+     *   2. Future inbound channels (FHIR REST, EHR_NATIVE_API) might
+     *      legitimately carry an upstream-generated id; if none arrives
+     *      we fall back to a server-generated one, but the column itself
+     *      stays nullable so a sender that explicitly sends a null
+     *      header isn't blocked by a DB NOT NULL constraint.
+     */
+    @Column(name = "correlation_id")
+    var correlationId: String? = null,
 ) {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
