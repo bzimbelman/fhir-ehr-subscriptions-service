@@ -86,7 +86,7 @@ open class WorkerJdbcGateway(
     open fun loadRow(id: Long): ClaimedRow? {
         val rows = jdbc.queryForList(
             """
-            SELECT id, message_type, raw_message, attempt_count
+            SELECT id, source_system, source_id, message_type, raw_message, attempt_count
               FROM ingested_messages
              WHERE id = ?
             """.trimIndent(),
@@ -95,6 +95,8 @@ open class WorkerJdbcGateway(
         val row = rows.firstOrNull() ?: return null
         return ClaimedRow(
             id = (row["id"] as Number).toLong(),
+            sourceSystem = row["source_system"] as String,
+            sourceId = row["source_id"] as String,
             messageType = row["message_type"] as String,
             rawMessage = row["raw_message"] as String,
             attemptCount = (row["attempt_count"] as Number).toInt(),
@@ -122,18 +124,32 @@ open class WorkerJdbcGateway(
     }
 
     /**
-     * Terminal update for the failure path. Increments attempt_count,
-     * stamps last_attempt_at + last_error. `next_attempt_at` is left NULL
-     * for this story — ticket #383 will compute the exponential backoff
-     * here.
+     * Terminal update for the retryable failure path (#383). Increments
+     * attempt_count, stamps last_attempt_at + last_error, and schedules
+     * the next retry by writing `next_attempt_at = now() + backoffMillis`.
+     *
+     * The caller (the worker) is responsible for the backoff math + the
+     * decision of "retry vs. DLQ" — this gateway method only persists.
+     * Keeping the policy out here makes the SQL trivial and lets the
+     * worker test the math without standing up Postgres.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    open fun markFailed(id: Long, attemptCount: Int, lastError: String) {
+    open fun markFailedWithBackoff(
+        id: Long,
+        newAttemptCount: Int,
+        lastError: String,
+        backoffMillis: Long,
+    ) {
         // Truncate last_error to a reasonable size — Postgres TEXT is
         // unbounded but very long error messages from a stack trace would
         // bloat the table. 4 KB is more than enough for any single
         // exception message we expect.
         val trimmed = if (lastError.length > 4096) lastError.take(4096) else lastError
+        // Compute next_attempt_at in SQL with `now() + interval` so we
+        // don't have to argue about JVM clock vs. DB clock at retry time —
+        // the worker's claimBatch() comparison also runs against `now()`
+        // server-side. Using `make_interval(secs => ?)` accepts a fractional
+        // double for sub-second backoffs (used by tests with base=100ms).
         jdbc.update(
             """
             UPDATE ingested_messages
@@ -141,10 +157,42 @@ open class WorkerJdbcGateway(
                    attempt_count = ?,
                    last_attempt_at = now(),
                    last_error = ?,
+                   next_attempt_at = now() + make_interval(secs => ?)
+             WHERE id = ?
+            """.trimIndent(),
+            newAttemptCount,
+            trimmed,
+            backoffMillis / 1000.0,
+            id,
+        )
+    }
+
+    /**
+     * Terminal update for the DLQ path (#383). The retry budget is
+     * exhausted; the row moves to `DEAD_LETTER`, `next_attempt_at` is
+     * cleared (so the worker never re-claims it), and `last_error` is
+     * preserved for operator triage. The admin retry endpoint
+     * (POST /admin/messages/{id}/retry, ticket #384) is the only way
+     * out of this state.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    open fun markDeadLetter(
+        id: Long,
+        newAttemptCount: Int,
+        lastError: String,
+    ) {
+        val trimmed = if (lastError.length > 4096) lastError.take(4096) else lastError
+        jdbc.update(
+            """
+            UPDATE ingested_messages
+               SET status = 'DEAD_LETTER',
+                   attempt_count = ?,
+                   last_attempt_at = now(),
+                   last_error = ?,
                    next_attempt_at = NULL
              WHERE id = ?
             """.trimIndent(),
-            attemptCount + 1,
+            newAttemptCount,
             trimmed,
             id,
         )
@@ -181,6 +229,8 @@ open class WorkerJdbcGateway(
  */
 data class ClaimedRow(
     val id: Long,
+    val sourceSystem: String,
+    val sourceId: String,
     val messageType: String,
     val rawMessage: String,
     val attemptCount: Int,
