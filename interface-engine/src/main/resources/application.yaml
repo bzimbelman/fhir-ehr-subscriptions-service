@@ -93,6 +93,15 @@ subscription-service:
       adt-a01: ${MATCHBOX_SM_ADT_A01:http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01}
 
 # Camel autoconfig.
+# ---------------------------------------------------------------------------
+# Admin REST API (Epic #378, ticket #384). The bearer token gates the
+# `/admin/**` endpoints. When empty/unset the endpoints are unauthenticated
+# (dev convenience); a WARN is logged at startup. Override per-environment.
+# ---------------------------------------------------------------------------
+ipf:
+  admin:
+    auth-token: ${IPF_ADMIN_AUTH_TOKEN:}
+
 camel:
   springboot:
     name: subscription-ingest

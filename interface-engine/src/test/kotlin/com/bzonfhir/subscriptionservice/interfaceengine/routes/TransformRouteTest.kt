@@ -56,6 +56,7 @@ import java.nio.charset.StandardCharsets
         "spring.autoconfigure.exclude=" +
             "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration," +
             "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration," +
             "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration," +
             "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration",
     ],
@@ -85,6 +86,17 @@ class TransformRouteTest {
         @Bean
         @Primary
         fun mockHapiClient(): IGenericClient = mock()
+
+        // The admin REST API (Epic #378, ticket #384) wires
+        // [AdminMessagesController] which requires an
+        // [IngestedMessageRepository] bean. This test excludes the JPA
+        // autoconfigs so Spring Data never registers one — supply a Mockito
+        // stub so the admin controller can be constructed (we never call
+        // it in this test).
+        @Bean
+        fun mockIngestedMessageRepository():
+            com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageRepository =
+            mock()
     }
 
     companion object {

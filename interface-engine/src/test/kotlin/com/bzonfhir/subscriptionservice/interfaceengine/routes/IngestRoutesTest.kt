@@ -1,11 +1,15 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.routes
 
+import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageRepository
 import org.apache.camel.CamelContext
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.Awaitility.await
 import org.junit.jupiter.api.Test
+import org.mockito.kotlin.mock
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.boot.test.context.TestConfiguration
+import org.springframework.context.annotation.Bean
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import java.net.ServerSocket
@@ -41,6 +45,7 @@ import java.time.Duration
         "spring.autoconfigure.exclude=" +
             "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration," +
             "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.data.jpa.JpaRepositoriesAutoConfiguration," +
             "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration," +
             "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration",
     ],
@@ -68,6 +73,17 @@ class IngestRoutesTest {
 
     @Autowired
     private lateinit var camelContext: CamelContext
+
+    @TestConfiguration
+    class AdminRepoStubConfig {
+        // Admin REST API (Epic #378, ticket #384) wires AdminMessagesController
+        // which requires an IngestedMessageRepository bean. This test
+        // excludes the JPA autoconfigs so Spring Data never registers one —
+        // supply a Mockito stub so the admin controller can be constructed
+        // (we never call it in this test).
+        @Bean
+        fun mockIngestedMessageRepository(): IngestedMessageRepository = mock()
+    }
 
     @Test
     fun `route accepts ADT_A01 and returns an AA ACK`() {
