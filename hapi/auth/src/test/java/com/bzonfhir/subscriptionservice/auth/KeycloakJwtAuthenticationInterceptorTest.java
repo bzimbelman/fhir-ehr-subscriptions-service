@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

@@ -11,7 +11,7 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7"
 }
 
-group = "com.bzonfhir"
+group = "com.bzonfhir.subscriptionservice"
 version = "0.0.1-SNAPSHOT"
 
 java {

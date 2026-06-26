@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -62,7 +62,7 @@ public class JwtValidator {
    */
   public JwtValidator(AuthProperties props, JWKSource<SecurityContext> jwkSource) {
     if (props.getIssuer() == null || props.getIssuer().isBlank()) {
-      throw new IllegalArgumentException("subscription_service.auth.issuer must be set");
+      throw new IllegalArgumentException("subscription-service.auth.issuer must be set");
     }
     this.expectedIssuer = props.getIssuer();
 
