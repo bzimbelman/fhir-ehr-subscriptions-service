@@ -75,14 +75,17 @@ interface HapiSubscriptionStatusClient {
      * Fetch SubscriptionStatus history for one Subscription. Returns a
      * structured list of recent delivery attempts.
      *
-     * In HAPI 7.6 the R5 Backport `$status` operation is implemented for
-     * topic-based subscriptions and returns a Parameters resource carrying
-     * a contained SubscriptionStatus with `eventsSinceSubscriptionStart`
-     * and a `notificationEvent[]` array. For legacy R4 criteria
-     * subscriptions HAPI returns the operation but without per-attempt
-     * detail; we surface what is available and synthesize the rest from
-     * the Subscription's own metadata (e.g. `Subscription.error` →
-     * `last_error`).
+     * In HAPI 7.6 the R5 Backport IG ships StructureDefinitions and
+     * OperationDefinitions in the package, but ticket #390 live-testing on
+     * Rancher Desktop confirmed that `$status` is NOT wired as a method on
+     * the Subscription resource provider in our build of the HAPI JPA
+     * starter image — every `GET /fhir/Subscription/{id}/$status` comes
+     * back with HAPI's "No methods exist" warning. We therefore tolerate a
+     * failure on the operation call and fall back to a metadata-only view
+     * synthesized from the Subscription resource itself (status, error,
+     * channel.endpoint). The DeliveryEvent parser is kept in place so a
+     * future HAPI bump (or a custom `IResourceProvider` in `hapi-auth`)
+     * that wires `$status` will start producing events automatically.
      *
      * Returns null when the Subscription id is not found at all (HAPI 404).
      */
