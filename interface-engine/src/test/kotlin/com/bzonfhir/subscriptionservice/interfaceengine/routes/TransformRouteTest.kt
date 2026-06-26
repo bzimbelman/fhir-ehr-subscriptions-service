@@ -47,7 +47,19 @@ import java.nio.charset.StandardCharsets
  *     a ProducerTemplate. That skips the MLLP listener and lets us focus
  *     the assertions on the transform → HAPI hand-off.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.NONE,
+    // Exclude the IPF-DB datasource autoconfigs added in Epic #378 — this
+    // test mocks Matchbox + HAPI via AdviceWith and doesn't need a
+    // Postgres available.
+    properties = [
+        "spring.autoconfigure.exclude=" +
+            "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration",
+    ],
+)
 @UseAdviceWith
 // Each test method gets a fresh Spring context (and therefore a fresh Camel
 // context + fresh route definitions). Without this the second test's call to
