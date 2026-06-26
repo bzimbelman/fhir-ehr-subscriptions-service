@@ -1,6 +1,7 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.worker
 
 import ca.uhn.fhir.rest.client.api.IGenericClient
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -217,6 +218,15 @@ class IngestedMessageWorker(
         if (claimed.isEmpty()) return
         log.debug("worker poll: claimed {} rows", claimed.size)
         for (id in claimed) {
+            // Each row processes under its own MDC scope so its
+            // correlation_id ends up on every log line emitted while
+            // the row is in flight — and is cleared on exit so the
+            // next iteration of this for-loop doesn't inherit it.
+            // We don't yet know the correlation_id; processOne resolves
+            // it from the row and re-installs the MDC there. Clear up
+            // front so a leaked value from a prior poll thread is
+            // discarded.
+            org.slf4j.MDC.remove(CorrelationId.MDC_KEY)
             try {
                 processOne(id)
             } catch (ex: Exception) {
@@ -224,6 +234,10 @@ class IngestedMessageWorker(
                 // status updates itself; an exception out here means even
                 // *that* path failed (DB unreachable, etc.). Log + continue.
                 log.error("worker poll: row {} processing crashed: {}", id, ex.message)
+            } finally {
+                // Defensive cleanup — processOne sets MDC; clear on the
+                // way out regardless of success or throw.
+                org.slf4j.MDC.remove(CorrelationId.MDC_KEY)
             }
         }
     }
@@ -247,6 +261,28 @@ class IngestedMessageWorker(
             log.warn("worker: row {} vanished after claim?", id)
             return
         }
+
+        // Establish the correlation id BEFORE any other log line. Three
+        // cases:
+        //   (a) row has a stored correlation_id (post-#388 receive path) →
+        //       adopt it as-is.
+        //   (b) row has none (pre-#388 row, or future protocol that didn't
+        //       carry one in) → mint a fresh UUID and back-fill it so the
+        //       value persists across retries and is grep-able later.
+        // We set MDC + send the header to matchbox + HAPI from the same
+        // value either way.
+        val correlationId = row.correlationId ?: CorrelationId.generate().also {
+            // Best-effort back-fill — if the UPDATE races with another
+            // replica (unlikely under SKIP LOCKED but theoretically
+            // possible if a recovery sweep ran), the WHERE clause keeps
+            // it idempotent. We don't read back; the value we just
+            // generated is what THIS processOne uses.
+            runCatching { gateway.backfillCorrelationId(id, it) }.onFailure { ex ->
+                log.debug("worker: backfill correlation_id failed for id={} ({})", id, ex.message)
+            }
+        }
+        org.slf4j.MDC.put(CorrelationId.MDC_KEY, correlationId)
+
         val messageType = row.messageType
         val rawMessage = row.rawMessage
 
@@ -269,6 +305,9 @@ class IngestedMessageWorker(
         }
 
         // -- Matchbox transform --
+        // The MatchboxClient implementation reads the current MDC
+        // correlation_id and sends it as `X-Correlation-Id` on the
+        // outbound POST. Same value goes on the HAPI Bundle post below.
         val bundle = try {
             matchboxClient.transformToBundle(structureMap, rawMessage)
         } catch (ex: Exception) {
@@ -278,6 +317,9 @@ class IngestedMessageWorker(
         }
 
         // -- HAPI transaction POST --
+        // HAPI client sees the correlation id via an additional request
+        // header configured by [HapiClientConfig]'s ClientInterceptor that
+        // copies MDC.get(correlation_id) onto every outbound request.
         try {
             hapiClient.transaction().withBundle(bundle).execute()
         } catch (ex: Exception) {

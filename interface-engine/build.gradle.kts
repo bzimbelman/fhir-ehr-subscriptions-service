@@ -95,6 +95,16 @@ dependencies {
     implementation("org.flywaydb:flyway-core:10.20.1")
     implementation("org.flywaydb:flyway-database-postgresql:10.20.1")
 
+    // JSON-formatted logs (Epic #387, ticket #388). logstash-logback-encoder
+    // produces one JSON object per log record in the Logstash / ECS-style
+    // layout, with MDC values surfaced as top-level fields and exception
+    // stack traces emitted as a `stack_trace` string. Picked over
+    // `logback-jackson` because logstash-logback-encoder is the dominant
+    // choice in the Spring Boot world and integrates cleanly with SLF4J
+    // MDC for correlation-id propagation. Version 7.4 is the latest stable
+    // line compatible with Logback 1.5.x (which Spring Boot 3.5 brings).
+    implementation("net.logstash.logback:logstash-logback-encoder:7.4")
+
     // Tests.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.apache.camel:camel-test-spring-junit5:$camelVersion")

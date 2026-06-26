@@ -1,8 +1,12 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.config
 
 import ca.uhn.fhir.context.FhirContext
+import ca.uhn.fhir.rest.client.api.IClientInterceptor
 import ca.uhn.fhir.rest.client.api.IGenericClient
+import ca.uhn.fhir.rest.client.api.IHttpRequest
+import ca.uhn.fhir.rest.client.api.IHttpResponse
 import ca.uhn.fhir.rest.client.api.ServerValidationModeEnum
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -35,6 +39,38 @@ class FhirConfig {
     ): IGenericClient {
         fhirContext.restfulClientFactory.socketTimeout = timeoutMs
         fhirContext.restfulClientFactory.connectTimeout = timeoutMs
-        return fhirContext.newRestfulGenericClient(hapiBaseUrl)
+        val client = fhirContext.newRestfulGenericClient(hapiBaseUrl)
+        // Register a client interceptor that copies the current MDC
+        // correlation_id (set by IngestedMessageWorker.processOne) onto
+        // every outbound HAPI request as `X-Correlation-Id`. The HAPI
+        // server-side OidcJwtAuthenticationInterceptor (in the hapi-auth
+        // JAR) reads the same header into its own MDC, so both services'
+        // log lines for the same message share an id.
+        client.registerInterceptor(CorrelationIdClientInterceptor())
+        return client
+    }
+}
+
+/**
+ * HAPI client interceptor: stamps `X-Correlation-Id` on every outbound
+ * request from the current MDC.
+ *
+ * Lives at file-package scope rather than nested in [FhirConfig] so it
+ * can be unit-tested without the surrounding configuration class.
+ */
+private class CorrelationIdClientInterceptor : IClientInterceptor {
+    override fun interceptRequest(request: IHttpRequest) {
+        val id = CorrelationId.current() ?: return
+        // addHeader rather than removeHeaders+addHeader: HAPI's generic
+        // client doesn't expose a "set or replace" method on IHttpRequest
+        // and we want this header to be additive, not destructive of
+        // anything the caller layered on top.
+        request.addHeader(CorrelationId.HEADER, id)
+    }
+
+    override fun interceptResponse(response: IHttpResponse?) {
+        // No-op on the response. We could log the round-trip with the
+        // correlation_id here, but every request already produces a log
+        // line in IngestedMessageWorker, so this would be noise.
     }
 }

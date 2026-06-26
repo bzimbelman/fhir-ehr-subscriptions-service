@@ -1,4 +1,5 @@
 com.bzonfhir.subscriptionservice.auth.AuthAutoConfiguration
 com.bzonfhir.subscriptionservice.channelsecurity.ChannelSecurityAutoConfiguration
 com.bzonfhir.subscriptionservice.multitenancy.MultitenancyAutoConfiguration
+com.bzonfhir.subscriptionservice.observability.ObservabilityAutoConfiguration
 com.bzonfhir.subscriptionservice.validation.ProfileValidationAutoConfiguration
