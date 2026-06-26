@@ -167,6 +167,21 @@ A second Service (`<release>-interface-engine-mllp`) exposes the interface engin
 
 Off by default (`networkPolicy.enabled: false`) because k3s/Rancher Desktop ships without a NetworkPolicy controller. Turn on in production clusters running Calico / Cilium / etc.
 
+### Pod disruption budgets
+
+Off by default (`podDisruptionBudgets.enabled: false`) for the same reason as NetworkPolicy — k3s / Rancher Desktop doesn't ship a PDB controller, so the manifests would be inert at best and confusing at worst. Turn on in real clusters (`values-dev.yaml` already does) to protect each workload from voluntary evictions during node drains, k8s control-plane upgrades, and scale-down events. Forced drains are not blocked.
+
+```yaml
+podDisruptionBudgets:
+  enabled: false                  # flip to true in real clusters
+  hapi:             { minAvailable: 1 }
+  matchbox:         { minAvailable: 1 }
+  interfaceEngine:  { minAvailable: 1 }
+  postgres:         { maxUnavailable: 0 }   # StatefulSet, single replica
+```
+
+Each workload accepts either `minAvailable` or `maxUnavailable` (the PDB API allows only one of the two — `minAvailable` wins if both are set). The defaults pair with the chart's single-replica deployments; a `minAvailable: 1` PDB on a single-replica deployment blocks all voluntary evictions of that pod, so coordinate with cluster admins before opting in on maintenance-heavy environments. Bump `replicaCount` first if you want graceful rolling drains.
+
 ## Values overlays
 
 Three overlays ship with the chart:
