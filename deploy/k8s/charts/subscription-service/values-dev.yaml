@@ -1,8 +1,11 @@
 # Dev-environment overrides on top of values.yaml.
 #
+# TEMPLATE: copy this file and edit the placeholder hostnames + issuer URL
+# for your own dev cluster. The values below are intentionally generic.
+#
 # Single-replica everything, smaller resource requests, ingress assumes a
-# real DNS record (e.g. subscription-service-dev.bzonfhir.com). Auth is ON
-# in dev so we exercise the real Keycloak path; flip enabled=false to bypass.
+# real DNS record you control. Auth is ON in dev so you exercise the real
+# OIDC path; flip enabled=false to bypass.
 
 image:
   hapi:
@@ -18,19 +21,19 @@ ingress:
   enabled: true
   className: traefik
   hosts:
-    - host: subscription-service-dev.bzonfhir.com
+    - host: <your-dev-host>.example.com
       paths:
         - path: /
           pathType: Prefix
   tls:
     - hosts:
-        - subscription-service-dev.bzonfhir.com
+        - <your-dev-host>.example.com
       secretName: subscription-service-dev-tls
 
 featureToggles:
   auth:
     enabled: true
-    issuer: https://keycloak.bzonfhir.com/realms/subscription-service
+    issuer: https://<your-keycloak-host>.example.com/realms/subscription-service
   validation:
     mode: warn
   channelSecurity:
