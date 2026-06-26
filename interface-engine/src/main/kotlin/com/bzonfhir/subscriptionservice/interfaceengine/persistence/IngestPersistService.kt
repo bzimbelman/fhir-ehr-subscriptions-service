@@ -1,5 +1,6 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.persistence
 
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.InterfaceEngineMetrics
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.context.annotation.Lazy
@@ -61,6 +62,12 @@ import org.springframework.transaction.annotation.Transactional
 @Service
 open class IngestPersistService(
     private val repository: IngestedMessageRepository,
+    // Metrics (Epic #387, ticket #389). Stamps one
+    // `interface_engine_ingested_messages_total{...,status="RECEIVED"}`
+    // increment per persisted row. Constructor-injected so test contexts
+    // get the SimpleMeterRegistry from spring-boot-starter-actuator's
+    // auto-config and producers don't have to be conditional.
+    private val metrics: InterfaceEngineMetrics,
 ) {
     private val log = LoggerFactory.getLogger(IngestPersistService::class.java)
 
@@ -106,7 +113,7 @@ open class IngestPersistService(
         correlationId: String? = null,
     ): IngestedMessage {
         return try {
-            self.insertReceived(
+            val saved = self.insertReceived(
                 sourceProtocol = sourceProtocol,
                 sourceSystem = sourceSystem,
                 sourceId = sourceId,
@@ -115,6 +122,17 @@ open class IngestPersistService(
                 rawContentType = rawContentType,
                 correlationId = correlationId,
             )
+            // Metrics (#389): increment AFTER the insert transaction has
+            // committed so we never overcount on a roll-back. Only the
+            // fresh-insert path stamps RECEIVED — the idempotent-duplicate
+            // path below is a sender retry, not a new message.
+            metrics.incrementIngestedMessages(
+                sourceProtocol = sourceProtocol.name,
+                sourceSystem = sourceSystem,
+                messageType = messageType,
+                status = IngestedMessageStatus.RECEIVED.name,
+            )
+            saved
         } catch (ex: DataIntegrityViolationException) {
             // Distinguish "duplicate control id" (benign — sender retry) from
             // any other integrity issue (a real failure). Spring wraps the

@@ -49,9 +49,12 @@ management:
   endpoints:
     web:
       exposure:
-        # Spring Boot 3.x exposes only /health by default; we add /info and /metrics
-        # so the Docker healthcheck + future Prometheus scrape both work.
-        include: health,info,metrics
+        # Spring Boot 3.x exposes only /health by default. We expose:
+        #   - health: liveness/readiness probes (k8s, Docker)
+        #   - info: build metadata
+        #   - metrics: queryable Micrometer metric names (debugging)
+        #   - prometheus: Prometheus exposition format for scraping (#389)
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       # ALWAYS show details on /actuator/health so the per-indicator
@@ -87,6 +90,42 @@ management:
         # the count in the response body for monitoring.
         readiness:
           include: ping, db, matchbox, hapi, dlqBacklog
+    # Spring Boot 3.4+ added an endpoint-level "access" gate that defaults
+    # to `read_only` for most endpoints — EXCEPT the prometheus endpoint,
+    # which defaults to `none` (registered but not reachable). Without
+    # this `read_only` override the /actuator/prometheus path 404s even
+    # when `management.endpoints.web.exposure.include` lists `prometheus`.
+    # Required for ticket #389.
+    prometheus:
+      access: read_only
+  prometheus:
+    # Spring Boot 3.5 added @ConditionalOnEnabledMetricsExport to the
+    # Prometheus auto-configuration; explicit enable required so the
+    # PrometheusMeterRegistry bean is created even though the registry
+    # JAR is on the classpath. Default is true at the framework level but
+    # we set it here so the contract is documented + local-dev overrides
+    # have one obvious knob to flip when debugging.
+    metrics:
+      export:
+        enabled: true
+  # Prometheus registry configuration (Epic #387, ticket #389). Histograms
+  # without explicit SLO buckets ship only count/sum/max, which is fine for
+  # alerts on rate / p99-vs-baseline but useless for cross-percentile
+  # comparison. Turn on percentile histograms globally for the custom
+  # timers below so query-time percentile (`histogram_quantile`) works in
+  # Prometheus without a separate "summary" type. Cost is modest — one
+  # bucket counter per default-bucket per timer.
+  metrics:
+    distribution:
+      percentiles-histogram:
+        interface_engine.transform.duration: true
+        interface_engine.hapi_post.duration: true
+        interface_engine.received_to_delivered: true
+    tags:
+      # Static application tag on every metric so a single Prometheus can
+      # scrape multiple services and disambiguate via `application="..."`.
+      # Matches the convention HAPI's own Micrometer setup uses.
+      application: ${spring.application.name}
 
 logging:
   level:
@@ -105,6 +144,22 @@ logging:
   # The `dev` profile is wired in logback-spring.xml.
 
 subscription-service:
+  # Observability config (Epic #387).
+  # ticket #389: Prometheus metrics. The custom-metrics emitters are unconditional
+  # (they're cheap and the registry handles unused metrics gracefully), but the
+  # DlqSizeGauge's scheduled poll IS conditional — operators in non-Prometheus
+  # environments can flip `enabled` off to skip the DB SELECT every poll
+  # interval. Default ON.
+  observability:
+    metrics:
+      enabled: ${SUB_SERVICE_METRICS_ENABLED:true}
+      # DlqSizeGauge poll interval (ms). Default 30s — chart scrapes at 30s
+      # by default so one poll per scrape is the right rhythm. Lower to 5s
+      # for high-frequency dashboards; raise to 60s to reduce DB load.
+      dlq-poll-ms: ${SUB_SERVICE_METRICS_DLQ_POLL_MS:30000}
+      # Initial delay before the first DlqSizeGauge poll. Kept short so a
+      # freshly-started pod reports a real value within ~1s of readiness.
+      dlq-poll-initial-ms: ${SUB_SERVICE_METRICS_DLQ_POLL_INITIAL_MS:1000}
   # MLLP listener port. Override with MLLP_PORT env var. 2575 is the de-facto
   # default for HL7v2 MLLP in the IPF / hapi-test-panel community.
   mllp:
