@@ -20,7 +20,7 @@ ipf-app/
 ├── compose-snippet.yml         ← service block to merge into deploy/docker/docker-compose.yml
 ├── ca-cert/                    ← optional corporate-MITM root, see below
 └── src/
-    ├── main/kotlin/com/bzonfhir/subscription/
+    ├── main/kotlin/com/bzonfhir/subscriptionservice/ipf/
     │   ├── Application.kt
     │   └── routes/IngestRoutes.kt
     ├── main/resources/
