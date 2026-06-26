@@ -134,6 +134,16 @@ spec:
               value: {{ .Values.featureToggles.multitenancy.tenantClaim | quote }}
             - name: SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE
               value: {{ .Values.featureToggles.multitenancy.testMode | quote }}
+            # FHIR AuditEvent generator (ticket #391). See application.yaml /
+            # values.yaml for the full meaning of each knob.
+            - name: SUBSCRIPTION_SERVICE_AUDIT_ENABLED
+              value: {{ .Values.featureToggles.audit.enabled | quote }}
+            - name: SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS
+              value: {{ .Values.featureToggles.audit.captureReads | quote }}
+            - name: SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH
+              value: {{ .Values.featureToggles.audit.captureSearch | quote }}
+            - name: SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS
+              value: {{ .Values.featureToggles.audit.retentionDays | quote }}
             # JSON log layout (Epic #387, ticket #388). Tells Spring Boot to
             # load the logback config bundled inside the
             # subscription-service-hapi-auth JAR (which is on the classpath
