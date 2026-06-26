@@ -179,6 +179,58 @@ interfaceEngine:
 
 A second Service (`<release>-interface-engine-mllp`) exposes the interface engine's MLLP listener as a `LoadBalancer`. On Rancher Desktop, klipper-lb binds it to the host on `localhost:2575`. In cloud clusters, the cloud provider's LB controller picks up a public IP.
 
+### Pod Security Standards (ticket #420)
+
+The chart's default `podSecurityContext` and `securityContext` blocks satisfy the [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/) `restricted` profile — the strictest of the three profiles, enforced by default on GKE Autopilot, OpenShift, and many hardened production clusters. Concretely, every Pod template renders with:
+
+- `runAsNonRoot: true` and a non-zero `runAsUser`
+- `allowPrivilegeEscalation: false`
+- `capabilities.drop: [ALL]`
+- `seccompProfile.type: RuntimeDefault`
+
+Each workload uses the UID its image actually expects (so the kubelet doesn't refuse to chown emptyDir / PVC mounts):
+
+| Workload | Image | UID |
+|----------|-------|-----|
+| `hapi` | `hapiproject/hapi:v7.6.0` (distroless) | 65532 |
+| `matchbox` | `ahdis/matchbox:v3.9.13` | 1000 |
+| `interface-engine` | `subscription-service/interface-engine:dev` | 10001 |
+| `postgres` | `postgres:16-alpine` | 70 |
+| `fetch-igs` (initContainer) | `curlimages/curl:8.10.1` | 100 |
+
+Verify on your cluster by labeling a fresh namespace and installing:
+
+```bash
+kubectl create namespace psa-test
+kubectl label namespace psa-test \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/audit=restricted   \
+  pod-security.kubernetes.io/warn=restricted
+
+helm install psatest deploy/k8s/charts/subscription-service \
+  -n psa-test \
+  -f deploy/k8s/charts/subscription-service/values-rancher.yaml \
+  --set ingress.enabled=false
+
+kubectl -n psa-test wait --for=condition=Ready pod --all --timeout=420s
+helm uninstall psatest -n psa-test
+kubectl delete ns psa-test
+```
+
+If any pod fails to schedule under `restricted`, the chart's `scripts/k8s/test-psa.sh` script renders the chart and validates every pod template / container — run it locally to triage offline.
+
+To temporarily loosen for debugging (e.g. `kubectl exec` as root), override on the CLI:
+
+```bash
+# DO NOT do this in production.
+helm upgrade ... \
+  --set podSecurityContext.runAsNonRoot=false \
+  --set securityContext.allowPrivilegeEscalation=true \
+  --set securityContext.runAsNonRoot=false
+```
+
+The per-workload override pattern is documented at the top of [`values.yaml`](values.yaml) — chart-level keys deep-merge with `<workload>.podSecurityContext` / `<workload>.securityContext` so you can pin a single workload to a different UID without rewriting the chart-level defaults.
+
 ### NetworkPolicy
 
 Off by default (`networkPolicy.enabled: false`) because k3s/Rancher Desktop ships without a NetworkPolicy controller. Turn on in production clusters running Calico / Cilium / etc.

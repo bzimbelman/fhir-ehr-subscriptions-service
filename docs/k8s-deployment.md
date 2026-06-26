@@ -182,6 +182,10 @@ The same pattern works for any dev or production cluster:
 
 5. Configure auth (`featureToggles.auth.issuer` -> `https://your-keycloak.example.com/realms/subscription-service`) and feature toggles per environment.
 
+### Pod Security Standards
+
+The chart's default `podSecurityContext` / `securityContext` blocks satisfy the [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/) `restricted` profile, so it installs cleanly on GKE Autopilot, OpenShift, and any namespace labeled `pod-security.kubernetes.io/enforce=restricted`. Each workload runs as its image's expected non-root UID (HAPI 65532, matchbox 1000, interface-engine 10001, postgres 70) with `allowPrivilegeEscalation: false`, all Linux capabilities dropped, and the `RuntimeDefault` seccomp profile. See the [chart README's Pod Security Standards section](../deploy/k8s/charts/subscription-service/README.md#pod-security-standards-ticket-420) for the per-workload UID table and override mechanics.
+
 ---
 
 ## Troubleshooting
