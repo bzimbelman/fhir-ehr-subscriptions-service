@@ -51,7 +51,8 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
-      # Feature toggles — stubs today, wired up in follow-up tickets (#367-#369).
+      # Feature toggles. SUBSCRIPTION_SERVICE_VALIDATION_MODE wired in #367 — off|warn|enforce.
+      # The other two (#368, #369) are still stubs.
       SUBSCRIPTION_SERVICE_VALIDATION_MODE: ${SUBSCRIPTION_SERVICE_VALIDATION_MODE:-off}
       SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: ${SUBSCRIPTION_SERVICE_CHANNEL_SECURITY:-strict}
       SUBSCRIPTION_SERVICE_MULTITENANCY: ${SUBSCRIPTION_SERVICE_MULTITENANCY:-disabled}
