@@ -1,7 +1,7 @@
 spring:
   application:
     # Referenced by IPF's ATNA auto-config (auditMetadataProvider). Required.
-    name: subscription-service-ipf
+    name: subscription-service-interface-engine
 
 server:
   # HAPI FHIR's bundled servers use 8080. Pick 8090 to avoid conflicts in

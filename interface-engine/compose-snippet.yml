@@ -1,6 +1,6 @@
 # compose-snippet.yml
 #
-# Service block for ipf-app. To be merged into deploy/docker/docker-compose.yml
+# Service block for interface-engine. To be merged into deploy/docker/docker-compose.yml
 # by the integrator. NOT a standalone compose file — it is missing the top-level
 # `services:`, `networks:`, and `volumes:` keys that the consolidated compose
 # file owns.
@@ -20,15 +20,16 @@
 #   2575:2575  MLLP listener for HL7 v2 over TCP.
 #
 # Build context:
-#   Built from the repo root with `ipf-app/Dockerfile` so the Dockerfile can
-#   reference the gradle wrapper and src/ tree without ".." escapes.
+#   Built from the repo root with `interface-engine/Dockerfile` so the
+#   Dockerfile can reference the gradle wrapper and src/ tree without
+#   ".." escapes.
 
-ipf-app:
+interface-engine:
   build:
-    context: ../../ipf-app
+    context: ../../interface-engine
     dockerfile: Dockerfile
-  image: subscription-service/ipf-app:dev
-  container_name: subscription-ipf-app
+  image: subscription-service/interface-engine:dev
+  container_name: subscription-service-interface-engine
   restart: unless-stopped
   environment:
     HAPI_BASE: http://hapi:8080/fhir
