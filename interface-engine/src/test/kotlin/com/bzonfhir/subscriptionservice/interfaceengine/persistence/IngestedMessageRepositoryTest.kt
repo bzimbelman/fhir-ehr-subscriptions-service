@@ -58,6 +58,11 @@ class IngestedMessageRepositoryTest {
             .withDatabaseName("ipf")
             .withUsername("ipf")
             .withPassword("ipf")
+            // Wait for the Postgres TCP listener to accept a connection on
+            // the host port — the default LogMessageWaitStrategy checks
+            // stdout, which can fire before the Rancher Desktop host
+            // port-forward is open (causing flaky first-run failures).
+            .waitingFor(org.testcontainers.containers.wait.strategy.Wait.forListeningPort())
 
         @JvmStatic
         @DynamicPropertySource
