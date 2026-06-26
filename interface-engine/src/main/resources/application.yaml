@@ -54,9 +54,39 @@ management:
         include: health,info,metrics
   endpoint:
     health:
-      show-details: when-authorized
+      # ALWAYS show details on /actuator/health so the per-indicator
+      # status (matchbox, hapi, dlqBacklog, db, …) is visible to the
+      # Kubernetes probe consumers and to operators curling the endpoint
+      # for triage. The endpoint is on the same listener as the rest of
+      # the app — if you don't want clients seeing details, gate the
+      # actuator path at the ingress / NetworkPolicy layer rather than
+      # by stripping detail here. Ticket #393.
+      show-details: always
       probes:
+        # Exposes /actuator/health/liveness and /actuator/health/readiness
+        # as separate endpoints with their own indicator groupings below.
         enabled: true
+      group:
+        # Liveness probe (Kubernetes will RESTART a DOWN pod). Only
+        # JVM-internal stuff: if Matchbox is unreachable, restarting our
+        # pod doesn't help — Matchbox itself needs to come back. We
+        # include `ping` (always UP — proves the actuator endpoint is
+        # responsive) and `db` (a `SELECT 1` against the local Postgres
+        # via Spring Boot's built-in DataSourceHealthIndicator) so a
+        # totally wedged JVM or a corrupt local DB connection pool DOES
+        # trigger restart. Ticket #393.
+        liveness:
+          include: ping, db
+        # Readiness probe (Kubernetes will REMOVE a DOWN pod from
+        # Service endpoints but leave it running). Full health: if a
+        # downstream is unreachable, take this pod out of rotation so
+        # incoming traffic isn't sent to a pod that can't complete work.
+        # The `dlqBacklog` indicator NEVER returns DOWN (only DEGRADED),
+        # so including it here doesn't cause readiness flapping when
+        # operators leave DEAD_LETTER rows uncleared — it just surfaces
+        # the count in the response body for monitoring.
+        readiness:
+          include: ping, db, matchbox, hapi, dlqBacklog
 
 logging:
   level:

@@ -119,6 +119,23 @@
       <version>${spring.boot.version}</version>
       <scope>provided</scope>
     </dependency>
+
+    <!--
+      spring-boot-actuator: required at compile time for the
+      HealthIndicator / Health / Status types used by
+      AuthIssuerHealthIndicator and JwksHealthIndicator (Epic #387, ticket #393).
+      `provided` because the upstream HAPI starter image already brings
+      spring-boot-actuator transitively (the existing /actuator/health
+      probe relies on it). Listing it explicitly here so our compilation
+      doesn't depend on the version that happens to be on the HAPI
+      classpath via other deps.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-actuator</artifactId>
+      <version>${spring.boot.version}</version>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot</artifactId>
