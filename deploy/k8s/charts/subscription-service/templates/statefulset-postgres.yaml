@@ -6,7 +6,11 @@ postgres:16-alpine — identical to the Compose stack — and the JPA dialect
 in HAPI is fixed to HapiFhirPostgresDialect regardless. Upgrade ergonomics:
 the PVC survives `helm uninstall`; bumping the postgres image tag is an
 in-place StatefulSet rolling update.
+
+Skipped entirely when externalPostgres.enabled (ticket #416) — HAPI is
+pointed at the managed Postgres outside the cluster instead.
 */ -}}
+{{- if not .Values.externalPostgres.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -95,3 +99,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.storage.size | quote }}
+{{- end }}
