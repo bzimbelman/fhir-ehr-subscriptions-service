@@ -1,0 +1,101 @@
+{{- /*
+HAPI application.yaml mounted at /app/config/application.yaml. Kept verbatim
+from hapi/application.yaml in the repo — when that file changes, this one
+must change with it. We can't `.Files.Get` it from outside the chart dir,
+and we explicitly do NOT want a `helm dependency build` step pulling a
+subchart for one config file, so we inline it here.
+
+The env-var placeholders (${SUBSCRIPTION_SERVICE_*}) are resolved by Spring
+Boot's property resolver at runtime; the chart just needs to make sure the
+env vars are wired up on the HAPI pod (see deployment-hapi.yaml).
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}-config
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+data:
+  application.yaml: |
+    server:
+      port: 8080
+    management:
+      endpoints:
+        enabled-by-default: false
+        web:
+          exposure:
+            include: 'health'
+      endpoint:
+        health:
+          enabled: true
+          probes:
+            enabled: true
+    spring:
+      main:
+        allow-circular-references: true
+      flyway:
+        enabled: false
+        baselineOnMigrate: true
+        fail-on-missing-locations: false
+      datasource:
+        driverClassName: org.postgresql.Driver
+        max-active: 15
+        hikari:
+          maximum-pool-size: 10
+      jpa:
+        properties:
+          hibernate.format_sql: false
+          hibernate.show_sql: false
+          hibernate.dialect: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+          hibernate.hbm2ddl.auto: update
+          hibernate.search.enabled: false
+    hapi:
+      fhir:
+        fhir_version: R4
+        openapi_enabled: true
+        partitioning:
+          partitioning_include_in_search_hashes: false
+          allow_references_across_partitions: false
+          conditional_create_duplicate_identifiers_enabled: false
+        install_transitive_ig_dependencies: false
+        subscription:
+          resthook_enabled: true
+          websocket_enabled: true
+        implementationguides:
+          us_core:
+            name: hl7.fhir.us.core
+            version: 7.0.0
+            packageUrl: file:///app/igs/hl7.fhir.us.core-7.0.0.tgz
+            reloadExisting: false
+            installMode: STORE_AND_INSTALL
+          subscriptions_backport:
+            name: hl7.fhir.uv.subscriptions-backport.r4
+            version: 1.1.0
+            packageUrl: file:///app/igs/hl7.fhir.uv.subscriptions-backport.r4-1.1.0.tgz
+            reloadExisting: false
+            installMode: STORE_AND_INSTALL
+        cors:
+          allow_Credentials: true
+          allowed_origin:
+            - '*'
+        tester:
+          home:
+            name: subscription-service (k8s)
+            server_address: 'http://localhost:8080/fhir'
+            refuse_to_fetch_third_party_urls: false
+            fhir_version: R4
+        logical_urls:
+          - http://terminology.hl7.org/*
+          - https://terminology.hl7.org/*
+          - http://snomed.info/*
+          - https://snomed.info/*
+          - http://unitsofmeasure.org/*
+          - https://unitsofmeasure.org/*
+          - http://loinc.org/*
+          - https://loinc.org/*
+    subscription-service:
+      multitenancy:
+        mode: ${SUBSCRIPTION_SERVICE_MULTITENANCY:disabled}
+        tenant-claim: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM:tenant}
+        test-mode: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE:false}

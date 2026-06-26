@@ -1,0 +1,25 @@
+{{- /*
+HAPI JEP-330 single-file Java healthcheck probe. The hapiproject/hapi image
+is distroless — no shell/curl/wget — so the only thing we can `exec` is the
+JRE. Source of truth: hapi/healthcheck/HapiHealthCheck.java. Kept in sync
+manually; the file is 12 lines of code.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}-healthcheck
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+data:
+  HapiHealthCheck.java: |
+    import java.net.InetSocketAddress;
+    import java.net.Socket;
+
+    public class HapiHealthCheck {
+        public static void main(String[] args) throws Exception {
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress("localhost", 8080), 2000);
+            }
+        }
+    }

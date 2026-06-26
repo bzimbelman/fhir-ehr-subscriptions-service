@@ -1,0 +1,42 @@
+# Dev-environment overrides on top of values.yaml.
+#
+# Single-replica everything, smaller resource requests, ingress assumes a
+# real DNS record (e.g. subscription-service-dev.bzonfhir.com). Auth is ON
+# in dev so we exercise the real Keycloak path; flip enabled=false to bypass.
+
+image:
+  hapi:
+    pullPolicy: Always
+  ipf:
+    pullPolicy: Always
+
+postgres:
+  storage:
+    size: 20Gi
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: subscription-service-dev.bzonfhir.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts:
+        - subscription-service-dev.bzonfhir.com
+      secretName: subscription-service-dev-tls
+
+featureToggles:
+  auth:
+    enabled: true
+    issuer: https://keycloak.bzonfhir.com/realms/subscription-service
+  validation:
+    mode: warn
+  channelSecurity:
+    mode: strict
+  multitenancy:
+    mode: disabled
+
+networkPolicy:
+  enabled: false

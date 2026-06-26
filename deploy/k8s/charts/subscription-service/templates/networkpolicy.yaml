@@ -1,0 +1,58 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- /*
+Default-deny + targeted allows between the four components. Off by default
+because k3s / Rancher Desktop ships without a NetworkPolicy controller, so
+enabling it on Rancher Desktop is a no-op anyway. On a real cluster
+(Calico/Cilium/etc.), enabling this constrains traffic to:
+
+  ingress (cluster traefik)  -> hapi:8080
+  ipf  -> hapi:8080, matchbox:8080
+  hapi -> postgres:5432
+  all  -> internet (DNS, IG fetch)
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hapi
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        # Allow anything in the same namespace (ipf, matchbox callbacks, tester).
+        - podSelector: {}
+        # Allow traefik / cluster ingress controller.
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "subscription-service.postgres.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "subscription-service.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: hapi
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}

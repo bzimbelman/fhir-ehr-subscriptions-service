@@ -1,0 +1,23 @@
+apiVersion: v2
+name: subscription-service
+description: |
+  Helm chart for the subscription-service FOSS HL7v2/FHIR pipeline.
+  Mirrors the deploy/docker/docker-compose.yml stack (HAPI FHIR R4 on Postgres,
+  Matchbox for v2-to-FHIR transforms, IPF Spring Boot for MLLP ingest).
+  See docs/architecture.md "Kubernetes (Helm)" for the contract.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - fhir
+  - hl7
+  - subscriptions
+  - hapi
+  - matchbox
+  - ipf
+home: https://github.com/bzimbelman/subscription-service
+sources:
+  - https://github.com/bzimbelman/subscription-service
+maintainers:
+  - name: subscription-service maintainers
