@@ -7,6 +7,9 @@ import ca.uhn.fhir.rest.client.api.IHttpRequest
 import ca.uhn.fhir.rest.client.api.IHttpResponse
 import ca.uhn.fhir.rest.client.api.ServerValidationModeEnum
 import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
+import io.opentelemetry.context.Context
+import io.opentelemetry.context.propagation.ContextPropagators
+import io.opentelemetry.context.propagation.TextMapSetter
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -36,6 +39,12 @@ class FhirConfig {
         fhirContext: FhirContext,
         @Value("\${subscription-service.hapi.base-url}") hapiBaseUrl: String,
         @Value("\${subscription-service.hapi.timeout-ms:30000}") timeoutMs: Int,
+        // OpenTelemetry propagators (Epic #387, ticket #394). Used by
+        // the HAPI client interceptor to inject W3C `traceparent` (+
+        // optional `tracestate`) onto every outbound request. When the
+        // SDK is disabled the active context is the no-op root and
+        // inject is a no-op — no header added, no overhead.
+        propagators: ContextPropagators,
     ): IGenericClient {
         fhirContext.restfulClientFactory.socketTimeout = timeoutMs
         fhirContext.restfulClientFactory.connectTimeout = timeoutMs
@@ -47,6 +56,11 @@ class FhirConfig {
         // JAR) reads the same header into its own MDC, so both services'
         // log lines for the same message share an id.
         client.registerInterceptor(CorrelationIdClientInterceptor())
+        // Register a second interceptor that injects the W3C traceparent
+        // for the current OTel context onto every outbound request.
+        // HAPI's auth JAR has a matching server-side extractor that
+        // continues the trace into HAPI's request scope (ticket #394).
+        client.registerInterceptor(OtelTraceparentClientInterceptor(propagators))
         return client
     }
 }
@@ -72,5 +86,47 @@ private class CorrelationIdClientInterceptor : IClientInterceptor {
         // No-op on the response. We could log the round-trip with the
         // correlation_id here, but every request already produces a log
         // line in IngestedMessageWorker, so this would be noise.
+    }
+}
+
+/**
+ * HAPI client interceptor: injects the W3C `traceparent` header onto
+ * every outbound request from the current OTel context (Epic #387,
+ * ticket #394).
+ *
+ * Uses the SDK's [ContextPropagators] rather than encoding the header
+ * by hand so an SDK upgrade that ships a new `traceparent` version
+ * (currently v00) propagates the right thing automatically.
+ *
+ * When the SDK is disabled, `Context.current()` is the no-op root and
+ * the propagator's inject(...) writes nothing onto the carrier — no
+ * traceparent header appears on the wire, matching the "off by default
+ * with zero overhead" requirement.
+ */
+private class OtelTraceparentClientInterceptor(
+    private val propagators: ContextPropagators,
+) : IClientInterceptor {
+
+    override fun interceptRequest(request: IHttpRequest) {
+        propagators.textMapPropagator.inject(Context.current(), request, IHttpRequestSetter)
+    }
+
+    override fun interceptResponse(response: IHttpResponse?) {
+        // No-op — the OTel SDK ends the client span via the wrapping
+        // try/finally in the caller (see MatchboxClientImpl / the
+        // workerSpan in IngestedMessageWorker). HAPI's IGenericClient
+        // doesn't expose a "request completed" hook with timing data
+        // we'd attach to the span here.
+    }
+
+    private object IHttpRequestSetter : TextMapSetter<IHttpRequest> {
+        override fun set(carrier: IHttpRequest?, key: String, value: String) {
+            // HAPI's addHeader is additive; if someone (presumably
+            // tests) stamped a traceparent on the request before this
+            // interceptor ran, both would land. That's unlikely — only
+            // this interceptor sets the OTel headers — so we accept the
+            // simpler API rather than juggling removeHeaders + addHeader.
+            carrier?.addHeader(key, value)
+        }
     }
 }
