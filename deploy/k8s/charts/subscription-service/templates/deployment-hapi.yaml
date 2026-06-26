@@ -43,13 +43,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "hapi") | nindent 8 }}
       initContainers:
         - name: fetch-igs
           image: "{{ .Values.image.igFetcher.repository }}:{{ .Values.image.igFetcher.tag }}"
           imagePullPolicy: {{ .Values.image.igFetcher.pullPolicy }}
           # curl image runs as non-root with /tmp writable; emptyDir mounted
-          # at /igs is writable by the same uid.
+          # at /igs is writable via the pod's fsGroup (curl_user is added to
+          # the supplementary group by the kubelet).
+          securityContext:
+            {{- include "subscription-service.igFetcherSecurityContext" . | nindent 12 }}
           command:
             - sh
             - -c
@@ -152,7 +155,7 @@ spec:
           resources:
             {{- toYaml .Values.hapi.resources | nindent 12 }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "hapi") | nindent 12 }}
       volumes:
         - name: config
           configMap:

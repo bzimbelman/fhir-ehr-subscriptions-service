@@ -36,11 +36,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "postgres") | nindent 8 }}
       containers:
         - name: postgres
           image: "{{ .Values.image.postgres.repository }}:{{ .Values.image.postgres.tag }}"
           imagePullPolicy: {{ .Values.image.postgres.pullPolicy }}
+          securityContext:
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "postgres") | nindent 12 }}
           ports:
             - name: postgres
               containerPort: 5432
