@@ -52,6 +52,31 @@ hapi:
     fhir_version: R4
     openapi_enabled: true
 
+    # Enable HAPI partitioning structurally so the Postgres schema gets a
+    # `partition_id` column on every resource table — whether or not
+    # multi-tenancy is actually in use at runtime. This is the key
+    # cheap-up-front / expensive-to-retrofit knob (see ticket #369 and
+    # docs/architecture.md "Multi-tenancy").
+    #
+    # The runtime behaviour is owned by
+    # `subscription-service.multitenancy.mode` (DISABLED | ENABLED), not
+    # by this block:
+    #
+    #   - DISABLED (default): TenantPartitionInterceptor returns the DEFAULT
+    #     partition for every request. URLs look like /fhir/Patient/123.
+    #     Subscribers see a single-tenant server.
+    #   - ENABLED: TenantPartitionInterceptor reads the `tenant` claim from
+    #     the validated JWT and scopes every operation to a partition named
+    #     after the claim.
+    #
+    # We also unregister the upstream HAPI starter's URL-based tenant
+    # interceptor + strategy at boot (see MultitenancyAutoConfiguration),
+    # so the FHIR base URL shape is identical in both modes.
+    partitioning:
+      partitioning_include_in_search_hashes: false
+      allow_references_across_partitions: false
+      conditional_create_duplicate_identifiers_enabled: false
+
     # Don't auto-install transitive IG dependencies. US Core 7.0.0 lists
     # `hl7.fhir.uv.extensions@5.1.0-snapshot1` as a dep, which declares
     # fhirVersions: ["4.3.0"] (R4B) and HAPI's PackageInstaller refuses it
@@ -112,3 +137,15 @@ hapi:
       - https://unitsofmeasure.org/*
       - http://loinc.org/*
       - https://loinc.org/*
+
+# Multi-tenancy runtime config (ticket #369). The env-var-driven values resolve
+# via Spring's standard property placeholders below — that's necessary because
+# the short env var `SUBSCRIPTION_SERVICE_MULTITENANCY` itself maps to the YAML
+# *prefix*, not to a `.mode` leaf. Spelling out the binding here gives us the
+# friendly env-var name from architecture.md while still using `mode` as the
+# real property the @ConfigurationProperties bean reads.
+subscription-service:
+  multitenancy:
+    mode: ${SUBSCRIPTION_SERVICE_MULTITENANCY:disabled}
+    tenant-claim: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM:tenant}
+    test-mode: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE:false}
