@@ -93,6 +93,35 @@ public class AuthAutoConfiguration {
   }
 
   /**
+   * Health indicator that probes the OIDC issuer's discovery document
+   * (Epic #387, ticket #393). Wired into the HAPI {@code readiness} probe
+   * group via the {@code management.endpoint.health.group.readiness}
+   * include list — see hapi/application.yaml.
+   *
+   * <p>Bean name {@code authIssuer} is derived from the method name with
+   * the {@code healthIndicator} suffix stripped (Spring Boot's
+   * {@code HealthEndpoint} contribution-key convention). Don't rename the
+   * method without also updating the include list in hapi/application.yaml
+   * and the configmap-hapi.yaml override.
+   */
+  @Bean
+  public AuthIssuerHealthIndicator authIssuerHealthIndicator(AuthProperties props) {
+    return new AuthIssuerHealthIndicator(props);
+  }
+
+  /**
+   * Health indicator that fetches the JWKS endpoint, parses it, and
+   * asserts at least one signing key is present. Same bean-naming
+   * caveats as {@link #authIssuerHealthIndicator(AuthProperties)} —
+   * bean name {@code jwks} must stay in sync with the readiness
+   * include list.
+   */
+  @Bean
+  public JwksHealthIndicator jwksHealthIndicator(AuthProperties props) {
+    return new JwksHealthIndicator(props);
+  }
+
+  /**
    * Registers the two interceptors on the HAPI {@link RestfulServer} once it's fully
    * constructed. The starter's {@code restfulServer} bean does NOT pick up arbitrary
    * {@code IServerInterceptor} beans from the context automatically — only ones listed
