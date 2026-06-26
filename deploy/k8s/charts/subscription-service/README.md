@@ -86,7 +86,8 @@ image:
 ```yaml
 postgres:
   user: hapi
-  password: hapi              # CHANGE in values-prod.yaml or via sealed secret.
+  password: ""                # empty -> chart auto-generates a 32-char
+                              # random password; preserved across upgrades.
   database: hapi
   storage:
     size: 10Gi
@@ -94,6 +95,21 @@ postgres:
 ```
 
 The chart rolls its own minimal Postgres StatefulSet (not the bitnami subchart) so the Compose and k8s targets stay identical down to the image and PGDATA layout. The PVC is templated by `volumeClaimTemplates` and survives `helm uninstall`.
+
+#### Postgres password (ticket #419)
+
+The chart resolves the Postgres password in this precedence:
+
+1. **Explicit `postgres.password` value** — wins if set to a non-empty string. Recommended path is layering it in via a sealed/external secret manager, not committing it in a values file.
+2. **Existing Secret in the namespace** — if `postgres.password` is empty AND a Secret named `<release>-postgres` already exists, the chart re-reads the `POSTGRES_PASSWORD` key from it. This is the upgrade path: the password stays stable for the life of the install.
+3. **Auto-generated random 32-char password** — first install only, when neither of the above applies. Uses Helm's `randAlphaNum 32`. This means no operator can accidentally ship the old `hapi` literal default to a real cluster.
+
+For **secure production** deploys, do not rely on the auto-generated password — back it with durable secret management:
+
+- Use an external secret manager (sealed-secrets, external-secrets, SOPS) and supply the password via `--set postgres.password=...` or by pre-creating the `<release>-postgres` Secret before `helm install`.
+- Or set `externalPostgres.enabled: true` (ticket #416, parallel work) to point at a managed Postgres outside the chart entirely.
+
+**Caveat on `helm template`**: rendering offline (no cluster) skips the `lookup` step, so each `helm template` run prints a *different* generated password. The stable-across-upgrade behavior is a server-side property of `helm install`/`upgrade`.
 
 ### IGs (US Core + Subscriptions Backport)
 
