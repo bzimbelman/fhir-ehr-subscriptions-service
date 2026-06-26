@@ -86,7 +86,8 @@ open class WorkerJdbcGateway(
     open fun loadRow(id: Long): ClaimedRow? {
         val rows = jdbc.queryForList(
             """
-            SELECT id, source_system, source_id, message_type, raw_message, attempt_count, correlation_id
+            SELECT id, source_system, source_id, message_type, raw_message,
+                   attempt_count, correlation_id, trace_context
               FROM ingested_messages
              WHERE id = ?
             """.trimIndent(),
@@ -101,6 +102,7 @@ open class WorkerJdbcGateway(
             rawMessage = row["raw_message"] as String,
             attemptCount = (row["attempt_count"] as Number).toInt(),
             correlationId = row["correlation_id"] as String?,
+            traceContext = row["trace_context"] as String?,
         )
     }
 
@@ -267,4 +269,13 @@ data class ClaimedRow(
      * before the first log line about this row is emitted.
      */
     val correlationId: String? = null,
+    /**
+     * W3C `traceparent`-encoded trace context (Epic #387, ticket #394).
+     *
+     * Captured at MLLP receive time so the worker can continue the
+     * SAME trace started there. Nullable: pre-V004 rows have no value,
+     * and rows persisted while OTEL_SDK_DISABLED=true store NULL (the
+     * no-op SDK injects nothing into the carrier).
+     */
+    val traceContext: String? = null,
 )
