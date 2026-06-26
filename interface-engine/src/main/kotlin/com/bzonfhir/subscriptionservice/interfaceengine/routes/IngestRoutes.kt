@@ -4,8 +4,12 @@ import ca.uhn.hl7v2.AcknowledgmentCode
 import ca.uhn.hl7v2.model.Message
 import ca.uhn.hl7v2.util.Terser
 import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.OtelTracing
 import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestPersistService
 import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageSourceProtocol
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.context.Scope
 import org.apache.camel.Exchange
 import org.apache.camel.builder.RouteBuilder
 import org.apache.camel.component.mllp.MllpConstants
@@ -78,6 +82,15 @@ import org.springframework.stereotype.Component
 class IngestRoutes(
     @Value("\${subscription-service.mllp.port:2575}") private val mllpPort: Int,
     private val persistService: IngestPersistService,
+    // OpenTelemetry tracer (Epic #387, ticket #394). Starts the
+    // `mllp.receive` root span before the persist call so the
+    // captured trace context can be stored on the row alongside the
+    // correlation_id, and the async worker can later restore the same
+    // trace context to make its `worker.process` span a CHILD of the
+    // receive span. The tracing wrapper handles the SDK-disabled case
+    // transparently: encode() returns null, persist stores null, the
+    // worker tolerates null by starting a fresh root.
+    private val otelTracing: OtelTracing,
 ) : RouteBuilder() {
 
     private val log = LoggerFactory.getLogger(IngestRoutes::class.java)
@@ -224,35 +237,79 @@ class IngestRoutes(
         val correlationId = exchange.getProperty(PROP_CORRELATION_ID, String::class.java)
             ?: throw IllegalStateException("correlation_id missing from exchange — assignCorrelationId() did not run")
 
-        val saved = persistService.persistReceived(
-            sourceProtocol = IngestedMessageSourceProtocol.HL7V2_MLLP,
+        // Start the OTel root span (`mllp.receive`). MLLP isn't trace-aware
+        // so we always start a new trace here — no parent extraction. The
+        // span is `setAttribute`'d with the OTel messaging semantic
+        // conventions so a Jaeger filter on `messaging.system=hl7v2`
+        // returns every inbound message. We hold the span open through the
+        // persist call so the trace context the SDK encodes from
+        // Context.current() (line below: encodeCurrentContext) actually
+        // points at THIS span — that string is what the worker decodes to
+        // make its `worker.process` span a child of receive.
+        val receiveSpan: Span = otelTracing.startReceiveSpan(
             sourceSystem = sendingApp,
             sourceId = controlId,
             messageType = messageType,
-            rawMessage = raw,
-            rawContentType = RAW_CONTENT_TYPE_HL7V2,
             correlationId = correlationId,
         )
-        exchange.setProperty(PROP_PERSISTED_ID, saved.id)
-        // Idempotent-duplicate handling: persistReceived returns the
-        // previously-persisted row when the (source_system, source_id)
-        // unique constraint trips. That row's correlation_id is from the
-        // ORIGINAL receive; we discard the freshly-minted id and adopt
-        // the persisted one so the worker's log lines (and any downstream
-        // X-Correlation-Id headers) line up with the original trace
-        // rather than the duplicate one.
-        val effective = saved.correlationId ?: correlationId
-        if (effective != correlationId) {
-            MDC.put(CorrelationId.MDC_KEY, effective)
-            exchange.setProperty(PROP_CORRELATION_ID, effective)
+        val scope: Scope = receiveSpan.makeCurrent()
+        try {
+            // Capture the W3C traceparent string for THIS span and persist
+            // it on the row. When the SDK is disabled this is null and the
+            // row's trace_context column stays NULL — the worker tolerates
+            // that and starts a fresh root (no-op) span on its side.
+            val traceContext = otelTracing.encodeCurrentContext()
+
+            val saved = persistService.persistReceived(
+                sourceProtocol = IngestedMessageSourceProtocol.HL7V2_MLLP,
+                sourceSystem = sendingApp,
+                sourceId = controlId,
+                messageType = messageType,
+                rawMessage = raw,
+                rawContentType = RAW_CONTENT_TYPE_HL7V2,
+                correlationId = correlationId,
+                traceContext = traceContext,
+            )
+            exchange.setProperty(PROP_PERSISTED_ID, saved.id)
+            // Idempotent-duplicate handling: persistReceived returns the
+            // previously-persisted row when the (source_system, source_id)
+            // unique constraint trips. That row's correlation_id is from
+            // the ORIGINAL receive; we discard the freshly-minted id and
+            // adopt the persisted one so the worker's log lines (and any
+            // downstream X-Correlation-Id headers) line up with the
+            // original trace rather than the duplicate one. We do NOT,
+            // however, swap in the persisted row's trace_context: this
+            // pod's receive span (the one currently active) is the actual
+            // ancestor span for any log line emitted right now; the
+            // duplicate's trace context belongs to a previous receive
+            // that may have happened on a different pod.
+            val effective = saved.correlationId ?: correlationId
+            if (effective != correlationId) {
+                MDC.put(CorrelationId.MDC_KEY, effective)
+                exchange.setProperty(PROP_CORRELATION_ID, effective)
+            }
+            log.info(
+                "received id={} type={} controlId={} sourceSystem={}",
+                saved.id,
+                messageType,
+                controlId,
+                sendingApp,
+            )
+        } catch (ex: Exception) {
+            // Record the failure on the span so Jaeger surfaces a red
+            // marker rather than silently succeeding. We rethrow — the
+            // Camel error handler still owns the AE-vs-AA decision.
+            receiveSpan.setStatus(StatusCode.ERROR, ex.message ?: ex.javaClass.simpleName)
+            receiveSpan.recordException(ex)
+            throw ex
+        } finally {
+            // Always close the scope first (so Context.current() returns
+            // the parent), then end the span. Reversed order would leak
+            // the span as the current context to whatever runs next on
+            // this thread.
+            scope.close()
+            receiveSpan.end()
         }
-        log.info(
-            "received id={} type={} controlId={} sourceSystem={}",
-            saved.id,
-            messageType,
-            controlId,
-            sendingApp,
-        )
     }
 
     // -- ACK helper ------------------------------------------------------
