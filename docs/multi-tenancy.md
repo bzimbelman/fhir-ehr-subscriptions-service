@@ -51,7 +51,7 @@ The default claim name is `tenant`. It MUST be a non-empty string. Recommended s
 
 ```jsonc
 {
-  "iss": "https://keycloak.bzonfhir.com/auth/realms/subscription-service",
+  "iss": "https://your-keycloak.example.com/auth/realms/subscription-service",
   "sub": "service-account-acme-hospital",
   "azp": "acme-hospital",
   "scope": "system/Patient.cruds system/Subscription.crus",
@@ -90,7 +90,7 @@ on the system level. With an admin/operator token:
 TENANT=acme-hospital
 TOKEN=...   # operator-scoped JWT
 
-curl -X POST "https://subscription-service.bzonfhir.com/fhir/\$partition-management-create-partition" \
+curl -X POST "https://subscription-service.example.com/fhir/\$partition-management-create-partition" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/fhir+json" \
   -d '{
@@ -139,19 +139,19 @@ TOKEN_ACME=$(curl ... | jq -r .access_token)
 TOKEN_GLOBEX=$(curl ... | jq -r .access_token)
 
 # 1. Acme creates a Patient. Lands in partition `acme`.
-curl -X POST https://subscription-service.bzonfhir.com/fhir/Patient \
+curl -X POST https://subscription-service.example.com/fhir/Patient \
   -H "Authorization: Bearer ${TOKEN_ACME}" \
   -H "Content-Type: application/fhir+json" \
   -d '{"resourceType":"Patient","name":[{"family":"Smith"}]}'
 # => 201 Created, Patient/<acme-id>
 
 # 2. Globex tries to read the Acme patient.
-curl https://subscription-service.bzonfhir.com/fhir/Patient/<acme-id> \
+curl https://subscription-service.example.com/fhir/Patient/<acme-id> \
   -H "Authorization: Bearer ${TOKEN_GLOBEX}"
 # => 404 Not Found  (HAPI doesn't leak existence across partitions)
 
 # 3. Acme reads its own patient.
-curl https://subscription-service.bzonfhir.com/fhir/Patient/<acme-id> \
+curl https://subscription-service.example.com/fhir/Patient/<acme-id> \
   -H "Authorization: Bearer ${TOKEN_ACME}"
 # => 200 OK
 ```

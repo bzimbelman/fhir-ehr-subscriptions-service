@@ -4,7 +4,36 @@ FHIR HTTPS ingress. Routes everything for the host(s) into the HAPI Service.
 Path /fhir is the public surface; the chart routes "/" so the HAPI tester
 UI is also reachable for ops convenience. Override .ingress.hosts[].paths
 if you want to scope it tighter.
+
+cert-manager integration (ticket #415): when .Values.ingress.certManager.enabled
+is true, this template adds the appropriate cert-manager.io annotation and
+auto-populates the TLS block when the operator didn't supply one. The chart
+does NOT install cert-manager itself — it must already be in the cluster with
+a ClusterIssuer (or namespaced Issuer) configured for the chosen ACME / DNS
+provider.
 */ -}}
+{{- $cm := .Values.ingress.certManager | default dict -}}
+{{- if and $cm.enabled (not $cm.clusterIssuer) (not $cm.issuer) -}}
+{{- fail "ingress.certManager.enabled is true but neither clusterIssuer nor issuer is set. Set one or disable cert-manager integration." -}}
+{{- end -}}
+{{- /* Merge operator-supplied annotations with cert-manager annotation when enabled. */ -}}
+{{- $annotations := deepCopy (.Values.ingress.annotations | default dict) -}}
+{{- if $cm.enabled -}}
+  {{- if $cm.clusterIssuer -}}
+    {{- $_ := set $annotations "cert-manager.io/cluster-issuer" $cm.clusterIssuer -}}
+  {{- else if $cm.issuer -}}
+    {{- $_ := set $annotations "cert-manager.io/issuer" $cm.issuer -}}
+  {{- end -}}
+{{- end -}}
+{{- /* Auto-populate tls block when cert-manager is on AND operator left tls empty. */ -}}
+{{- $tls := .Values.ingress.tls -}}
+{{- if and $cm.enabled (not $tls) -}}
+  {{- $hosts := list -}}
+  {{- range .Values.ingress.hosts -}}
+    {{- $hosts = append $hosts .host -}}
+  {{- end -}}
+  {{- $tls = list (dict "hosts" $hosts "secretName" (printf "%s-tls" (include "subscription-service.hapi.fullname" $))) -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -12,7 +41,7 @@ metadata:
   labels:
     {{- include "subscription-service.labels" . | nindent 4 }}
     app.kubernetes.io/component: hapi
-  {{- with .Values.ingress.annotations }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
@@ -20,7 +49,7 @@ spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
-  {{- with .Values.ingress.tls }}
+  {{- with $tls }}
   tls:
     {{- toYaml . | nindent 4 }}
   {{- end }}

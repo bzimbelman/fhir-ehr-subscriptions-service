@@ -1,0 +1,61 @@
+{{- /*
+ServiceMonitor resources for the Prometheus Operator. Opt-in via
+`.Values.monitoring.enabled`. Additionally gated on the cluster having the
+`monitoring.coreos.com/v1` CRDs installed so the chart still renders cleanly
+on clusters without the Operator.
+
+NOTE: the /actuator/prometheus endpoint these reference isn't wired up yet
+in either workload — that's Epic #387 #389. Plumbing only.
+
+The `endpoints[].port` value is a NAMED port on the Service (not the number).
+Both `service-hapi.yaml` and `service-interface-engine.yaml` expose their
+HTTP port as `name: http`, so that's what we reference here.
+
+The interface-engine SM selector also matches the sibling `-mllp` Service
+(both Services carry the same `app.kubernetes.io/component=interface-engine`
+metadata labels). That's harmless: the MLLP Service only exposes a `mllp`
+port, so the Operator finds no `http` port to scrape and silently skips it.
+*/ -}}
+{{- if and .Values.monitoring.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "subscription-service.interfaceEngine.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-engine
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: interface-engine
+  endpoints:
+    - port: http
+      path: {{ .Values.monitoring.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+    {{- with .Values.monitoring.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hapi
+  endpoints:
+    - port: http
+      path: {{ .Values.monitoring.serviceMonitor.path }}
+      interval: {{ .Values.monitoring.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout }}
+{{- end }}

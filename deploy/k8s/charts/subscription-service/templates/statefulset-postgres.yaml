@@ -6,7 +6,11 @@ postgres:16-alpine — identical to the Compose stack — and the JPA dialect
 in HAPI is fixed to HapiFhirPostgresDialect regardless. Upgrade ergonomics:
 the PVC survives `helm uninstall`; bumping the postgres image tag is an
 in-place StatefulSet rolling update.
+
+Skipped entirely when externalPostgres.enabled (ticket #416) — HAPI is
+pointed at the managed Postgres outside the cluster instead.
 */ -}}
+{{- if not .Values.externalPostgres.enabled }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -36,11 +40,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "postgres") | nindent 8 }}
       containers:
         - name: postgres
           image: "{{ .Values.image.postgres.repository }}:{{ .Values.image.postgres.tag }}"
           imagePullPolicy: {{ .Values.image.postgres.pullPolicy }}
+          securityContext:
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "postgres") | nindent 12 }}
           ports:
             - name: postgres
               containerPort: 5432
@@ -95,3 +101,4 @@ spec:
         resources:
           requests:
             storage: {{ .Values.postgres.storage.size | quote }}
+{{- end }}

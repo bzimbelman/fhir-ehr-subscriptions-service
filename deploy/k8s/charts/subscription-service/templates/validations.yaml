@@ -1,0 +1,7 @@
+{{- /*
+Template-time validations. This file is intentionally empty of Kubernetes
+resources — the `include` below calls `fail` (ticket #416) when the chart
+is misconfigured, producing a clear error before `helm install` ever talks
+to the API server.
+*/ -}}
+{{- include "subscription-service.externalPostgres.validate" . -}}

@@ -12,7 +12,7 @@ deploy/k8s/
     └── subscription-service/
         ├── Chart.yaml
         ├── values.yaml                 # defaults
-        ├── values-dev.yaml             # bzonfhir.com dev cluster overrides
+        ├── values-dev.yaml             # template overrides for your dev cluster
         ├── values-rancher.yaml         # local Rancher Desktop validation
         ├── README.md
         └── templates/
