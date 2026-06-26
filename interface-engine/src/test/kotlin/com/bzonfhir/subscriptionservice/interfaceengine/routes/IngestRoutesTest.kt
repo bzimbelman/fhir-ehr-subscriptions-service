@@ -32,7 +32,19 @@ import java.time.Duration
  * returning it as the result body, making a "what would nc see?" test
  * brittle.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(
+    webEnvironment = SpringBootTest.WebEnvironment.NONE,
+    // Exclude the IPF-DB datasource autoconfigs added in Epic #378 — this
+    // test is pure Camel and doesn't need a Postgres available. The tests
+    // for the durable inbound store (#380+) use Testcontainers explicitly.
+    properties = [
+        "spring.autoconfigure.exclude=" +
+            "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration," +
+            "org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration",
+    ],
+)
 class IngestRoutesTest {
 
     companion object {

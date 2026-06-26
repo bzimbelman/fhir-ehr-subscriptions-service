@@ -60,9 +60,23 @@ spec:
             # etc. on some PV provisioners).
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            # Interface-engine's own database (Epic #378). Consumed by the
+            # init script mounted below.
+            - name: IPF_DB_USER
+              value: {{ .Values.interfaceEngineDb.user | quote }}
+            - name: IPF_DB_NAME
+              value: {{ .Values.interfaceEngineDb.database | quote }}
+            - name: IPF_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "subscription-service.fullname" . }}-ipf-db
+                  key: password
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
           readinessProbe:
             exec:
               command: ["pg_isready", "-U", "{{ .Values.postgres.user }}", "-d", "{{ .Values.postgres.database }}"]
@@ -78,6 +92,11 @@ spec:
             timeoutSeconds: 5
           resources:
             {{- toYaml .Values.postgres.resources | nindent 12 }}
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: {{ include "subscription-service.fullname" . }}-postgres-init
+            defaultMode: 0755
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -55,6 +55,23 @@ spec:
               value: http://{{ include "subscription-service.matchbox.fullname" . }}:{{ .Values.matchbox.service.port }}/matchboxv3/fhir
             - name: MLLP_PORT
               value: "2575"
+            {{- if not .Values.externalPostgres.enabled }}
+            # Interface-engine's own Postgres (Epic #378). Same Postgres
+            # server as HAPI; separate database. When externalPostgres is
+            # enabled, the in-cluster IPF DB doesn't exist — operators
+            # provisioning a fully-external setup must supply IPF_DB_URL,
+            # IPF_DB_USER, and IPF_DB_PASSWORD via their own mechanism
+            # (envFrom a pre-created Secret, etc.).
+            - name: IPF_DB_URL
+              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.interfaceEngineDb.database }}
+            - name: IPF_DB_USER
+              value: {{ .Values.interfaceEngineDb.user | quote }}
+            - name: IPF_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "subscription-service.fullname" . }}-ipf-db
+                  key: password
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /actuator/health

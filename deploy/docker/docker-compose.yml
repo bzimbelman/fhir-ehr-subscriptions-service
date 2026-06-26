@@ -17,8 +17,18 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
       POSTGRES_DB: ${POSTGRES_DB:-hapi}
       PGDATA: /var/lib/postgresql/data/pgdata
+      # Interface-engine's own DB (Epic #378). Consumed by the init script
+      # in /docker-entrypoint-initdb.d/ on first boot.
+      IPF_DB_USER: ${IPF_DB_USER:-ipf}
+      IPF_DB_PASSWORD: ${IPF_DB_PASSWORD:-ipf}
+      IPF_DB_NAME: ${IPF_DB_NAME:-ipf}
     volumes:
       - ${POSTGRES_DATA_DIR:-./postgres-data}:/var/lib/postgresql/data
+      # Init scripts run ONCE on first boot (when PGDATA is empty) to set up
+      # the IPF database alongside HAPI's. To pick up changes here on an
+      # already-initialized volume, wipe POSTGRES_DATA_DIR or run the SQL
+      # by hand.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hapi} -d ${POSTGRES_DB:-hapi}"]
       interval: 5s
@@ -139,6 +149,8 @@ services:
     container_name: subscription-service-interface-engine
     restart: unless-stopped
     depends_on:
+      hapi-db:
+        condition: service_healthy
       hapi:
         condition: service_healthy
       matchbox:
@@ -148,6 +160,11 @@ services:
       MATCHBOX_BASE: http://matchbox:8080/matchboxv3/fhir
       MLLP_PORT: "2575"
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
+      # Interface-engine's own Postgres database (Epic #378). Same Postgres
+      # server as HAPI; separate database name + user.
+      IPF_DB_URL: jdbc:postgresql://hapi-db:5432/${IPF_DB_NAME:-ipf}
+      IPF_DB_USER: ${IPF_DB_USER:-ipf}
+      IPF_DB_PASSWORD: ${IPF_DB_PASSWORD:-ipf}
     ports:
       - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
       - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
