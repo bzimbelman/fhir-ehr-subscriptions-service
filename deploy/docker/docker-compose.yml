@@ -167,6 +167,15 @@ services:
       IPF_DB_PASSWORD: ${IPF_DB_PASSWORD:-ipf}
       # Admin REST API bearer token (#384). Empty = open (dev only).
       IPF_ADMIN_AUTH_TOKEN: ${IPF_ADMIN_AUTH_TOKEN:-}
+      # Async worker tuning (#382). See deploy/docker/.env.example for
+      # meaning + default reasoning. The whole worker subsystem is
+      # @ConditionalOnProperty-gated on IPF_WORKER_ENABLED, so setting
+      # it to false disables the @Scheduled loop AND the bean itself
+      # (useful for one-off "ingest-only" replicas).
+      IPF_WORKER_ENABLED: ${IPF_WORKER_ENABLED:-true}
+      IPF_WORKER_POLL_MS: ${IPF_WORKER_POLL_MS:-1000}
+      IPF_WORKER_BATCH_SIZE: ${IPF_WORKER_BATCH_SIZE:-10}
+      IPF_WORKER_TRANSFORMING_STALE_SECONDS: ${IPF_WORKER_TRANSFORMING_STALE_SECONDS:-60}
     ports:
       - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
       - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
