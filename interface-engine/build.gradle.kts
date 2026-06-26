@@ -11,6 +11,16 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7"
 }
 
+// NOTE on JPA + Kotlin: Hibernate needs a no-arg constructor on every
+// @Entity for reflective instantiation. The conventional fix is the
+// `kotlin("plugin.jpa")` (kotlin-noarg) compiler plugin, but adding it
+// would require the Dockerised Gradle build to reach the Gradle plugin
+// portal at build time — which fails behind our corporate-managed TLS
+// proxy. To keep the Dockerfile unchanged, we instead provide a default
+// value for every constructor parameter on JPA entities; Kotlin's
+// compiler then synthesizes a no-arg secondary constructor that
+// Hibernate can invoke. See IngestedMessage.kt.
+
 group = "com.bzonfhir.subscriptionservice"
 version = "0.0.1-SNAPSHOT"
 
@@ -109,4 +119,12 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // Testcontainers on Rancher Desktop: the Ryuk resource-reaper container
+    // can't bind-mount the Docker socket (/Users/$USER/.rd/docker.sock isn't
+    // a regular file from k3s/moby's view), so disable it. Containers we
+    // start will instead be cleaned up via JVM shutdown hooks. Equivalent
+    // to setting ryuk.disabled=true in ~/.testcontainers.properties — we
+    // push it into the test JVM's env explicitly so CI behaves the same way
+    // as the developer machine.
+    environment("TESTCONTAINERS_RYUK_DISABLED", "true")
 }
