@@ -92,6 +92,17 @@ services:
       SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS: ${SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS:-false}
       SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH: ${SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH:-false}
       SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS: ${SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS:-365}
+      # OpenTelemetry distributed tracing (Epic #387, ticket #394). Off by
+      # default — the SDK is built as a no-op, no spans recorded, no
+      # exporter. Flip OTEL_SDK_DISABLED=false (and set an endpoint via
+      # OTEL_EXPORTER_OTLP_ENDPOINT) when a collector is running. The
+      # `--profile observability` flag brings up the bundled jaeger
+      # service below; combined with OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      # in your .env, traces flow there end-to-end.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: subscription-service-hapi
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     volumes:
       - ../../hapi/application.yaml:/app/config/application.yaml:ro
       - ../../hapi/igs:/app/igs:ro
@@ -191,6 +202,13 @@ services:
       IPF_BACKOFF_MAX_MS: ${IPF_BACKOFF_MAX_MS:-300000}
       IPF_BACKOFF_FACTOR: ${IPF_BACKOFF_FACTOR:-2.0}
       IPF_DLQ_LOG_LEVEL: ${IPF_DLQ_LOG_LEVEL:-WARN}
+      # OpenTelemetry tracing (#394). See the matching block on the `hapi`
+      # service above for the env-var semantics; same defaults apply here
+      # (OFF by default, no overhead unless OTEL_SDK_DISABLED=false).
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: subscription-service-interface-engine
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     ports:
       - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
       - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
@@ -200,6 +218,34 @@ services:
       timeout: 5s
       retries: 8
       start_period: 30s
+    networks:
+      - subscription-service
+
+  # OpenTelemetry collector + UI (Epic #387, ticket #394).
+  #
+  # Optional — only brought up when you pass `--profile observability` to
+  # `docker compose up`. Without that flag this service is silently
+  # ignored, so the default `docker compose up -d` workflow is
+  # unchanged.
+  #
+  # Image: jaegertracing/jaeger:2.0.0 — the v2 monolith bundles the
+  # collector, query, and UI into one container. Set COLLECTOR_OTLP_ENABLED=true
+  # so the OTLP gRPC (:4317) and HTTP (:4318) receivers are wired.
+  #
+  # Wiring it into the rest of the stack: with this profile active, set
+  # OTEL_SDK_DISABLED=false and OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+  # in your .env. Then visit http://localhost:16686 to see traces.
+  jaeger:
+    profiles: [observability]
+    image: jaegertracing/jaeger:2.0.0
+    container_name: subscription-service-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
     networks:
       - subscription-service
 

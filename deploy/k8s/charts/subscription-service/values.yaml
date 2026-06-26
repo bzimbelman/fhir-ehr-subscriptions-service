@@ -447,6 +447,25 @@ monitoring:
     path: /actuator/prometheus
 
 # ---------------------------------------------------------------------------
+# OpenTelemetry distributed tracing (Epic #387, ticket #394).
+#
+# Default OFF — span recording is a no-op when `enabled: false`, with no
+# SDK threads, no exporter, no network connections. Flip on when you have
+# an OTLP collector reachable from the pods. Service-name is set
+# automatically per workload (`subscription-service-interface-engine`,
+# `subscription-service-hapi`) — operators don't have to override unless
+# they want a different naming convention.
+#
+# `endpoint`: OTLP gRPC endpoint (defaults to the standard 4317 port).
+# `resourceAttributes`: optional `key=value,key2=value2` string appended
+#   to OTEL_RESOURCE_ATTRIBUTES — handy for `deployment.environment=prod`.
+# ---------------------------------------------------------------------------
+otel:
+  enabled: false
+  endpoint: ""
+  resourceAttributes: ""
+
+# ---------------------------------------------------------------------------
 # Common pod scheduling knobs (apply to all four deployments).
 # ---------------------------------------------------------------------------
 nodeSelector: {}
