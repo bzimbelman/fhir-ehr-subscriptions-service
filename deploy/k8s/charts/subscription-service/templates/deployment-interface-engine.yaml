@@ -78,6 +78,19 @@ spec:
             # `interfaceEngine.admin.authToken` in values to enable.
             - name: IPF_ADMIN_AUTH_TOKEN
               value: {{ .Values.interfaceEngine.admin.authToken | default "" | quote }}
+            # Async worker (Epic #378, ticket #382). See
+            # `interfaceEngine.worker` in values.yaml for the meaning of
+            # each knob. The bean is @ConditionalOnProperty-gated, so
+            # setting enabled=false produces a truly inert worker
+            # subsystem (no scheduled task, no @PostConstruct, nothing).
+            - name: IPF_WORKER_ENABLED
+              value: {{ .Values.interfaceEngine.worker.enabled | default true | quote }}
+            - name: IPF_WORKER_POLL_MS
+              value: {{ .Values.interfaceEngine.worker.pollIntervalMs | default 1000 | quote }}
+            - name: IPF_WORKER_BATCH_SIZE
+              value: {{ .Values.interfaceEngine.worker.batchSize | default 10 | quote }}
+            - name: IPF_WORKER_TRANSFORMING_STALE_SECONDS
+              value: {{ .Values.interfaceEngine.worker.transformingStaleSeconds | default 60 | quote }}
           readinessProbe:
             httpGet:
               path: /actuator/health
