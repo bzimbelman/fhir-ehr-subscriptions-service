@@ -153,6 +153,33 @@ class IngestedMessage(
      */
     @Column(name = "trace_context")
     var traceContext: String? = null,
+
+    /**
+     * Canonical FHIR references for resources HAPI created when the worker
+     * POSTed the transaction Bundle (Epic #387, ticket #392). Populated
+     * AFTER the successful HAPI POST by parsing the TRANSACTION_RESPONSE
+     * bundle's `entry[].response.location` fields and normalizing each
+     * to `ResourceType/id` form (HAPI returns the version-history URL,
+     * e.g. `Patient/123/_history/1`, which we trim).
+     *
+     * Nullable to tolerate:
+     *
+     *   - Rows persisted before V005 — they have no list; the admin
+     *     effects view treats this as `effects_status="unknown"`.
+     *   - Rows in non-DELIVERED status — by definition no HAPI POST
+     *     succeeded so no refs to list. The list is `null`, NOT an empty
+     *     array, because "POSTed and got zero" is a distinguishable case
+     *     (rare; would be a transaction Bundle with no `entry[].response`).
+     *
+     * Mapped as TEXT[] via Hibernate's `SqlTypes.ARRAY`. The kotlin-noarg
+     * fallback (default-value-on-every-constructor-parameter) requires a
+     * default here too; emptyList() would be wrong because it implies
+     * "POSTed, zero refs" — so we default to null and require callers to
+     * pass the real list when they have one.
+     */
+    @Column(name = "created_resource_refs", columnDefinition = "text[]")
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    var createdResourceRefs: Array<String>? = null,
 ) {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

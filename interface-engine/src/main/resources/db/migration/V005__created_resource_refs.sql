@@ -1,0 +1,64 @@
+-- V005 created_resource_refs column on ingested_messages (Epic #387, ticket #392).
+--
+-- After the worker (#382) POSTs the matchbox-produced transaction Bundle to
+-- HAPI, HAPI returns a TRANSACTION_RESPONSE bundle whose `entry[].response.location`
+-- fields carry the canonical FHIR references HAPI assigned to each newly
+-- created resource (e.g. "Patient/123/_history/1"). Ticket #392's effects
+-- endpoint joins that list back to the inbound message so an operator can
+-- see, in one place, which FHIR resources a single inbound HL7v2 message
+-- produced.
+--
+-- ## Why a column on this table, not a separate join table or a HAPI lookup
+--
+-- Three options were on the table for #392:
+--
+--   1. **(picked)** Persist the response Bundle's references back here as a
+--      TEXT[] column. Easy: it's exactly one UPDATE in the worker after the
+--      successful POST, and the read path is a single SELECT — no extra
+--      tables, no extra cross-DB queries. The downside is the column captures
+--      ONLY resources HAPI created in this one transaction; a subsequent
+--      manual edit on HAPI isn't reflected. That's the right scope: the
+--      "effects" view is about what *this message* produced, not the
+--      lifetime history of those resources.
+--
+--   2. Add a custom HAPI extension on every resource carrying the
+--      correlation_id, then query HAPI with `?_extension=...&_extension-value=...`
+--      at read time. Standardizable and survives Bundle restructuring, but
+--      adds an interceptor + the indexing cost on HAPI side, and we don't
+--      have a numbers-justified reason to pay for it yet. Future work if
+--      option 1 starts feeling cramped.
+--
+--   3. Query AuditEvent (from #391) for resources whose `agent` block
+--      references the correlation_id. Doesn't work cleanly — #391's
+--      AuditEvent doesn't have correlation_id in queryable fields.
+--
+-- ## Schema choice
+--
+-- TEXT[] (Postgres array of TEXT). Stored references look like
+-- `["Patient/123", "Encounter/456"]` — the canonical reference form, NOT
+-- the version-history URL HAPI returns in the `Location` header. The worker
+-- normalizes "Patient/123/_history/1" → "Patient/123" before persisting so
+-- the array stays operator-readable and matches what FHIR clients put on
+-- `Reference.reference` elsewhere.
+--
+-- We picked TEXT[] over JSONB for two reasons:
+--   - The data is a flat list of strings; JSONB would add encoding overhead
+--     and a different query syntax for no win.
+--   - TEXT[] gets Postgres's native array operators (ANY, @>, etc.) if a
+--     future feature needs to find rows by reference.
+--
+-- Nullable so:
+--   - Rows persisted before this migration have no value (their effects
+--     view falls back to "effects_status=unknown — pre-V005").
+--   - Rows in RECEIVED / FAILED / DEAD_LETTER status that never reached
+--     a successful HAPI POST have no list to persist; NULL is the honest
+--     value (different from "POSTed and HAPI created zero resources",
+--     which would be `'{}'::TEXT[]` — an empty array).
+--
+-- No index on the column for now — operator queries hit the row by id
+-- (via the admin endpoint), and the column is sparsely populated. If a
+-- future feature wants to find "which inbound message created this
+-- Patient?" we can add a GIN index later.
+
+ALTER TABLE ingested_messages
+  ADD COLUMN created_resource_refs TEXT[];

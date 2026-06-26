@@ -152,11 +152,26 @@ class IngestedMessageWorkerTest {
 
     // ---------------------------------------------------------------------
     // 1. Happy path: ADT_A01 → matchbox → HAPI → DELIVERED.
+    //
+    //    Also asserts (Epic #387, ticket #392) that
+    //    `created_resource_refs` is populated from the HAPI transaction
+    //    response. The stub is configured to return a response Bundle
+    //    with two entries whose `response.location` fields are the
+    //    canonical references HAPI assigned; the worker normalizes the
+    //    version-history suffix off and persists the list.
     // ---------------------------------------------------------------------
     @Test
-    fun `happy path - ADT_A01 row is transformed and delivered`() {
+    fun `happy path - ADT_A01 row is transformed and delivered with created refs`() {
         val stub = matchboxClient as StubMatchboxClient
         stub.response = adtA01Bundle()
+        // Configure HAPI's TRANSACTION_RESPONSE to look like a real
+        // create-Patient + create-Encounter pair. One value is the bare
+        // reference, one is the version-history URL — the worker should
+        // normalize both to "ResourceType/id".
+        StubHapiClient.setResponseLocations(
+            hapiClient,
+            listOf("Patient/p-123", "Encounter/e-456/_history/1"),
+        )
 
         val id = seedReceived(
             sourceSystem = "EPIC",
@@ -170,6 +185,13 @@ class IngestedMessageWorkerTest {
             assertThat(row.status).isEqualTo(IngestedMessageStatus.DELIVERED)
             assertThat(row.deliveredAt).isNotNull()
             assertThat(row.lastError).isNull()
+            // V005 / ticket #392: refs persisted from the transaction response.
+            assertThat(row.createdResourceRefs)
+                .describedAs("created_resource_refs should be populated from the HAPI response")
+                .isNotNull()
+            // Normalized to bare ResourceType/id form (history suffix stripped).
+            assertThat(row.createdResourceRefs!!.toList())
+                .containsExactly("Patient/p-123", "Encounter/e-456")
         }
         assertThat(stub.callCount.get()).isEqualTo(1)
         assertThat(StubHapiClient.transactionCount(hapiClient).get()).isEqualTo(1)
@@ -449,6 +471,12 @@ class StubMatchboxClient(private val fhirContext: FhirContext) : MatchboxClient 
 object StubHapiClient {
     private val counters = mutableMapOf<IGenericClient, AtomicInteger>()
     private val failures = mutableMapOf<IGenericClient, Throwable?>()
+    // Per-client list of `entry[].response.location` strings to put on the
+    // TRANSACTION_RESPONSE bundle the stub returns (Epic #387, ticket #392).
+    // The worker parses these and persists them to created_resource_refs;
+    // configuring them here lets the test assert the round-trip without
+    // standing up real HAPI.
+    private val responseLocations = mutableMapOf<IGenericClient, List<String>>()
 
     fun build(): IGenericClient {
         // Build the deep stub from the outside in. We deliberately stub the
@@ -470,16 +498,31 @@ object StubHapiClient {
             val counter = counters.getOrPut(mock) { AtomicInteger(0) }
             counter.incrementAndGet()
             failures[mock]?.let { throw it }
-            Bundle().apply { type = Bundle.BundleType.TRANSACTIONRESPONSE }
+            // Build the response Bundle. If the test configured response
+            // locations, attach them as `entry[].response.location` so
+            // the worker's extractCreatedResourceRefs() has something to
+            // parse. Otherwise empty (the historical default).
+            val responseBundle = Bundle().apply { type = Bundle.BundleType.TRANSACTIONRESPONSE }
+            for (location in responseLocations[mock].orEmpty()) {
+                responseBundle.addEntry().apply {
+                    response = Bundle.BundleEntryResponseComponent().apply {
+                        this.location = location
+                        this.status = "201 Created"
+                    }
+                }
+            }
+            responseBundle
         }
         counters[mock] = AtomicInteger(0)
         failures[mock] = null
+        responseLocations[mock] = emptyList()
         return mock
     }
 
     fun reset(client: IGenericClient) {
         counters[client]?.set(0)
         failures[client] = null
+        responseLocations[client] = emptyList()
     }
 
     fun transactionCount(client: IGenericClient): AtomicInteger =
@@ -487,5 +530,14 @@ object StubHapiClient {
 
     fun failureToThrow(client: IGenericClient, t: Throwable) {
         failures[client] = t
+    }
+
+    /**
+     * Configure the response bundle's `entry[].response.location` list
+     * for subsequent stub returns. The worker parses these into
+     * `created_resource_refs` on the row (Epic #387, ticket #392).
+     */
+    fun setResponseLocations(client: IGenericClient, locations: List<String>) {
+        responseLocations[client] = locations
     }
 }
