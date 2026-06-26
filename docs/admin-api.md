@@ -398,23 +398,34 @@ interface engine queries HAPI via the same HAPI FHIR client wired by
 
 ### Architectural note
 
-HAPI 7.6 implements the R5 Subscriptions Backport IG's `$status` operation
-on `Subscription`, which returns a `Parameters` resource containing a
-contained `SubscriptionStatus` with recent delivery events. We proxy that
-operation, plus a basic Subscription read for the bare metadata
-(active/error status, channel type, endpoint).
+HAPI 7.6 ships the R5 Subscriptions Backport IG (StructureDefinitions and
+OperationDefinitions land in the package on startup), but the `$status`
+operation **is not wired as a method on the Subscription resource provider
+by default** in our build of the HAPI JPA starter image. We verified this
+during ticket #390 live testing on Rancher Desktop: requests to
+`GET /fhir/Subscription/{id}/$status` come back with HAPI's
+`ResourceBinding` "No methods exist for resource: null" warning, not a
+useful Parameters payload.
 
-A richer per-attempt log (with HTTP status codes, durations, full error
-text) would require us to keep our own `subscription_delivery_log` table
-fed by the same `SUBSCRIPTION_AFTER_REST_HOOK_DELIVERY` hooks ticket #389
-uses for metrics. We deferred that — the Prometheus
-`hapi_subscription_delivery_total` counter from #389 already covers the
-"are deliveries succeeding?" aggregate alerting question, and HAPI's
-SubscriptionStatus answers the per-subscription "did the last attempt
-succeed?" question for the topic-based subscriptions where it's wired.
-If operators report that legacy R4 criteria subscriptions need richer
-detail than HAPI exposes, revisit the own-table design — see
-`HapiSubscriptionStatusClient.kt`'s class-level KDoc for the tradeoffs.
+Consequently, the admin endpoints today report `delivery_success_count: 0`,
+`delivery_failure_count: 0`, and empty `items[]` for the history endpoint
+on every Subscription. The summary still surfaces useful operator data:
+which subscriptions exist, whether each is `active`, the endpoint URL, and
+whether HAPI flipped any into `status=error` (in which case
+`last_attempt_outcome=failure` and `last_error` carries HAPI's text).
+
+A richer per-attempt log would require us to keep our own
+`subscription_delivery_log` table fed by the
+`SUBSCRIPTION_AFTER_REST_HOOK_DELIVERY` hooks ticket #389 already uses for
+metrics. We deferred that — the Prometheus
+`hapi_subscription_delivery_total` counter from #389 covers the aggregate
+"are deliveries succeeding?" alerting question, and the admin "which
+subscriptions are registered? are any in error?" question is answered by
+the existing fields. When operators report that they need richer
+per-attempt detail than Prometheus + Subscription metadata provides, the
+right next step is to either (a) wire HAPI's `$status` operation via a
+custom `IResourceProvider` in `hapi-auth`, or (b) implement the own-table
+approach. See `HapiSubscriptionStatusClient.kt`'s class-level KDoc.
 
 ### 1. `GET /admin/subscriptions/health`
 
