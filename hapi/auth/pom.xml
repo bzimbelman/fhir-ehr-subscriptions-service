@@ -170,6 +170,17 @@
       <scope>test</scope>
     </dependency>
     <!--
+      Spring Boot test harness; used only for ApplicationContextRunner which exercises
+      the auto-configuration's startup-time fail-fast behaviour (ticket #370). Not
+      packaged because the JAR's own deps are all `provided`.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-test</artifactId>
+      <version>${spring.boot.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!--
       `provided`-scope deps above are already on the compile AND test
       classpaths (per Maven's scope table). No duplicate declarations
       needed.
