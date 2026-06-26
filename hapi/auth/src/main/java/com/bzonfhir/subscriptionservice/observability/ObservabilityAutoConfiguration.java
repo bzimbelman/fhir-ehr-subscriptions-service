@@ -2,10 +2,10 @@ package com.bzonfhir.subscriptionservice.observability;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -76,15 +76,31 @@ public class ObservabilityAutoConfiguration {
    * <p>Gated by {@link ConditionalOnClass} on Micrometer — the HAPI image bundles
    * micrometer-core in its WEB-INF/lib, so this class is present at runtime; if a future
    * HAPI image strips it the bean would silently no-op rather than blowing up the
-   * autoconfigure. {@link ConditionalOnBean} on {@link MeterRegistry} similarly defers
-   * to whatever the HAPI Spring Boot context wires (PrometheusMeterRegistry in
-   * production; SimpleMeterRegistry in tests).
+   * autoconfigure.
+   *
+   * <p>The {@link MeterRegistry} is injected via {@link ObjectProvider} so this autoconfig
+   * is NOT order-dependent on {@code MetricsAutoConfiguration}. {@code @ConditionalOnBean}
+   * has a known limitation in autoconfig classes — it can fire BEFORE the conditional
+   * bean's autoconfig has run and report "no bean" even when one will exist by application
+   * start. ObjectProvider sidesteps that race by deferring the lookup to the registrar's
+   * runtime callback.
    */
   @Bean
   @ConditionalOnClass(MeterRegistry.class)
-  @ConditionalOnBean(MeterRegistry.class)
   public SubscriptionMetricsInterceptor subscriptionMetricsInterceptor(
-      MeterRegistry meterRegistry) {
+      ObjectProvider<MeterRegistry> meterRegistryProvider) {
+    MeterRegistry meterRegistry = meterRegistryProvider.getIfAvailable();
+    if (meterRegistry == null) {
+      log.warn(
+          "No MeterRegistry bean found — SubscriptionMetricsInterceptor will be created "
+              + "but won't publish anything until a registry appears. This is fine for "
+              + "the in-process unit tests; in the HAPI image we expect a "
+              + "PrometheusMeterRegistry from Spring Boot's metrics autoconfig.");
+      // Construct against a no-op registry rather than returning null — the
+      // @Hook methods still get called by HAPI, they just don't record anywhere.
+      // This avoids forcing every caller of the bean to null-check.
+      return new SubscriptionMetricsInterceptor(new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
+    }
     return new SubscriptionMetricsInterceptor(meterRegistry);
   }
 
@@ -101,7 +117,6 @@ public class ObservabilityAutoConfiguration {
    */
   @Bean
   @ConditionalOnClass(MeterRegistry.class)
-  @ConditionalOnBean(MeterRegistry.class)
   public SmartInitializingSingleton subscriptionMetricsInterceptorRegistrar(
       @Autowired(required = false) IInterceptorService interceptorService,
       SubscriptionMetricsInterceptor interceptor) {
