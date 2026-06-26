@@ -52,6 +52,23 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
 
+    // Micrometer Prometheus registry (Epic #387, ticket #389).
+    //
+    // Spring Boot 3.5.x bundles micrometer-core (the metrics abstraction) via
+    // the actuator starter, but NOT the Prometheus registry — adding it here
+    // turns on the `/actuator/prometheus` endpoint when also added to
+    // `management.endpoints.web.exposure.include`. We pin via the Spring
+    // Boot BOM (`io.spring.dependency-management` resolves Micrometer's
+    // version to the one Boot was tested with — 1.14.x for Boot 3.5.x), so
+    // no explicit version string is needed and a future Boot bump won't
+    // leave Micrometer trailing.
+    //
+    // Why Prometheus specifically: the chart already plumbs ServiceMonitor
+    // CRDs (ticket #418 / values.yaml `monitoring.enabled`) for the
+    // Prometheus Operator. Picking Prometheus here means zero scrape-config
+    // changes for operators who already run that stack.
+    implementation("io.micrometer:micrometer-registry-prometheus")
+
     // Kotlin.
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
