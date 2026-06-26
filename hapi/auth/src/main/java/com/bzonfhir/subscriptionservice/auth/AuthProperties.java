@@ -40,11 +40,14 @@ public class AuthProperties {
    * Expected {@code iss} claim on incoming JWTs. The token's {@code iss} MUST exactly match
    * this value or the request is rejected.
    *
-   * <p>Default matches the Keycloak realm provisioned by ticket #358 on the WildFly-path
-   * Keycloak instance at the-deploy-host. Override via env
-   * {@code SUBSCRIPTION_SERVICE_AUTH_ISSUER} for other deployments.
+   * <p>No default — every deployment MUST supply its own issuer via
+   * {@code SUBSCRIPTION_SERVICE_AUTH_ISSUER} (or the equivalent yaml property). When
+   * {@link #enabled} is {@code true} and this is null/blank, the auto-configuration
+   * fails fast at startup with a clear error (ticket #370). Previously this defaulted to
+   * the maintainer's Keycloak instance, which silently pointed strangers' clones at the
+   * wrong realm.
    */
-  private String issuer = "https://keycloak.bzonfhir.com/auth/realms/subscription-service";
+  private String issuer = null;
 
   /**
    * JWKS endpoint used to fetch the realm's signing keys. Defaults to the standard Keycloak

@@ -36,17 +36,47 @@ public class AuthAutoConfiguration {
   private static final Logger log = LoggerFactory.getLogger(AuthAutoConfiguration.class);
 
   /**
+   * Error message thrown when auth is enabled but no issuer is configured. Documented as
+   * a constant so tests can pin the wording (ticket #370). Mention BOTH the env-var fix
+   * (production) and the disable-for-dev escape hatch (laptops, CI) so an operator can
+   * resolve it without reading source.
+   */
+  static final String ISSUER_REQUIRED_MESSAGE =
+      "subscription-service.auth.issuer is required when auth is enabled. "
+          + "Set SUBSCRIPTION_SERVICE_AUTH_ISSUER "
+          + "(e.g., https://your-keycloak.example.com/realms/subscription-service) "
+          + "or set SUBSCRIPTION_SERVICE_AUTH_ENABLED=false for local dev.";
+
+  /**
    * Validates incoming JWTs against the configured Keycloak realm's JWKS. Singleton: the
    * underlying Nimbus {@code JWKSource} caches the JWKS and refreshes it on its own
    * schedule, so reusing one instance across requests is correct and cheap.
+   *
+   * <p>This bean's factory method is also where we fail-fast on a missing issuer
+   * (ticket #370). Throwing here aborts Spring's context refresh, which in turn causes
+   * the Spring Boot launcher to exit non-zero — so the HAPI container restarts in a loop
+   * with the documented error in its logs, instead of starting up against the wrong
+   * Keycloak realm.
    */
   @Bean
   public JwtValidator jwtValidator(AuthProperties props) {
+    validateIssuer(props);
     log.info(
         "Subscription-service auth enabled: issuer={} jwks={}",
         props.getIssuer(),
         props.resolveJwksUrl());
     return new JwtValidator(props);
+  }
+
+  /**
+   * Package-private so the unit test can call it directly, but the production path is
+   * always through {@link #jwtValidator(AuthProperties)}.
+   */
+  static void validateIssuer(AuthProperties props) {
+    String issuer = props.getIssuer();
+    if (issuer == null || issuer.isBlank()) {
+      throw new IllegalStateException(ISSUER_REQUIRED_MESSAGE);
+    }
   }
 
   @Bean
