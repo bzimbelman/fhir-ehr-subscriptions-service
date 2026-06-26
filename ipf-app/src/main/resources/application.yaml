@@ -24,7 +24,7 @@ management:
 logging:
   level:
     root: INFO
-    com.bzonfhir.subscription: INFO
+    com.bzonfhir.subscriptionservice: INFO
     org.apache.camel: INFO
     org.openehealth.ipf: INFO
 

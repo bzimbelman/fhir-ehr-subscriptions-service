@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import java.util.Arrays;
 import java.util.List;
@@ -8,16 +8,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 /**
  * Configuration knobs for the subscription-service auth layer.
  *
- * <p>Bound from {@code application.yaml} under the prefix {@code subscription_service.auth}.
+ * <p>Bound from {@code application.yaml} under the prefix {@code subscription-service.auth}.
  * Example:
  *
  * <pre>
- * subscription_service:
+ * subscription-service:
  *   auth:
  *     enabled: true
  *     issuer: https://keycloak.bzonfhir.com/auth/realms/subscription-service
- *     jwks_url: ${subscription_service.auth.issuer}/protocol/openid-connect/certs
- *     allow_anonymous_paths:
+ *     jwks-url: ${subscription-service.auth.issuer}/protocol/openid-connect/certs
+ *     allow-anonymous-paths:
  *       - /metadata
  *       - /.well-known/smart-configuration
  * </pre>
