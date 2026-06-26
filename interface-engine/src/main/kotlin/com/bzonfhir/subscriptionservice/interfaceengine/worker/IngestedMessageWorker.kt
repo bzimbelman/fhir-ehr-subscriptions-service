@@ -403,13 +403,20 @@ class IngestedMessageWorker(
         // HAPI client sees the correlation id via an additional request
         // header configured by [HapiClientConfig]'s ClientInterceptor that
         // copies MDC.get(correlation_id) onto every outbound request.
+        //
+        // We capture the response Bundle because HAPI's TRANSACTION_RESPONSE
+        // carries the assigned resource IDs in `entry[].response.location`.
+        // Ticket #392 persists that list to the row so the admin /effects
+        // endpoint can report which FHIR resources this inbound message
+        // produced — no second cross-DB query, no HAPI-side lookup.
         val hapiPostStart = System.nanoTime()
-        try {
-            hapiClient.transaction().withBundle(bundle).execute()
+        val responseBundle: org.hl7.fhir.r4.model.Bundle? = try {
+            val resp = hapiClient.transaction().withBundle(bundle).execute()
             metrics.recordHapiPostDuration(
                 Duration.ofNanos(System.nanoTime() - hapiPostStart),
                 success = true,
             )
+            resp
         } catch (ex: Exception) {
             metrics.recordHapiPostDuration(
                 Duration.ofNanos(System.nanoTime() - hapiPostStart),
@@ -422,9 +429,83 @@ class IngestedMessageWorker(
             return
         }
 
-        gateway.markDelivered(id, lastError = null)
+        // Parse the response Bundle's `entry[].response.location` fields
+        // into normalized "ResourceType/id" references. The HAPI server
+        // returns either a bare reference ("Patient/123") or the version-
+        // history URL ("Patient/123/_history/1"); we normalize to the
+        // bare form so the stored values match what FHIR consumers put
+        // on `Reference.reference` elsewhere. A null/empty/garbled
+        // response Bundle yields an empty list — the row is still
+        // DELIVERED, but the effects view shows no resources.
+        val createdRefs = extractCreatedResourceRefs(responseBundle)
+        gateway.markDelivered(id, lastError = null, createdResourceRefs = createdRefs)
         recordDeliveredMetrics(row)
-        log.info("worker: row {} DELIVERED type={}", id, messageType)
+        log.info(
+            "worker: row {} DELIVERED type={} created_refs={}",
+            id,
+            messageType,
+            createdRefs.size,
+        )
+    }
+
+    /**
+     * Extract `ResourceType/id` references from a HAPI TRANSACTION_RESPONSE
+     * bundle (Epic #387, ticket #392).
+     *
+     * For each entry whose `response.location` is set, normalize the
+     * location string by stripping the optional `/_history/N` suffix and
+     * any leading slash. Entries without a location are skipped silently
+     * (they're typically `OperationOutcome` entries HAPI inserts on
+     * non-create operations).
+     *
+     * Visible-for-testing rather than private so the unit test can drive
+     * it directly against a synthesized Bundle without round-tripping
+     * through the full worker stack.
+     */
+    internal fun extractCreatedResourceRefs(
+        responseBundle: org.hl7.fhir.r4.model.Bundle?,
+    ): List<String> {
+        if (responseBundle == null) return emptyList()
+        val result = mutableListOf<String>()
+        for (entry in responseBundle.entry) {
+            val location = entry.response?.location?.takeUnless { it.isNullOrBlank() }
+                ?: continue
+            result += normalizeFhirLocation(location)
+        }
+        return result
+    }
+
+    /**
+     * Normalize a HAPI `Location`-style FHIR reference to bare
+     * `ResourceType/id` form. Tolerates:
+     *
+     *   - `Patient/123`                       → `Patient/123`
+     *   - `Patient/123/_history/1`            → `Patient/123`
+     *   - `/Patient/123`                      → `Patient/123`
+     *   - `https://hapi.example.com/fhir/Patient/123/_history/1` → `Patient/123`
+     *
+     * Anything we can't parse is returned as-is so a future operator
+     * inspection sees the raw value rather than a misleading-shortened
+     * one. The effects endpoint then surfaces whatever is in the column.
+     */
+    private fun normalizeFhirLocation(raw: String): String {
+        // Drop a query string or fragment, if any.
+        val noQuery = raw.substringBefore('?').substringBefore('#')
+        // Drop the version-history suffix if present.
+        val noHistory = noQuery.substringBefore("/_history/")
+        // If the value contains the FHIR endpoint host, strip everything
+        // before the resource-type segment. We look for the last two-segment
+        // tail (`ResourceType/id`) by trimming trailing slashes and taking
+        // the last two non-empty path segments.
+        val trimmed = noHistory.trimEnd('/')
+        val segments = trimmed.split('/').filter { it.isNotEmpty() }
+        if (segments.size < 2) return raw
+        // The last two segments are the resource type + id. This works for
+        // both bare references ("Patient/123") and fully qualified URLs
+        // ("https://host/fhir/Patient/123").
+        val resourceType = segments[segments.size - 2]
+        val resourceId = segments.last()
+        return "$resourceType/$resourceId"
     }
 
     /**
