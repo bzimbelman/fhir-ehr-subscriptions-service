@@ -35,7 +35,7 @@ PACKAGES=(
   # ConceptMaps describing the message-level v2 → FHIR mapping; executable
   # StructureMaps for $transform on raw ER7 are NOT in this version of the
   # IG (the build.fhir.org continuous build has WIP StructureMaps but no
-  # released package yet). The IPF app calls Matchbox $transform with the
+  # released package yet). The interface engine calls Matchbox $transform with the
   # canonical URL "http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01".
   # Operators should drop a project-owned or community-supplied StructureMap
   # into matchbox/maps/, or bump this pin once HL7 publishes the executable

@@ -9,8 +9,8 @@ FROM gradle:8.11.1-jdk21 AS build
 WORKDIR /work
 
 # Optional corporate-MITM CA injection. Off by default. To use:
-#   cp ~/.netskope-ca/full-chain.pem ipf-app/ca-cert/cert.pem
-#   docker build -t subscription-service/ipf-app:dev ipf-app/
+#   cp ~/.netskope-ca/full-chain.pem interface-engine/ca-cert/cert.pem
+#   docker build -t subscription-service/interface-engine:dev interface-engine/
 # The COPY is conditional: if ca-cert/cert.pem is absent the import is a no-op.
 # The file may contain a CA chain (multiple PEM blocks); we split it and import
 # each cert into the JVM truststore individually because `keytool -importcert`
