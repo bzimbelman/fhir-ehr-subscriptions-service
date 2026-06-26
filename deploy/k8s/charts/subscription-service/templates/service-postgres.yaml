@@ -1,3 +1,8 @@
+{{- /*
+Headless Service paired with the in-cluster Postgres StatefulSet. Skipped
+when externalPostgres.enabled (ticket #416).
+*/ -}}
+{{- if not .Values.externalPostgres.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -17,3 +22,4 @@ spec:
   selector:
     {{- include "subscription-service.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: postgres
+{{- end }}
