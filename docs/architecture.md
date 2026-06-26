@@ -126,6 +126,12 @@ Matchbox is stateless. The IPF app is stateless. Only Postgres holds durable sta
   - `permissive` — HTTP and missing auth headers are allowed. **Only intended for the sandbox/testing model (3)** and local dev (model 4).
 - Whatever policy is in effect, the server records the configured `Subscription.header` and includes it on every outbound notification — the subscriber is always responsible for verifying that header.
 
+**Implementation (ticket #368, merged):** a HAPI server interceptor that hooks `STORAGE_PRESTORAGE_RESOURCE_CREATED` and `STORAGE_PRESTORAGE_RESOURCE_UPDATED`. Violations short-circuit the write with `HTTP 422 Unprocessable Entity` plus an `OperationOutcome` whose issues list each specific failure ("HTTPS required", "Authorization header required", etc.). Classes live under `com.bzonfhir.subscriptionservice.channelsecurity`:
+
+- [`ChannelSecurityProperties`](../hapi/auth/src/main/java/com/bzonfhir/subscriptionservice/channelsecurity/ChannelSecurityProperties.java) — binds `SUBSCRIPTION_SERVICE_CHANNEL_SECURITY` to a `ChannelSecurityMode` enum; default `STRICT`.
+- [`ChannelSecurityInterceptor`](../hapi/auth/src/main/java/com/bzonfhir/subscriptionservice/channelsecurity/ChannelSecurityInterceptor.java) — the interceptor itself. Permissive mode logs a startup WARN documenting that the policy is relaxed for sandbox/dev.
+- [`ChannelSecurityAutoConfiguration`](../hapi/auth/src/main/java/com/bzonfhir/subscriptionservice/channelsecurity/ChannelSecurityAutoConfiguration.java) — Spring Boot `@AutoConfiguration`; always loaded (no `@ConditionalOnProperty`) so a misconfigured env var can never silently disable the interceptor.
+
 ---
 
 ## Multi-tenancy
