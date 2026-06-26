@@ -24,7 +24,8 @@ image:
     pullPolicy: IfNotPresent
 
 postgres:
-  password: hapi
+  # Leave password empty so the chart auto-generates one on first install
+  # and preserves it across `helm upgrade` (ticket #419).
   storage:
     size: 5Gi
     storageClassName: local-path
