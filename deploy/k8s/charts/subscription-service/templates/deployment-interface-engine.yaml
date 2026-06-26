@@ -1,6 +1,6 @@
 {{- /*
-IPF Spring Boot app — HL7v2 MLLP listener + Camel router. Talks to HAPI (for
-persistence) and Matchbox (for $transform). Two ports:
+Interface engine — Spring Boot + IPF (HL7v2 MLLP listener + Camel router).
+Talks to HAPI (for persistence) and Matchbox (for $transform). Two ports:
 
   - 8090: Spring Boot HTTP + actuator. ClusterIP service for in-cluster
     health checks and any future REST surface.
@@ -11,21 +11,21 @@ persistence) and Matchbox (for $transform). Two ports:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "subscription-service.ipf.fullname" . }}
+  name: {{ include "subscription-service.interfaceEngine.fullname" . }}
   labels:
     {{- include "subscription-service.labels" . | nindent 4 }}
-    app.kubernetes.io/component: ipf
+    app.kubernetes.io/component: interface-engine
 spec:
-  replicas: {{ .Values.ipf.replicaCount }}
+  replicas: {{ .Values.interfaceEngine.replicaCount }}
   selector:
     matchLabels:
       {{- include "subscription-service.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: ipf
+      app.kubernetes.io/component: interface-engine
   template:
     metadata:
       labels:
         {{- include "subscription-service.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: ipf
+        app.kubernetes.io/component: interface-engine
       {{- with .Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
@@ -38,9 +38,9 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-        - name: ipf
-          image: "{{ .Values.image.ipf.repository }}:{{ .Values.image.ipf.tag }}"
-          imagePullPolicy: {{ .Values.image.ipf.pullPolicy }}
+        - name: interface-engine
+          image: "{{ .Values.image.interfaceEngine.repository }}:{{ .Values.image.interfaceEngine.tag }}"
+          imagePullPolicy: {{ .Values.image.interfaceEngine.pullPolicy }}
           ports:
             - name: http
               containerPort: 8090
@@ -72,7 +72,7 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 5
           resources:
-            {{- toYaml .Values.ipf.resources | nindent 12 }}
+            {{- toYaml .Values.interfaceEngine.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       {{- with .Values.nodeSelector }}

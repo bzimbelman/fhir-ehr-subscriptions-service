@@ -1,0 +1,43 @@
+{{- /*
+Two Services for the interface engine:
+  - <release>-interface-engine       : ClusterIP, HTTP/actuator on 8090
+  - <release>-interface-engine-mllp  : LoadBalancer, TCP MLLP on 2575
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "subscription-service.interfaceEngine.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-engine
+spec:
+  type: {{ .Values.interfaceEngine.http.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.interfaceEngine.http.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "subscription-service.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-engine
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "subscription-service.interfaceEngine.fullname" . }}-mllp
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-engine
+spec:
+  type: {{ .Values.interfaceEngine.mllp.service.type }}
+  {{- if .Values.interfaceEngine.mllp.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.interfaceEngine.mllp.service.loadBalancerIP }}
+  {{- end }}
+  ports:
+    - name: mllp
+      port: {{ .Values.interfaceEngine.mllp.service.port }}
+      targetPort: mllp
+      protocol: TCP
+  selector:
+    {{- include "subscription-service.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-engine
