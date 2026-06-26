@@ -7,9 +7,9 @@ Helm chart for deploying the subscription-service HL7v2/FHIR pipeline to Kuberne
 | `<release>-postgres` (StatefulSet) | `postgres:16-alpine` | HAPI's datastore |
 | `<release>-hapi` (Deployment) | `subscription-service/hapi:dev` | FHIR R4 server + Subscriptions engine |
 | `<release>-matchbox` (Deployment) | `europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox:v3.9.13` | `$transform` for HL7v2 -> FHIR |
-| `<release>-ipf` (Deployment) | `subscription-service/ipf-app:dev` | HL7 MLLP listener + Camel router |
+| `<release>-interface-engine` (Deployment) | `subscription-service/interface-engine:dev` | HL7 MLLP listener + Camel router |
 
-A FHIR HTTPS Ingress fronts HAPI; a separate `LoadBalancer` Service exposes the IPF MLLP listener on TCP 2575.
+A FHIR HTTPS Ingress fronts HAPI; a separate `LoadBalancer` Service exposes the interface engine's MLLP listener on TCP 2575.
 
 ## Tickets
 
@@ -23,8 +23,8 @@ A FHIR HTTPS Ingress fronts HAPI; a separate `LoadBalancer` Service exposes the 
 kubectl config current-context        # -> rancher-desktop
 
 # 2. Build the locally-derived images.
-docker build -t subscription-service/hapi:dev    hapi/
-docker build -t subscription-service/ipf-app:dev ipf-app/
+docker build -t subscription-service/hapi:dev             hapi/
+docker build -t subscription-service/interface-engine:dev interface-engine/
 
 # 3. Load images into the cluster runtime.
 #    Rancher Desktop has two container engine modes:
@@ -35,8 +35,8 @@ docker build -t subscription-service/ipf-app:dev ipf-app/
 #                              show as `docker://X.Y.Z` under CONTAINER-
 #                              RUNTIME.)
 #      b) "containerd"       — k3s and dockerd have separate stores. Load:
-#                              docker save subscription-service/hapi:dev    | nerdctl --namespace k8s.io load
-#                              docker save subscription-service/ipf-app:dev | nerdctl --namespace k8s.io load
+#                              docker save subscription-service/hapi:dev             | nerdctl --namespace k8s.io load
+#                              docker save subscription-service/interface-engine:dev | nerdctl --namespace k8s.io load
 #
 #    Either way, `imagePullPolicy: IfNotPresent` in values.yaml prevents
 #    the kubelet from trying to pull a non-existent registry tag.
@@ -50,7 +50,7 @@ helm install subsvc deploy/k8s/charts/subscription-service \
 kubectl -n subsvc-test rollout status statefulset/subsvc-postgres --timeout=300s
 kubectl -n subsvc-test rollout status deployment/subsvc-matchbox  --timeout=300s
 kubectl -n subsvc-test rollout status deployment/subsvc-hapi      --timeout=600s
-kubectl -n subsvc-test rollout status deployment/subsvc-ipf       --timeout=300s
+kubectl -n subsvc-test rollout status deployment/subsvc-interface-engine --timeout=300s
 
 # 6. Add a hosts entry so the ingress hostname resolves locally.
 echo "127.0.0.1 subscription-service.local" | sudo tee -a /etc/hosts
@@ -74,7 +74,7 @@ The full schema lives in [`values.yaml`](values.yaml); the highlights:
 image:
   hapi:     { repository: subscription-service/hapi,    tag: dev, pullPolicy: IfNotPresent }
   matchbox: { repository: europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox, tag: v3.9.13 }
-  ipf:      { repository: subscription-service/ipf-app, tag: dev, pullPolicy: IfNotPresent }
+  interfaceEngine: { repository: subscription-service/interface-engine, tag: dev, pullPolicy: IfNotPresent }
   postgres: { repository: postgres,        tag: "16-alpine" }
   igFetcher:{ repository: curlimages/curl, tag: "8.10.1" }   # initContainer that fetches IGs
 ```
@@ -153,7 +153,7 @@ Routes `/` (and therefore `/fhir/*`) at the HAPI Service. The HAPI tester UI at 
 ### MLLP (port 2575)
 
 ```yaml
-ipf:
+interfaceEngine:
   mllp:
     service:
       type: LoadBalancer
@@ -161,7 +161,7 @@ ipf:
       loadBalancerIP: ""   # set on cloud LBs; ignored by klipper-lb
 ```
 
-A second Service (`<release>-ipf-mllp`) exposes the IPF MLLP listener as a `LoadBalancer`. On Rancher Desktop, klipper-lb binds it to the host on `localhost:2575`. In cloud clusters, the cloud provider's LB controller picks up a public IP.
+A second Service (`<release>-interface-engine-mllp`) exposes the interface engine's MLLP listener as a `LoadBalancer`. On Rancher Desktop, klipper-lb binds it to the host on `localhost:2575`. In cloud clusters, the cloud provider's LB controller picks up a public IP.
 
 ### NetworkPolicy
 

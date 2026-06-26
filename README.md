@@ -162,7 +162,7 @@ R4 was chosen because every USCDI-conformant EHR (Epic, Cerner, Athena, etc.) ex
 
 ## Component summary
 
-- **Interface engine** — Spring Boot + Apache Camel + Open eHealth Integration Platform (IPF) + HAPI HL7v2 parser. One Camel route per upstream MLLP feed. Parses, routes by message type, calls Matchbox, posts to HAPI, then ACKs. Owned in this repo (`./ipf-app`).
+- **Interface engine** — Spring Boot + Apache Camel + Open eHealth Integration Platform (IPF) + HAPI HL7v2 parser. One Camel route per upstream MLLP feed. Parses, routes by message type, calls Matchbox, posts to HAPI, then ACKs. Owned in this repo (`./interface-engine`).
 - **Matchbox** — Off-the-shelf FHIR transform engine. Loads the public HL7 v2-to-FHIR IG plus any project-specific StructureMaps. Talks FHIR; the interface engine calls it via `$transform`.
 - **HAPI FHIR JPA server** — Off-the-shelf FHIR server with Postgres backend. Loads US Core 7.0 + Subscriptions Backport IGs at boot. Subscription matcher fires REST-hook / WebSocket / message channels.
 - **Postgres** — HAPI's persistence store. Lives on a persistent volume (bind mount in Docker, PVC in Kubernetes).
@@ -197,7 +197,7 @@ For exposing the public FHIR endpoint to subscribers outside your facility, see 
 subscription-service/
 ├── README.md                    ← you are here
 ├── docs/                        ← architecture, design notes, deployment recipes
-├── ipf-app/                     ← Interface engine: Spring Boot + IPF (Kotlin/Gradle)
+├── interface-engine/            ← Interface engine: Spring Boot + IPF (Kotlin/Gradle)
 ├── matchbox/                    ← Custom IGs and StructureMaps for Matchbox
 ├── hapi/                        ← HAPI server config + derived image
 │   └── auth/                    ← OIDC JWT validation interceptor JAR
