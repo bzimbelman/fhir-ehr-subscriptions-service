@@ -1,0 +1,34 @@
+-- V004 trace_context column on ingested_messages (Epic #387, ticket #394).
+--
+-- #388 added `correlation_id` (a single UUID per message) so a grep across
+-- service logs joins one trace. This migration adds `trace_context`, which
+-- carries the W3C `traceparent` value captured at MLLP receive time.
+--
+-- Why both columns:
+--
+--   - `correlation_id` is the human-readable identifier — operators paste
+--     it into log queries; it's friendly across systems that don't speak
+--     OpenTelemetry.
+--   - `trace_context` is the standards-compliant span-aware version: a
+--     `00-<trace-id>-<span-id>-<flags>` string that lets the async worker
+--     restore the SAME trace context started at receive time and emit
+--     its `worker.process` span as a CHILD of the receive span. Without
+--     this, the worker would start its own root span and the receive
+--     and worker spans would be in two different traces.
+--
+-- The column is plain TEXT (not a domain type) because traceparent is
+-- a transport-format string the SDK parses; storing it as-is is the
+-- simplest possible serialization. Tracestate (the second W3C header)
+-- isn't stored: it carries vendor-specific bag-of-properties used for
+-- cross-system propagation between competing tracing backends; the
+-- async worker's job is only to continue the trace, not to forward
+-- another vendor's properties. We can add a `trace_state` column later
+-- if/when an integration needs it.
+--
+-- Nullable so rows that predate this migration (and any future channel
+-- that didn't carry a trace context in) work as-is. The worker tolerates
+-- a NULL trace_context by simply starting a new root span — same
+-- behaviour as before this column existed.
+
+ALTER TABLE ingested_messages
+  ADD COLUMN trace_context TEXT;

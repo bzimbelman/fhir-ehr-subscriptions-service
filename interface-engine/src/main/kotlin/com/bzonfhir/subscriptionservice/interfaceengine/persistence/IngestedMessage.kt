@@ -131,6 +131,28 @@ class IngestedMessage(
      */
     @Column(name = "correlation_id")
     var correlationId: String? = null,
+
+    /**
+     * W3C `traceparent`-encoded trace context (Epic #387, ticket #394).
+     *
+     * Captured at MLLP receive time so the async worker can restore the
+     * SAME trace context when it picks the row up later — the worker's
+     * `worker.process` span ends up as a CHILD of the receive span, not
+     * the root of its own trace.
+     *
+     * Format is the W3C-defined transport string `00-<trace-id>-<span-id>-<flags>`
+     * (53 ASCII chars for the v00 header). We store it as plain TEXT so
+     * the SDK's TextMapPropagator can parse it back without our app
+     * having to know the internal trace-id / span-id binary shape.
+     *
+     * Nullable for the same reasons [correlationId] is: rows persisted
+     * before this migration have no value, and a JVM with
+     * `OTEL_SDK_DISABLED=true` writes NULL here (no active span context
+     * to encode). The worker tolerates NULL by starting a fresh root
+     * span — same behaviour as if OTel wasn't configured at all.
+     */
+    @Column(name = "trace_context")
+    var traceContext: String? = null,
 ) {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
