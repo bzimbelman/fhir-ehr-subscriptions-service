@@ -70,6 +70,9 @@ class IngestedMessageRepositoryTest {
             registry.add("spring.datasource.url") { postgres.jdbcUrl }
             registry.add("spring.datasource.username") { postgres.username }
             registry.add("spring.datasource.password") { postgres.password }
+            // Repository tests exercise raw JPA mappings; they don't want
+            // the async worker (#382) mutating rows underneath them.
+            registry.add("subscription-service.worker.enabled") { "false" }
         }
 
         // Sanity-check Docker availability up front. Testcontainers itself

@@ -91,6 +91,30 @@ subscription-service:
     # "Mapping strategy" and matchbox/README.md.
     structuremap:
       adt-a01: ${MATCHBOX_SM_ADT_A01:http://hl7.org/fhir/uv/v2mappings/StructureMap/ADT_A01}
+  # ---------------------------------------------------------------------------
+  # Async worker (Epic #378, ticket #382). The worker polls `ingested_messages`
+  # for RECEIVED (or retry-ready FAILED) rows, drives the matchbox transform,
+  # POSTs the resulting Bundle to HAPI, and updates the row's status.
+  #
+  # Implementation note: uses Spring's `@Scheduled` rather than a Camel
+  # `timer:` route. The IngestedMessageWorker class comment explains the
+  # tradeoffs; the short version is that this whole story is one bounded
+  # piece of work driven by SELECT … FOR UPDATE SKIP LOCKED, and plain
+  # Spring scheduling keeps the moving parts minimal + the test harness
+  # is just @SpringBootTest + Awaitility (no Camel AdviceWith needed).
+  #
+  # `enabled: false` turns the @Scheduled loop off entirely — used by the
+  # existing IngestRoutesTest / AdminMessagesControllerTest so they don't
+  # have a worker chewing on their seed rows mid-test.
+  # ---------------------------------------------------------------------------
+  worker:
+    enabled: ${IPF_WORKER_ENABLED:true}
+    poll-interval-ms: ${IPF_WORKER_POLL_MS:1000}
+    batch-size: ${IPF_WORKER_BATCH_SIZE:10}
+    # Rows stuck in TRANSFORMING for longer than this on startup are
+    # considered orphans from a previous JVM that died mid-process and
+    # are reset to FAILED so the worker retries them on the next poll.
+    transforming-stale-seconds: ${IPF_WORKER_TRANSFORMING_STALE_SECONDS:60}
 
 # Camel autoconfig.
 # ---------------------------------------------------------------------------
