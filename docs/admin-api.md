@@ -12,8 +12,9 @@ Ticket history:
 
 - #380 — `ingested_messages` table + JPA layer (the data model exposed below)
 - #382 — async worker (consumes the rows the retry endpoint resets to `RECEIVED`)
-- **#384** — *this* admin REST API
+- **#384** — *this* admin REST API (messages section)
 - #383 — retry policy + DLQ transition consumed by the operator workflow below
+- **#390** — `/admin/subscriptions/*` endpoints (see the [Subscriptions](#subscriptions-endpoints) section below)
 
 ## Auth model
 
@@ -382,6 +383,165 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
 - If you suspect the token has leaked: change `IPF_ADMIN_AUTH_TOKEN` and
   re-roll the interface-engine pods. The change takes effect on next start
   (it's read at bean creation, not per-request).
+
+## Subscriptions endpoints
+
+Ticket #390 adds two endpoints under `/admin/subscriptions/` for inspecting
+the health of HAPI's per-Subscription delivery state. Same port, same
+`/admin/` glob — so the same `IPF_ADMIN_AUTH_TOKEN` bearer-token gate that
+covers `/admin/messages/*` covers these too.
+
+These endpoints are **read-only proxies** in front of HAPI's Subscription
+store. They do not maintain their own state. Behind the scenes the
+interface engine queries HAPI via the same HAPI FHIR client wired by
+`FhirConfig`, and reformats the responses into operator-friendly JSON.
+
+### Architectural note
+
+HAPI 7.6 ships the R5 Subscriptions Backport IG (StructureDefinitions and
+OperationDefinitions land in the package on startup), but the `$status`
+operation **is not wired as a method on the Subscription resource provider
+by default** in our build of the HAPI JPA starter image. We verified this
+during ticket #390 live testing on Rancher Desktop: requests to
+`GET /fhir/Subscription/{id}/$status` come back with HAPI's
+`ResourceBinding` "No methods exist for resource: null" warning, not a
+useful Parameters payload.
+
+Consequently, the admin endpoints today report `delivery_success_count: 0`,
+`delivery_failure_count: 0`, and empty `items[]` for the history endpoint
+on every Subscription. The summary still surfaces useful operator data:
+which subscriptions exist, whether each is `active`, the endpoint URL, and
+whether HAPI flipped any into `status=error` (in which case
+`last_attempt_outcome=failure` and `last_error` carries HAPI's text).
+
+A richer per-attempt log would require us to keep our own
+`subscription_delivery_log` table fed by the
+`SUBSCRIPTION_AFTER_REST_HOOK_DELIVERY` hooks ticket #389 already uses for
+metrics. We deferred that — the Prometheus
+`hapi_subscription_delivery_total` counter from #389 covers the aggregate
+"are deliveries succeeding?" alerting question, and the admin "which
+subscriptions are registered? are any in error?" question is answered by
+the existing fields. When operators report that they need richer
+per-attempt detail than Prometheus + Subscription metadata provides, the
+right next step is to either (a) wire HAPI's `$status` operation via a
+custom `IResourceProvider` in `hapi-auth`, or (b) implement the own-table
+approach. See `HapiSubscriptionStatusClient.kt`'s class-level KDoc.
+
+### 1. `GET /admin/subscriptions/health`
+
+List a summary across all Subscription resources currently registered on
+HAPI.
+
+Response (200):
+
+```json
+{
+  "total": 3,
+  "items": [
+    {
+      "id": "Subscription/123",
+      "active": true,
+      "channel_type": "rest-hook",
+      "endpoint": "https://webhook.example.com/notify",
+      "delivery_success_count": 1247,
+      "delivery_failure_count": 3,
+      "last_attempt_at": "2026-06-26T18:00:00Z",
+      "last_attempt_outcome": "success",
+      "last_error": null
+    }
+  ]
+}
+```
+
+- `total` is the number of subscriptions HAPI returned (capped at 500;
+  see `HapiSubscriptionStatusClientImpl.MAX_LIST`).
+- `delivery_success_count` / `delivery_failure_count` reflect events
+  returned by HAPI's `$status` operation. For subscription types where
+  HAPI doesn't track per-attempt events (legacy R4 criteria), both are
+  `0` and the aggregate Prometheus counter is the right source of truth.
+- `last_attempt_outcome` is `"success"`, `"failure"`, or `null` (no
+  attempts recorded). When HAPI's `Subscription.status` is `error`, this
+  is forced to `"failure"` even with no events.
+
+Example:
+
+```bash
+curl -s -H "Authorization: Bearer $IPF_ADMIN_AUTH_TOKEN" \
+  "http://localhost:18090/admin/subscriptions/health" | jq .
+```
+
+### 2. `GET /admin/subscriptions/{id}/history`
+
+Recent delivery attempts for one Subscription. `{id}` is the bare HAPI
+id, e.g. `123`, not the `Subscription/123` reference form.
+
+Query parameters (all optional):
+
+| Param | Default | Notes |
+|-|-|-|
+| `limit` | 50 | Clamped to `[1, 500]`. |
+| `offset` | 0 | Negative values coerced to 0. Rounded down to the nearest multiple of `limit` (page-aligned); the response's `offset` field reflects what was actually used. |
+
+Response (200):
+
+```json
+{
+  "subscription_id": "Subscription/123",
+  "total": 1250,
+  "limit": 50,
+  "offset": 0,
+  "items": [
+    {
+      "attempted_at": "2026-06-26T18:00:00Z",
+      "outcome": "success",
+      "http_status": 200,
+      "error": null,
+      "duration_ms": 142
+    }
+  ]
+}
+```
+
+- `items[]` are newest-first.
+- `http_status` and `duration_ms` are populated only when the underlying
+  HAPI response carries them. For the current `$status` proxy
+  implementation both are `null` — they're reserved for the future
+  own-table implementation. `outcome` and `error` are always populated.
+
+Errors:
+
+- `404 Not Found` — no Subscription with that id on HAPI.
+
+Example:
+
+```bash
+curl -s -H "Authorization: Bearer $IPF_ADMIN_AUTH_TOKEN" \
+  "http://localhost:18090/admin/subscriptions/123/history?limit=20" | jq .
+```
+
+### Operator workflow — "is this subscriber receiving notifications?"
+
+```bash
+export ADMIN_URL=http://localhost:18090
+export TOKEN="<the value of IPF_ADMIN_AUTH_TOKEN>"
+
+# 1. Quick aggregate scan — anyone with non-zero failure_count?
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$ADMIN_URL/admin/subscriptions/health" \
+  | jq '.items[] | select(.delivery_failure_count > 0)'
+
+# 2. For a suspect subscription, drill into the recent attempts:
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$ADMIN_URL/admin/subscriptions/123/history?limit=20" | jq '.items'
+
+# 3. If the FHIR Subscription itself is in `status=error`, look at
+#    the same Subscription resource's `error` field via plain FHIR:
+curl -s "$ADMIN_URL/fhir/Subscription/123" | jq '{status, error}'
+```
+
+For aggregate alerting use the Prometheus
+`hapi_subscription_delivery_total{outcome="failure"}` counter (ticket
+#389) — this admin API is for human-driven inspection.
 
 ## Log schema and metrics
 
