@@ -11,14 +11,16 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
  * is the fail-fast guarantee added for ticket #370: when auth is enabled but no issuer is
  * configured, the Spring context must fail to start so the container exits non-zero
  * instead of silently falling back to a baked-in default that points at someone else's
- * Keycloak.
+ * IdP.
  */
 class AuthAutoConfigurationTest {
 
   private static final String EXPECTED_MESSAGE =
       "subscription-service.auth.issuer is required when auth is enabled. "
-          + "Set SUBSCRIPTION_SERVICE_AUTH_ISSUER "
-          + "(e.g., https://your-keycloak.example.com/realms/subscription-service) "
+          + "Set SUBSCRIPTION_SERVICE_AUTH_ISSUER to your OIDC provider's issuer URL "
+          + "(e.g., https://your-idp.example.com/realms/<realm> for Keycloak, "
+          + "https://<tenant>.us.auth0.com/ for Auth0, "
+          + "https://<org>.okta.com/oauth2/default for Okta) "
           + "or set SUBSCRIPTION_SERVICE_AUTH_ENABLED=false for local dev.";
 
   private final ApplicationContextRunner contextRunner =

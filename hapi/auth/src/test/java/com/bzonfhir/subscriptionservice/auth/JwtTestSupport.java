@@ -32,8 +32,8 @@ final class JwtTestSupport {
   }
 
   static String keyId(KeyPair kp) {
-    // Deterministic-ish but unique per key. Real Keycloak gives a kid; we just need a
-    // non-null value that matches across signing and the published JWKS.
+    // Deterministic-ish but unique per key. Real IdPs publish a kid in the JWKS; we
+    // just need a non-null value that matches across signing and the published JWKS.
     return "test-key-" + UUID.nameUUIDFromBytes(kp.getPublic().getEncoded());
   }
 

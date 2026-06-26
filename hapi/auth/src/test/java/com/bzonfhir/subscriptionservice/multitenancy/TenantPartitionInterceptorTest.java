@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
 import ca.uhn.fhir.interceptor.model.RequestPartitionId;
 import ca.uhn.fhir.rest.api.server.RequestDetails;
 import ca.uhn.fhir.rest.server.exceptions.ForbiddenOperationException;
-import com.bzonfhir.subscriptionservice.auth.KeycloakJwtAuthenticationInterceptor;
+import com.bzonfhir.subscriptionservice.auth.OidcJwtAuthenticationInterceptor;
 import com.nimbusds.jwt.JWTClaimsSet;
 
 /**
@@ -40,7 +40,7 @@ class TenantPartitionInterceptorTest {
     RequestDetails rd = mock(RequestDetails.class);
     Map<Object, Object> userData = new HashMap<>();
     if (claims != null) {
-      userData.put(KeycloakJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY, claims);
+      userData.put(OidcJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY, claims);
     }
     lenient().when(rd.getUserData()).thenReturn(userData);
     return rd;

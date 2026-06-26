@@ -24,11 +24,11 @@ import com.nimbusds.jwt.JWTClaimsSet;
  * interceptor's request-handling logic (header parsing, anonymous allow-list, userData
  * stash).
  */
-class KeycloakJwtAuthenticationInterceptorTest {
+class OidcJwtAuthenticationInterceptorTest {
 
   private AuthProperties props;
   private JwtValidator validator;
-  private KeycloakJwtAuthenticationInterceptor interceptor;
+  private OidcJwtAuthenticationInterceptor interceptor;
 
   @BeforeEach
   void setUp() {
@@ -36,7 +36,7 @@ class KeycloakJwtAuthenticationInterceptorTest {
     props.setEnabled(true);
     props.setIssuer("https://issuer.example.com/realms/test");
     validator = mock(JwtValidator.class);
-    interceptor = new KeycloakJwtAuthenticationInterceptor(props, validator);
+    interceptor = new OidcJwtAuthenticationInterceptor(props, validator);
   }
 
   private RequestDetails mockRequest(String path, String authHeader) {
@@ -110,11 +110,11 @@ class KeycloakJwtAuthenticationInterceptorTest {
 
     Map<Object, Object> userData = rd.getUserData();
     assertThat(userData)
-        .containsKey(KeycloakJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY);
+        .containsKey(OidcJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY);
     @SuppressWarnings("unchecked")
     Set<SmartScope> scopes =
         (Set<SmartScope>)
-            userData.get(KeycloakJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY);
+            userData.get(OidcJwtAuthenticationInterceptor.USER_DATA_SCOPES_KEY);
     assertThat(scopes).hasSize(2);
     assertThat(scopes)
         .extracting(SmartScope::getResourceType)
@@ -144,13 +144,13 @@ class KeycloakJwtAuthenticationInterceptorTest {
         new JWTClaimsSet.Builder()
             .claim("scope", List.of("system/Patient.r", "system/Patient.cruds"))
             .build();
-    assertThat(KeycloakJwtAuthenticationInterceptor.extractScopeClaim(claims))
+    assertThat(OidcJwtAuthenticationInterceptor.extractScopeClaim(claims))
         .contains("system/Patient.r", "system/Patient.cruds");
   }
 
   @Test
   void extractScopeClaimHandlesMissingClaim() {
     JWTClaimsSet claims = new JWTClaimsSet.Builder().build();
-    assertThat(KeycloakJwtAuthenticationInterceptor.extractScopeClaim(claims)).isEmpty();
+    assertThat(OidcJwtAuthenticationInterceptor.extractScopeClaim(claims)).isEmpty();
   }
 }
