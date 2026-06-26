@@ -392,3 +392,21 @@ Remaining items will be worked through as the implementation progresses.
 4. Add additional message types (ORU, ORM, SIU, MDM) once the first slice works.
 5. Mirror the deployment into a Helm chart and validate on Rancher Desktop.
 6. Resolve MLLP ingress strategy.
+
+---
+
+## Observability
+
+The full operational observability story lives under Epic #387. Two
+contracts are load-bearing for downstream agents and dashboards and are
+documented out of this file's scope so they can be versioned and CI-gated
+independently:
+
+- [`observability/log-schema.md`](observability/log-schema.md) — JSON log
+  field-stability matrix, versioning policy, worked examples. Read this
+  before depending on any log field in an automation.
+- [`observability/metric-catalog.md`](observability/metric-catalog.md) —
+  Prometheus metric catalog with the same stability tiers, plus naming
+  conventions and label-cardinality rules.
+- [`observability/schema-stability-contract.md`](observability/schema-stability-contract.md)
+  — what the future CI gate will enforce against both docs.

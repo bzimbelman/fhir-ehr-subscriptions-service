@@ -382,3 +382,19 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
 - If you suspect the token has leaked: change `IPF_ADMIN_AUTH_TOKEN` and
   re-roll the interface-engine pods. The change takes effect on next start
   (it's read at bean creation, not per-request).
+
+## Log schema and metrics
+
+This admin API is one of two ways agents and operators read state out of
+the interface engine. The other is the structured-log and Prometheus
+surface, which has its own versioned contract:
+
+- [`observability/log-schema.md`](observability/log-schema.md) — JSON log
+  field-stability matrix (every record carries a `correlation_id` that
+  ties back to a `/admin/messages/{id}` row).
+- [`observability/metric-catalog.md`](observability/metric-catalog.md) —
+  Prometheus metrics with stability tiers and label-cardinality rules.
+
+Agents that need per-message state should prefer the admin API. Agents
+that need aggregate operational signals should prefer the metrics
+endpoint. Both surfaces version independently.
