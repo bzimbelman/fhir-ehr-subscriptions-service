@@ -127,6 +127,12 @@ class IngestRoutesTest {
             // outbound call on the sync path.
             registry.add("subscription-service.hapi.base-url") { "http://invalid.hapi.test/fhir" }
             registry.add("subscription-service.matchbox.base-url") { "http://invalid.matchbox.test" }
+            // Disable the async worker (#382) — these tests only verify the
+            // synchronous receive path. Leaving the worker enabled would mean
+            // a background thread is polling the same table the tests
+            // truncate before each test, and racing to mutate the RECEIVED
+            // rows the happy-path test then asserts on.
+            registry.add("subscription-service.worker.enabled") { "false" }
         }
 
         init {

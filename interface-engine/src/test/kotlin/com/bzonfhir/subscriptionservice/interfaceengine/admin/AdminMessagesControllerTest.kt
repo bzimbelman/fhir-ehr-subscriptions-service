@@ -100,6 +100,10 @@ class AdminMessagesControllerAuthOffTest {
         fun datasourceProperties(registry: DynamicPropertyRegistry) {
             registerDatasource(registry, postgres)
             registry.add("subscription-service.mllp.port") { mllpPort }
+            // Disable the async worker (#382) — admin-API tests seed rows
+            // directly via the repository and assert on their state; a
+            // running worker would race them.
+            registry.add("subscription-service.worker.enabled") { "false" }
         }
     }
 
@@ -304,6 +308,10 @@ class AdminMessagesControllerAuthOnTest {
         fun datasourceProperties(registry: DynamicPropertyRegistry) {
             registerDatasource(registry, postgres)
             registry.add("subscription-service.mllp.port") { mllpPort }
+            // Disable the async worker (#382) — admin-API tests seed rows
+            // directly via the repository and assert on their state; a
+            // running worker would race them.
+            registry.add("subscription-service.worker.enabled") { "false" }
         }
     }
 
