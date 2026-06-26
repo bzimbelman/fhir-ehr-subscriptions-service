@@ -1,0 +1,85 @@
+{{- /*
+PodDisruptionBudgets for each workload. Opt-in via
+`podDisruptionBudgets.enabled: true` — default OFF because k3s / Rancher
+Desktop doesn't ship a PDB controller. Turn on in real clusters.
+
+Each PDB targets its workload by the same selector labels the corresponding
+Deployment / StatefulSet uses (selectorLabels + app.kubernetes.io/component).
+If a workload exposes both minAvailable and maxUnavailable in values, prefer
+minAvailable; the PodDisruptionBudget spec accepts only one of the two.
+*/ -}}
+{{- if .Values.podDisruptionBudgets.enabled }}
+{{- $cmp := .Values.podDisruptionBudgets }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+spec:
+  {{- if hasKey $cmp.hapi "minAvailable" }}
+  minAvailable: {{ $cmp.hapi.minAvailable }}
+  {{- else if hasKey $cmp.hapi "maxUnavailable" }}
+  maxUnavailable: {{ $cmp.hapi.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hapi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "subscription-service.matchbox.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: matchbox
+spec:
+  {{- if hasKey $cmp.matchbox "minAvailable" }}
+  minAvailable: {{ $cmp.matchbox.minAvailable }}
+  {{- else if hasKey $cmp.matchbox "maxUnavailable" }}
+  maxUnavailable: {{ $cmp.matchbox.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: matchbox
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "subscription-service.interfaceEngine.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-engine
+spec:
+  {{- if hasKey $cmp.interfaceEngine "minAvailable" }}
+  minAvailable: {{ $cmp.interfaceEngine.minAvailable }}
+  {{- else if hasKey $cmp.interfaceEngine "maxUnavailable" }}
+  maxUnavailable: {{ $cmp.interfaceEngine.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: interface-engine
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "subscription-service.postgres.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  {{- if hasKey $cmp.postgres "minAvailable" }}
+  minAvailable: {{ $cmp.postgres.minAvailable }}
+  {{- else if hasKey $cmp.postgres "maxUnavailable" }}
+  maxUnavailable: {{ $cmp.postgres.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+{{- end }}
