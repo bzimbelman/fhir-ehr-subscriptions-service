@@ -1,1 +1,2 @@
 com.bzonfhir.subscriptionservice.auth.AuthAutoConfiguration
+com.bzonfhir.subscriptionservice.channelsecurity.ChannelSecurityAutoConfiguration
