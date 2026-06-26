@@ -9,7 +9,7 @@ Provide a FOSS, self-hostable pipeline that:
 1. Listens for HL7 v2 message feeds from EHRs and labs (MLLP/TCP).
 2. Converts them to FHIR R4 resources using the HL7 v2-to-FHIR Implementation Guide and project-specific mappings.
 3. Persists them to a FHIR server.
-4. Exposes a FHIR R4 API at `https://subscription-service.bzonfhir.com/fhir` where external systems can register Subscriptions and read resources.
+4. Exposes a FHIR R4 API where external systems can register Subscriptions and read resources.
 5. Fires those Subscriptions when matching resources change.
 
 The system is designed to be deployable as either a Docker Compose stack or a Kubernetes (Helm) release. The same container images are used in both targets.
@@ -109,7 +109,7 @@ per-IdP recipes (Keycloak, Auth0, Okta, Authentik).
 **Decision: HAPI on Postgres, backed by a persistent volume.**
 
 - HAPI's reference deployment uses H2 in-memory; we override to Postgres in both deployment targets.
-- Docker Compose: bind-mount a host directory (e.g., `${WORKDIR}/subscription-data/postgres`) to `/var/lib/postgresql/data` so the data survives container recreation.
+- Docker Compose: bind-mount a host directory to `/var/lib/postgresql/data` so the data survives container recreation. The default in `.env.example` is `./postgres-data` (inside the repo, fine for dev); production deployments should point at a path outside the repo (e.g., `/var/lib/subscription-service/postgres`).
 - Kubernetes: PVC backed by the cluster's default StorageClass.
 - Backups are out of scope for the initial deployment; the first iteration is development-grade. A backup strategy (logical dumps on a cron, or `pg_basebackup` to object storage) will be added before any production use.
 
@@ -196,7 +196,7 @@ These are deferred until after the first end-to-end slice works.
 
 ## Public API surface
 
-`https://subscription-service.bzonfhir.com/fhir/*` exposes the standard FHIR REST API. External systems can:
+The FHIR REST API is exposed at whatever hostname the operator puts in front of HAPI's HTTP port — `https://your-deployment.example.com/fhir/*` or similar. External systems can:
 
 - `POST /fhir/Subscription` (or `/fhir/SubscriptionTopic` + `/fhir/Subscription` under the Backport IG) to register for notifications.
 - `GET /fhir/{Resource}/{id}` to read resources after a notification fires.
@@ -231,57 +231,63 @@ This repo's deployment targets — Docker Compose and Helm — are designed so t
 
 ## Deployment targets
 
-### Docker Compose on the-deploy-host (development)
+### Docker Compose
 
-Fastest path for our own development. the-deploy-host already runs the Cloudflare tunnel and the Meld stack; adding one compose project is straightforward. The tunnel's ingress config gets a new entry pointing `subscription-service.bzonfhir.com` at the local HAPI port. Also serves as the reference deployment for hosting model (4) — self-installers point at the same `deploy/docker/docker-compose.yml`.
+Fastest path to running. Single host, four containers (Postgres, HAPI, Matchbox, interface engine). Good for development, demos, single-node deployments, and self-installers who want to run the system in their own Docker environment.
 
-Layout:
-
-```
-deploy/docker/
-├── docker-compose.yml
-├── .env.example
-├── postgres/                ← bind-mount target (gitignored data)
-└── README.md
-```
+See [`../deploy/docker/`](../deploy/docker/) for the compose stack and [`smoke-test.md`](smoke-test.md) for the end-to-end verification recipe.
 
 ### Kubernetes (Helm)
 
-Production-shaped target. Mirrors the rest of the CDS Tools platform. Each component is its own Deployment + Service:
+Production-shaped target. Each component is its own Deployment + Service:
 
 ```
-deploy/k8s/
-└── charts/
-    └── subscription-service/
-        ├── Chart.yaml
-        ├── values.yaml
-        ├── values-dev.yaml
-        ├── values-prod.yaml
-        └── templates/
-            ├── hapi-{deployment,service,configmap}.yaml
-            ├── matchbox-{deployment,service,configmap}.yaml
-            ├── ipf-{deployment,service}.yaml      ← LoadBalancer for MLLP
-            ├── postgres-{statefulset,service,pvc}.yaml
-            └── ingress.yaml                       ← FHIR HTTPS ingress
+deploy/k8s/charts/subscription-service/
+├── Chart.yaml
+├── values.yaml                # defaults
+├── values-dev.yaml            # dev cluster overrides
+├── values-rancher.yaml        # local Rancher Desktop validation overrides
+└── templates/
+    ├── _helpers.tpl
+    ├── configmap-{hapi,healthcheck}.yaml
+    ├── secret-{postgres,auth}.yaml
+    ├── statefulset-postgres.yaml
+    ├── deployment-{hapi,matchbox,ipf}.yaml
+    ├── service-{postgres,hapi,matchbox,ipf,ipf-mllp}.yaml
+    ├── ingress.yaml              # FHIR HTTPS via the cluster's IngressClass
+    └── networkpolicy.yaml        # optional, off by default
 ```
 
-The chart will be installable into Rancher Desktop, our own cloud cluster, and a facility's cluster (EKS / GKE / AKS / OpenShift / bare-metal) with just a values overlay. This is the same chart used by hosting models (1), (2), and (3) — only the values file differs.
+The chart is installable into Rancher Desktop, a cloud cluster, or a facility's cluster (EKS / GKE / AKS / OpenShift / bare-metal) with just a values overlay. See [`k8s-deployment.md`](k8s-deployment.md) for the operator workflow.
 
 ### Single-machine all-in-one
 
-Deferred. There are enough moving parts (Postgres, Matchbox, HAPI, IPF, possibly cloudflared) that a meaningfully ergonomic single-binary deploy is non-trivial. Revisit after both Docker and Kubernetes targets are working.
+Deferred. There are enough moving parts (Postgres, Matchbox, HAPI, interface engine) that a meaningfully ergonomic single-binary deploy is non-trivial. Revisit after both Docker and Kubernetes targets have shipped to enough users to justify the consolidation.
+
+### Exposing the FHIR endpoint publicly
+
+The compose stack and the Helm chart both put HAPI on an HTTP port; making that reachable from the outside is a deployment-specific decision. Any reverse proxy or tunnel works. See [`deployment-recipes/`](deployment-recipes/) for concrete recipes:
+
+- Cloudflare tunnel
+- Caddy reverse proxy
+- Traefik
+- nginx
+- Kubernetes Ingress
+- Direct port-forward (dev only)
 
 ---
 
-## HL7 MLLP ingress (deferred)
+## HL7 MLLP ingress
 
-The MLLP/TCP side of the system is out of scope for the first network design pass — Cloudflare's free HTTP tunnel cannot carry plain TCP, so MLLP ingress needs its own strategy (LAN-only, Cloudflare Spectrum, dedicated VPN, etc.). Decisions to be made later:
+MLLP is plain TCP, not HTTP. Most HTTP-only proxies and tunnels (including Cloudflare's free tier) cannot carry it. For the first version of the system MLLP ingress is intentionally LAN/VPN-only — sources connect to the interface engine's MLLP port over a trusted network path.
 
-- Where do MLLP listeners bind? (the-deploy-host LAN IP, k8s LoadBalancer, ngrok TCP, …)
+Decisions still to be made (depending on the deployment shape):
+
+- Where do MLLP listeners bind? (host LAN IP, k8s LoadBalancer, ngrok TCP, etc.)
 - What's the auth/encryption story? (`mllps://` TLS, client certs, IP allowlist)
-- How do EHRs reach us? (LAN, VPN, Cloudflare Spectrum, …)
+- How do sources reach the listener? (LAN, site-to-site VPN, IPsec tunnel, Cloudflare Spectrum if paid)
 
-For now the IPF app is designed to expose MLLP ports — they just won't be publicly reachable through `subscription-service.bzonfhir.com`.
+For now the interface engine exposes MLLP ports on the host; operators decide how to route inbound traffic.
 
 ---
 
