@@ -43,13 +43,16 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "hapi") | nindent 8 }}
       initContainers:
         - name: fetch-igs
           image: "{{ .Values.image.igFetcher.repository }}:{{ .Values.image.igFetcher.tag }}"
           imagePullPolicy: {{ .Values.image.igFetcher.pullPolicy }}
           # curl image runs as non-root with /tmp writable; emptyDir mounted
-          # at /igs is writable by the same uid.
+          # at /igs is writable via the pod's fsGroup (curl_user is added to
+          # the supplementary group by the kubelet).
+          securityContext:
+            {{- include "subscription-service.igFetcherSecurityContext" . | nindent 12 }}
           command:
             - sh
             - -c
@@ -90,8 +93,22 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            {{- if .Values.externalPostgres.enabled }}
+            # External managed Postgres (ticket #416). The Secret named in
+            # externalPostgres.passwordSecret must already exist in this
+            # namespace with the password under the key "password".
             - name: SPRING_DATASOURCE_URL
-              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.postgres.database }}
+              value: jdbc:postgresql://{{ .Values.externalPostgres.host }}:{{ .Values.externalPostgres.port }}/{{ .Values.externalPostgres.database }}?sslmode={{ .Values.externalPostgres.sslMode }}
+            - name: SPRING_DATASOURCE_USERNAME
+              value: {{ .Values.externalPostgres.user | quote }}
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalPostgres.passwordSecret }}
+                  key: password
+            {{- else }}
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.postgres.database }}?sslmode=disable
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -102,6 +119,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "subscription-service.postgres.fullname" . }}
                   key: POSTGRES_PASSWORD
+            {{- end }}
             - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
               value: org.postgresql.Driver
             - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
@@ -152,7 +170,7 @@ spec:
           resources:
             {{- toYaml .Values.hapi.resources | nindent 12 }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "hapi") | nindent 12 }}
       volumes:
         - name: config
           configMap:

@@ -681,12 +681,3 @@ curl -fsS -X POST \
 
 # 3. Watch the request land in the webhook.site UI within a few seconds.
 ```
-
----
-
-> **Reference deployment.** The maintainer's instance of this service
-> is at `https://subscription-service.bzonfhir.com` with Keycloak at
-> `https://keycloak.bzonfhir.com`. You can curl `/fhir/metadata` there
-> anonymously to see what a live deployment looks like. Everything in
-> this guide is provider-agnostic; this callout exists only so a reader
-> who lands in the maintainer's repo recognizes the real URLs.

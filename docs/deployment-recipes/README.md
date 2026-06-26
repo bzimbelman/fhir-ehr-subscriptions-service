@@ -1,23 +1,38 @@
 # Deployment recipes
 
-The subscription-service compose stack and Helm chart both put HAPI on an HTTP port. Making that port reachable from outside the host (or outside the cluster) is a deployment-specific decision. This directory collects working recipes.
+Concrete recipes for running subscription-service in different environments. The compose stack and the Helm chart both expose HAPI on an HTTP port; this directory collects working recipes for the surrounding pieces (reverse proxy, ingress, cluster-specific quirks, image registries).
 
-Pick the one that matches your environment:
+## By cluster / platform
 
 | Recipe | When to use |
 |---|---|
-| [Cloudflare tunnel](cloudflare-tunnel.md) | You have a Cloudflare account, a domain on Cloudflare, and you want HTTPS to your service from anywhere without opening firewall ports |
-| [Caddy reverse proxy](caddy-reverse-proxy.md) | You want automatic Let's Encrypt TLS with one config file; you're running on a VPS with a public IP |
-| [Traefik](traefik.md) | You're already running Traefik for other services |
-| [nginx](nginx.md) | Classic reverse proxy; you want full manual control |
-| [Kubernetes Ingress](k8s-ingress.md) | You're deploying via Helm and your cluster has an IngressClass |
+| [AWS EKS](k8s-eks.md) | EKS or eks-anywhere; ALB / NLB; ECR; RDS |
+| [Google GKE](k8s-gke.md) | GKE Standard or Autopilot; GCE LB / Cloud LB; GAR; Cloud SQL |
+| [Azure AKS](k8s-aks.md) | AKS; Azure LB / Application Gateway; ACR; Azure DB for PostgreSQL |
+| [Kubernetes Ingress (generic)](k8s-ingress.md) | Other k8s clusters with an IngressClass (OpenShift, on-prem with ingress-nginx, etc.) |
+
+## By reverse proxy / tunnel (Docker Compose deployments)
+
+| Recipe | When to use |
+|---|---|
+| [Cloudflare tunnel](cloudflare-tunnel.md) | Cloudflare account + domain; HTTPS without opening firewall ports |
+| [Caddy reverse proxy](caddy-reverse-proxy.md) | Automatic Let's Encrypt TLS with one config file; VPS with a public IP |
+| [Traefik](traefik.md) | Already running Traefik for other services |
+| [nginx](nginx.md) | Classic reverse proxy; full manual control |
 | [Direct port-forward](direct-port-forward.md) | Local dev only; no proxy in front |
 
-All recipes assume the compose stack or Helm release is already running and HAPI is reachable internally (e.g., `http://localhost:18080/fhir/metadata` returns a CapabilityStatement).
+## Image registry
+
+[`image-registry.md`](image-registry.md) covers the workflow common to all OCI registries (Docker Hub, ECR, GCR/GAR, ACR, Harbor, etc.) — building, tagging, pushing, image-pull secrets, image signing. The cloud-specific recipes layer cloud-CLI helpers on top.
+
+## All recipes assume
+
+- The compose stack or Helm release is already running
+- HAPI is reachable internally (`/fhir/metadata` returns a CapabilityStatement on the chosen internal port)
 
 ## MLLP isn't covered here
 
-The recipes are for the **FHIR HTTP API**. MLLP is plain TCP and most HTTP-only proxies can't carry it. MLLP ingress is LAN/VPN-only by design in the first version of the system — see [`../architecture.md`](../architecture.md) "HL7 MLLP ingress".
+These recipes are for the **FHIR HTTP API**. MLLP is plain TCP and most HTTP-only proxies can't carry it. MLLP ingress is LAN/VPN-only by design in the first version of the system — see [`../architecture.md`](../architecture.md) "HL7 MLLP ingress".
 
 ## Reference deployment
 
