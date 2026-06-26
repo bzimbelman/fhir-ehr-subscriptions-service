@@ -17,7 +17,10 @@ management:
     enabled-by-default: false
     web:
       exposure:
-        include: 'health'
+        # Ticket #389 adds `prometheus` here so the Prometheus Operator can
+        # scrape /actuator/prometheus. `metrics` follows for queryable
+        # metric-name debugging (`/actuator/metrics/jvm.memory.used`).
+        include: 'health,prometheus,metrics'
   endpoint:
     health:
       enabled: true
@@ -57,6 +60,22 @@ management:
         # note above. Ticket #393.
         readiness:
           include: ping, db, authIssuer, jwks
+    # Endpoints are gated individually because `endpoints.enabled-by-default`
+    # is false above. Without these per-endpoint `enabled: true` lines the
+    # exposure include is ignored. Ticket #389.
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+  # Spring Boot 3.x guards the actual Prometheus scrape behind a separate
+  # `metrics.export.enabled` flag (independent of the endpoint visibility).
+  # Default value is `true` upstream but we set it explicitly so the
+  # contract is documented and so a sub-service-specific override is one
+  # property edit away. Ticket #389.
+  prometheus:
+    metrics:
+      export:
+        enabled: true
 
 spring:
   main:

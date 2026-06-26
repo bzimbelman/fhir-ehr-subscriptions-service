@@ -60,6 +60,21 @@
     <wiremock.version>3.5.4</wiremock.version>
 
     <!--
+      Micrometer core for the subscription-side metrics interceptor (Epic
+      #387, ticket #389). The upstream `hapiproject/hapi:v7.6.0` image
+      bundles `micrometer-core` 1.13.3 + `micrometer-registry-prometheus`
+      1.13.3 inside main.war (confirmed by inspecting WEB-INF/lib in the
+      image). We therefore declare it `provided` — the JAR we ship contains
+      no Micrometer classes, the runtime classpath finds them already on
+      the HAPI server's classpath. Version is pinned to the older 1.13.x
+      line that HAPI uses, not the 1.14.x line Spring Boot 3.5 brings —
+      our code compiles against the lowest-common Micrometer API surface
+      (Counter, Timer, MeterRegistry.gauge), all of which are stable
+      across both lines.
+    -->
+    <micrometer.version>1.13.3</micrometer.version>
+
+    <!--
       JSON-formatted logs (Epic #387, ticket #388). The HAPI 7.6.0 base image
       bundles slf4j + logback-classic, but NOT logstash-logback-encoder — so
       this one dep is compile-scope (i.e. packaged into the JAR) rather than
@@ -180,6 +195,17 @@
     </dependency>
 
     <!--
+      Micrometer Counter / Timer / MeterRegistry — ticket #389. `provided`
+      because the HAPI image already bundles micrometer-core under WEB-INF/lib.
+    -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+      <version>${micrometer.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
       logstash-logback-encoder: JSON layout for Logback. NOT in the HAPI base
       image, so this one is `compile` scope and ends up packaged inside the
       JAR — picked up off /app/extra-classes by the upstream PropertiesLauncher
@@ -256,6 +282,15 @@
       <version>1.5.6</version>
       <scope>test</scope>
     </dependency>
+
+<!--
+      SimpleMeterRegistry / Counter / Timer for SubscriptionMetricsInterceptorTest
+      (ticket #389). `provided`-scope deps from above (micrometer-core) are
+      already on the test classpath per Maven's scope table, so no extra
+      declaration is needed here. The registry contract is a Micrometer one
+      and SimpleMeterRegistry implements it; production runtime uses the
+      PrometheusMeterRegistry from the HAPI image's classpath instead.
+    -->
 
     <!--
       Spring Boot's ApplicationContextRunner — the recommended way to test

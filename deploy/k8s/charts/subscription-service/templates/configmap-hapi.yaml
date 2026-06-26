@@ -25,7 +25,10 @@ data:
         enabled-by-default: false
         web:
           exposure:
-            include: 'health'
+            # Ticket #389 exposes /actuator/prometheus for the ServiceMonitor
+            # to scrape. /actuator/metrics is included so operators can query
+            # metric names without a Prometheus instance during debugging.
+            include: 'health,prometheus,metrics'
       endpoint:
         health:
           enabled: true
@@ -42,14 +45,25 @@ data:
           group:
             # Liveness probe: only the trivial `ping` (proves the actuator
             # itself is responsive). DB issues are caught by readiness; a
-            # JVM restart can't fix Postgres being down anyway.
+            # JVM restart can't fix Postgres being down anyway. Ticket #393.
             liveness:
               include: ping
             # Readiness probe: full health, including the authIssuer + jwks
             # indicators from the subscription-service-hapi-auth JAR. Missing
             # indicators (auth disabled) are silently omitted at request time.
+            # Ticket #393.
             readiness:
               include: ping, db, authIssuer, jwks
+        # Per-endpoint enables — required because endpoints.enabled-by-default
+        # is false above. Ticket #389.
+        prometheus:
+          enabled: true
+        metrics:
+          enabled: true
+      prometheus:
+        metrics:
+          export:
+            enabled: true
     spring:
       main:
         allow-circular-references: true

@@ -2,6 +2,9 @@ package com.bzonfhir.subscriptionservice.interfaceengine.worker
 
 import ca.uhn.fhir.rest.client.api.IGenericClient
 import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.InterfaceEngineMetrics
+import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageRepository
+import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageStatus
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -11,6 +14,8 @@ import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.context.event.EventListener
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import java.time.Duration
+import java.time.Instant
 import kotlin.math.min
 import kotlin.math.pow
 
@@ -114,6 +119,12 @@ class IngestedMessageWorker(
     private val gateway: WorkerJdbcGateway,
     private val matchboxClient: MatchboxClient,
     private val hapiClient: IGenericClient,
+    private val repository: IngestedMessageRepository,
+    // Metrics (Epic #387, ticket #389). Stamps timers for matchbox /
+    // HAPI calls and counters for terminal transitions. Constructor-
+    // injected; the bean is present in every Spring context that boots
+    // spring-boot-starter-actuator (which we always do).
+    private val metrics: InterfaceEngineMetrics,
     @Value("\${subscription-service.worker.batch-size:10}") private val batchSize: Int,
     @Value("\${subscription-service.worker.transforming-stale-seconds:60}")
     private val staleSeconds: Long,
@@ -295,6 +306,7 @@ class IngestedMessageWorker(
             // because the message was successfully *received* and we don't
             // intend to retry it — retry won't help if no map exists.)
             gateway.markDelivered(id, lastError = NO_TRANSFORM_SENTINEL)
+            recordDeliveredMetrics(row)
             log.info(
                 "worker: row {} type={} short-circuit DELIVERED ({})",
                 id,
@@ -308,9 +320,25 @@ class IngestedMessageWorker(
         // The MatchboxClient implementation reads the current MDC
         // correlation_id and sends it as `X-Correlation-Id` on the
         // outbound POST. Same value goes on the HAPI Bundle post below.
+        //
+        // Wrapped in a wall-clock timer so we get latency p50/p95/p99 on
+        // `interface_engine_transform_duration_seconds{outcome="..."}`.
+        // We use `System.nanoTime()` (monotonic) rather than `Instant.now()`
+        // because the metric is a duration — not affected by NTP slews —
+        // and nanoTime is the canonical "how long did this take" clock.
+        val transformStart = System.nanoTime()
         val bundle = try {
-            matchboxClient.transformToBundle(structureMap, rawMessage)
+            val result = matchboxClient.transformToBundle(structureMap, rawMessage)
+            metrics.recordTransformDuration(
+                Duration.ofNanos(System.nanoTime() - transformStart),
+                success = true,
+            )
+            result
         } catch (ex: Exception) {
+            metrics.recordTransformDuration(
+                Duration.ofNanos(System.nanoTime() - transformStart),
+                success = false,
+            )
             val msg = "matchbox transform failed: ${ex.message ?: ex.javaClass.simpleName}"
             handleFailure(row, msg)
             return
@@ -320,17 +348,77 @@ class IngestedMessageWorker(
         // HAPI client sees the correlation id via an additional request
         // header configured by [HapiClientConfig]'s ClientInterceptor that
         // copies MDC.get(correlation_id) onto every outbound request.
+        val hapiPostStart = System.nanoTime()
         try {
             hapiClient.transaction().withBundle(bundle).execute()
+            metrics.recordHapiPostDuration(
+                Duration.ofNanos(System.nanoTime() - hapiPostStart),
+                success = true,
+            )
         } catch (ex: Exception) {
+            metrics.recordHapiPostDuration(
+                Duration.ofNanos(System.nanoTime() - hapiPostStart),
+                success = false,
+            )
             val msg = "HAPI transaction failed: ${ex.message ?: ex.javaClass.simpleName}"
             handleFailure(row, msg)
             return
         }
 
         gateway.markDelivered(id, lastError = null)
+        recordDeliveredMetrics(row)
         log.info("worker: row {} DELIVERED type={}", id, messageType)
     }
+
+    /**
+     * Stamp the per-row "delivered" metrics:
+     *
+     *   - `interface_engine_ingested_messages_total{status="DELIVERED"}` counter
+     *   - `interface_engine_received_to_delivered_seconds` histogram
+     *
+     * Latency comes from re-reading the row so we use the DB's `received_at`
+     * (the canonical timestamp), not the JVM's. The extra read is cheap and
+     * gauarantees we never report a misleadingly small latency just because
+     * the worker's clock drifted forward from the receive route's.
+     *
+     * The re-read is best-effort — a missing row (shouldn't happen, but
+     * defensively) just skips the latency metric; the counter still ticks.
+     */
+    private fun recordDeliveredMetrics(claimed: ClaimedRow) {
+        val sourceProtocol = lookupSourceProtocol(claimed.id)
+        metrics.incrementIngestedMessages(
+            sourceProtocol = sourceProtocol,
+            sourceSystem = claimed.sourceSystem,
+            messageType = claimed.messageType,
+            status = IngestedMessageStatus.DELIVERED.name,
+        )
+        // Re-fetch the row so we read the DB-side `received_at` and the
+        // just-written `delivered_at`. JPA's first-level cache may return
+        // the pre-update copy; for the latency math we want the freshest
+        // values, hence findById without a cache hint and `received_at`
+        // pulled from there.
+        runCatching {
+            val row = repository.findById(claimed.id).orElse(null) ?: return@runCatching
+            val received = row.receivedAt?.toInstant() ?: return@runCatching
+            val delivered = row.deliveredAt?.toInstant() ?: Instant.now()
+            val latency = Duration.between(received, delivered)
+            if (!latency.isNegative) {
+                metrics.recordReceivedToDelivered(latency)
+            }
+        }
+    }
+
+    /**
+     * Read the row's source_protocol from the DB. The [ClaimedRow] dto
+     * doesn't carry it (the worker doesn't need it for transform logic),
+     * but the metrics counter wants it as a label. Best-effort: if the
+     * lookup fails we stamp "UNKNOWN" rather than skip the increment
+     * entirely.
+     */
+    private fun lookupSourceProtocol(id: Long): String =
+        runCatching {
+            repository.findById(id).map { it.sourceProtocol.name }.orElse("UNKNOWN")
+        }.getOrDefault("UNKNOWN")
 
     /**
      * Apply the retry policy on failure (#383).
@@ -349,11 +437,27 @@ class IngestedMessageWorker(
      */
     internal fun handleFailure(row: ClaimedRow, lastError: String) {
         val newAttemptCount = row.attemptCount + 1
+        val sourceProtocol = lookupSourceProtocol(row.id)
         if (newAttemptCount >= maxAttempts) {
             gateway.markDeadLetter(
                 id = row.id,
                 newAttemptCount = newAttemptCount,
                 lastError = lastError,
+            )
+            // Metrics (#389): one terminal-status counter tick + one
+            // dlq-transition counter tick. The DLQ counter's `reason`
+            // label goes through normalization (UUIDs / URLs / long ints
+            // collapsed) to keep Prometheus cardinality bounded — see
+            // InterfaceEngineMetrics.normalizeDlqReason.
+            metrics.incrementIngestedMessages(
+                sourceProtocol = sourceProtocol,
+                sourceSystem = row.sourceSystem,
+                messageType = row.messageType,
+                status = IngestedMessageStatus.DEAD_LETTER.name,
+            )
+            metrics.incrementDlqTransitions(
+                sourceProtocol = sourceProtocol,
+                rawReason = lastError,
             )
             // Structured key=value pairs so a single grep can pull DLQ
             // events out of pod logs (`grep event=dlq`). Keep the field
@@ -377,6 +481,18 @@ class IngestedMessageWorker(
             newAttemptCount = newAttemptCount,
             lastError = lastError,
             backoffMillis = backoffMillis,
+        )
+        // Metrics (#389): one increment for the FAILED transition. Note
+        // this fires once per FAILED transition — i.e. once per failed
+        // attempt — which matches the worker's actual state model. A
+        // retry that succeeds will subsequently fire DELIVERED; a retry
+        // that fails again fires FAILED again. Operators can derive
+        // "retry pressure" from `rate(...{status="FAILED"}[1m])`.
+        metrics.incrementIngestedMessages(
+            sourceProtocol = sourceProtocol,
+            sourceSystem = row.sourceSystem,
+            messageType = row.messageType,
+            status = IngestedMessageStatus.FAILED.name,
         )
         log.info(
             "event=retry_scheduled message_id={} source_system={} source_id={} " +
