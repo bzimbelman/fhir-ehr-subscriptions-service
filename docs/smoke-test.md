@@ -8,8 +8,8 @@ Variables used below:
 |---|---|---|
 | `BASE_URL` | `https://subscription-service.bzonfhir.com` | Public FHIR endpoint |
 | `BASE_LOCAL` | `http://localhost:18080` | HAPI on the docker host (zdock or laptop) |
-| `MLLP_HOST` | `localhost` (run on zdock) | IPF MLLP listener host |
-| `MLLP_PORT` | `2575` | IPF MLLP listener port |
+| `MLLP_HOST` | `localhost` (run on zdock) | Interface engine MLLP listener host |
+| `MLLP_PORT` | `2575` | Interface engine MLLP listener port |
 
 ## 1. CapabilityStatement
 
@@ -56,7 +56,7 @@ printf '\x0bMSH|^~\\&|EPIC|HOSP|RECEIVER|CDS|20260625120000||ADT^A04|SMOKE001|P|
   | nc -w 3 $MLLP_HOST $MLLP_PORT
 ```
 
-**Expect**: an `MSH|...|ACK^A04^ACK|...` ACK message ending in `MSA|AA|SMOKE001`. The IPF app log will show:
+**Expect**: an `MSH|...|ACK^A04^ACK|...` ACK message ending in `MSA|AA|SMOKE001`. The interface engine log will show:
 
 ```
 passthrough type=ADT_A04 controlId=SMOKE001 sendingApp=EPIC (no transform configured)
@@ -79,4 +79,4 @@ This is the goal state — covered by a separate end-to-end test ticket, not par
 - **HAPI returns 200 on `/fhir/metadata` but writes hang** — Postgres bind mount unwritable. Check `POSTGRES_DATA_DIR` perms.
 - **HAPI crashloops with `HAPI-2031: Error loading file:///app/igs/...`** — IG tarball is mode 0600 and the HAPI container user can't read it. Run `chmod 644 hapi/igs/*.tgz` (the `scripts/fetch-igs.sh` script does this automatically since 2026-06-25).
 - **Public hostname returns 404 from Cloudflare but `localhost:18080` works** — `cloudflared` has multiple instances and one of them is on a stale config. Verify with `ps -ef | grep cloudflared` and restart any pre-tunnel-change processes.
-- **MLLP listener accepts but ACK is AE** — the IPF app tried to call Matchbox or POST to HAPI and got an error. Check `docker logs subscription-service-ipf-app` for the `stage=matchbox|hapi reason=...` line.
+- **MLLP listener accepts but ACK is AE** — the interface engine tried to call Matchbox or POST to HAPI and got an error. Check `docker logs subscription-service-interface-engine` for the `stage=matchbox|hapi reason=...` line.

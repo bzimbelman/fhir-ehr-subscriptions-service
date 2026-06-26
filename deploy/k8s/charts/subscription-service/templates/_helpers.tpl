@@ -63,8 +63,8 @@ SPRING_DATASOURCE_URL points at the postgres service by DNS name).
 {{- printf "%s-matchbox" .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "subscription-service.ipf.fullname" -}}
-{{- printf "%s-ipf" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- define "subscription-service.interfaceEngine.fullname" -}}
+{{- printf "%s-interface-engine" .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{- define "subscription-service.postgres.fullname" -}}

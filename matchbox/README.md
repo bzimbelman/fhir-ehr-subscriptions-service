@@ -1,6 +1,6 @@
 # matchbox
 
-Configuration for the Matchbox FHIR StructureMap engine. Matchbox loads the public HL7 v2-to-FHIR IG plus any project-specific FML maps and exposes `$transform` so the IPF app can convert HL7 v2 messages into FHIR Bundles.
+Configuration for the Matchbox FHIR StructureMap engine. Matchbox loads the public HL7 v2-to-FHIR IG plus any project-specific FML maps and exposes `$transform` so the interface engine can convert HL7 v2 messages into FHIR Bundles.
 
 ## Layout
 
