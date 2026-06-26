@@ -1,0 +1,134 @@
+package com.bzonfhir.subscriptionservice.interfaceengine.persistence
+
+import jakarta.persistence.Column
+import jakarta.persistence.Entity
+import jakarta.persistence.EnumType
+import jakarta.persistence.Enumerated
+import jakarta.persistence.GeneratedValue
+import jakarta.persistence.GenerationType
+import jakarta.persistence.Id
+import jakarta.persistence.Table
+import jakarta.persistence.UniqueConstraint
+import org.hibernate.annotations.JdbcTypeCode
+import org.hibernate.type.SqlTypes
+import java.time.OffsetDateTime
+
+/**
+ * Durable inbound row for the interface engine (Epic #378, ticket #380).
+ *
+ * One row = one message we received from any source protocol. The table is
+ * the single source of truth for the inbound side of the pipeline:
+ *
+ *   - the receive route INSERTs (idempotently via [sourceSystem]+[sourceId])
+ *     and ACKs the sender before doing any downstream work (#381),
+ *   - the async worker (#382) polls by [status] + [nextAttemptAt] to drive
+ *     transform + HAPI delivery,
+ *   - operators inspect [status], [attemptCount], [lastError] for triage.
+ *
+ * Enum mapping uses Hibernate 6.5+'s [SqlTypes.NAMED_ENUM] so the Kotlin
+ * enums round-trip cleanly against the Postgres ENUM types created by V002.
+ * Without it Hibernate would try to bind enum values as VARCHAR, which
+ * fails the table's column type check (ENUM != VARCHAR in Postgres).
+ *
+ * Schema invariants:
+ *   - [id] is server-generated (BIGSERIAL); never set by callers.
+ *   - [receivedAt] defaults at the database level — leaving the field null
+ *     when saving a fresh row is fine, the column has DEFAULT now().
+ *   - [status] defaults to RECEIVED at the DB level; we mirror that here.
+ *   - [sourceSystem] + [sourceId] together form the idempotency key.
+ */
+@Entity
+@Table(
+    name = "ingested_messages",
+    uniqueConstraints = [
+        UniqueConstraint(
+            name = "ingested_messages_source_system_source_id_key",
+            columnNames = ["source_system", "source_id"],
+        ),
+    ],
+)
+// Every constructor parameter has a default value so that Kotlin generates
+// the no-arg secondary constructor Hibernate needs for reflective row
+// instantiation. (Equivalent to applying the kotlin-noarg plugin, but
+// avoids a Gradle-plugin-portal lookup at Docker-build time.) Callers
+// should always provide real values when constructing rows manually —
+// the defaults are for the JPA bootstrap path only and would fail the
+// NOT NULL constraints on save if persisted as-is.
+class IngestedMessage(
+
+    @Column(name = "source_protocol", nullable = false)
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    var sourceProtocol: IngestedMessageSourceProtocol = IngestedMessageSourceProtocol.OTHER,
+
+    @Column(name = "source_system", nullable = false)
+    var sourceSystem: String = "",
+
+    @Column(name = "source_id", nullable = false)
+    var sourceId: String = "",
+
+    @Column(name = "message_type", nullable = false)
+    var messageType: String = "",
+
+    @Column(name = "raw_message", nullable = false)
+    var rawMessage: String = "",
+
+    @Column(name = "raw_content_type", nullable = false)
+    var rawContentType: String = "",
+
+    // DB DEFAULT now() handles unset on insert; keep it nullable here so a
+    // freshly constructed (unsaved) entity is valid, then JPA will read the
+    // server-assigned timestamp back on flush+refresh.
+    @Column(name = "received_at", nullable = false, insertable = false, updatable = false)
+    var receivedAt: OffsetDateTime? = null,
+
+    @Column(name = "status", nullable = false)
+    @Enumerated(EnumType.STRING)
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    var status: IngestedMessageStatus = IngestedMessageStatus.RECEIVED,
+
+    @Column(name = "attempt_count", nullable = false)
+    var attemptCount: Int = 0,
+
+    @Column(name = "last_attempt_at")
+    var lastAttemptAt: OffsetDateTime? = null,
+
+    @Column(name = "next_attempt_at")
+    var nextAttemptAt: OffsetDateTime? = null,
+
+    @Column(name = "last_error")
+    var lastError: String? = null,
+
+    @Column(name = "delivered_at")
+    var deliveredAt: OffsetDateTime? = null,
+) {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id", nullable = false, updatable = false)
+    var id: Long? = null
+}
+
+/**
+ * Status enum mirroring the Postgres `ingested_message_status` ENUM
+ * created by V002. Values + ordering MUST match the SQL; reordering or
+ * renaming requires a coordinated Flyway migration to ALTER TYPE.
+ */
+enum class IngestedMessageStatus {
+    RECEIVED,
+    TRANSFORMING,
+    DELIVERED,
+    FAILED,
+    DEAD_LETTER,
+}
+
+/**
+ * Source-protocol enum mirroring `ingested_message_source_protocol`.
+ * v1 only writes HL7V2_MLLP; the others are reserved so the schema
+ * doesn't need migrating when we add new inbound channels.
+ */
+enum class IngestedMessageSourceProtocol {
+    HL7V2_MLLP,
+    FHIR_REST,
+    EHR_NATIVE_API,
+    OTHER,
+}

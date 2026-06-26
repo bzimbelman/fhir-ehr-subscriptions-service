@@ -128,6 +128,26 @@ externalPostgres:
   sslMode: require
 
 # ---------------------------------------------------------------------------
+# Interface-engine's own Postgres database (Epic #378). Lives on the same
+# Postgres server as HAPI but is a separate database + user. The init
+# script in templates/configmap-postgres-init.yaml creates the role + DB
+# on the Postgres StatefulSet's first boot. The password lives in a
+# separate Secret (templates/secret-ipf-db.yaml) with the same
+# auto-generate-and-preserve semantics as the HAPI postgres Secret.
+#
+# Skipped when externalPostgres.enabled. If you want a managed Postgres
+# for the interface engine too, override IPF_DB_* env vars on the
+# interface-engine Deployment directly.
+# ---------------------------------------------------------------------------
+interfaceEngineDb:
+  user: ipf
+  database: ipf
+  # When empty, the chart generates a random 32-char password on first
+  # install and stores it in the <release>-ipf-db Secret. Preserved across
+  # `helm upgrade`. Override here only for explicit test/dev passwords.
+  password: ""
+
+# ---------------------------------------------------------------------------
 # HAPI FHIR server.
 # ---------------------------------------------------------------------------
 hapi:
@@ -228,6 +248,50 @@ interfaceEngine:
     service:
       type: ClusterIP
       port: 8090
+  # ---------------------------------------------------------------------------
+  # Admin REST API (Epic #378, ticket #384). Bearer token gates `/admin/**`.
+  # When empty (the default), endpoints are UNAUTHENTICATED — fine for ephemeral
+  # dev clusters, NOT FINE for any cluster reachable from outside its namespace.
+  # Production deployments must override this to a long random string and
+  # rotate it periodically. The chart wires this value into the
+  # IPF_ADMIN_AUTH_TOKEN env var on the interface-engine Deployment.
+  # ---------------------------------------------------------------------------
+  admin:
+    authToken: ""
+  # ---------------------------------------------------------------------------
+  # Async worker (Epic #378, ticket #382). Polls `ingested_messages` for
+  # RECEIVED + retry-ready FAILED rows; transforms via matchbox; POSTs the
+  # resulting Bundle to HAPI. See interface-engine/.../worker/IngestedMessageWorker.kt
+  # for the full design. These chart values become the IPF_WORKER_* env vars
+  # on the interface-engine container.
+  #
+  # `enabled: false` disables the bean entirely (via @ConditionalOnProperty),
+  # which is useful for an "ingest-only" replica that ACKs MLLP traffic but
+  # leaves the queue work for a sibling pod. Defaults are sized for the
+  # single-replica v1 deployment described in docs/architecture.md.
+  # ---------------------------------------------------------------------------
+  worker:
+    enabled: true
+    pollIntervalMs: 1000
+    batchSize: 10
+    transformingStaleSeconds: 60
+    # ---------------------------------------------------------------------
+    # Retry policy (Epic #378, ticket #383). When a row fails (matchbox
+    # transform or HAPI POST raised), the worker schedules a retry with
+    # exponential backoff. After `maxAttempts` failures the row moves to
+    # DEAD_LETTER and stops being polled — the admin retry endpoint (#384)
+    # is the only way out.
+    #
+    # Defaults produce 1s, 2s, 4s, 8s, 16s (capped at 5 min); the 5th
+    # failure DLQs. Total wall-clock spent waiting between retries: ~31s.
+    # Values map 1:1 to IPF_* env vars on the interface-engine container.
+    # ---------------------------------------------------------------------
+    retry:
+      maxAttempts: 5
+      backoffBaseMs: 1000
+      backoffMaxMs: 300000
+      backoffFactor: 2.0
+      dlqLogLevel: WARN
   # MLLP exposed as a separate LoadBalancer Service so cluster ingress
   # controllers (which speak HTTP) don't have to handle plain TCP. On Rancher
   # Desktop, traefik/klipper-lb exposes the LoadBalancer on localhost.

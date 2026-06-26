@@ -54,3 +54,6 @@ hapi/ca-cert/cert.pem
 # Gradle local state and HAPI runtime droppings.
 **/.gradle/
 ipf-app/id_file
+
+# HAPI HL7v2 random-number-generator state file (written when the library runs locally)
+interface-engine/id_file

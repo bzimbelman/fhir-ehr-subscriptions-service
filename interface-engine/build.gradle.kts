@@ -11,6 +11,16 @@ plugins {
     id("io.spring.dependency-management") version "1.1.7"
 }
 
+// NOTE on JPA + Kotlin: Hibernate needs a no-arg constructor on every
+// @Entity for reflective instantiation. The conventional fix is the
+// `kotlin("plugin.jpa")` (kotlin-noarg) compiler plugin, but adding it
+// would require the Dockerised Gradle build to reach the Gradle plugin
+// portal at build time — which fails behind our corporate-managed TLS
+// proxy. To keep the Dockerfile unchanged, we instead provide a default
+// value for every constructor parameter on JPA entities; Kotlin's
+// compiler then synthesizes a no-arg secondary constructor that
+// Hibernate can invoke. See IngestedMessage.kt.
+
 group = "com.bzonfhir.subscriptionservice"
 version = "0.0.1-SNAPSHOT"
 
@@ -75,12 +85,29 @@ dependencies {
     implementation("ca.uhn.hapi.fhir:hapi-fhir-client:$hapiFhirVersion")
     implementation("ca.uhn.hapi.fhir:hapi-fhir-structures-r4:$hapiFhirVersion")
 
+    // Postgres-backed durable inbound store (Epic #378). The interface engine
+    // owns its own database ("ipf" by default) on the same Postgres SERVER
+    // that HAPI uses, but a separate Spring datasource + Flyway migration
+    // history. Subsequent stories add JPA repositories on top of this base.
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    implementation("org.postgresql:postgresql:42.7.4")
+    implementation("org.flywaydb:flyway-core:10.20.1")
+    implementation("org.flywaydb:flyway-database-postgresql:10.20.1")
+
     // Tests.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.apache.camel:camel-test-spring-junit5:$camelVersion")
     testImplementation("org.apache.camel:camel-test-junit5:$camelVersion")
     testImplementation("org.awaitility:awaitility:4.2.2")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
+    // Testcontainers for Postgres-backed Flyway / JPA tests. Optional —
+    // skipped if Docker isn't reachable; the Spring context tests still
+    // run against H2 in-memory (Flyway has a PostgreSQL-flavor SQL we
+    // gate by profile).
+    testImplementation("org.testcontainers:testcontainers:1.20.3")
+    testImplementation("org.testcontainers:postgresql:1.20.3")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.3")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
@@ -92,4 +119,12 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // Testcontainers on Rancher Desktop: the Ryuk resource-reaper container
+    // can't bind-mount the Docker socket (/Users/$USER/.rd/docker.sock isn't
+    // a regular file from k3s/moby's view), so disable it. Containers we
+    // start will instead be cleaned up via JVM shutdown hooks. Equivalent
+    // to setting ryuk.disabled=true in ~/.testcontainers.properties — we
+    // push it into the test JVM's env explicitly so CI behaves the same way
+    // as the developer machine.
+    environment("TESTCONTAINERS_RYUK_DISABLED", "true")
 }
