@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription.config
+package com.bzonfhir.subscriptionservice.ipf.config
 
 import ca.uhn.fhir.context.FhirContext
 import ca.uhn.fhir.rest.client.api.IGenericClient

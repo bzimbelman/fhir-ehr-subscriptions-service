@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
