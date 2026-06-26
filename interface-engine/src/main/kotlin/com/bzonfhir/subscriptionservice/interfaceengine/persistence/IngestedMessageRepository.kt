@@ -1,5 +1,6 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.persistence
 
+import org.springframework.data.domain.Pageable
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.stereotype.Repository
 
@@ -45,4 +46,18 @@ interface IngestedMessageRepository : JpaRepository<IngestedMessage, Long> {
      * Cheap counter for monitoring / health endpoints.
      */
     fun countByStatus(status: IngestedMessageStatus): Long
+
+    /**
+     * Admin list (#384) — paged + status-filtered. Spring Data builds the
+     * SQL from the method name. Sort comes from the Pageable so the
+     * controller can ask for newest-first.
+     */
+    fun findByStatus(status: IngestedMessageStatus, pageable: Pageable): List<IngestedMessage>
+
+    /**
+     * Admin list (#384) — paged, no filter. Spring Data exposes findAll
+     * but with a Pageable that returns a Page<T>; we only need a slice,
+     * so this method-name finder gives us the list shape directly.
+     */
+    fun findAllBy(pageable: Pageable): List<IngestedMessage>
 }
