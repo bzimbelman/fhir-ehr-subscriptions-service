@@ -1,4 +1,4 @@
-package com.bzonfhir.subscriptionservice.ipf.routes
+package com.bzonfhir.subscriptionservice.interfaceengine.routes
 
 import org.apache.camel.CamelContext
 import org.assertj.core.api.Assertions.assertThat
