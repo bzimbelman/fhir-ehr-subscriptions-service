@@ -1,10 +1,58 @@
 # subscription-service
 
-This is an implementation that is here to make FHIR subscription services available to hospitals and other users of EHRs. The approach is to provide a connection between the facilities EHR system to this service and this service will then provide a standard FHIR subscription service that clients can then register and listen for updates on.
+A FOSS HL7 v2 → FHIR R4 pipeline that runs in your Docker or Kubernetes. Receives HL7 v2 messages from EHRs and labs, converts them to FHIR resources via Matchbox, persists them in HAPI FHIR, and fires FHIR Subscriptions to downstream consumers (in-house apps, partner systems, SMART on FHIR apps, analytics, etc.).
+
+Use this when you need a standards-compliant FHIR Subscription endpoint and your EHR vendor hasn't shipped one. Run it inside your facility's network, in your own cloud, or anywhere Docker/Kubernetes runs.
+
+## Quickstart (no auth, 5 minutes)
+
+Goal: clone the repo, bring the stack up, prove it works. Auth is OFF by default in the quickstart so you don't need an OIDC provider to see your first message flow through.
+
+```bash
+git clone git@github.com:bzimbelman/fhir-ehr-subscriptions-service.git
+cd fhir-ehr-subscriptions-service
+
+# 1. Fetch the HL7 IGs (US Core, Subscriptions Backport, v2-to-FHIR)
+bash scripts/fetch-igs.sh
+
+# 2. Configure (defaults are fine for local dev)
+cd deploy/docker
+cp .env.example .env
+
+# 3. Bring the stack up
+docker compose up -d
+
+# 4. Verify
+curl http://localhost:18080/fhir/metadata | jq '.software'
+# {"name": "HAPI FHIR Server", "version": "7.6.0"}
+
+# 5. Send an HL7 v2 message and watch it ACK
+printf '\x0bMSH|^~\\&|EPIC|HOSP|RECEIVER|CDS|20260626120000||ADT^A04|HELLO|P|2.5\rEVN|A04|20260626120000\rPID|1||MRN-HELLO^^^HOSP^MR||TEST^Quick^Start||19800101|M\rPV1|1|I|2000\r\x1c\r' \
+  | nc -w 3 localhost 2575
+# expect: MSH|...|ACK^A04^ACK|...|...MSA|AA|HELLO
+```
+
+That's it — you have a running FHIR server at `http://localhost:18080/fhir` and an HL7 v2 listener on port 2575.
+
+Next steps:
+
+- Send a real ADT^A01 (transformed to a FHIR Patient + Encounter): see [`docs/smoke-test.md`](docs/smoke-test.md)
+- Register a Subscription so a webhook fires when a Patient is created: see [`docs/external-subscribers.md`](docs/external-subscribers.md)
+- Enable OIDC authentication on the FHIR API for production: see [`docs/auth.md`](docs/auth.md)
+
+## Why this exists
+
+Many SMART on FHIR apps and backend services need to keep their data in sync with the EHR's data after the app has completed. This is the exact problem that FHIR Subscriptions was created to solve. However, most EHR vendors have not yet implemented FHIR Subscriptions on their R4 surfaces.
+
+This project removes the dependency on the EHR vendor having to implement and maintain a FHIR subscription service of their own. The downside: it's not integrated into the EHR, so it won't be as elegant a solution as the vendor themselves could offer. If your EHR vendor has the subscription service baked in, look at that first — it will have better support than this project can provide.
+
+The concept of this tool was drawn up at the FHIR DevDays conference in 2026 and built immediately so that it could resolve this need without waiting for EHR vendors to get time to implement the solution themselves.
+
+## How it sits in a facility
 
 ```mermaid
 flowchart LR
-    subgraph fac["Facility network"]
+    subgraph fac["Your facility's network"]
         ehr["EHR / clinical systems"]
         svc["subscription-service<br/>(this project)"]
         internal["Internal subscribers<br/>(in-house apps, analytics)"]
@@ -18,14 +66,6 @@ flowchart LR
     svc -.->|"notifications<br/>(through firewall)"| external
     external -.->|"register Subscriptions<br/>(through firewall)"| svc
 ```
-
-This removes the dependency on the EHR vendor having to implement and maintain the FHIR subscription service's apis on their own. The downside to this option is that it is not integrated into the EHR and as such may not be as efficient and elegent of a solution as the vendor themselves can offer. If you have an EHR vendor that has the subscription service baked in, I would strongly suggest looking at that service and seeing if it will meet your needs as it will undoubtedly have better support than we can provide.
-
-## Why this exists
-
-Many SMART on FHIR, and backend services need to be able to keep their data in sync with the EHR's data after the app has completed. This is the exact problem that FHIR subscriptions was created to solve. However, most EHR vendors have not even started to implement FHIR subscriptions.
-
-The concept of this tool was drawn up at a FHIR dev days conference in 2026, and we immediately created it so that we could have a system that will resolve this need without waiting for EHR vendors to get time to implement this solution.
 
 ## High-level architecture
 
@@ -58,6 +98,8 @@ flowchart LR
     rad2 -->|"HL7 v2 (MLLP)"| us
 ```
 
+Multi-source ingestion is on the roadmap: in addition to HL7 v2/MLLP, future versions will support FHIR polling (any FHIR-conformant EHR — Epic, Cerner, Meditech, etc.) and EHR-native API polling for vendors like Athena. Vendor-specific configuration profiles are tracked in Epic #410.
+
 ### Functional components
 
 ```mermaid
@@ -66,7 +108,7 @@ flowchart LR
 
     subgraph svc["subscription-service"]
         direction LR
-        ipf["IPF<br/>(interface engine)"]
+        ipf["Interface engine<br/>(IPF, Apache Camel)"]
         raw[("Raw-message<br/>store")]
         matchbox["Matchbox<br/>(transformation)"]
         hapi["HAPI FHIR<br/>(FHIR server +<br/>Subscription engine)"]
@@ -96,15 +138,15 @@ flowchart LR
     ext_sub -.->|"obtain token"| idp
 ```
 
-The raw-message store is deliberately in front of Matchbox: we want to persist every inbound v2 message and ACK the sender *before* we attempt the transform, so a hiccup in Matchbox or HAPI never causes us to drop a message on the floor.
+The raw-message store is deliberately in front of Matchbox: every inbound v2 message is persisted and ACKed before the transform is attempted, so a hiccup in Matchbox or HAPI never causes us to drop a message on the floor.
 
 The FHIR DB is HAPI's persistence (Postgres). Any OpenID Connect provider that exposes a JWKS endpoint works — Keycloak, Auth0, Okta, Azure AD, AWS Cognito, Authentik, etc. Both internal and external subscribers obtain bearer tokens from the configured IdP, and HAPI validates them via JWKS. See [`docs/auth.md`](docs/auth.md) for the provider-agnostic contract and per-IdP recipes.
 
-External callers reach HAPI via `https://subscription-service.bzonfhir.com/fhir/*`, fronted by OIDC-issued OAuth2 bearer tokens. The MLLP ingress side is LAN/VPN-only (Cloudflare's HTTP tunnel can't carry plain TCP) and will be addressed in a later phase.
+The public FHIR endpoint is whatever hostname *you* expose HAPI's HTTP port behind. Any reverse proxy works (Caddy, Traefik, nginx, ingress-nginx, a Cloudflare tunnel, etc.) — see [`docs/deployment-recipes/`](docs/deployment-recipes/). The MLLP ingress side is LAN/VPN-only by design (HTTP-only proxies can't carry plain TCP).
 
 ## Standards posture
 
-For this implementation we choose to use as many FOSS tools as we could to make sure we were not building yet another component that already existed. In that vein we broke the tool down and used these components to build the system.
+For this implementation we chose to use as many FOSS tools as we could to make sure we were not building yet another component that already existed. In that spirit, the system is composed of:
 
 | Concern               | Choice                                        |
 |-----------------------|-----------------------------------------------|
@@ -120,37 +162,67 @@ R4 was chosen because every USCDI-conformant EHR (Epic, Cerner, Athena, etc.) ex
 
 ## Component summary
 
-- **IPF app** — Spring Boot + Apache Camel + HAPI HL7v2 parser. One Camel route per upstream MLLP feed. Parses, routes by message type, calls Matchbox, posts to HAPI, then ACKs. Owned in this repo (`./ipf-app`).
-- **Matchbox** — Off-the-shelf FHIR transform engine. Loads the public HL7 v2-to-FHIR IG plus any project-specific StructureMaps. Talks FHIR; IPF calls it via `$transform`.
+- **Interface engine** — Spring Boot + Apache Camel + Open eHealth Integration Platform (IPF) + HAPI HL7v2 parser. One Camel route per upstream MLLP feed. Parses, routes by message type, calls Matchbox, posts to HAPI, then ACKs. Owned in this repo (`./ipf-app`).
+- **Matchbox** — Off-the-shelf FHIR transform engine. Loads the public HL7 v2-to-FHIR IG plus any project-specific StructureMaps. Talks FHIR; the interface engine calls it via `$transform`.
 - **HAPI FHIR JPA server** — Off-the-shelf FHIR server with Postgres backend. Loads US Core 7.0 + Subscriptions Backport IGs at boot. Subscription matcher fires REST-hook / WebSocket / message channels.
-- **Postgres** — HAPI's persistence store. Lives on a persistent volume (bind mount on zdock, PVC on Kubernetes).
-- **OIDC IdP** — Any OpenID Connect provider that exposes a JWKS endpoint. The reference deployment reuses the existing Keycloak instance at `keycloak.bzonfhir.com` (turn-key realm export at `idp/keycloak/realms/`), but Auth0, Okta, Azure AD, Cognito, Authentik etc. are all supported — see [`docs/auth.md`](docs/auth.md).
+- **Postgres** — HAPI's persistence store. Lives on a persistent volume (bind mount in Docker, PVC in Kubernetes).
+- **OIDC IdP** — Any OpenID Connect provider that exposes a JWKS endpoint. The repo ships a turn-key realm export at [`idp/keycloak/realms/`](idp/keycloak/realms/) for Keycloak users, but Auth0, Okta, Azure AD, Cognito, Authentik, etc. are all supported — see [`docs/auth.md`](docs/auth.md).
+
+## Configuration toggles
+
+All toggles are environment variables; set them in `deploy/docker/.env` (Docker) or `values.yaml` (Helm). Full reference in [`deploy/docker/.env.example`](deploy/docker/.env.example).
+
+| Variable | Modes | What it does |
+|---|---|---|
+| `SUBSCRIPTION_SERVICE_AUTH_ENABLED` | `true` / `false` | OFF for the quickstart; ON for production. |
+| `SUBSCRIPTION_SERVICE_AUTH_ISSUER` | `<your IdP issuer URL>` | Required when auth is ON; fail-fast otherwise. |
+| `SUBSCRIPTION_SERVICE_VALIDATION_MODE` | `off` / `warn` / `enforce` | US Core profile validation. |
+| `SUBSCRIPTION_SERVICE_CHANNEL_SECURITY` | `strict` / `relaxed` / `permissive` | Policy for accepting Subscription channels (HTTPS, auth headers). |
+| `SUBSCRIPTION_SERVICE_MULTITENANCY` | `disabled` / `enabled` | HAPI partition-based isolation, keyed off a JWT claim. |
 
 ## Deployment targets
 
-Two deployment shapes are planned:
+Two deployment shapes are supported, both delivered from this repo:
 
-1. **Docker Compose on zdock** — fastest path to running; reuses the existing Cloudflare tunnel that already fronts `*.bzonfhir.com`. Good for development, demos, and a single-node deployment.
-2. **Kubernetes (Helm chart)** — production-shaped deployment; mirrors how the rest of the CDS Tools platform runs (`cdstools-deployment/charts/`). Supports rolling updates, horizontal scale, and graduation to a real cluster (EKS).
+1. **Docker Compose** — fastest path to running. Good for dev, demo, single-node deployments. See [`deploy/docker/`](deploy/docker/).
+2. **Kubernetes (Helm)** — production-shaped. Same images, values-driven config per environment. See [`deploy/k8s/`](deploy/k8s/) and [`docs/k8s-deployment.md`](docs/k8s-deployment.md).
 
-Both shapes deploy the *same* IPF/Matchbox/HAPI images; only the orchestration wrapper differs. The Helm chart and docker compose files will live in this repo so the chart and the service evolve together.
+Both shapes deploy the *same* container images; only the orchestration wrapper differs. The Helm chart and Docker Compose files live in this repo so they evolve together.
 
-## Repository layout (planned)
+For exposing the public FHIR endpoint to subscribers outside your facility, see [`docs/deployment-recipes/`](docs/deployment-recipes/) — Cloudflare tunnel, Caddy, Traefik, nginx, k8s ingress, and direct port-forward recipes are all covered.
+
+## Repository layout
 
 ```
 subscription-service/
 ├── README.md                    ← you are here
-├── docs/                        ← architecture, design notes, decisions
-├── ipf-app/                     ← Spring Boot + IPF source (Kotlin/Gradle)
-├── matchbox/                    ← Custom IGs and StructureMaps
-├── hapi/                        ← HAPI server config (application.yaml, IGs)
+├── docs/                        ← architecture, design notes, deployment recipes
+├── ipf-app/                     ← Interface engine: Spring Boot + IPF (Kotlin/Gradle)
+├── matchbox/                    ← Custom IGs and StructureMaps for Matchbox
+├── hapi/                        ← HAPI server config + derived image
+│   └── auth/                    ← OIDC JWT validation interceptor JAR
+├── idp/                         ← IdP-specific assets (Keycloak realm export, etc.)
 ├── deploy/
 │   ├── docker/                  ← docker-compose.yml + .env templates
 │   └── k8s/                     ← Helm chart
-└── scripts/                     ← Dev/operational helpers
+└── scripts/                     ← Operational helpers (IG fetch, IdP provisioning, etc.)
 ```
 
-There will be more components as we add them and make them available. 
+More components will arrive as the project grows.
+
+## Project status
+
+- **Active**: Docker Compose + Helm targets, HL7 v2/MLLP ingestion, FHIR R4 + US Core + Subscriptions Backport, OIDC auth (any IdP), four configurable feature toggles
+- **In progress**: durable inbound message store, retry + DLQ, observability surface, operator UI, vendor configuration profiles, FHIR/native-API polling
+- **Roadmap epics**: [#378 hardening](https://op.bzonfhir.com/work_packages/378), [#387 observability](https://op.bzonfhir.com/work_packages/387), [#398 operator UI](https://op.bzonfhir.com/work_packages/398), [#410 vendor profiles](https://op.bzonfhir.com/work_packages/410), [#411 extension SPI](https://op.bzonfhir.com/work_packages/411)
+
+## Reference deployment
+
+The maintainer runs a reference instance at `https://subscription-service.bzonfhir.com` for development and testing. That URL is the maintainer's environment — your deployment will have its own URL. Don't point production traffic at it; it has no SLA and gets destroyed and rebuilt frequently.
+
+## Contributing
+
+Pull requests welcome — open an issue first if you're planning a substantial change. The `main` branch is protected: PRs require review and only the project owner can merge.
 
 ## License
 
