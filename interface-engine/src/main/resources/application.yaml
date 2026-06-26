@@ -115,6 +115,24 @@ subscription-service:
     # considered orphans from a previous JVM that died mid-process and
     # are reset to FAILED so the worker retries them on the next poll.
     transforming-stale-seconds: ${IPF_WORKER_TRANSFORMING_STALE_SECONDS:60}
+    # -------------------------------------------------------------------------
+    # Retry policy (Epic #378, ticket #383). When the matchbox transform or
+    # HAPI POST fails for a row, the worker schedules a retry with
+    # exponential backoff: `next_attempt_at = now() + min(base * factor^(N-1), max)`
+    # for the new attempt count N. After max-attempts failures the row
+    # transitions to DEAD_LETTER (next_attempt_at = NULL) and one log line
+    # at `dlq-log-level` is emitted. The admin retry endpoint (#384) resets
+    # the row's attempt_count to 0 and clears next_attempt_at, so a retried
+    # message starts the backoff sequence from scratch.
+    #
+    # Defaults: 1s, 2s, 4s, 8s, 16s (capped at 5 min) before DLQ at attempt 5.
+    # -------------------------------------------------------------------------
+    retry:
+      max-attempts: ${IPF_MAX_ATTEMPTS:5}
+      backoff-base-ms: ${IPF_BACKOFF_BASE_MS:1000}
+      backoff-max-ms: ${IPF_BACKOFF_MAX_MS:300000}
+      backoff-factor: ${IPF_BACKOFF_FACTOR:2.0}
+      dlq-log-level: ${IPF_DLQ_LOG_LEVEL:WARN}
 
 # Camel autoconfig.
 # ---------------------------------------------------------------------------
