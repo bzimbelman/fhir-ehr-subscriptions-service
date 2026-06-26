@@ -159,6 +159,19 @@ spec:
             # production layout.
             - name: SPRING_PROFILES_ACTIVE
               value: {{ .Values.hapi.profiles | default "" | quote }}
+            # OpenTelemetry tracing (Epic #387, ticket #394). Same env-var
+            # surface as the interface-engine — see the comment block on
+            # the interface-engine Deployment template for semantics.
+            # Service name fixed to `subscription-service-hapi` so Jaeger
+            # can distinguish HAPI spans from interface-engine spans.
+            - name: OTEL_SDK_DISABLED
+              value: {{ not .Values.otel.enabled | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | default "" | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: subscription-service-hapi
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.otel.resourceAttributes | default "" | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "subscription-service.hapi.fullname" . }}-auth
