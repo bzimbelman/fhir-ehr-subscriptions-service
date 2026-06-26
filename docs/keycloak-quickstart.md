@@ -1,8 +1,12 @@
 # Keycloak quickstart (smoke test)
 
+> Keycloak-specific. See [`docs/auth.md`](./auth.md) for the
+> provider-agnostic auth contract and [`docs/idp/keycloak.md`](./idp/keycloak.md)
+> for the full Keycloak setup walkthrough.
+
 A self-contained recipe for spinning up a modern (Quarkus) Keycloak in a
 container, provisioning the `subscription-service` realm via
-[`scripts/keycloak/provision-realm.sh`](../scripts/keycloak/provision-realm.sh),
+[`scripts/idp/keycloak/provision-realm.sh`](../scripts/idp/keycloak/provision-realm.sh),
 and confirming end-to-end that the realm issues usable bearer tokens.
 
 The whole loop fits in a single shell session and runs in ~30 seconds on a
@@ -44,7 +48,7 @@ KEYCLOAK_URL=http://localhost:8888 \
 KEYCLOAK_ADMIN_USER=admin \
 KEYCLOAK_ADMIN_PASSWORD=admin \
 KEYCLOAK_CLIENT_SECRET="${CLIENT_SECRET}" \
-  scripts/keycloak/provision-realm.sh
+  scripts/idp/keycloak/provision-realm.sh
 ```
 
 Expected output:
@@ -148,7 +152,7 @@ KEYCLOAK_PATH_PREFIX=/auth \
 KEYCLOAK_ADMIN_USER=admin \
 KEYCLOAK_ADMIN_PASSWORD=admin \
 KEYCLOAK_CLIENT_SECRET=$(openssl rand -hex 32) \
-  scripts/keycloak/provision-realm.sh
+  scripts/idp/keycloak/provision-realm.sh
 ```
 
 All the discovery / token URLs gain the `/auth/` segment correspondingly.

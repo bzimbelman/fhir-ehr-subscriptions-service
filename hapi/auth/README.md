@@ -1,19 +1,26 @@
 # hapi-auth
 
-Spring Boot auto-configuration JAR that adds Keycloak JWT bearer-token
+Spring Boot auto-configuration JAR that adds OIDC JWT bearer-token
 authentication, SMART-scope authorization, and US Core profile
 validation to the upstream `hapiproject/hapi:v7.6.0` image.
-Tickets #359 (auth) + #367 (validation).
+Tickets #359 (auth) + #367 (validation) + #372 (provider-agnostic
+rename).
+
+Any OpenID Connect identity provider that exposes a JWKS endpoint works:
+Keycloak, Auth0, Okta, Azure AD, AWS Cognito, Authentik, etc. See
+[`docs/auth.md`](../../docs/auth.md) "Provider recipes" for per-IdP
+configuration.
 
 ## What it does
 
 HAPI interceptors, wired into the existing HAPI starter Spring context
 via `META-INF/spring/...AutoConfiguration.imports`:
 
-- `KeycloakJwtAuthenticationInterceptor` — validates `Authorization:
-  Bearer <jwt>` against the configured Keycloak realm's JWKS. Anonymous
-  on `/metadata` and `/.well-known/smart-configuration`; 401 on every
-  other path without a valid token.
+- `OidcJwtAuthenticationInterceptor` — validates `Authorization: Bearer
+  <jwt>` against the configured IdP's JWKS (resolved from
+  `SUBSCRIPTION_SERVICE_AUTH_ISSUER` / `SUBSCRIPTION_SERVICE_AUTH_JWKS_URL`).
+  Anonymous on `/metadata` and `/.well-known/smart-configuration`; 401
+  on every other path without a valid token.
 - `ScopeAuthorizationInterceptor` — extends HAPI's
   `AuthorizationInterceptor` and maps SMART `system/<Resource>.<flags>`
   scopes to HAPI auth rules. 403 on any operation not explicitly granted.
