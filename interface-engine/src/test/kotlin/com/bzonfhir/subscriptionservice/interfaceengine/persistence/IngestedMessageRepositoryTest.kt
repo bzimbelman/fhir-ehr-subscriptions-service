@@ -98,13 +98,14 @@ class IngestedMessageRepositoryTest {
     }
 
     @Test
-    fun `flyway has applied V001 V002 V003 V004 successfully`() {
+    fun `flyway has applied V001 V002 V003 V004 V005 successfully`() {
         val rows = jdbc.queryForList(
             "SELECT version, success FROM flyway_schema_history ORDER BY installed_rank",
         )
         val versions = rows.map { it["version"] as String }
-        // V003 added correlation_id (#388); V004 added trace_context (#394).
-        assertThat(versions).containsExactly("001", "002", "003", "004")
+        // V003 added correlation_id (#388); V004 added trace_context (#394);
+        // V005 added created_resource_refs (#392).
+        assertThat(versions).containsExactly("001", "002", "003", "004", "005")
         assertThat(rows).allSatisfy { row ->
             assertThat(row["success"] as Boolean).isTrue()
         }
