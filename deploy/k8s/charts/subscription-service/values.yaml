@@ -248,6 +248,16 @@ interfaceEngine:
     service:
       type: ClusterIP
       port: 8090
+  # ---------------------------------------------------------------------------
+  # Admin REST API (Epic #378, ticket #384). Bearer token gates `/admin/**`.
+  # When empty (the default), endpoints are UNAUTHENTICATED — fine for ephemeral
+  # dev clusters, NOT FINE for any cluster reachable from outside its namespace.
+  # Production deployments must override this to a long random string and
+  # rotate it periodically. The chart wires this value into the
+  # IPF_ADMIN_AUTH_TOKEN env var on the interface-engine Deployment.
+  # ---------------------------------------------------------------------------
+  admin:
+    authToken: ""
   # MLLP exposed as a separate LoadBalancer Service so cluster ingress
   # controllers (which speak HTTP) don't have to handle plain TCP. On Rancher
   # Desktop, traefik/klipper-lb exposes the LoadBalancer on localhost.

@@ -165,6 +165,8 @@ services:
       IPF_DB_URL: jdbc:postgresql://hapi-db:5432/${IPF_DB_NAME:-ipf}
       IPF_DB_USER: ${IPF_DB_USER:-ipf}
       IPF_DB_PASSWORD: ${IPF_DB_PASSWORD:-ipf}
+      # Admin REST API bearer token (#384). Empty = open (dev only).
+      IPF_ADMIN_AUTH_TOKEN: ${IPF_ADMIN_AUTH_TOKEN:-}
     ports:
       - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
       - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"

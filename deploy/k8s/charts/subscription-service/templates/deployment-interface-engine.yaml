@@ -72,6 +72,12 @@ spec:
                   name: {{ include "subscription-service.fullname" . }}-ipf-db
                   key: password
             {{- end }}
+            # Admin REST API bearer token (Epic #378, ticket #384). Empty
+            # value = unauthenticated admin endpoints (dev only — the app
+            # logs a WARN at startup). Set
+            # `interfaceEngine.admin.authToken` in values to enable.
+            - name: IPF_ADMIN_AUTH_TOKEN
+              value: {{ .Values.interfaceEngine.admin.authToken | default "" | quote }}
           readinessProbe:
             httpGet:
               path: /actuator/health
