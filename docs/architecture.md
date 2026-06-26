@@ -107,14 +107,93 @@ per-IdP recipes (Keycloak, Auth0, Okta, Authentik).
 
 ## Persistence
 
-**Decision: HAPI on Postgres, backed by a persistent volume.**
+**Decision: HAPI and the interface engine each get their own Postgres database, on the same Postgres server, backed by a persistent volume.**
 
 - HAPI's reference deployment uses H2 in-memory; we override to Postgres in both deployment targets.
+- The interface engine has its own Postgres database (default name `ipf`) for the durable inbound message store (Epic #378). Same Postgres *server* as HAPI; separate database, separate user, separate Flyway migration history. Keeps HAPI's schema changes from breaking the interface engine and vice versa, and lets us split to a separate Postgres server later without app changes.
 - Docker Compose: bind-mount a host directory to `/var/lib/postgresql/data` so the data survives container recreation. The default in `.env.example` is `./postgres-data` (inside the repo, fine for dev); production deployments should point at a path outside the repo (e.g., `/var/lib/subscription-service/postgres`).
 - Kubernetes: PVC backed by the cluster's default StorageClass.
 - Backups are out of scope for the initial deployment; the first iteration is development-grade. A backup strategy (logical dumps on a cron, or `pg_basebackup` to object storage) will be added before any production use.
 
-Matchbox is stateless. The interface engine is stateless. Only Postgres holds durable state.
+Matchbox is stateless. Postgres holds all durable state (HAPI's FHIR resources, the interface engine's inbound message store).
+
+---
+
+## Interface engine durability, retries, and DLQ
+
+**Decision: every inbound HL7 v2 message is persisted to the interface engine's `ingested_messages` table BEFORE the sender is ACKed. Transform + push to HAPI happens asynchronously. Failed transforms retry with exponential backoff; after the configured max attempts they move to a DEAD_LETTER state for operator triage.**
+
+This closes the "messages lost on container restart or downstream failure" gap that the earlier (pre-#378) inline-transform path had.
+
+### Pipeline shape
+
+```
+MLLP receive → parse v2 → INSERT into ingested_messages (status=RECEIVED) → ACK AA
+                                       ↓
+                              (async worker, every IPF_WORKER_POLL_MS)
+                                       ↓
+                  SELECT FOR UPDATE SKIP LOCKED  rows where
+                       status = RECEIVED
+                    OR (status = FAILED AND next_attempt_at <= now())
+                                       ↓
+                  UPDATE status = TRANSFORMING  (committed before I/O)
+                                       ↓
+                  POST to Matchbox $transform → POST FHIR Bundle to HAPI
+                                       ↓
+       ┌───────────────────────────────┼───────────────────────────────┐
+       ▼                               ▼                               ▼
+   success                       transient failure              attempts exhausted
+       │                               │                               │
+   status=DELIVERED             status=FAILED                    status=DEAD_LETTER
+   delivered_at=now()           attempt_count++                  next_attempt_at=NULL
+   last_error=NULL              next_attempt_at=now()+backoff    log event=dlq (WARN)
+                                log event=retry_scheduled (INFO)
+```
+
+### Schema
+
+The `ingested_messages` table (V002 Flyway migration in `interface-engine/src/main/resources/db/migration/`) is multi-protocol-ready from day one:
+
+- `source_protocol` ENUM: `HL7V2_MLLP` (today), `FHIR_REST` (future), `EHR_NATIVE_API` (future, e.g. Athena), `OTHER`
+- `source_system` + `source_id` — UNIQUE constraint gives idempotency for free: replays from the same EHR control-id return AA without creating a duplicate row
+- `status` ENUM: `RECEIVED` / `TRANSFORMING` / `DELIVERED` / `FAILED` / `DEAD_LETTER`
+- `raw_message` + `raw_content_type` — the original payload, preserved for replay and audit
+- `attempt_count`, `last_attempt_at`, `next_attempt_at`, `last_error` — retry bookkeeping
+- `delivered_at` — terminal-success timestamp
+
+Three indexes back the worker's poll query and the admin endpoint's list/filter pattern.
+
+### Retry policy
+
+Configurable per deployment via env vars (defaults shown):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `IPF_MAX_ATTEMPTS` | 5 | After this many failed attempts, move to DEAD_LETTER |
+| `IPF_BACKOFF_BASE_MS` | 1000 | Base delay before retry attempt 2 |
+| `IPF_BACKOFF_FACTOR` | 2.0 | Exponent: delay = BASE * FACTOR^(N-1) |
+| `IPF_BACKOFF_MAX_MS` | 300000 | Cap on the per-attempt delay (5 min) |
+| `IPF_DLQ_LOG_LEVEL` | WARN | Log level for the `event=dlq` transition |
+
+With defaults: attempt 1 fails → wait 1s; attempt 2 → wait 2s; 3 → 4s; 4 → 8s; 5 → DEAD_LETTER. Total wall-clock waiting between retries: ~15s.
+
+### Failure modes the design accepts
+
+| Scenario | What happens |
+|---|---|
+| EHR sends duplicate of an already-received message | UNIQUE constraint trips on insert; we ACK AA with the original control id. No duplicate row, no retry storm. |
+| Interface engine container restarts mid-process | Any rows in `status=TRANSFORMING` older than `IPF_WORKER_TRANSFORMING_STALE_SECONDS` (default 60s) are reset to `FAILED` on startup so the worker picks them back up. |
+| Matchbox is down when a message arrives | Receive path persists + ACKs AA (no AE!). Worker hits Matchbox, gets a connection error, schedules retry. Once Matchbox returns, the next poll picks up the row and succeeds. |
+| Matchbox is permanently broken for a message | After `IPF_MAX_ATTEMPTS` failures the row hits DEAD_LETTER. An operator queries `GET /admin/messages?status=DEAD_LETTER`, fixes the upstream issue (e.g., updates the StructureMap), then `POST /admin/messages/{id}/retry` resets the row to RECEIVED with attempt_count=0. |
+| HAPI is down | Same as Matchbox-down: persist + ACK AA, retry path picks it back up when HAPI returns. |
+| Postgres is unreachable | Only legitimate AE-ACK case. The interface engine genuinely can't take ownership of the message; honest AE tells the sender to retry. |
+| Multiple interface-engine replicas competing for work | The worker's poll uses `SELECT FOR UPDATE SKIP LOCKED`, so concurrent replicas claim disjoint batches. Single-replica today; horizontal scale is a values bump. |
+
+### Operator surface
+
+`GET /admin/messages?status=DEAD_LETTER` lists the rows that need human attention. `GET /admin/messages/{id}` returns the full row including the raw v2 payload for inspection. `POST /admin/messages/{id}/retry` resets to RECEIVED, attempt_count=0. `DELETE /admin/messages/{id}` (only on DEAD_LETTER rows) purges known-bad messages.
+
+Full docs in [`docs/admin-api.md`](admin-api.md). Bearer-token auth via `IPF_ADMIN_AUTH_TOKEN` env var (empty = unauthenticated, fine for dev; required for production).
 
 ---
 
