@@ -143,6 +143,36 @@ logging:
   # To run with pretty-printed logs locally: SPRING_PROFILES_ACTIVE=dev.
   # The `dev` profile is wired in logback-spring.xml.
 
+# ---------------------------------------------------------------------------
+# OpenTelemetry distributed tracing (Epic #387, ticket #394).
+#
+# The OTel SDK reads `OTEL_*` env vars on its own via
+# AutoConfiguredOpenTelemetrySdk. We ALSO expose the same knobs here as
+# Spring properties (`otel.*`) so they can be overridden via
+# @TestPropertySource and application-${profile}.yaml. The OtelConfig
+# bean bridges the two via addPropertiesCustomizer.
+#
+# Default is OFF (no spans, no exporter, no overhead). Operator flips
+# OTEL_SDK_DISABLED=false (or otel.sdk.disabled=false) and sets an
+# endpoint to turn tracing on.
+#
+# Relevant knobs:
+#   otel.sdk.disabled (default true here — explicit OFF)
+#   otel.exporter.otlp.endpoint
+#   otel.service.name (defaulted to subscription-service-interface-engine in OtelConfig)
+#   otel.resource.attributes (e.g. deployment.environment=prod)
+# ---------------------------------------------------------------------------
+otel:
+  sdk:
+    disabled: ${OTEL_SDK_DISABLED:true}
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:}
+  service:
+    name: ${OTEL_SERVICE_NAME:subscription-service-interface-engine}
+  resource:
+    attributes: ${OTEL_RESOURCE_ATTRIBUTES:}
+
 subscription-service:
   # Observability config (Epic #387).
   # ticket #389: Prometheus metrics. The custom-metrics emitters are unconditional
