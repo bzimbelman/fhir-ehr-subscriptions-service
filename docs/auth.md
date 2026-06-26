@@ -347,12 +347,11 @@ hapi/
 - **JWT introspection** as a fallback for opaque tokens — every modern
   IdP issues JWTs natively so no introspection round-trip is needed.
 
-## Reference deployment
+## Legacy WildFly-based Keycloak
 
-> The maintainer's instance runs at `https://keycloak.bzonfhir.com` (a
-> Cloudflare-tunneled, legacy WildFly-based Keycloak — set
-> `KEYCLOAK_PATH_PREFIX=/auth` when running the provisioning script
-> against it). The subscription-service deployment in front of it is at
-> `https://subscription-service.bzonfhir.com`. Everything in this
-> document is provider-agnostic; this callout exists only so a reader who
-> stumbles into the maintainer's repo knows what the real URLs look like.
+> If you point this service at a legacy WildFly-based Keycloak distribution
+> (versions before the Quarkus rewrite), set `KEYCLOAK_PATH_PREFIX=/auth`
+> when running the provisioning script — older Keycloak serves under `/auth`
+> by default while the modern distribution serves at root. The rest of this
+> document is provider-agnostic and works with any OIDC IdP that exposes
+> JWKS.

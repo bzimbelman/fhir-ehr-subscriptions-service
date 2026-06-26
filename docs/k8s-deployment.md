@@ -125,15 +125,15 @@ The PVC for Postgres is removed with the namespace; data is gone.
 
 ## Production / dev clusters
 
-For our `bzonfhir.com` dev cluster (and the same pattern for any production cluster):
+The same pattern works for any dev or production cluster:
 
-1. Push the locally-built images to a registry (per `cdstools-deployment` convention, that's Quay):
+1. Push the locally-built images to a registry. Any OCI registry works (Docker Hub, ECR, GCR, GAR, ACR, Harbor, Quay, etc.):
 
    ```bash
-   docker tag  subscription-service/hapi:dev    quay.io/natera/tools:subscription-service-hapi-<sha>
-   docker push quay.io/natera/tools:subscription-service-hapi-<sha>
-   docker tag  subscription-service/interface-engine:dev quay.io/natera/tools:subscription-service-interface-engine-<sha>
-   docker push quay.io/natera/tools:subscription-service-interface-engine-<sha>
+   docker tag  subscription-service/hapi:dev               your-registry.example.com/subscription-service-hapi:<tag>
+   docker push your-registry.example.com/subscription-service-hapi:<tag>
+   docker tag  subscription-service/interface-engine:dev   your-registry.example.com/subscription-service-interface-engine:<tag>
+   docker push your-registry.example.com/subscription-service-interface-engine:<tag>
    ```
 
 2. Set the registry coordinates and pull policy in `values-dev.yaml` / `values-prod.yaml`:
@@ -141,16 +141,30 @@ For our `bzonfhir.com` dev cluster (and the same pattern for any production clus
    ```yaml
    image:
      hapi:
-       repository: quay.io/natera/tools
-       tag: subscription-service-hapi-<sha>
+       repository: your-registry.example.com/subscription-service-hapi
+       tag: <tag>
        pullPolicy: Always
      interfaceEngine:
-       repository: quay.io/natera/tools
-       tag: subscription-service-interface-engine-<sha>
+       repository: your-registry.example.com/subscription-service-interface-engine
+       tag: <tag>
        pullPolicy: Always
    imagePullSecrets:
-     - name: quay-image-pull-secret   # Kyverno auto-injects on our clusters.
+     - name: your-registry-cred
    ```
+
+   If the registry needs credentials, create the pull secret once per namespace with the
+   standard kubectl recipe:
+
+   ```bash
+   kubectl create secret docker-registry your-registry-cred \
+     --docker-server=your-registry.example.com \
+     --docker-username=<user> \
+     --docker-password=<password> \
+     --docker-email=<email> \
+     -n subscription-service
+   ```
+
+   Drop the `imagePullSecrets` block entirely if you're pulling from a public registry.
 
 3. Install / upgrade:
 
@@ -163,10 +177,10 @@ For our `bzonfhir.com` dev cluster (and the same pattern for any production clus
 4. Wait for rollout, then verify CapabilityStatement on the public hostname:
 
    ```bash
-   curl -fsS https://subscription-service-dev.bzonfhir.com/fhir/metadata | jq .fhirVersion
+   curl -fsS https://subscription-service.example.com/fhir/metadata | jq .fhirVersion
    ```
 
-5. Configure auth (`featureToggles.auth.issuer` -> `https://keycloak.bzonfhir.com/realms/subscription-service`) and feature toggles per environment.
+5. Configure auth (`featureToggles.auth.issuer` -> `https://your-keycloak.example.com/realms/subscription-service`) and feature toggles per environment.
 
 ---
 
