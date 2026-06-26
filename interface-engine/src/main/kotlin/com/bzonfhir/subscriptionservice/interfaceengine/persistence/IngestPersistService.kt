@@ -111,6 +111,13 @@ open class IngestPersistService(
         rawMessage: String,
         rawContentType: String,
         correlationId: String? = null,
+        // OpenTelemetry trace context, W3C traceparent-encoded (Epic #387,
+        // ticket #394). Captured at MLLP receive time so the async worker
+        // can continue the same trace. Null when the SDK is disabled or
+        // for callers (older tests) that don't supply one. The column is
+        // nullable; the worker tolerates NULL by starting a fresh root
+        // span.
+        traceContext: String? = null,
     ): IngestedMessage {
         return try {
             val saved = self.insertReceived(
@@ -121,6 +128,7 @@ open class IngestPersistService(
                 rawMessage = rawMessage,
                 rawContentType = rawContentType,
                 correlationId = correlationId,
+                traceContext = traceContext,
             )
             // Metrics (#389): increment AFTER the insert transaction has
             // committed so we never overcount on a roll-back. Only the
@@ -180,6 +188,7 @@ open class IngestPersistService(
         rawMessage: String,
         rawContentType: String,
         correlationId: String? = null,
+        traceContext: String? = null,
     ): IngestedMessage {
         val candidate = IngestedMessage(
             sourceProtocol = sourceProtocol,
@@ -190,6 +199,7 @@ open class IngestPersistService(
             rawContentType = rawContentType,
             status = IngestedMessageStatus.RECEIVED,
             correlationId = correlationId,
+            traceContext = traceContext,
         )
         return repository.saveAndFlush(candidate)
     }

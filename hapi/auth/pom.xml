@@ -83,6 +83,22 @@
       with `ClassNotFoundException: LogstashEncoder`.
     -->
     <logstash.encoder.version>7.4</logstash.encoder.version>
+
+    <!--
+      OpenTelemetry SDK (Epic #387, ticket #394). The HAPI 7.6.0 base
+      image does NOT bundle the OTel SDK, so we ship our own with the
+      JAR. `compile` scope (not `provided`) on every OTel artifact: the
+      maven-dependency-plugin's `copy-runtime-deps` step (already in
+      this pom for logstash-logback-encoder) copies them next to the
+      main JAR and the Dockerfile drops both into /app/extra-classes/
+      where PropertiesLauncher picks them up.
+
+      Pinned to 1.41.0 — same line the interface-engine uses, so the
+      two services speak the same trace propagation format (W3C v00
+      traceparent) at the SDK level. Compiles cleanly against the HAPI
+      starter image's Spring Boot 3.2.6 + Spring 6.1.14 baseline.
+    -->
+    <otel.version>1.41.0</otel.version>
   </properties>
 
   <dependencies>
@@ -220,6 +236,39 @@
       <scope>compile</scope>
     </dependency>
 
+    <!--
+      OpenTelemetry SDK (ticket #394). Compile scope: bundled into the
+      runtime classpath via the copy-runtime-deps step below. Versions
+      pinned via the otel.version property since this pom doesn't have
+      a <dependencyManagement> section to import the BOM into. The
+      autoconfigure module reads OTEL_* env vars and builds the SDK
+      (no-op when OTEL_SDK_DISABLED=true).
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+
     <!-- ============================================================
          Test-only — pulled in for unit tests only.
          ============================================================ -->
@@ -340,6 +389,20 @@
       <groupId>ca.uhn.hapi.fhir</groupId>
       <artifactId>hapi-fhir-caching-caffeine</artifactId>
       <version>${hapi.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      OTel in-memory span exporter for tests (ticket #394). Captures
+      spans into a list so OtelTraceTest can assert on names, attributes,
+      and parent-child relationships without standing up an OTLP
+      collector. Test scope only — production runtime uses the
+      OtlpGrpcSpanExporter via AutoConfiguredOpenTelemetrySdk.
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <version>${otel.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>

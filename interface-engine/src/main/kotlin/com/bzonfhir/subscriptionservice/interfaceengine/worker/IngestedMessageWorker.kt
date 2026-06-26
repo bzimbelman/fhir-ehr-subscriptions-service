@@ -3,8 +3,12 @@ package com.bzonfhir.subscriptionservice.interfaceengine.worker
 import ca.uhn.fhir.rest.client.api.IGenericClient
 import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
 import com.bzonfhir.subscriptionservice.interfaceengine.observability.InterfaceEngineMetrics
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.OtelTracing
 import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageRepository
 import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageStatus
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.context.Scope
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -125,6 +129,13 @@ class IngestedMessageWorker(
     // injected; the bean is present in every Spring context that boots
     // spring-boot-starter-actuator (which we always do).
     private val metrics: InterfaceEngineMetrics,
+    // OpenTelemetry tracer (Epic #387, ticket #394). Decodes the row's
+    // stored trace_context into the parent for the `worker.process`
+    // span; the matchbox + HAPI calls below become CHILD spans of that
+    // through Context propagation. When the SDK is disabled this is a
+    // no-op end-to-end (encode returned null at receive, decode returns
+    // Context.root() here, span recording is a sequence of returns).
+    private val otelTracing: OtelTracing,
     @Value("\${subscription-service.worker.batch-size:10}") private val batchSize: Int,
     @Value("\${subscription-service.worker.transforming-stale-seconds:60}")
     private val staleSeconds: Long,
@@ -294,6 +305,45 @@ class IngestedMessageWorker(
         }
         org.slf4j.MDC.put(CorrelationId.MDC_KEY, correlationId)
 
+        // Decode the row's stored trace_context (Epic #387, ticket #394)
+        // into the parent context for the `worker.process` span. When
+        // row.traceContext is null (pre-V004 row, or SDK was disabled at
+        // receive time) decodeContext returns Context.root() and we
+        // start a fresh root span — same code path as production, just
+        // unparented. The span is made-current so the HTTP-client
+        // interceptor (HapiClientConfig#OtelInjectingClientInterceptor)
+        // and the MatchboxClient's RestTemplate find the right context
+        // when they inject traceparent onto outbound requests.
+        val parentContext = otelTracing.decodeContext(row.traceContext)
+        val workerSpan: Span = otelTracing.startWorkerProcessSpan(
+            parentContext = parentContext,
+            messageId = id,
+            messageType = row.messageType,
+            correlationId = correlationId,
+        )
+        val scope: Scope = workerSpan.makeCurrent()
+        try {
+            processOneInSpan(id, row, correlationId, workerSpan)
+        } finally {
+            scope.close()
+            workerSpan.end()
+        }
+    }
+
+    /**
+     * Body of [processOne], extracted so the OTel span lifecycle in
+     * processOne is the only Span-tracking try/finally in this file.
+     * All matchbox + HAPI calls below run with [workerSpan] as the
+     * current span (it was made-current in the caller), so the
+     * downstream HTTP-client interceptors see it as the parent context
+     * for traceparent injection.
+     */
+    private fun processOneInSpan(
+        id: Long,
+        row: ClaimedRow,
+        correlationId: String,
+        workerSpan: Span,
+    ) {
         val messageType = row.messageType
         val rawMessage = row.rawMessage
 
@@ -340,6 +390,11 @@ class IngestedMessageWorker(
                 success = false,
             )
             val msg = "matchbox transform failed: ${ex.message ?: ex.javaClass.simpleName}"
+            // OTel: stamp the failure on the worker.process span so the
+            // trace in Jaeger shows red instead of silently succeeding.
+            // recordException attaches the stack trace as a span event.
+            workerSpan.recordException(ex)
+            workerSpan.setStatus(StatusCode.ERROR, msg)
             handleFailure(row, msg)
             return
         }
@@ -361,6 +416,8 @@ class IngestedMessageWorker(
                 success = false,
             )
             val msg = "HAPI transaction failed: ${ex.message ?: ex.javaClass.simpleName}"
+            workerSpan.recordException(ex)
+            workerSpan.setStatus(StatusCode.ERROR, msg)
             handleFailure(row, msg)
             return
         }

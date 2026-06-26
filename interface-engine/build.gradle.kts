@@ -40,9 +40,31 @@ val camelVersion = "4.18.2"
 val hapiHl7v2Version = "2.6.0"
 val hapiFhirVersion = "8.10.0"
 
+// OpenTelemetry (Epic #387, ticket #394). Pinned to the 1.41.x LTS line —
+// stable API surface, no breaking changes vs the current main branch's
+// Spring Boot 3.5 baseline. We pull in the BOM so every otel-* artifact
+// resolves to the same version without us tracking each one separately.
+//
+// Why NOT the `opentelemetry-spring-boot-starter` artifact:
+//   - That starter is on its own version cadence (currently tracks Spring
+//     Boot 3.4) and dragging it into our 3.5.x project produces transitive
+//     conflicts the BOM can't resolve.
+//   - We don't need a fully agent-based instrumentation surface; the only
+//     wire-format propagation we care about is W3C traceparent on the
+//     handful of outbound HTTP calls the worker makes. A direct SDK
+//     dependency + a small RestTemplate interceptor we own is simpler
+//     than wiring the starter just to get the SDK on the classpath.
+val otelVersion = "1.41.0"
+
 dependencyManagement {
     imports {
         mavenBom("org.apache.camel.springboot:camel-spring-boot-bom:$camelVersion")
+        // OTel BOM resolves every io.opentelemetry:* dep to a single
+        // coherent version. Without this, transitive deps (e.g. otlp
+        // exporter pulling in opentelemetry-api) could end up on
+        // mismatched lines and the SDK's internal version-check would
+        // emit a warning at boot.
+        mavenBom("io.opentelemetry:opentelemetry-bom:$otelVersion")
     }
 }
 
@@ -122,6 +144,31 @@ dependencies {
     // line compatible with Logback 1.5.x (which Spring Boot 3.5 brings).
     implementation("net.logstash.logback:logstash-logback-encoder:7.4")
 
+    // OpenTelemetry SDK (Epic #387, ticket #394).
+    //
+    // Three artifacts, all on the OTel BOM so no explicit versions:
+    //
+    //   - opentelemetry-api: the public `Tracer` / `Span` / `SpanBuilder`
+    //     surface our code uses directly. Always-on (api is a no-op when
+    //     the SDK is disabled).
+    //   - opentelemetry-sdk: the SDK that actually records spans + holds
+    //     the configured TracerProvider / propagators. The autoconfigure
+    //     module below builds one from environment variables.
+    //   - opentelemetry-exporter-otlp: the OTLP gRPC + HTTP exporter that
+    //     ships spans to a collector. Only sends when
+    //     OTEL_EXPORTER_OTLP_ENDPOINT is set AND OTEL_SDK_DISABLED is unset
+    //     (or false). The default config produces a no-op SDK that never
+    //     opens a network connection, which is what we want for operators
+    //     who don't run a collector.
+    //   - opentelemetry-sdk-extension-autoconfigure: parses OTEL_* env vars
+    //     into an SdkTracerProvider, wires the OTLP exporter, picks the
+    //     W3C traceparent propagator by default. One bean, one call to
+    //     AutoConfiguredOpenTelemetrySdk.initialize(), and we're done.
+    implementation("io.opentelemetry:opentelemetry-api")
+    implementation("io.opentelemetry:opentelemetry-sdk")
+    implementation("io.opentelemetry:opentelemetry-exporter-otlp")
+    implementation("io.opentelemetry:opentelemetry-sdk-extension-autoconfigure")
+
     // Tests.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.apache.camel:camel-test-spring-junit5:$camelVersion")
@@ -135,6 +182,13 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers:1.20.3")
     testImplementation("org.testcontainers:postgresql:1.20.3")
     testImplementation("org.testcontainers:junit-jupiter:1.20.3")
+
+    // OTel in-memory test exporter (ticket #394). Captures emitted spans
+    // into a list so OtelTraceTest can assert on their attributes,
+    // parents, and names without standing up a real collector. The
+    // artifact is OTel-side test-scope only — production runtime uses
+    // the OTLP exporter via the autoconfigure SDK.
+    testImplementation("io.opentelemetry:opentelemetry-sdk-testing")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
