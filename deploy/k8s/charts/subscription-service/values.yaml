@@ -195,6 +195,33 @@ networkPolicy:
   enabled: false
 
 # ---------------------------------------------------------------------------
+# Monitoring. Opt-in. Produces a ServiceMonitor resource for the Prometheus
+# Operator to discover and scrape /actuator/prometheus on interface-engine
+# (and HAPI when it gets its own metrics endpoint via #389).
+#
+# Requires the Prometheus Operator's `monitoring.coreos.com/v1` CRDs to be
+# installed in the cluster. The chart checks `.Capabilities.APIVersions.Has`
+# at template time, so if the CRDs aren't present this block is a no-op
+# (the chart still installs cleanly on clusters without the Operator).
+#
+# NOTE: the /actuator/prometheus endpoint itself isn't wired up yet —
+# tracked in Epic #387 #389. Until that ships, this block is no-op even
+# when enabled. The chart plumbing is in place so flipping enabled=true
+# AFTER #389 lands needs zero chart changes.
+# ---------------------------------------------------------------------------
+monitoring:
+  enabled: false
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+    # Extra labels added to ServiceMonitor metadata so the operator's
+    # selector (typically prometheus.spec.serviceMonitorSelector) can match.
+    # Real clusters require something here; common default is "release: prometheus".
+    labels: {}
+    # Path that exposes Prometheus metrics on each service's HTTP port.
+    path: /actuator/prometheus
+
+# ---------------------------------------------------------------------------
 # Common pod scheduling knobs (apply to all four deployments).
 # ---------------------------------------------------------------------------
 nodeSelector: {}

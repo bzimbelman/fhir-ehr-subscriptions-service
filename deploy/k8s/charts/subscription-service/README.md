@@ -167,6 +167,42 @@ A second Service (`<release>-interface-engine-mllp`) exposes the interface engin
 
 Off by default (`networkPolicy.enabled: false`) because k3s/Rancher Desktop ships without a NetworkPolicy controller. Turn on in production clusters running Calico / Cilium / etc.
 
+### Monitoring (ServiceMonitor)
+
+Opt-in `ServiceMonitor` resources for the [Prometheus Operator](https://prometheus-operator.dev/). Disabled by default so the chart installs cleanly on clusters without it.
+
+```yaml
+monitoring:
+  enabled: false                # flip to true on clusters running the Operator
+  serviceMonitor:
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}                  # e.g. { release: prometheus } so the Operator's selector picks it up
+    path: /actuator/prometheus  # Spring Boot Actuator's Prometheus endpoint
+```
+
+Two `ServiceMonitor` objects render when enabled (one per workload that will expose `/actuator/prometheus`):
+
+- `<release>-interface-engine` — scrapes the interface engine on its `http` port (8090)
+- `<release>-hapi` — scrapes HAPI on its `http` port (8080)
+
+Two layers of safety:
+
+1. **Toggle** — `monitoring.enabled: false` by default.
+2. **Capability gate** — the template additionally checks `.Capabilities.APIVersions.Has "monitoring.coreos.com/v1"`. If the Prometheus Operator CRDs aren't installed, the block is a no-op even when `enabled: true`, so flipping the toggle never breaks a cluster that doesn't have the Operator. (Note: `helm template` without `--api-versions monitoring.coreos.com/v1` won't render the resources either, since it has no live cluster to query.)
+
+> **Dependency: Epic #387 ticket #389.** The actual `/actuator/prometheus` endpoint isn't wired up on either workload yet — that ships with #389. Until then, enabling this block produces a `ServiceMonitor` that points at a 404. The chart plumbing is in place so flipping `enabled: true` AFTER #389 lands needs zero chart changes. Tracked as ticket #418.
+
+Rendering with `--api-versions` to fake the capability for `helm template`:
+
+```bash
+helm template subsvc deploy/k8s/charts/subscription-service \
+  --set monitoring.enabled=true \
+  --set monitoring.serviceMonitor.labels.release=prometheus \
+  --api-versions monitoring.coreos.com/v1
+# -> 2 ServiceMonitor resources in the output
+```
+
 ## Values overlays
 
 Three overlays ship with the chart:
