@@ -110,9 +110,15 @@ Matchbox is stateless. The IPF app is stateless. Only Postgres holds durable sta
 
 **Decision: Validation against US Core profiles is configurable per deployment, off by default.**
 
-- Environment variable `SUBSCRIPTION_SERVICE_VALIDATION_MODE` controls behavior: `off` (default, no profile validation), `warn` (validate, log non-conformance, accept anyway), `enforce` (reject non-conforming bundles with a `400 Bad Request` and `OperationOutcome`).
-- HAPI's `RequestValidatingInterceptor` is wired with the US Core IG; the interceptor's failure mode is what the env var actually switches between.
+- Environment variable `SUBSCRIPTION_SERVICE_VALIDATION_MODE` controls behavior: `off` (default, no profile validation), `warn` (validate, surface findings in the response `OperationOutcome`, accept anyway), `enforce` (reject non-conforming bundles with HTTP `422 Unprocessable Entity` and an `OperationOutcome`).
+- HAPI's `RequestValidatingInterceptor` is wired with the IGs already installed at boot under `hapi.fhir.implementationguides` (US Core 7.0 + Subscriptions Backport R4); the interceptor's failure mode is what the env var actually switches between. The validator picks up the IGs by injecting the JPA starter's `IInstanceValidatorModule` bean — no re-loading of the package tarballs.
 - Default `off` because the v2-to-FHIR IG StructureMaps don't always produce strictly US Core–conformant output for every field; a brand-new deployment shouldn't reject real-world traffic. Operators dial up to `warn` once they see what their feeds actually produce, then to `enforce` once their custom maps fill the gaps.
+
+**Implemented in #367** — see `hapi/auth/src/main/java/com/bzonfhir/subscriptionservice/validation/`:
+
+- `ValidationProperties` — binds `SUBSCRIPTION_SERVICE_VALIDATION_MODE` to the `ValidationMode` enum (`OFF | WARN | ENFORCE`).
+- `ProfileValidationAutoConfiguration` — Spring Boot auto-configuration. Skipped entirely when `mode=off`. When `mode=warn|enforce` it builds a `RequestValidatingInterceptor` configured with `addValidationResultsToResponseOperationOutcome=true`; in `enforce` mode it also sets `failOnSeverity=ERROR`. Registers the interceptor on the HAPI `RestfulServer` via a `SmartInitializingSingleton` (same pattern the auth layer uses).
+- Note on the HTTP response code: HAPI's `BaseValidatingInterceptor.fail(...)` hard-codes `UnprocessableEntityException` (HTTP 422), which is the FHIR-standard response for failed resource validation. Earlier drafts of this section said "400 Bad Request"; 422 is the correct shape and what the e2e suite asserts.
 
 ---
 

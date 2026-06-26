@@ -191,6 +191,57 @@
       <version>${slf4j.version}</version>
       <scope>test</scope>
     </dependency>
+
+    <!--
+      Spring Boot's ApplicationContextRunner — the recommended way to test
+      auto-configuration classes without a full @SpringBootTest. Pulls in
+      AssertableApplicationContext + the spring-test machinery it needs.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-test</artifactId>
+      <version>${spring.boot.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-test</artifactId>
+      <version>${spring.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      HAPI FHIR validation module — for ticket #367. Lets the integration-style
+      validation test load a real US Core IG and exercise FhirInstanceValidator
+      against conforming / non-conforming Patients. `provided` because the HAPI
+      runtime image already bundles it (hapi-fhir-validation-7.6.0.jar inside
+      main.war), so we still ship zero new runtime classes from this JAR.
+    -->
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-validation</artifactId>
+      <version>${hapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-validation-resources-r4</artifactId>
+      <version>${hapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      HAPI's CachingValidationSupport / ValidationSupportChain need a caching
+      service provider on the classpath at runtime (HAPI-2200 if missing).
+      The HAPI image bundles hapi-fhir-caching-caffeine; declare it as a
+      test-scope dep so the integration test can also resolve one.
+    -->
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-caching-caffeine</artifactId>
+      <version>${hapi.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

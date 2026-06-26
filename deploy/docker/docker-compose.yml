@@ -51,8 +51,10 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
-      # Feature toggles. Channel-security (#368) and multi-tenancy (#369) are
-      # implemented; validation (#367) is a stub until that ticket lands.
+      # Feature toggles — all three implemented:
+      # - #367 SUBSCRIPTION_SERVICE_VALIDATION_MODE (off|warn|enforce)
+      # - #368 SUBSCRIPTION_SERVICE_CHANNEL_SECURITY (strict|relaxed|permissive)
+      # - #369 SUBSCRIPTION_SERVICE_MULTITENANCY (disabled|enabled)
       # See docs/architecture.md and docs/multi-tenancy.md.
       SUBSCRIPTION_SERVICE_VALIDATION_MODE: ${SUBSCRIPTION_SERVICE_VALIDATION_MODE:-off}
       SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: ${SUBSCRIPTION_SERVICE_CHANNEL_SECURITY:-strict}
