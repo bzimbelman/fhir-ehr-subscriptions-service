@@ -2,6 +2,7 @@ package com.bzonfhir.subscriptionservice.interfaceengine
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
+import org.springframework.scheduling.annotation.EnableScheduling
 
 /**
  * Main entry point.
@@ -19,8 +20,14 @@ import org.springframework.boot.runApplication
  * Postgres available. The autoconfig path stays opt-in (active when the
  * datasource autoconfig is present, dormant when it's excluded), which
  * is exactly what we want.
+ *
+ * @EnableScheduling activates Spring's @Scheduled support for the async
+ * worker (Epic #378, ticket #382). The IngestedMessageWorker is itself
+ * gated on `subscription-service.worker.enabled` so tests that don't want
+ * the worker running can disable it via @TestPropertySource.
  */
 @SpringBootApplication
+@EnableScheduling
 class Application
 
 fun main(args: Array<String>) {
