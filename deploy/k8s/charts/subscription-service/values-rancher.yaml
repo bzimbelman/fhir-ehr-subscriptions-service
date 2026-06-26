@@ -8,8 +8,8 @@
 # Locally built images live in dockerd's image store, NOT k3s's containerd
 # namespace. Before `helm install`, load them into k8s.io:
 #
-#   docker save subscription-service/hapi:dev    | nerdctl --namespace k8s.io load
-#   docker save subscription-service/ipf-app:dev | nerdctl --namespace k8s.io load
+#   docker save subscription-service/hapi:dev             | nerdctl --namespace k8s.io load
+#   docker save subscription-service/interface-engine:dev | nerdctl --namespace k8s.io load
 #
 # Then `helm install`. See chart README for the full dance.
 
@@ -18,8 +18,8 @@ image:
     repository: subscription-service/hapi
     tag: dev
     pullPolicy: IfNotPresent
-  ipf:
-    repository: subscription-service/ipf-app
+  interfaceEngine:
+    repository: subscription-service/interface-engine
     tag: dev
     pullPolicy: IfNotPresent
 
@@ -49,7 +49,7 @@ ingress:
 
 # Rancher Desktop's klipper-lb listens on the host network for LoadBalancer
 # Services, so port 2575 will be reachable at localhost:2575.
-ipf:
+interfaceEngine:
   mllp:
     service:
       type: LoadBalancer
