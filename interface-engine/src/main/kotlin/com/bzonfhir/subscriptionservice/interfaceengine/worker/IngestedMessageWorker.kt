@@ -3,12 +3,15 @@ package com.bzonfhir.subscriptionservice.interfaceengine.worker
 import ca.uhn.fhir.rest.client.api.IGenericClient
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
+import org.slf4j.event.Level
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty
 import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.context.event.EventListener
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * Asynchronous worker for `ingested_messages` (Epic #378, ticket #382).
@@ -115,8 +118,31 @@ class IngestedMessageWorker(
     private val staleSeconds: Long,
     @Value("\${subscription-service.matchbox.structuremap.adt-a01}")
     private val adtA01StructureMap: String,
+    // ---- Retry policy (#383) ----------------------------------------------
+    // maxAttempts: when (current.attemptCount + 1) >= maxAttempts the row
+    //   goes to DEAD_LETTER instead of being scheduled for another retry.
+    // backoffBaseMs / backoffFactor / backoffMaxMs: exponential backoff
+    //   capped at backoffMaxMs. See [computeBackoffMillis] for the formula.
+    // dlqLogLevel: severity of the one log line emitted per DLQ transition.
+    @Value("\${subscription-service.worker.retry.max-attempts:5}")
+    private val maxAttempts: Int,
+    @Value("\${subscription-service.worker.retry.backoff-base-ms:1000}")
+    private val backoffBaseMs: Long,
+    @Value("\${subscription-service.worker.retry.backoff-max-ms:300000}")
+    private val backoffMaxMs: Long,
+    @Value("\${subscription-service.worker.retry.backoff-factor:2.0}")
+    private val backoffFactor: Double,
+    @Value("\${subscription-service.worker.retry.dlq-log-level:WARN}")
+    private val dlqLogLevel: String,
 ) {
     private val log = LoggerFactory.getLogger(IngestedMessageWorker::class.java)
+
+    private val dlqLevel: Level by lazy {
+        runCatching { Level.valueOf(dlqLogLevel.uppercase()) }.getOrElse {
+            log.warn("invalid dlq-log-level '{}', defaulting to WARN", dlqLogLevel)
+            Level.WARN
+        }
+    }
 
     /**
      * Per-message-type → StructureMap canonical URL.
@@ -133,10 +159,17 @@ class IngestedMessageWorker(
     @PostConstruct
     fun logStartup() {
         log.info(
-            "IngestedMessageWorker enabled batchSize={} staleSeconds={} transforms={}",
+            "IngestedMessageWorker enabled batchSize={} staleSeconds={} transforms={} " +
+                "retry.maxAttempts={} retry.backoffBaseMs={} retry.backoffMaxMs={} " +
+                "retry.backoffFactor={} retry.dlqLogLevel={}",
             batchSize,
             staleSeconds,
             transformByType.keys,
+            maxAttempts,
+            backoffBaseMs,
+            backoffMaxMs,
+            backoffFactor,
+            dlqLevel,
         )
     }
 
@@ -203,7 +236,8 @@ class IngestedMessageWorker(
      *
      * Not @Transactional itself — we deliberately do the slow I/O OUTSIDE
      * a transaction. The terminal UPDATE in [WorkerJdbcGateway.markDelivered]
-     * / [WorkerJdbcGateway.markFailed] runs in its own short transaction.
+     * / [WorkerJdbcGateway.markFailedWithBackoff] / [WorkerJdbcGateway.markDeadLetter]
+     * runs in its own short transaction.
      * This is important: holding a transaction open across a 30-second
      * matchbox call would tie up a Hikari connection that other request
      * paths (admin API, MLLP route) also need.
@@ -215,7 +249,6 @@ class IngestedMessageWorker(
         }
         val messageType = row.messageType
         val rawMessage = row.rawMessage
-        val attemptCount = row.attemptCount
 
         val structureMap = transformByType[messageType]
         if (structureMap == null) {
@@ -240,8 +273,7 @@ class IngestedMessageWorker(
             matchboxClient.transformToBundle(structureMap, rawMessage)
         } catch (ex: Exception) {
             val msg = "matchbox transform failed: ${ex.message ?: ex.javaClass.simpleName}"
-            log.warn("worker: row {} {}", id, msg)
-            gateway.markFailed(id, attemptCount = attemptCount, lastError = msg)
+            handleFailure(row, msg)
             return
         }
 
@@ -250,14 +282,106 @@ class IngestedMessageWorker(
             hapiClient.transaction().withBundle(bundle).execute()
         } catch (ex: Exception) {
             val msg = "HAPI transaction failed: ${ex.message ?: ex.javaClass.simpleName}"
-            log.warn("worker: row {} {}", id, msg)
-            gateway.markFailed(id, attemptCount = attemptCount, lastError = msg)
+            handleFailure(row, msg)
             return
         }
 
         gateway.markDelivered(id, lastError = null)
         log.info("worker: row {} DELIVERED type={}", id, messageType)
     }
+
+    /**
+     * Apply the retry policy on failure (#383).
+     *
+     * Decision tree:
+     *
+     *   - new_attempt = current.attemptCount + 1
+     *   - if new_attempt >= maxAttempts → DEAD_LETTER, one log line at
+     *     `dlqLogLevel` (default WARN) with structured fields so operators
+     *     can grep / alert on `event=dlq`.
+     *   - otherwise → FAILED with `next_attempt_at = now() + backoff(new_attempt)`
+     *     and one INFO log line tagged `event=retry_scheduled`.
+     *
+     * Each branch is exactly one DB UPDATE (via the gateway) and exactly
+     * one log line — the rest of the policy is data on the row.
+     */
+    internal fun handleFailure(row: ClaimedRow, lastError: String) {
+        val newAttemptCount = row.attemptCount + 1
+        if (newAttemptCount >= maxAttempts) {
+            gateway.markDeadLetter(
+                id = row.id,
+                newAttemptCount = newAttemptCount,
+                lastError = lastError,
+            )
+            // Structured key=value pairs so a single grep can pull DLQ
+            // events out of pod logs (`grep event=dlq`). Keep the field
+            // names stable; runbooks may reference them.
+            logAt(
+                dlqLevel,
+                "event=dlq message_id={} source_system={} source_id={} message_type={} " +
+                    "attempt_count={} last_error={}",
+                row.id,
+                row.sourceSystem,
+                row.sourceId,
+                row.messageType,
+                newAttemptCount,
+                shortenError(lastError),
+            )
+            return
+        }
+        val backoffMillis = computeBackoffMillis(newAttemptCount)
+        gateway.markFailedWithBackoff(
+            id = row.id,
+            newAttemptCount = newAttemptCount,
+            lastError = lastError,
+            backoffMillis = backoffMillis,
+        )
+        log.info(
+            "event=retry_scheduled message_id={} source_system={} source_id={} " +
+                "message_type={} attempt_count={} backoff_ms={} last_error={}",
+            row.id,
+            row.sourceSystem,
+            row.sourceId,
+            row.messageType,
+            newAttemptCount,
+            backoffMillis,
+            shortenError(lastError),
+        )
+    }
+
+    /**
+     * Backoff formula (#383):
+     *
+     *   delay = min(base * factor^(attempt-1), max)
+     *
+     * `attempt` is the **post-increment** attempt count — i.e. when the
+     * caller has just failed for the N-th time and is asking "how long
+     * should I wait before the (N+1)-th try", they pass N.
+     *
+     * Defaults (1000ms / 2.0 / 300000ms) produce: 1s, 2s, 4s, 8s, 16s …
+     * capped at 5 min. With max-attempts=5 the row hits DLQ after the
+     * 5th failure with a total wall-clock of ~1+2+4+8 = 15s spent
+     * waiting between retries.
+     */
+    internal fun computeBackoffMillis(newAttemptCount: Int): Long {
+        // pow(double) is fine here — the values are tiny and the result
+        // is converted to a Long after clamping. No overflow concerns.
+        val raw = backoffBaseMs.toDouble() * backoffFactor.pow((newAttemptCount - 1).coerceAtLeast(0))
+        return min(raw, backoffMaxMs.toDouble()).toLong().coerceAtLeast(0L)
+    }
+
+    private fun logAt(level: Level, format: String, vararg args: Any?) {
+        when (level) {
+            Level.ERROR -> log.error(format, *args)
+            Level.WARN -> log.warn(format, *args)
+            Level.INFO -> log.info(format, *args)
+            Level.DEBUG -> log.debug(format, *args)
+            Level.TRACE -> log.trace(format, *args)
+        }
+    }
+
+    private fun shortenError(msg: String): String =
+        if (msg.length > 200) msg.take(200) + "…" else msg
 
     companion object {
         /**
