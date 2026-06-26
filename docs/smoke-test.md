@@ -1,14 +1,14 @@
 # End-to-end smoke test
 
-How to verify the stack is healthy after a fresh `docker-compose up` (or a deploy to zdock). Each step is independent — if step N fails, you only need to debug N and re-run downstream steps.
+How to verify the stack is healthy after a fresh `docker-compose up` (or a deploy to a remote cluster). Each step is independent — if step N fails, you only need to debug N and re-run downstream steps.
 
 Variables used below:
 
 | Var | Default | What it is |
 |---|---|---|
-| `BASE_URL` | `https://subscription-service.bzonfhir.com` | Public FHIR endpoint |
-| `BASE_LOCAL` | `http://localhost:18080` | HAPI on the docker host (zdock or laptop) |
-| `MLLP_HOST` | `localhost` (run on zdock) | Interface engine MLLP listener host |
+| `BASE_URL` | `https://subscription-service.example.com` | Public FHIR endpoint |
+| `BASE_LOCAL` | `http://localhost:18080` | HAPI on the docker host |
+| `MLLP_HOST` | `localhost` | Interface engine MLLP listener host |
 | `MLLP_PORT` | `2575` | Interface engine MLLP listener port |
 
 ## 1. CapabilityStatement

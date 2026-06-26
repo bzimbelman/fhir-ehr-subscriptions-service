@@ -225,7 +225,7 @@ Three overlays ship with the chart:
 | File | Purpose |
 |------|---------|
 | [`values.yaml`](values.yaml) | Defaults; safe for any cluster |
-| [`values-dev.yaml`](values-dev.yaml) | Our `bzonfhir.com` dev cluster: auth ON, ingress TLS, larger PVC |
+| [`values-dev.yaml`](values-dev.yaml) | Template for a real dev cluster: auth ON, ingress TLS, larger PVC. Copy and edit the placeholder hosts. |
 | [`values-rancher.yaml`](values-rancher.yaml) | Rancher Desktop validation: auth OFF, permissive channel security, smaller PVC, `subscription-service.local` host |
 
 Layer them with `-f values-rancher.yaml`.
