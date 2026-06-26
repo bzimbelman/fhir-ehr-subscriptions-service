@@ -195,6 +195,27 @@ networkPolicy:
   enabled: false
 
 # ---------------------------------------------------------------------------
+# PodDisruptionBudgets. Off by default. Turn on in production clusters to
+# protect against voluntary evictions (node drain, k8s upgrade, scale-down).
+# Doesn't block forced drains. Most useful when paired with replica > 1; on
+# single-replica deployments, a PDB with minAvailable: 1 blocks ALL voluntary
+# evictions of that pod — pair carefully with cluster admin's maintenance
+# expectations.
+# ---------------------------------------------------------------------------
+podDisruptionBudgets:
+  enabled: false
+  hapi:
+    minAvailable: 1
+  matchbox:
+    minAvailable: 1
+  interfaceEngine:
+    minAvailable: 1
+  # postgres is a StatefulSet with a single replica; maxUnavailable: 0 means
+  # 'don't voluntarily evict this pod at all'.
+  postgres:
+    maxUnavailable: 0
+
+# ---------------------------------------------------------------------------
 # Common pod scheduling knobs (apply to all four deployments).
 # ---------------------------------------------------------------------------
 nodeSelector: {}
