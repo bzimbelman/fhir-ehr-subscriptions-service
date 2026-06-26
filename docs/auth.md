@@ -208,7 +208,7 @@ the auto-configuration registers two HAPI server interceptors:
 
 ### Configuration
 
-All knobs live under `subscription_service.auth.*` and are bindable via
+All knobs live under `subscription-service.auth.*` and are bindable via
 either `application.yaml` or environment variables (Spring Boot's relaxed
 binding maps `SUBSCRIPTION_SERVICE_AUTH_*` env vars onto the property
 tree).
@@ -240,7 +240,7 @@ hapi/
 ├── auth/                   ← Maven project; produces the JAR
 │   ├── pom.xml
 │   └── src/
-│       ├── main/java/com/bzonfhir/subscription_service/auth/
+│       ├── main/java/com/bzonfhir/subscriptionservice/auth/
 │       │   ├── AuthAutoConfiguration.java     ← Spring Boot @AutoConfiguration entry
 │       │   ├── AuthProperties.java            ← @ConfigurationProperties bound from yaml/env
 │       │   ├── JwtValidator.java              ← Nimbus-backed JWT validation
