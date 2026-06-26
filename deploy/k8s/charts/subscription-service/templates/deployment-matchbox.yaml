@@ -1,7 +1,7 @@
 {{- /*
 Matchbox (FHIR StructureMap engine). Stateless; the IG packages it loads at
 boot come from an emptyDir populated by an initContainer (same pattern as
-HAPI). FHIR endpoints live under /matchboxv3 — the IPF app's MATCHBOX_BASE
+HAPI). FHIR endpoints live under /matchboxv3 — the interface engine's MATCHBOX_BASE
 already accounts for this.
 */ -}}
 apiVersion: apps/v1

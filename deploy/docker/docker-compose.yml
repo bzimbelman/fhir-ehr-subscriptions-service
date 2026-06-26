@@ -130,12 +130,12 @@ services:
     networks:
       - subscription-service
 
-  ipf-app:
+  interface-engine:
     build:
-      context: ../../ipf-app
+      context: ../../interface-engine
       dockerfile: Dockerfile
-    image: ${IPF_IMAGE:-subscription-service/ipf-app:dev}
-    container_name: subscription-service-ipf-app
+    image: ${INTERFACE_ENGINE_IMAGE:-subscription-service/interface-engine:dev}
+    container_name: subscription-service-interface-engine
     restart: unless-stopped
     depends_on:
       hapi:
@@ -148,8 +148,8 @@ services:
       MLLP_PORT: "2575"
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-}
     ports:
-      - "${IPF_HTTP_HOST_PORT:-18090}:8090"
-      - "${IPF_MLLP_HOST_PORT:-2575}:2575"
+      - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
+      - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8090/actuator/health >/dev/null || exit 1"]
       interval: 15s

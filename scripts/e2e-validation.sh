@@ -34,8 +34,8 @@ export COMPOSE_PROJECT_NAME="subsvc-validation-test"
 # subscription-service prod stack (if any).
 export HAPI_HOST_PORT=48080
 export MATCHBOX_HOST_PORT=48081
-export IPF_HTTP_HOST_PORT=48090
-export IPF_MLLP_HOST_PORT=42575
+export INTERFACE_ENGINE_HTTP_HOST_PORT=48090
+export INTERFACE_ENGINE_MLLP_HOST_PORT=42575
 
 # Postgres data lives in a project-scoped subdir so tearing down `subsvc-
 # validation-test` doesn't trample the dev stack's data.
