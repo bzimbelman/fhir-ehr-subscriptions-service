@@ -275,6 +275,23 @@ interfaceEngine:
     pollIntervalMs: 1000
     batchSize: 10
     transformingStaleSeconds: 60
+    # ---------------------------------------------------------------------
+    # Retry policy (Epic #378, ticket #383). When a row fails (matchbox
+    # transform or HAPI POST raised), the worker schedules a retry with
+    # exponential backoff. After `maxAttempts` failures the row moves to
+    # DEAD_LETTER and stops being polled — the admin retry endpoint (#384)
+    # is the only way out.
+    #
+    # Defaults produce 1s, 2s, 4s, 8s, 16s (capped at 5 min); the 5th
+    # failure DLQs. Total wall-clock spent waiting between retries: ~31s.
+    # Values map 1:1 to IPF_* env vars on the interface-engine container.
+    # ---------------------------------------------------------------------
+    retry:
+      maxAttempts: 5
+      backoffBaseMs: 1000
+      backoffMaxMs: 300000
+      backoffFactor: 2.0
+      dlqLogLevel: WARN
   # MLLP exposed as a separate LoadBalancer Service so cluster ingress
   # controllers (which speak HTTP) don't have to handle plain TCP. On Rancher
   # Desktop, traefik/klipper-lb exposes the LoadBalancer on localhost.
