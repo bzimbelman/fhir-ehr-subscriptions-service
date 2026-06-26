@@ -133,12 +133,35 @@ class JwtValidatorTest {
 
   @Test
   void extractScopeClaimHandlesListShape() {
-    // Keycloak default is a space-delimited string, but some deployments use a JSON array.
+    // OAuth2/OIDC spec is a space-delimited string, but some IdPs and custom mappers
+    // emit a JSON array instead. The interceptor accepts either.
     JWTClaimsSet listClaims =
         new JWTClaimsSet.Builder()
             .claim("scope", List.of("system/Patient.r", "system/Observation.r"))
             .build();
-    String extracted = KeycloakJwtAuthenticationInterceptor.extractScopeClaim(listClaims);
+    String extracted = OidcJwtAuthenticationInterceptor.extractScopeClaim(listClaims);
     assertThat(extracted).contains("system/Patient.r", "system/Observation.r");
+  }
+
+  /**
+   * Documentation-as-test (ticket #372): the validator accepts any well-formed issuer
+   * URL, including the Auth0 shape (trailing slash, no realm path segment). This is a
+   * pure config-parse check — no Keycloak-specific assumptions about the issuer string.
+   */
+  @Test
+  void acceptsAuth0StyleIssuerUrl() throws Exception {
+    String auth0Issuer = "https://my-tenant.us.auth0.com/";
+
+    // Build a validator with an explicitly-set JWKS URL pointed at our local Wiremock,
+    // so we can drive a real JWT verify against an Auth0-shaped issuer string.
+    AuthProperties props = new AuthProperties();
+    props.setIssuer(auth0Issuer);
+    props.setJwksUrl(issuer + "/protocol/openid-connect/certs"); // local mock JWKS
+
+    JWTClaimsSet claims = JwtTestSupport.defaultClaims(auth0Issuer).build();
+    String token = JwtTestSupport.signJwt(keyPair, claims);
+
+    JWTClaimsSet decoded = new JwtValidator(props).validate(token);
+    assertThat(decoded.getIssuer()).isEqualTo(auth0Issuer);
   }
 }

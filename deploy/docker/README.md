@@ -73,7 +73,7 @@ via bind-mount, so a plain `down` never destroys it. To wipe local state,
 ## What's not here yet
 
 - **IPF Spring Boot app** (HL7 v2 MLLP ingestion) — separate ticket.
-- **Keycloak wiring** (JWT auth on `/fhir/*`) — separate ticket.
+- **OIDC IdP wiring** (JWT auth on `/fhir/*`) — separate ticket (#359, merged).
 - **Feature toggles** referenced in `.env.example`
   (`SUBSCRIPTION_SERVICE_VALIDATION_MODE` etc.) are stubs today; they get
   wired into the HAPI interceptors in tickets #367-#369.

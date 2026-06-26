@@ -73,7 +73,7 @@ flowchart LR
         fhirdb[("FHIR DB")]
     end
 
-    keycloak["Keycloak<br/>(AuthN/AuthZ)"]
+    idp["OIDC IdP<br/>(AuthN/AuthZ)"]
 
     int_sub["Internal subscribers"]
     ext_sub["External subscribers"]
@@ -91,16 +91,16 @@ flowchart LR
     hapi -->|"notifications<br/>(REST-hook / WebSocket)"| int_sub
     hapi -->|"notifications<br/>(REST-hook / WebSocket)"| ext_sub
 
-    keycloak -.->|"JWT validation<br/>(JWKS)"| hapi
-    int_sub -.->|"obtain token"| keycloak
-    ext_sub -.->|"obtain token"| keycloak
+    idp -.->|"JWT validation<br/>(JWKS)"| hapi
+    int_sub -.->|"obtain token"| idp
+    ext_sub -.->|"obtain token"| idp
 ```
 
 The raw-message store is deliberately in front of Matchbox: we want to persist every inbound v2 message and ACK the sender *before* we attempt the transform, so a hiccup in Matchbox or HAPI never causes us to drop a message on the floor.
 
-The FHIR DB is HAPI's persistence (Postgres). Keycloak is used for the reference version, but any oauth provider is supported; both internal and external subscribers obtain bearer tokens from it and HAPI validates them via JWKS.
+The FHIR DB is HAPI's persistence (Postgres). Any OpenID Connect provider that exposes a JWKS endpoint works — Keycloak, Auth0, Okta, Azure AD, AWS Cognito, Authentik, etc. Both internal and external subscribers obtain bearer tokens from the configured IdP, and HAPI validates them via JWKS. See [`docs/auth.md`](docs/auth.md) for the provider-agnostic contract and per-IdP recipes.
 
-External callers reach HAPI via `https://subscription-service.bzonfhir.com/fhir/*`, fronted by Keycloak-issued OAuth2 bearer tokens. The MLLP ingress side is LAN/VPN-only (Cloudflare's HTTP tunnel can't carry plain TCP) and will be addressed in a later phase.
+External callers reach HAPI via `https://subscription-service.bzonfhir.com/fhir/*`, fronted by OIDC-issued OAuth2 bearer tokens. The MLLP ingress side is LAN/VPN-only (Cloudflare's HTTP tunnel can't carry plain TCP) and will be addressed in a later phase.
 
 ## Standards posture
 
@@ -114,7 +114,7 @@ For this implementation we choose to use as many FOSS tools as we could to make 
 | Legacy subscriptions  | R4 criteria-based, still supported by HAPI    |
 | HL7 v2 → FHIR mapping | HL7 v2-to-FHIR IG (StructureMaps via Matchbox)|
 | Custom mappings       | Project-owned FML files, loaded into Matchbox |
-| AuthN/AuthZ           | Keycloak (`keycloak.bzonfhir.com`), OAuth2/JWT|
+| AuthN/AuthZ           | Any OIDC IdP (Keycloak, Auth0, Okta, etc.), OAuth2/JWT|
 
 R4 was chosen because every USCDI-conformant EHR (Epic, Cerner, Athena, etc.) exposes R4 today — US Core has not yet migrated to R5. The Subscriptions Backport IG lets us adopt R5's modern Topic-based subscription model on R4, so subscribers get the forward-shaped API without forcing the rest of the stack to R5.
 
@@ -124,7 +124,7 @@ R4 was chosen because every USCDI-conformant EHR (Epic, Cerner, Athena, etc.) ex
 - **Matchbox** — Off-the-shelf FHIR transform engine. Loads the public HL7 v2-to-FHIR IG plus any project-specific StructureMaps. Talks FHIR; IPF calls it via `$transform`.
 - **HAPI FHIR JPA server** — Off-the-shelf FHIR server with Postgres backend. Loads US Core 7.0 + Subscriptions Backport IGs at boot. Subscription matcher fires REST-hook / WebSocket / message channels.
 - **Postgres** — HAPI's persistence store. Lives on a persistent volume (bind mount on the-deploy-host, PVC on Kubernetes).
-- **Keycloak** — Reuses the existing instance at `keycloak.bzonfhir.com`. A new realm/client issues bearer tokens for the FHIR API.
+- **OIDC IdP** — Any OpenID Connect provider that exposes a JWKS endpoint. The reference deployment reuses the existing Keycloak instance at `keycloak.bzonfhir.com` (turn-key realm export at `idp/keycloak/realms/`), but Auth0, Okta, Azure AD, Cognito, Authentik etc. are all supported — see [`docs/auth.md`](docs/auth.md).
 
 ## Deployment targets
 

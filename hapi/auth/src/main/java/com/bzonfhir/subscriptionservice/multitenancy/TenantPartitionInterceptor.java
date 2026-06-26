@@ -9,7 +9,7 @@ import ca.uhn.fhir.interceptor.api.Pointcut;
 import ca.uhn.fhir.interceptor.model.RequestPartitionId;
 import ca.uhn.fhir.rest.api.server.RequestDetails;
 import ca.uhn.fhir.rest.server.exceptions.ForbiddenOperationException;
-import com.bzonfhir.subscriptionservice.auth.KeycloakJwtAuthenticationInterceptor;
+import com.bzonfhir.subscriptionservice.auth.OidcJwtAuthenticationInterceptor;
 import com.nimbusds.jwt.JWTClaimsSet;
 
 /**
@@ -35,9 +35,9 @@ import com.nimbusds.jwt.JWTClaimsSet;
  * land in the same partition.
  *
  * <p>The JWT is expected to have already been validated by
- * {@link KeycloakJwtAuthenticationInterceptor}, which stashes the decoded
+ * {@link OidcJwtAuthenticationInterceptor}, which stashes the decoded
  * {@link JWTClaimsSet} in {@link RequestDetails#getUserData()} under
- * {@link KeycloakJwtAuthenticationInterceptor#USER_DATA_CLAIMS_KEY}.
+ * {@link OidcJwtAuthenticationInterceptor#USER_DATA_CLAIMS_KEY}.
  */
 @Interceptor
 public class TenantPartitionInterceptor {
@@ -110,7 +110,7 @@ public class TenantPartitionInterceptor {
     Object raw =
         requestDetails
             .getUserData()
-            .get(KeycloakJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY);
+            .get(OidcJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY);
     if (!(raw instanceof JWTClaimsSet claims)) {
       return null;
     }

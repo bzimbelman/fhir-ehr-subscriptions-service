@@ -20,7 +20,7 @@ import ca.uhn.fhir.rest.api.server.RequestDetails;
 import ca.uhn.fhir.rest.server.exceptions.UnprocessableEntityException;
 
 import com.bzonfhir.subscriptionservice.auth.AuthProperties;
-import com.bzonfhir.subscriptionservice.auth.KeycloakJwtAuthenticationInterceptor;
+import com.bzonfhir.subscriptionservice.auth.OidcJwtAuthenticationInterceptor;
 import com.bzonfhir.subscriptionservice.channelsecurity.ChannelSecurityProperties.ChannelSecurityMode;
 
 /**
@@ -81,7 +81,7 @@ class ChannelSecurityInterceptorTest {
     Map<Object, Object> userData = new HashMap<>();
     if (authenticated) {
       userData.put(
-          KeycloakJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY, new Object());
+          OidcJwtAuthenticationInterceptor.USER_DATA_CLAIMS_KEY, new Object());
     }
     lenient().when(rd.getUserData()).thenReturn(userData);
     return rd;
