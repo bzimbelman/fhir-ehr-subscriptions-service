@@ -1,0 +1,89 @@
+{{- /*
+IPF Spring Boot app — HL7v2 MLLP listener + Camel router. Talks to HAPI (for
+persistence) and Matchbox (for $transform). Two ports:
+
+  - 8090: Spring Boot HTTP + actuator. ClusterIP service for in-cluster
+    health checks and any future REST surface.
+  - 2575: MLLP listener. LoadBalancer service so EHR senders outside the
+    cluster can reach it; on Rancher Desktop the klipper-lb daemonset puts
+    it on localhost:2575.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "subscription-service.ipf.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ipf
+spec:
+  replicas: {{ .Values.ipf.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ipf
+  template:
+    metadata:
+      labels:
+        {{- include "subscription-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ipf
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: ipf
+          image: "{{ .Values.image.ipf.repository }}:{{ .Values.image.ipf.tag }}"
+          imagePullPolicy: {{ .Values.image.ipf.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8090
+              protocol: TCP
+            - name: mllp
+              containerPort: 2575
+              protocol: TCP
+          env:
+            - name: HAPI_BASE
+              value: http://{{ include "subscription-service.hapi.fullname" . }}:{{ .Values.hapi.service.port }}/fhir
+            - name: MATCHBOX_BASE
+              value: http://{{ include "subscription-service.matchbox.fullname" . }}:{{ .Values.matchbox.service.port }}/matchboxv3/fhir
+            - name: MLLP_PORT
+              value: "2575"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.ipf.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

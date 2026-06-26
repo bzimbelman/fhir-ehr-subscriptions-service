@@ -1,0 +1,176 @@
+{{- /*
+HAPI FHIR JPA server. Mirrors the `hapi` service in
+deploy/docker/docker-compose.yml — same image, same env vars, same mounted
+files. Key k8s-specific bits:
+
+  - IG tarballs are NOT in ConfigMaps (US Core 7.0 is ~1.6 MB, ConfigMap
+    limit is 1 MiB). An initContainer downloads them from packages.fhir.org
+    into an emptyDir mounted at /app/igs. The init container needs internet
+    egress; document this in the chart README.
+  - The Java healthcheck file is small (a few hundred bytes) and goes in a
+    ConfigMap mounted at /app/healthcheck.
+  - application.yaml is in its own ConfigMap, mounted to /app/config.
+  - SPRING_DATASOURCE_* env vars point at the postgres service by DNS.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+spec:
+  replicas: {{ .Values.hapi.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: hapi
+  template:
+    metadata:
+      labels:
+        {{- include "subscription-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: hapi
+      annotations:
+        # Pod restart trigger on config change (helm upgrade picks this up).
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-hapi.yaml") . | sha256sum }}
+        checksum/healthcheck: {{ include (print $.Template.BasePath "/configmap-healthcheck.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: fetch-igs
+          image: "{{ .Values.image.igFetcher.repository }}:{{ .Values.image.igFetcher.tag }}"
+          imagePullPolicy: {{ .Values.image.igFetcher.pullPolicy }}
+          # curl image runs as non-root with /tmp writable; emptyDir mounted
+          # at /igs is writable by the same uid.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              REG="{{ .Values.hapi.igRegistry }}"
+              INSECURE=""
+              {{- if .Values.hapi.igFetcherInsecure }}
+              # TLS verification disabled for the IG fetch — corporate MITM
+              # / Rancher Desktop on a managed Mac. Runtime HAPI traffic is
+              # unaffected.
+              INSECURE="--insecure"
+              {{- end }}
+              {{- range .Values.hapi.igs }}
+              echo "Fetching {{ .name }}@{{ .version }}"
+              curl --fail --location --silent --show-error $INSECURE \
+                -o "/igs/{{ .name }}-{{ .version }}.tgz" \
+                "$REG/{{ .name }}/{{ .version }}"
+              {{- end }}
+              echo "All IGs fetched:"
+              ls -la /igs
+          volumeMounts:
+            - name: igs
+              mountPath: /igs
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      containers:
+        - name: hapi
+          image: "{{ .Values.image.hapi.repository }}:{{ .Values.image.hapi.tag }}"
+          imagePullPolicy: {{ .Values.image.hapi.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.postgres.database }}
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "subscription-service.postgres.fullname" . }}
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "subscription-service.postgres.fullname" . }}
+                  key: POSTGRES_PASSWORD
+            - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
+              value: org.postgresql.Driver
+            - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT
+              value: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
+            - name: SUBSCRIPTION_SERVICE_VALIDATION_MODE
+              value: {{ .Values.featureToggles.validation.mode | quote }}
+            - name: SUBSCRIPTION_SERVICE_CHANNEL_SECURITY
+              value: {{ .Values.featureToggles.channelSecurity.mode | quote }}
+            - name: SUBSCRIPTION_SERVICE_MULTITENANCY
+              value: {{ .Values.featureToggles.multitenancy.mode | quote }}
+            - name: SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM
+              value: {{ .Values.featureToggles.multitenancy.tenantClaim | quote }}
+            - name: SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE
+              value: {{ .Values.featureToggles.multitenancy.testMode | quote }}
+          envFrom:
+            - secretRef:
+                name: {{ include "subscription-service.hapi.fullname" . }}-auth
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            - name: igs
+              mountPath: /app/igs
+              readOnly: true
+            - name: healthcheck
+              mountPath: /app/healthcheck
+              readOnly: true
+          readinessProbe:
+            # Probe HAPI's CapabilityStatement via the JEP-330 helper. Java
+            # is the only binary present in the distroless image.
+            exec:
+              command:
+                - java
+                - /app/healthcheck/HapiHealthCheck.java
+            initialDelaySeconds: {{ .Values.hapi.healthcheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.hapi.healthcheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.hapi.healthcheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.hapi.healthcheck.failureThreshold }}
+          livenessProbe:
+            exec:
+              command:
+                - java
+                - /app/healthcheck/HapiHealthCheck.java
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.hapi.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "subscription-service.hapi.fullname" . }}-config
+        - name: healthcheck
+          configMap:
+            name: {{ include "subscription-service.hapi.fullname" . }}-healthcheck
+        - name: igs
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,42 @@
+{{- if .Values.ingress.enabled -}}
+{{- /*
+FHIR HTTPS ingress. Routes everything for the host(s) into the HAPI Service.
+Path /fhir is the public surface; the chart routes "/" so the HAPI tester
+UI is also reachable for ops convenience. Override .ingress.hosts[].paths
+if you want to scope it tighter.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "subscription-service.hapi.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hapi
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ include "subscription-service.hapi.fullname" $ }}
+                port:
+                  number: {{ $.Values.hapi.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

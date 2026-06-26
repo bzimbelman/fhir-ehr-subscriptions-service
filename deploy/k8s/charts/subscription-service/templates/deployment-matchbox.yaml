@@ -1,0 +1,119 @@
+{{- /*
+Matchbox (FHIR StructureMap engine). Stateless; the IG packages it loads at
+boot come from an emptyDir populated by an initContainer (same pattern as
+HAPI). FHIR endpoints live under /matchboxv3 — the IPF app's MATCHBOX_BASE
+already accounts for this.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "subscription-service.matchbox.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: matchbox
+spec:
+  replicas: {{ .Values.matchbox.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: matchbox
+  template:
+    metadata:
+      labels:
+        {{- include "subscription-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: matchbox
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: fetch-igs
+          image: "{{ .Values.image.igFetcher.repository }}:{{ .Values.image.igFetcher.tag }}"
+          imagePullPolicy: {{ .Values.image.igFetcher.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              REG="{{ .Values.matchbox.igRegistry }}"
+              INSECURE=""
+              {{- if .Values.matchbox.igFetcherInsecure }}
+              INSECURE="--insecure"
+              {{- end }}
+              {{- range .Values.matchbox.igs }}
+              echo "Fetching {{ .name }}@{{ .version }}"
+              curl --fail --location --silent --show-error $INSECURE \
+                -o "/igs/{{ .name }}-{{ .version }}.tgz" \
+                "$REG/{{ .name }}/{{ .version }}"
+              {{- end }}
+              echo "All Matchbox IGs fetched:"
+              ls -la /igs
+          volumeMounts:
+            - name: igs
+              mountPath: /igs
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      containers:
+        - name: matchbox
+          image: "{{ .Values.image.matchbox.repository }}:{{ .Values.image.matchbox.tag }}"
+          imagePullPolicy: {{ .Values.image.matchbox.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: MATCHBOX_FHIR_VERSION
+              value: R4
+            - name: HEALTHCHECK_URL
+              value: http://localhost:8080/matchboxv3/fhir/metadata
+          volumeMounts:
+            - name: igs
+              mountPath: /app/matchbox/igs
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /matchboxv3/fhir/metadata
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /matchboxv3/fhir/metadata
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.matchbox.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        - name: igs
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

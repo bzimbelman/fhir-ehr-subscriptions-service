@@ -1,0 +1,205 @@
+# Default values for subscription-service.
+#
+# Sensible defaults for development clusters. Production deployments should
+# layer values-prod.yaml on top, and Rancher Desktop validation uses
+# values-rancher.yaml. See deploy/k8s/charts/subscription-service/README.md.
+
+# ---------------------------------------------------------------------------
+# Common labels / pod metadata. nameOverride lets two releases live in the
+# same namespace if ever needed.
+# ---------------------------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Container images. Defaults match the local Compose build (the HAPI and IPF
+# images are built locally from this repo; see deploy/k8s/charts/.../README.md
+# for the Rancher Desktop image-loading workflow). For real clusters, push
+# the images to a registry and override .repository/.tag here.
+# ---------------------------------------------------------------------------
+image:
+  hapi:
+    repository: subscription-service/hapi
+    tag: dev
+    pullPolicy: IfNotPresent
+  matchbox:
+    repository: europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox
+    tag: v3.9.13
+    pullPolicy: IfNotPresent
+  ipf:
+    repository: subscription-service/ipf-app
+    tag: dev
+    pullPolicy: IfNotPresent
+  postgres:
+    repository: postgres
+    tag: 16-alpine
+    pullPolicy: IfNotPresent
+  # Init container that pulls IG tarballs from packages.fhir.org. Needs curl.
+  # alpine + curl by default; override to an internal mirror for air-gapped.
+  igFetcher:
+    repository: curlimages/curl
+    tag: "8.10.1"
+    pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# ---------------------------------------------------------------------------
+# Postgres (HAPI's datastore). StatefulSet + PVC.
+# ---------------------------------------------------------------------------
+postgres:
+  user: hapi
+  password: hapi   # CHANGE in values-prod.yaml or via a sealed secret.
+  database: hapi
+  storage:
+    size: 10Gi
+    storageClassName: ""   # "" -> cluster default StorageClass.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  service:
+    port: 5432
+
+# ---------------------------------------------------------------------------
+# HAPI FHIR server.
+# ---------------------------------------------------------------------------
+hapi:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  # IG packages to fetch into an emptyDir at /app/igs via initContainer.
+  # The container runs `curl <packageUrl>` and writes <name>-<version>.tgz.
+  igs:
+    - name: hl7.fhir.us.core
+      version: "7.0.0"
+    - name: hl7.fhir.uv.subscriptions-backport.r4
+      version: "1.1.0"
+  igRegistry: https://packages.fhir.org
+  # If your cluster sits behind a TLS-inspecting proxy (corporate MITM,
+  # Rancher Desktop on a Netskope-managed Mac, etc.), set
+  # `igFetcher.insecure: true` to skip TLS verification in the init
+  # container. ONLY affects the IG fetch step; runtime HAPI traffic is
+  # unaffected. Off by default; turn on in values-rancher.yaml or via
+  # --set if needed.
+  igFetcherInsecure: false
+  # Java JEP-330 single-file healthcheck (same probe as Compose). Mounted via
+  # ConfigMap. Distroless image has no shell/curl/wget, only the JRE.
+  healthcheck:
+    initialDelaySeconds: 60
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 30
+
+# ---------------------------------------------------------------------------
+# Matchbox (StructureMap engine).
+# ---------------------------------------------------------------------------
+matchbox:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  # Same init-container pattern as HAPI: pull the v2-to-FHIR IG into an
+  # emptyDir mounted at /app/matchbox/igs.
+  igs:
+    - name: hl7.fhir.uv.v2mappings
+      version: "1.0.0"
+  igRegistry: https://packages.fhir.org
+  igFetcherInsecure: false
+
+# ---------------------------------------------------------------------------
+# IPF Spring Boot app (HL7 MLLP listener + Camel router).
+# ---------------------------------------------------------------------------
+ipf:
+  replicaCount: 1
+  http:
+    service:
+      type: ClusterIP
+      port: 8090
+  # MLLP exposed as a separate LoadBalancer Service so cluster ingress
+  # controllers (which speak HTTP) don't have to handle plain TCP. On Rancher
+  # Desktop, traefik/klipper-lb exposes the LoadBalancer on localhost.
+  mllp:
+    service:
+      type: LoadBalancer
+      port: 2575
+      # Set this to a specific external IP on cloud LBs. Rancher Desktop
+      # ignores it.
+      loadBalancerIP: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Feature toggles. These map 1:1 to the env vars HAPI reads. See
+# docs/architecture.md for the meaning of each mode.
+# ---------------------------------------------------------------------------
+featureToggles:
+  auth:
+    enabled: false       # default OFF so the chart works without a Keycloak.
+    issuer: ""           # e.g. https://keycloak.example.com/realms/subsvc
+    jwksUrl: ""          # blank -> issuer + /protocol/openid-connect/certs
+  validation:
+    mode: "off"          # off | warn | enforce
+  channelSecurity:
+    mode: strict         # strict | relaxed | permissive
+  multitenancy:
+    mode: disabled       # disabled | enabled
+    tenantClaim: tenant
+    testMode: false      # NEVER true outside the e2e isolation suite.
+
+# ---------------------------------------------------------------------------
+# FHIR HTTPS ingress. Disabled by default; enable per environment.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: traefik
+  annotations: {}
+  hosts:
+    - host: subscription-service.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #   - hosts:
+  #       - subscription-service.example.com
+  #     secretName: subscription-service-tls
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy. OPTIONAL; off by default because k3s/Rancher Desktop ships
+# without a NetworkPolicy controller. Turn on in production clusters.
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Common pod scheduling knobs (apply to all four deployments).
+# ---------------------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: false
+securityContext: {}
