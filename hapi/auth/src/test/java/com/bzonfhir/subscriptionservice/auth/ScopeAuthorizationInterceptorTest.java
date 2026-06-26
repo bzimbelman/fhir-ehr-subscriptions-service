@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -24,7 +24,7 @@ import ca.uhn.fhir.rest.server.interceptor.auth.IAuthRule;
  * <ul>
  *   <li>Every documented scope produces at least the right verbs.
  *   <li>An empty scope set produces a deny-all-but-metadata rule list.
- *   <li>{@code subscription_service.auth.enabled=false} produces a single allow-all rule.
+ *   <li>{@code subscription-service.auth.enabled=false} produces a single allow-all rule.
  * </ul>
  */
 class ScopeAuthorizationInterceptorTest {

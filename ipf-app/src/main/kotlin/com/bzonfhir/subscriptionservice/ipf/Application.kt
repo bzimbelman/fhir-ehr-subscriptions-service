@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription
+package com.bzonfhir.subscriptionservice.ipf
 
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication

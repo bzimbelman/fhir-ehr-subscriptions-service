@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import java.util.ArrayList;
 import java.util.Collection;

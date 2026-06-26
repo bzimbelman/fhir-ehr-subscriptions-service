@@ -1,4 +1,4 @@
-package com.bzonfhir.subscription_service.auth;
+package com.bzonfhir.subscriptionservice.auth;
 
 import java.util.List;
 import java.util.Locale;
@@ -34,14 +34,14 @@ import com.nimbusds.jwt.JWTClaimsSet.Builder;
 public class KeycloakJwtAuthenticationInterceptor {
 
   /** Key under which the validated claims set is stashed in {@code RequestDetails.userData}. */
-  public static final String USER_DATA_CLAIMS_KEY = "subscription_service.auth.claims";
+  public static final String USER_DATA_CLAIMS_KEY = "subscription-service.auth.claims";
 
   /**
    * Key under which the parsed scopes ({@link Set} of {@link SmartScope}) are stashed in
    * {@code RequestDetails.userData}. Pre-parsed so the authz interceptor doesn't repeat the
    * regex on every request.
    */
-  public static final String USER_DATA_SCOPES_KEY = "subscription_service.auth.scopes";
+  public static final String USER_DATA_SCOPES_KEY = "subscription-service.auth.scopes";
 
   private static final Logger log =
       LoggerFactory.getLogger(KeycloakJwtAuthenticationInterceptor.class);
