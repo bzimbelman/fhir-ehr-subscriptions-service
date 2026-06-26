@@ -2,7 +2,12 @@
 # provision-realm.sh
 #
 # Idempotently provisions the `subscription-service` Keycloak realm from
-# `keycloak/realms/subscription-service.json`.
+# `idp/keycloak/realms/subscription-service.json`. This tooling is
+# Keycloak-specific by design — it talks to the Keycloak admin REST API to
+# create a realm with the project's clients, scopes, and mappers preconfigured.
+# Other OIDC providers (Auth0, Okta, Authentik, etc.) have their own
+# provisioning surfaces; see `docs/auth.md` "Provider recipes" for the
+# per-IdP knobs you need to set by hand.
 #
 # Environment variables (required when actually running against a server):
 #   KEYCLOAK_URL              Base URL, e.g. https://your-keycloak.example.com
@@ -11,7 +16,7 @@
 #
 # Optional:
 #   KEYCLOAK_REALM_FILE       Path to the realm export JSON.
-#                             Default: keycloak/realms/subscription-service.json
+#                             Default: idp/keycloak/realms/subscription-service.json
 #                             (resolved relative to the repo root)
 #   KEYCLOAK_PATH_PREFIX      Path prefix for the Keycloak server.
 #                             Default: "" (Keycloak >= 17 / Quarkus default).
@@ -45,8 +50,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-REALM_FILE_DEFAULT="${REPO_ROOT}/keycloak/realms/subscription-service.json"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+REALM_FILE_DEFAULT="${REPO_ROOT}/idp/keycloak/realms/subscription-service.json"
 
 REALM_FILE="${KEYCLOAK_REALM_FILE:-${REALM_FILE_DEFAULT}}"
 PATH_PREFIX="${KEYCLOAK_PATH_PREFIX-}"
