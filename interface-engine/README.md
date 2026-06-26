@@ -1,4 +1,4 @@
-# ipf-app
+# interface-engine
 
 Spring Boot + Apache Camel + IPF + HAPI HL7v2 application. Listens for HL7 v2 over MLLP, parses, and routes by `MSH-9` message type:
 
@@ -11,7 +11,7 @@ See [../docs/architecture.md](../docs/architecture.md) for background on the sta
 ## Layout
 
 ```
-ipf-app/
+interface-engine/
 ├── build.gradle.kts            ← Kotlin/Gradle build, pinned versions
 ├── settings.gradle.kts
 ├── gradlew, gradle/            ← Gradle 8.11.1 wrapper
@@ -20,7 +20,7 @@ ipf-app/
 ├── compose-snippet.yml         ← service block to merge into deploy/docker/docker-compose.yml
 ├── ca-cert/                    ← optional corporate-MITM root, see below
 └── src/
-    ├── main/kotlin/com/bzonfhir/subscriptionservice/ipf/
+    ├── main/kotlin/com/bzonfhir/subscriptionservice/interfaceengine/
     │   ├── Application.kt
     │   └── routes/IngestRoutes.kt
     ├── main/resources/
@@ -52,8 +52,8 @@ Received HL7 v2 message type=ADT^A01 controlId=MSGCTRL00001 sendingApp=EPIC
 ## Docker build
 
 ```
-docker build -t subscription-service/ipf-app:dev .
-docker run --rm -p 8090:8090 -p 2575:2575 subscription-service/ipf-app:dev
+docker build -t subscription-service/interface-engine:dev .
+docker run --rm -p 8090:8090 -p 2575:2575 subscription-service/interface-engine:dev
 ```
 
 ### Behind a corporate TLS MITM (Netskope/Zscaler/etc.)
@@ -61,8 +61,8 @@ docker run --rm -p 8090:8090 -p 2575:2575 subscription-service/ipf-app:dev
 Gradle and Maven Central downloads fail with PKIX errors inside the build container if your network intercepts TLS. Drop the corporate CA chain into `ca-cert/cert.pem` before running `docker build` and the Dockerfile will install it into both the OS trust store and the JVM keystore for the build stage only.
 
 ```
-cp ~/.netskope-ca/full-chain.pem ipf-app/ca-cert/cert.pem
-docker build -t subscription-service/ipf-app:dev ipf-app/
+cp ~/.netskope-ca/full-chain.pem interface-engine/ca-cert/cert.pem
+docker build -t subscription-service/interface-engine:dev interface-engine/
 ```
 
 The `cert.pem` file is gitignored. CI builds outside a corporate proxy don't need this step.

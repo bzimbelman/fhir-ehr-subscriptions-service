@@ -13,7 +13,7 @@ See [`docs/architecture.md`](architecture.md) "Kubernetes (Helm)" for the design
 | `<release>-postgres` | StatefulSet (1 replica) + PVC | `postgres:16-alpine` | HAPI's datastore. Headless Service. |
 | `<release>-hapi` | Deployment (1 replica) | `subscription-service/hapi:dev` | FHIR R4 server. ClusterIP Service. |
 | `<release>-matchbox` | Deployment (1 replica) | `europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox:v3.9.13` | `$transform`. ClusterIP Service. |
-| `<release>-ipf` | Deployment (1 replica) | `subscription-service/ipf-app:dev` | HL7 MLLP listener. Two Services: ClusterIP for HTTP, LoadBalancer for MLLP. |
+| `<release>-interface-engine` | Deployment (1 replica) | `subscription-service/interface-engine:dev` | HL7 MLLP listener. Two Services: ClusterIP for HTTP, LoadBalancer for MLLP. |
 
 Plus: two ConfigMaps (HAPI `application.yaml` + JEP-330 healthcheck), two Secrets (Postgres creds + auth config), and an Ingress fronting HAPI.
 
@@ -37,8 +37,8 @@ docker version                   # tested with 29.x
 - **containerd** — k3s uses its own containerd. Locally-built docker images must be re-loaded:
 
   ```bash
-  docker save subscription-service/hapi:dev    | nerdctl --namespace k8s.io load
-  docker save subscription-service/ipf-app:dev | nerdctl --namespace k8s.io load
+  docker save subscription-service/hapi:dev             | nerdctl --namespace k8s.io load
+  docker save subscription-service/interface-engine:dev | nerdctl --namespace k8s.io load
   ```
 
   `CONTAINER-RUNTIME` shows `containerd://...`.
@@ -48,11 +48,11 @@ The chart sets `imagePullPolicy: IfNotPresent` so neither mode tries to pull a n
 ### Build the locally-derived images
 
 ```bash
-docker build -t subscription-service/hapi:dev    hapi/
-docker build -t subscription-service/ipf-app:dev ipf-app/
+docker build -t subscription-service/hapi:dev             hapi/
+docker build -t subscription-service/interface-engine:dev interface-engine/
 ```
 
-The HAPI image layers our auth/validation/channel-security/multi-tenancy JAR onto `hapiproject/hapi:v7.6.0`. The IPF image is built from the Gradle Spring Boot project in `ipf-app/`.
+The HAPI image layers our auth/validation/channel-security/multi-tenancy JAR onto `hapiproject/hapi:v7.6.0`. The interface-engine image is built from the Gradle Spring Boot project in `interface-engine/`.
 
 ### Install
 
@@ -70,7 +70,7 @@ The chart's init containers will fetch the FHIR IGs from `packages.fhir.org` int
 kubectl -n subsvc-test rollout status statefulset/subsvc-postgres --timeout=300s
 kubectl -n subsvc-test rollout status deployment/subsvc-matchbox  --timeout=300s
 kubectl -n subsvc-test rollout status deployment/subsvc-hapi      --timeout=600s
-kubectl -n subsvc-test rollout status deployment/subsvc-ipf       --timeout=300s
+kubectl -n subsvc-test rollout status deployment/subsvc-interface-engine --timeout=300s
 ```
 
 HAPI takes the longest (1-3 minutes on a fresh DB) because it has to install the US Core + Subscriptions Backport IGs.
@@ -132,8 +132,8 @@ For our `bzonfhir.com` dev cluster (and the same pattern for any production clus
    ```bash
    docker tag  subscription-service/hapi:dev    quay.io/natera/tools:subscription-service-hapi-<sha>
    docker push quay.io/natera/tools:subscription-service-hapi-<sha>
-   docker tag  subscription-service/ipf-app:dev quay.io/natera/tools:subscription-service-ipf-<sha>
-   docker push quay.io/natera/tools:subscription-service-ipf-<sha>
+   docker tag  subscription-service/interface-engine:dev quay.io/natera/tools:subscription-service-interface-engine-<sha>
+   docker push quay.io/natera/tools:subscription-service-interface-engine-<sha>
    ```
 
 2. Set the registry coordinates and pull policy in `values-dev.yaml` / `values-prod.yaml`:
@@ -144,9 +144,9 @@ For our `bzonfhir.com` dev cluster (and the same pattern for any production clus
        repository: quay.io/natera/tools
        tag: subscription-service-hapi-<sha>
        pullPolicy: Always
-     ipf:
+     interfaceEngine:
        repository: quay.io/natera/tools
-       tag: subscription-service-ipf-<sha>
+       tag: subscription-service-interface-engine-<sha>
        pullPolicy: Always
    imagePullSecrets:
      - name: quay-image-pull-secret   # Kyverno auto-injects on our clusters.
@@ -188,7 +188,7 @@ Common causes:
 | `curl: (6) Could not resolve host: packages.fhir.org` | No DNS/internet egress from the pod network. Configure cluster DNS or mirror the packages to an internal registry and override `igRegistry`. |
 | `curl: (22) HTTP 404` | Bad package name or version. Verify `<igRegistry>/<name>/<version>` returns a tarball in a browser. |
 
-### `ImagePullBackOff` on hapi / ipf
+### `ImagePullBackOff` on hapi / interface-engine
 
 The locally-built image is missing from the cluster's image store. In **dockerd-mode** Rancher Desktop, just `docker build`. In **containerd-mode**, do the `docker save | nerdctl --namespace k8s.io load` dance documented above.
 

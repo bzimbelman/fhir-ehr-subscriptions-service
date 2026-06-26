@@ -12,10 +12,11 @@ nameOverride: ""
 fullnameOverride: ""
 
 # ---------------------------------------------------------------------------
-# Container images. Defaults match the local Compose build (the HAPI and IPF
-# images are built locally from this repo; see deploy/k8s/charts/.../README.md
-# for the Rancher Desktop image-loading workflow). For real clusters, push
-# the images to a registry and override .repository/.tag here.
+# Container images. Defaults match the local Compose build (the HAPI and
+# interface-engine images are built locally from this repo; see
+# deploy/k8s/charts/.../README.md for the Rancher Desktop image-loading
+# workflow). For real clusters, push the images to a registry and override
+# .repository/.tag here.
 # ---------------------------------------------------------------------------
 image:
   hapi:
@@ -26,8 +27,8 @@ image:
     repository: europe-west6-docker.pkg.dev/ahdis-ch/ahdis/matchbox
     tag: v3.9.13
     pullPolicy: IfNotPresent
-  ipf:
-    repository: subscription-service/ipf-app
+  interfaceEngine:
+    repository: subscription-service/interface-engine
     tag: dev
     pullPolicy: IfNotPresent
   postgres:
@@ -125,9 +126,9 @@ matchbox:
   igFetcherInsecure: false
 
 # ---------------------------------------------------------------------------
-# IPF Spring Boot app (HL7 MLLP listener + Camel router).
+# Interface engine — Spring Boot + IPF (HL7 MLLP listener + Camel router).
 # ---------------------------------------------------------------------------
-ipf:
+interfaceEngine:
   replicaCount: 1
   http:
     service:

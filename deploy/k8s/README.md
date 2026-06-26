@@ -27,8 +27,8 @@ deploy/k8s/
             ├── service-hapi.yaml
             ├── deployment-matchbox.yaml     # initContainer fetches v2-to-FHIR IG
             ├── service-matchbox.yaml
-            ├── deployment-ipf.yaml
-            ├── service-ipf.yaml             # ClusterIP HTTP + LoadBalancer MLLP
+            ├── deployment-interface-engine.yaml
+            ├── service-interface-engine.yaml  # ClusterIP HTTP + LoadBalancer MLLP
             ├── ingress.yaml                 # FHIR HTTPS via traefik
             └── networkpolicy.yaml           # OPTIONAL; off by default
 ```

@@ -16,8 +16,8 @@
 #
 # The ticket originally specified 68080/68081/68090/62575 — those are out of the
 # valid TCP port range. We reuse the 28xxx band instead. Only the HAPI port is
-# actually used by the e2e (db is internal); the other prod ports (matchbox/IPF)
-# aren't needed for the multi-tenancy check.
+# actually used by the e2e (db is internal); the other prod ports (matchbox /
+# interface-engine) aren't needed for the multi-tenancy check.
 #
 # Bring up:
 #   docker compose -p subsvc-multitenancy-test \

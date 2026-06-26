@@ -20,7 +20,8 @@ The system is designed to be deployable as either a Docker Compose stack or a Ku
 
 ```
    ┌─────────────────────────────────────────────────────────────┐
-   │  IPF Spring Boot app (one JVM, possibly multiple replicas)  │
+   │  Interface engine (Spring Boot + IPF, one JVM, possibly    │
+   │  multiple replicas)                                         │
    │                                                             │
    │  MLLP listener :2575  ─┐                                    │
    │  MLLP listener :2576  ─┼─► HL7v2 parser ─► v2 message POJO  │
@@ -53,7 +54,7 @@ The system is designed to be deployable as either a Docker Compose stack or a Ku
                   REST-hook / WebSocket / message subscribers
 ```
 
-The IPF app and Matchbox/HAPI run side by side. Matchbox is just another FHIR endpoint that exposes `$transform`; IPF calls it like any other FHIR server.
+The interface engine and Matchbox/HAPI run side by side. Matchbox is just another FHIR endpoint that exposes `$transform`; the interface engine calls it like any other FHIR server.
 
 ---
 
@@ -113,7 +114,7 @@ per-IdP recipes (Keycloak, Auth0, Okta, Authentik).
 - Kubernetes: PVC backed by the cluster's default StorageClass.
 - Backups are out of scope for the initial deployment; the first iteration is development-grade. A backup strategy (logical dumps on a cron, or `pg_basebackup` to object storage) will be added before any production use.
 
-Matchbox is stateless. The IPF app is stateless. Only Postgres holds durable state.
+Matchbox is stateless. The interface engine is stateless. Only Postgres holds durable state.
 
 ---
 
@@ -181,8 +182,8 @@ What this explicitly does NOT include in the first cut:
 **Decision: Start with the public HL7 v2-to-FHIR IG StructureMaps; layer custom maps on top.**
 
 - Matchbox loads the published `hl7.fhir.uv.v2mappings` IG package at boot. This covers the common message types (ADT, ORU, ORM, MDM, SIU, VXU) with maps the HL7 community maintains.
-- For project-specific concerns (Z-segments, customer-specific fields, special routing rules), we add custom FML files under `matchbox/maps/`. Matchbox loads them alongside the IG; routes in IPF select by `source=` URL.
-- The mapping layer is *configurable per deployment*: an operator can drop in a different IG version or a different set of custom maps without rebuilding the IPF app or HAPI. This is one reason Matchbox is a separate service rather than an embedded library.
+- For project-specific concerns (Z-segments, customer-specific fields, special routing rules), we add custom FML files under `matchbox/maps/`. Matchbox loads them alongside the IG; routes in the interface engine select by `source=` URL.
+- The mapping layer is *configurable per deployment*: an operator can drop in a different IG version or a different set of custom maps without rebuilding the interface engine or HAPI. This is one reason Matchbox is a separate service rather than an embedded library.
 
 We will eventually want a way to:
 
@@ -252,8 +253,8 @@ deploy/k8s/charts/subscription-service/
     ├── configmap-{hapi,healthcheck}.yaml
     ├── secret-{postgres,auth}.yaml
     ├── statefulset-postgres.yaml
-    ├── deployment-{hapi,matchbox,ipf}.yaml
-    ├── service-{postgres,hapi,matchbox,ipf,ipf-mllp}.yaml
+    ├── deployment-{hapi,matchbox,interface-engine}.yaml
+    ├── service-{postgres,hapi,matchbox,interface-engine,interface-engine-mllp}.yaml
     ├── ingress.yaml              # FHIR HTTPS via the cluster's IngressClass
     └── networkpolicy.yaml        # optional, off by default
 ```
@@ -306,9 +307,9 @@ Remaining items will be worked through as the implementation progresses.
 
 ## Next steps
 
-1. Stand up Docker Compose target with HAPI + Postgres + Matchbox (no IPF yet), verify `/fhir/metadata` returns, register a test Subscription against an external webhook.
+1. Stand up Docker Compose target with HAPI + Postgres + Matchbox (no interface engine yet), verify `/fhir/metadata` returns, register a test Subscription against an external webhook.
 2. Wire HAPI to an OIDC IdP (JWKS validation, scope-based authorization).
-3. Add the IPF Spring Boot app with one MLLP listener and ADT^A01 transform via Matchbox. End-to-end smoke test: nc-piped v2 in, webhook fires.
+3. Add the interface engine (Spring Boot + IPF) with one MLLP listener and ADT^A01 transform via Matchbox. End-to-end smoke test: nc-piped v2 in, webhook fires.
 4. Add additional message types (ORU, ORM, SIU, MDM) once the first slice works.
 5. Mirror the deployment into a Helm chart and validate on Rancher Desktop.
 6. Resolve MLLP ingress strategy.

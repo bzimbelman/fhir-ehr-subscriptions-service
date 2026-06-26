@@ -34,8 +34,8 @@ export COMPOSE_PROJECT_NAME="subsvc-validation-test"
 # subscription-service prod stack (if any).
 export HAPI_HOST_PORT=48080
 export MATCHBOX_HOST_PORT=48081
-export IPF_HTTP_HOST_PORT=48090
-export IPF_MLLP_HOST_PORT=42575
+export INTERFACE_ENGINE_HTTP_HOST_PORT=48090
+export INTERFACE_ENGINE_MLLP_HOST_PORT=42575
 
 # Postgres data lives in a project-scoped subdir so tearing down `subsvc-
 # validation-test` doesn't trample the dev stack's data.
@@ -96,8 +96,8 @@ wait_for_hapi() {
 }
 
 # Boot the stack with the given validation mode. We use --no-deps + a fresh
-# `up -d hapi hapi-db` so we don't drag the IPF / Matchbox services in (they
-# aren't relevant to validation and slow the test down).
+# `up -d hapi hapi-db` so we don't drag the interface-engine / Matchbox
+# services in (they aren't relevant to validation and slow the test down).
 bring_up_with_mode() {
   local mode="$1"
   log "==> starting stack with SUBSCRIPTION_SERVICE_VALIDATION_MODE=${mode}"
