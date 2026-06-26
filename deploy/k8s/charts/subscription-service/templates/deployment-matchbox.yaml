@@ -32,11 +32,13 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "matchbox") | nindent 8 }}
       initContainers:
         - name: fetch-igs
           image: "{{ .Values.image.igFetcher.repository }}:{{ .Values.image.igFetcher.tag }}"
           imagePullPolicy: {{ .Values.image.igFetcher.pullPolicy }}
+          securityContext:
+            {{- include "subscription-service.igFetcherSecurityContext" . | nindent 12 }}
           command:
             - sh
             - -c
@@ -101,7 +103,7 @@ spec:
           resources:
             {{- toYaml .Values.matchbox.resources | nindent 12 }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "matchbox") | nindent 12 }}
       volumes:
         - name: igs
           emptyDir: {}
