@@ -1,46 +1,58 @@
 # Authentication & authorization
 
-> Status: Updated, ticket #359 (JWT enforcement landed). This document
-> defines both the *identity* infrastructure (ticket #358 — Keycloak realm,
-> clients, scopes) AND the *enforcement* layer inside HAPI itself
-> (ticket #359 — JWT validation + SMART scope mapping to HAPI auth rules).
+> Status: Updated, tickets #359 (JWT enforcement landed) and #370/#376
+> (provider-agnostic configuration). This document defines both the
+> *identity* infrastructure (Keycloak realm, clients, scopes) AND the
+> *enforcement* layer inside HAPI itself (JWT validation + SMART scope
+> mapping to HAPI auth rules).
 
 ## Overview
 
 External systems (and our own internal services) call the subscription-service
-FHIR API at `https://subscription-service.bzonfhir.com/fhir/*` using OAuth2
-bearer tokens. Tokens are issued by the shared Keycloak instance at
-`keycloak.bzonfhir.com`. A dedicated Keycloak realm — `subscription-service` —
-houses the clients and scopes for this API; it is isolated from the realms
-used by other tools on the same Keycloak server.
+FHIR API using OAuth2 bearer tokens. Tokens are issued by a Keycloak realm
+named `subscription-service` that the operator provisions on whichever
+Keycloak instance the deployment runs against. The realm is self-contained
+and can sit alongside other realms on a shared Keycloak server.
 
-This ticket (#358) sets up the realm. Ticket #359 wires HAPI to validate the
-tokens this realm issues and to enforce the scopes carried in them.
+Everything below uses placeholder hostnames (`your-keycloak.example.com`,
+`your-subscription-service.example.com`). Substitute your own. The reference
+deployment that this project's maintainer runs is documented in a single
+callout at the bottom of this page.
+
+## Modern vs. legacy Keycloak path prefix
+
+Keycloak 17 (released April 2022) replaced the WildFly-based distribution
+with a Quarkus-based one and **dropped the `/auth/` path prefix** that was
+present in every earlier release. Both shapes show up in the wild, so the
+provisioning script and the auth-layer config both accept either:
+
+| Keycloak version       | Base URL shape                                          | `KEYCLOAK_PATH_PREFIX` |
+| ---------------------- | ------------------------------------------------------- | ---------------------- |
+| **>= 17** (Quarkus)    | `https://your-keycloak.example.com/realms/<name>`       | empty (default)        |
+| < 17 (WildFly, legacy) | `https://your-keycloak.example.com/auth/realms/<name>`  | `/auth`                |
+
+Every example in this document uses the modern (no-prefix) form. If you're
+on a legacy WildFly Keycloak, prepend `/auth` to every Keycloak URL — e.g.
+`https://your-keycloak.example.com/auth/realms/subscription-service/...`.
+The provisioning script accepts `KEYCLOAK_PATH_PREFIX=/auth` for that case.
 
 ## The realm
 
-| Property              | Value                                                                              |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| Realm name            | `subscription-service`                                                             |
-| Issuer URL            | `https://keycloak.bzonfhir.com/realms/subscription-service`                        |
-| Discovery document    | `https://keycloak.bzonfhir.com/realms/subscription-service/.well-known/openid-configuration` |
-| JWKS URL              | `https://keycloak.bzonfhir.com/realms/subscription-service/protocol/openid-connect/certs` |
-| Token endpoint        | `https://keycloak.bzonfhir.com/realms/subscription-service/protocol/openid-connect/token` |
-| Access token lifespan | 15 minutes                                                                         |
-| Refresh token lifespan| 30 minutes (M2M clients are configured not to use refresh tokens)                  |
-| SSL required          | `external` (HTTPS required for all non-localhost traffic)                          |
-
-> Note on path prefix: the Cloudflare-tunneled Keycloak instance currently
-> exposes its API under `/auth/` (legacy WildFly mount). The URLs above assume
-> the v23 path-style (no `/auth/`). If the realm is imported into the legacy
-> instance, prepend `/auth` to every Keycloak URL — e.g.
-> `https://keycloak.bzonfhir.com/auth/realms/subscription-service/...`. The
-> provisioning script (`scripts/keycloak/provision-realm.sh`) accepts a
-> `KEYCLOAK_PATH_PREFIX=/auth` env var for that case.
+| Property              | Value                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| Realm name            | `subscription-service`                                                                         |
+| Issuer URL            | `https://your-keycloak.example.com/realms/subscription-service`                                |
+| Discovery document    | `https://your-keycloak.example.com/realms/subscription-service/.well-known/openid-configuration` |
+| JWKS URL              | `https://your-keycloak.example.com/realms/subscription-service/protocol/openid-connect/certs` |
+| Token endpoint        | `https://your-keycloak.example.com/realms/subscription-service/protocol/openid-connect/token` |
+| Access token lifespan | 15 minutes                                                                                     |
+| Refresh token lifespan| 30 minutes (M2M clients are configured not to use refresh tokens)                              |
+| SSL required          | `external` (HTTPS required for all non-localhost traffic)                                      |
 
 The full realm definition lives at `keycloak/realms/subscription-service.json`
 and is intended to be imported via the Keycloak admin UI (Realm settings ->
-Action -> Partial import) or via `scripts/keycloak/provision-realm.sh`.
+Action -> Partial import) or via `scripts/keycloak/provision-realm.sh` (see
+[Provisioning the realm](#provisioning-the-realm) below).
 
 ## Scope catalog
 
@@ -63,44 +75,81 @@ parameter on the token request. New clients onboarded for external systems
 should follow least-privilege: assign only the scopes the integration actually
 needs.
 
+## Provisioning the realm
+
+`scripts/keycloak/provision-realm.sh` is idempotent — it logs in, GETs the
+realm, and only POSTs the import if the realm doesn't already exist.
+
+Modern (Quarkus) Keycloak, with secret automation:
+
+```bash
+KEYCLOAK_URL=https://your-keycloak.example.com \
+KEYCLOAK_ADMIN_USER=admin \
+KEYCLOAK_ADMIN_PASSWORD='<admin-password>' \
+KEYCLOAK_CLIENT_SECRET=$(openssl rand -hex 32) \
+  scripts/keycloak/provision-realm.sh
+```
+
+Legacy WildFly Keycloak (`/auth/` path prefix):
+
+```bash
+KEYCLOAK_URL=https://your-keycloak.example.com \
+KEYCLOAK_PATH_PREFIX=/auth \
+KEYCLOAK_ADMIN_USER=admin \
+KEYCLOAK_ADMIN_PASSWORD='<admin-password>' \
+KEYCLOAK_CLIENT_SECRET=$(openssl rand -hex 32) \
+  scripts/keycloak/provision-realm.sh
+```
+
+Dry-run mode (`--dry-run`) authenticates and probes the realm endpoint but
+skips the import POST — useful for confirming connectivity, credentials, and
+that `KEYCLOAK_PATH_PREFIX` is set correctly against a Keycloak you don't
+want to mutate.
+
+When `KEYCLOAK_CLIENT_SECRET` is set, the script substitutes the
+`CHANGE-ME-IN-DEPLOYMENT` placeholder onto a temp copy of the realm JSON
+before import. The committed JSON is never modified. When it is not set, the
+placeholder imports as-is and a warning is logged; rotate the secret in the
+admin UI before the realm sees any traffic.
+
 ## Obtaining a token (client_credentials)
 
-The example confidential client is `subscription-service-cli` with the
-placeholder secret `CHANGE-ME-IN-DEPLOYMENT`. After importing the realm, the
-operator rotates the secret to a real value (Admin UI -> Clients ->
-`subscription-service-cli` -> Credentials -> Regenerate).
+The example confidential client is `subscription-service-cli`. If you used
+`KEYCLOAK_CLIENT_SECRET` during provisioning, use that value below;
+otherwise rotate the `CHANGE-ME-IN-DEPLOYMENT` placeholder in the admin UI
+(Clients -> `subscription-service-cli` -> Credentials -> Regenerate) first.
 
 To obtain a bearer token via the OAuth2 `client_credentials` grant:
 
 ```bash
 curl -sS -X POST \
-  https://keycloak.bzonfhir.com/realms/subscription-service/protocol/openid-connect/token \
+  https://your-keycloak.example.com/realms/subscription-service/protocol/openid-connect/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=client_credentials' \
   -d 'client_id=subscription-service-cli' \
-  -d 'client_secret=CHANGE-ME-IN-DEPLOYMENT' \
+  -d "client_secret=${CLIENT_SECRET}" \
   -d 'scope=system/Subscription.crus system/Patient.r' \
   | jq -r .access_token
 ```
 
 That JWT goes in the `Authorization: Bearer <token>` header on every call to
-`https://subscription-service.bzonfhir.com/fhir/*`. Tokens expire after 15
-minutes; re-request rather than refreshing (M2M flow does not issue refresh
-tokens).
+`https://your-subscription-service.example.com/fhir/*`. Tokens expire after
+15 minutes; re-request rather than refreshing (M2M flow does not issue
+refresh tokens).
 
 A useful one-liner for capturing the token into a shell variable:
 
 ```bash
 TOKEN=$(curl -sS -X POST \
-  https://keycloak.bzonfhir.com/realms/subscription-service/protocol/openid-connect/token \
+  https://your-keycloak.example.com/realms/subscription-service/protocol/openid-connect/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=client_credentials' \
   -d 'client_id=subscription-service-cli' \
-  -d 'client_secret=CHANGE-ME-IN-DEPLOYMENT' \
+  -d "client_secret=${CLIENT_SECRET}" \
   | jq -r .access_token)
 
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  https://subscription-service.bzonfhir.com/fhir/metadata
+  https://your-subscription-service.example.com/fhir/metadata
 ```
 
 You can inspect the token at <https://jwt.io> or with `jq -R 'split(".")[1] |
@@ -147,22 +196,28 @@ controlling what we require on the subscriber side.
 
 ## Smoke-testing Keycloak reachability
 
-The shared Keycloak server should be reachable from any machine that will run
-the provisioning script. Quick sanity check against the master realm (which is
+The Keycloak server should be reachable from any machine that will run the
+provisioning script. Quick sanity check against the master realm (which is
 always present):
 
 ```bash
-curl -sS https://keycloak.bzonfhir.com/auth/realms/master/.well-known/openid-configuration \
+# Modern (Quarkus) Keycloak — no /auth/ prefix
+curl -sS https://your-keycloak.example.com/realms/master/.well-known/openid-configuration \
   | jq -r .issuer
-# Expected: http://keycloak.bzonfhir.com/auth/realms/master
+# Expected: https://your-keycloak.example.com/realms/master
+
+# Legacy WildFly Keycloak — prepend /auth
+curl -sS https://your-keycloak.example.com/auth/realms/master/.well-known/openid-configuration \
+  | jq -r .issuer
+# Expected: https://your-keycloak.example.com/auth/realms/master
 ```
 
-(Use `https://keycloak.bzonfhir.com/realms/master/.well-known/...` if the
-deployed Keycloak is the v23 path-style instance.)
+If that does not return JSON, the Keycloak server is unreachable — fix
+networking or the server itself before proceeding.
 
-If that does not return JSON, the Cloudflare tunnel to the-deploy-host is down — see
-`~/.claude/projects/-Users-bzimbelman-cz/memory/infrastructure.md` for the
-tunnel troubleshooting runbook.
+For a self-contained smoke test that spins up Keycloak in a container and
+runs the full provision -> token -> verify loop, see
+[`keycloak-quickstart.md`](./keycloak-quickstart.md).
 
 ## How the FHIR API enforces tokens (ticket #359)
 
@@ -216,9 +271,23 @@ tree).
 | Property                                            | Env var                                | Default                                                                                  |
 | --------------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `subscription-service.auth.enabled`                 | `SUBSCRIPTION_SERVICE_AUTH_ENABLED`    | `true`                                                                                   |
-| `subscription-service.auth.issuer`                  | `SUBSCRIPTION_SERVICE_AUTH_ISSUER`     | `https://keycloak.bzonfhir.com/auth/realms/subscription-service`                          |
-| `subscription-service.auth.jwks-url`                | `SUBSCRIPTION_SERVICE_AUTH_JWKS_URL`   | derived from issuer: `${issuer}/protocol/openid-connect/certs`                            |
+| `subscription-service.auth.issuer`                  | `SUBSCRIPTION_SERVICE_AUTH_ISSUER`     | **none — required when auth is enabled** (ticket #370). Container fails fast at startup. |
+| `subscription-service.auth.jwks-url`                | `SUBSCRIPTION_SERVICE_AUTH_JWKS_URL`   | derived from issuer: `${issuer}/protocol/openid-connect/certs`                           |
 | `subscription-service.auth.allow-anonymous-paths`   | (yaml list only)                       | `[/metadata, /.well-known/smart-configuration]`                                          |
+
+When `enabled=true` and `issuer` is empty, the Spring context refresh fails
+with:
+
+```
+subscription-service.auth.issuer is required when auth is enabled.
+Set SUBSCRIPTION_SERVICE_AUTH_ISSUER (e.g.,
+https://your-keycloak.example.com/realms/subscription-service) or set
+SUBSCRIPTION_SERVICE_AUTH_ENABLED=false for local dev.
+```
+
+The HAPI container exits non-zero and restarts in a loop — the docker-compose
+default for `restart:` is `unless-stopped`, so look for the message in
+`docker logs subscription-service-hapi`.
 
 ### Disabling for local development
 
@@ -262,3 +331,13 @@ hapi/
   v1 (matches the realm catalog above).
 - **JWT introspection** as a fallback for opaque tokens — Keycloak issues
   JWTs natively so no introspection round-trip is needed.
+
+## Reference deployment
+
+> The maintainer's instance runs at `https://keycloak.bzonfhir.com` (a
+> Cloudflare-tunneled, legacy WildFly-based Keycloak — set
+> `KEYCLOAK_PATH_PREFIX=/auth` when running the provisioning script
+> against it). The subscription-service deployment in front of it is at
+> `https://subscription-service.bzonfhir.com`. Everything else in this
+> document is provider-agnostic; this callout exists only so a reader who
+> stumbles into the maintainer's repo knows what the real URLs look like.
