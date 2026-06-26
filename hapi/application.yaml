@@ -21,8 +21,42 @@ management:
   endpoint:
     health:
       enabled: true
+      # Show per-indicator details in the body so probe consumers and
+      # operators can see WHICH indicator went DOWN (Epic #387, ticket #393).
+      show-details: always
+      # Disable Spring Boot 3.4+'s group-membership validation so the
+      # readiness group can list `authIssuer` + `jwks` even when auth is
+      # disabled (subscription-service.auth.enabled=false → those beans
+      # don't exist). With validation on, the application context fails
+      # to start with "Included health contributor 'authIssuer' in group
+      # 'readiness' does not exist". The default Spring Boot behaviour
+      # when a referenced indicator is absent at request time is to
+      # simply omit it from the response — which is what we want here:
+      # the readiness group degrades gracefully from "ping+db+auth+jwks"
+      # to "ping+db" when the auth layer is turned off. Ticket #393.
+      validate-group-membership: false
       probes:
+        # Exposes /actuator/health/liveness and /actuator/health/readiness.
         enabled: true
+      group:
+        # Liveness probe (k8s restarts a DOWN pod). Only JVM-internal stuff
+        # — `ping` always returns UP, proving the actuator endpoint itself
+        # is responsive. We deliberately exclude `db` because if HAPI's
+        # local Postgres pool is unhealthy, a JVM restart can't recover
+        # it without manual intervention anyway (Postgres might be the
+        # one that's actually broken). The readiness probe below catches
+        # DB outages and removes the pod from rotation; liveness stays
+        # the most narrow possible. Ticket #393.
+        liveness:
+          include: ping
+        # Readiness probe (k8s removes a DOWN pod from Service endpoints
+        # but leaves it running). Full health, including `authIssuer` +
+        # `jwks` from the subscription-service-hapi-auth JAR. When auth
+        # is disabled those two indicators are absent and Spring Boot
+        # simply omits them from the response — see validate-group-membership
+        # note above. Ticket #393.
+        readiness:
+          include: ping, db, authIssuer, jwks
 
 spring:
   main:
