@@ -115,6 +115,19 @@ spec:
             # local debugging; default is the compact prod layout.
             - name: SPRING_PROFILES_ACTIVE
               value: {{ .Values.interfaceEngine.profiles | default "" | quote }}
+            # OpenTelemetry distributed tracing (Epic #387, ticket #394). The
+            # SDK reads these env vars directly via
+            # AutoConfiguredOpenTelemetrySdk; we don't need a config-file
+            # mapping. When `otel.enabled: false` (the default), the SDK is
+            # disabled and span recording becomes a no-op — no overhead.
+            - name: OTEL_SDK_DISABLED
+              value: {{ not .Values.otel.enabled | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | default "" | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: subscription-service-interface-engine
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.otel.resourceAttributes | default "" | quote }}
           # Liveness vs readiness split (Epic #387, ticket #393).
           #
           # Liveness (kubelet restarts a DOWN pod): only JVM-internal stuff —
