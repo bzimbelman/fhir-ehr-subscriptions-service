@@ -105,6 +105,16 @@ spec:
               value: {{ .Values.interfaceEngine.worker.retry.backoffFactor | default "2.0" | quote }}
             - name: IPF_DLQ_LOG_LEVEL
               value: {{ .Values.interfaceEngine.worker.retry.dlqLogLevel | default "WARN" | quote }}
+            # JSON log layout / pretty-print profile (Epic #387, ticket #388).
+            # The interface-engine's logback config lives at
+            # `interface-engine/src/main/resources/logback-spring.xml` and
+            # is loaded automatically by Spring Boot — no LOGGING_CONFIG
+            # needed (unlike the HAPI side, where the JAR-bundled config
+            # has a unique name to dodge the upstream image's logback.xml).
+            # SPRING_PROFILES_ACTIVE=dev enables pretty-printed JSON for
+            # local debugging; default is the compact prod layout.
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ .Values.interfaceEngine.profiles | default "" | quote }}
           readinessProbe:
             httpGet:
               path: /actuator/health

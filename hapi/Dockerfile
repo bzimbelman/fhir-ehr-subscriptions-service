@@ -72,3 +72,13 @@ FROM hapiproject/hapi:v7.6.0 AS runtime
 # JVM only needs to read, world-readable (the default) is fine.
 COPY --from=build /work/target/subscription-service-hapi-auth-*.jar \
      /app/extra-classes/subscription-service-hapi-auth.jar
+
+# Compile-scope runtime dependencies that aren't already in the HAPI base
+# image — currently logstash-logback-encoder (Epic #387, ticket #388),
+# which the bundled `logback-spring-subsvc.xml` references for JSON log
+# output. The maven-dependency-plugin step in auth/pom.xml's `package`
+# phase populates /work/target/runtime-deps/ with these JARs.
+#
+# If this layer ends up empty (no `compile`-scope deps), the COPY succeeds
+# but writes nothing — Dockerfile COPY accepts an empty source directory.
+COPY --from=build /work/target/runtime-deps/ /app/extra-classes/

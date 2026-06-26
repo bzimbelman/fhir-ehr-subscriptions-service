@@ -103,6 +103,7 @@ open class IngestPersistService(
         messageType: String,
         rawMessage: String,
         rawContentType: String,
+        correlationId: String? = null,
     ): IngestedMessage {
         return try {
             self.insertReceived(
@@ -112,6 +113,7 @@ open class IngestPersistService(
                 messageType = messageType,
                 rawMessage = rawMessage,
                 rawContentType = rawContentType,
+                correlationId = correlationId,
             )
         } catch (ex: DataIntegrityViolationException) {
             // Distinguish "duplicate control id" (benign — sender retry) from
@@ -159,6 +161,7 @@ open class IngestPersistService(
         messageType: String,
         rawMessage: String,
         rawContentType: String,
+        correlationId: String? = null,
     ): IngestedMessage {
         val candidate = IngestedMessage(
             sourceProtocol = sourceProtocol,
@@ -168,6 +171,7 @@ open class IngestPersistService(
             rawMessage = rawMessage,
             rawContentType = rawContentType,
             status = IngestedMessageStatus.RECEIVED,
+            correlationId = correlationId,
         )
         return repository.saveAndFlush(candidate)
     }

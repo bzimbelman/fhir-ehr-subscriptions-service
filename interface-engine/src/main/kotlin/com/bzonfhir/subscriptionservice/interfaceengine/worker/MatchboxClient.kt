@@ -1,6 +1,7 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.worker
 
 import ca.uhn.fhir.context.FhirContext
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
 import org.hl7.fhir.r4.model.Bundle
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
@@ -71,6 +72,11 @@ class MatchboxClientImpl(
             // b81da654's IngestRoutes.kt prepareMatchboxCall()).
             contentType = MediaType.parseMediaType("x-application/hl7-v2+er7")
             accept = listOf(MediaType.parseMediaType("application/fhir+json"))
+            // Forward the current MDC correlation_id (set by the worker
+            // in processOne before invoking us) so matchbox can log
+            // server-side with the same id we use, and so any future
+            // matchbox->HAPI propagation continues the chain.
+            CorrelationId.current()?.let { set(CorrelationId.HEADER, it) }
         }
         val request = HttpEntity(rawHl7, headers)
 

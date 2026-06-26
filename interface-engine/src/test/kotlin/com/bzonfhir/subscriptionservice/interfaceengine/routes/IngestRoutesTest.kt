@@ -202,6 +202,14 @@ class IngestRoutesTest {
         assertThat(row.attemptCount).isEqualTo(0)
         assertThat(row.deliveredAt).isNull()
         assertThat(row.lastError).isNull()
+        // Correlation id (Epic #387, ticket #388): server-assigned at
+        // receive time; HL7 v2 has no transport-level header, so the
+        // route generates a UUID. We don't pin the EXACT value (it's
+        // random), just that it looks like a UUID v4.
+        assertThat(row.correlationId)
+            .describedAs("correlation_id should be a UUID set by the receive route")
+            .isNotNull()
+            .matches("[0-9a-fA-F-]{36}")
     }
 
     @Test

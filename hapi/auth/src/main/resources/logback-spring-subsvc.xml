@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for the subscription-service-hapi-auth JAR
+  (Epic #387, ticket #388).
+
+  Produces JSON-formatted logs from the HAPI FHIR pod identical in shape to
+  what the interface-engine emits — same `@timestamp`, `level`, `logger_name`,
+  `message`, `thread_name`, `correlation_id`, `schema_version`, `stack_trace`
+  fields. The two services' logs concatenate into one trace when filtered by
+  correlation_id.
+
+  ## Why a unique file name (NOT logback.xml / logback-spring.xml)
+
+  The upstream `hapiproject/hapi:v7.6.0` image ships its own logback config
+  inside the bundled `main.war`. PropertiesLauncher's loader path puts the
+  WAR ahead of `/app/extra-classes/`, so a logback.xml or logback-spring.xml
+  at the root of THIS jar would be shadowed by the upstream one. The
+  solution: ship under a unique name (`logback-spring-subsvc.xml`) and point
+  Spring Boot at it explicitly via the `LOGGING_CONFIG` env var (which the
+  HAPI Deployment sets to `classpath:logback-spring-subsvc.xml`). That makes
+  the override surgical — no chance of accidentally clobbering a
+  configuration the upstream image relies on at boot.
+
+  ## Schema (matches interface-engine — see docs/observability/log-schema.md)
+
+    @timestamp      REQUIRED, ISO 8601 UTC
+    level           REQUIRED
+    logger_name     REQUIRED
+    message         REQUIRED
+    thread_name     OPTIONAL
+    correlation_id  REQUIRED on per-request log lines (MDC)
+    schema_version  REQUIRED, currently "1.0"
+    stack_trace     REQUIRED when an exception is logged
+    mdc.*           OPTIONAL extension
+-->
+<configuration scan="false">
+
+    <property name="LOG_SCHEMA_VERSION" value="1.0" />
+
+    <!-- Prod profile: compact JSON, one line per record. -->
+    <springProfile name="!dev">
+        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                <customFields>{"schema_version":"${LOG_SCHEMA_VERSION}"}</customFields>
+                <includeContext>false</includeContext>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!-- Dev profile: pretty-printed JSON. -->
+    <springProfile name="dev">
+        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                <customFields>{"schema_version":"${LOG_SCHEMA_VERSION}"}</customFields>
+                <includeContext>false</includeContext>
+                <jsonGeneratorDecorator
+                    class="net.logstash.logback.decorate.PrettyPrintingJsonGeneratorDecorator" />
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!-- Quiet HAPI's chatty boot loggers; matches the upstream image's
+         default tuning. -->
+    <logger name="org.springframework" level="INFO" />
+    <logger name="ca.uhn.fhir" level="INFO" />
+    <logger name="com.bzonfhir.subscriptionservice" level="INFO" />
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+    </root>
+
+</configuration>
