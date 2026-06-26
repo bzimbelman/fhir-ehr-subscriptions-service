@@ -29,8 +29,27 @@ data:
       endpoint:
         health:
           enabled: true
+          # Show per-indicator details so probe consumers / operators can
+          # see WHICH indicator failed (Epic #387, ticket #393).
+          show-details: always
+          # Allow `authIssuer` + `jwks` to be listed in the readiness
+          # group even when auth is disabled (those bean don't exist when
+          # subscription-service.auth.enabled=false). See application.yaml
+          # for the full reasoning.
+          validate-group-membership: false
           probes:
             enabled: true
+          group:
+            # Liveness probe: only the trivial `ping` (proves the actuator
+            # itself is responsive). DB issues are caught by readiness; a
+            # JVM restart can't fix Postgres being down anyway.
+            liveness:
+              include: ping
+            # Readiness probe: full health, including the authIssuer + jwks
+            # indicators from the subscription-service-hapi-auth JAR. Missing
+            # indicators (auth disabled) are silently omitted at request time.
+            readiness:
+              include: ping, db, authIssuer, jwks
     spring:
       main:
         allow-circular-references: true

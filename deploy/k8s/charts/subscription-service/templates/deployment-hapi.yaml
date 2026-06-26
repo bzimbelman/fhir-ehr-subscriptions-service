@@ -172,22 +172,28 @@ spec:
             - name: healthcheck
               mountPath: /app/healthcheck
               readOnly: true
+          # Liveness vs readiness split (Epic #387, ticket #393). Replaces
+          # the JEP-330 exec helper that lived here through epic #378. The
+          # subscription-service-hapi-auth JAR contributes `authIssuer`
+          # + `jwks` health indicators on top of Spring Boot's built-in
+          # `ping` and `db`; the two probe groups are defined under
+          # `management.endpoint.health.group` in the HAPI ConfigMap.
+          #
+          # Liveness: only `ping`. Slow + tolerant timings.
+          # Readiness: `ping` + `db` + `authIssuer` + `jwks`. Faster +
+          # stricter timings so a dead IdP / DB pulls us out of rotation.
           readinessProbe:
-            # Probe HAPI's CapabilityStatement via the JEP-330 helper. Java
-            # is the only binary present in the distroless image.
-            exec:
-              command:
-                - java
-                - /app/healthcheck/HapiHealthCheck.java
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
             initialDelaySeconds: {{ .Values.hapi.healthcheck.initialDelaySeconds }}
             periodSeconds: {{ .Values.hapi.healthcheck.periodSeconds }}
             timeoutSeconds: {{ .Values.hapi.healthcheck.timeoutSeconds }}
             failureThreshold: {{ .Values.hapi.healthcheck.failureThreshold }}
           livenessProbe:
-            exec:
-              command:
-                - java
-                - /app/healthcheck/HapiHealthCheck.java
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
             initialDelaySeconds: 180
             periodSeconds: 30
             timeoutSeconds: 10
