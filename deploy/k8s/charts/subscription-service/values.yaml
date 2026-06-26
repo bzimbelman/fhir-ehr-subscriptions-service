@@ -349,6 +349,17 @@ featureToggles:
     mode: disabled       # disabled | enabled
     tenantClaim: tenant
     testMode: false      # NEVER true outside the e2e isolation suite.
+  # FHIR AuditEvent generator (ticket #391, Epic #387). Every interesting REST
+  # operation produces an AuditEvent resource persisted back into HAPI so the
+  # audit trail is queryable via `GET /fhir/AuditEvent`. `enabled` defaults to
+  # `true` (production paranoia). `captureReads` / `captureSearch` are off by
+  # default — read traffic dwarfs write traffic; turn them on per deployment if
+  # compliance requires it.
+  audit:
+    enabled: true
+    captureReads: false
+    captureSearch: false
+    retentionDays: 365   # Informational only — purging is a separate job.
 
 # ---------------------------------------------------------------------------
 # FHIR HTTPS ingress. Disabled by default; enable per environment.
