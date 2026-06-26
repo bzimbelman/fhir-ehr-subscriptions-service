@@ -90,8 +90,22 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            {{- if .Values.externalPostgres.enabled }}
+            # External managed Postgres (ticket #416). The Secret named in
+            # externalPostgres.passwordSecret must already exist in this
+            # namespace with the password under the key "password".
             - name: SPRING_DATASOURCE_URL
-              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.postgres.database }}
+              value: jdbc:postgresql://{{ .Values.externalPostgres.host }}:{{ .Values.externalPostgres.port }}/{{ .Values.externalPostgres.database }}?sslmode={{ .Values.externalPostgres.sslMode }}
+            - name: SPRING_DATASOURCE_USERNAME
+              value: {{ .Values.externalPostgres.user | quote }}
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.externalPostgres.passwordSecret }}
+                  key: password
+            {{- else }}
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://{{ include "subscription-service.postgres.fullname" . }}:{{ .Values.postgres.service.port }}/{{ .Values.postgres.database }}?sslmode=disable
             - name: SPRING_DATASOURCE_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -102,6 +116,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "subscription-service.postgres.fullname" . }}
                   key: POSTGRES_PASSWORD
+            {{- end }}
             - name: SPRING_DATASOURCE_DRIVER_CLASS_NAME
               value: org.postgresql.Driver
             - name: SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT

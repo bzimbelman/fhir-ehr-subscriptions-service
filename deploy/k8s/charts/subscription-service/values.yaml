@@ -46,6 +46,10 @@ imagePullSecrets: []
 
 # ---------------------------------------------------------------------------
 # Postgres (HAPI's datastore). StatefulSet + PVC.
+#
+# Ignored when `externalPostgres.enabled: true` (ticket #416) — the chart
+# then skips the StatefulSet/Service/Secret and HAPI connects to the
+# managed Postgres described in the externalPostgres block below.
 # ---------------------------------------------------------------------------
 postgres:
   user: hapi
@@ -53,8 +57,7 @@ postgres:
   # install and stores it in the postgres Secret. On `helm upgrade` the
   # generated password is preserved (read back from the existing Secret).
   # To set it explicitly, supply a value here or use an existing Secret —
-  # see externalPostgres.passwordSecret in the values reference (added in
-  # ticket #416).
+  # see externalPostgres.passwordSecret below.
   password: ""
   database: hapi
   storage:
@@ -69,6 +72,42 @@ postgres:
       memory: 1Gi
   service:
     port: 5432
+
+# ---------------------------------------------------------------------------
+# External Postgres (RDS, Cloud SQL, Azure DB for PostgreSQL, on-prem, etc.)
+#
+# When `enabled: true`, the chart SKIPS the in-cluster StatefulSet, Service,
+# PVC, and Secret. HAPI is configured to connect to the host below, pulling
+# the password from `passwordSecret` (which must exist before `helm install`).
+#
+# Schema note: HAPI auto-creates its tables on first connect. The DB user
+# must therefore have CREATE privileges on the target database. On managed
+# DBs that means: create the database, create a role, grant ALL on the new
+# database to that role, and use it here. RDS / Cloud SQL operator UIs all
+# expose this.
+# ---------------------------------------------------------------------------
+externalPostgres:
+  enabled: false
+  host: ""                       # e.g. subsvc-prod.abc123.us-east-1.rds.amazonaws.com
+  port: 5432
+  database: hapi
+  user: hapi
+  # Name of an EXISTING Secret in this release's namespace holding the
+  # Postgres password under the key `password`. Create it before install:
+  #
+  #   kubectl create secret generic my-postgres-pw \
+  #     --from-literal=password='<the-password>' \
+  #     --namespace=<release-namespace>
+  #
+  # Then set passwordSecret: my-postgres-pw here.
+  passwordSecret: ""
+  # SSL mode for HAPI's JDBC connection. Most managed Postgres services
+  # require TLS; pick the strictest level your cluster's CA bundle supports.
+  #   disable     | no TLS — only OK for local dev
+  #   require     | TLS, no cert verification (default; widely compatible)
+  #   verify-ca   | TLS + verify server cert against system CA bundle
+  #   verify-full | TLS + verify hostname matches cert SAN
+  sslMode: require
 
 # ---------------------------------------------------------------------------
 # HAPI FHIR server.
