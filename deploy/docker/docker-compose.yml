@@ -60,7 +60,11 @@ services:
       # dev without a Keycloak. Default is `true`; flip to `false` via
       # .env or by exporting SUBSCRIPTION_SERVICE_AUTH_ENABLED=false.
       SUBSCRIPTION_SERVICE_AUTH_ENABLED: ${SUBSCRIPTION_SERVICE_AUTH_ENABLED:-true}
-      SUBSCRIPTION_SERVICE_AUTH_ISSUER: ${SUBSCRIPTION_SERVICE_AUTH_ISSUER:-https://keycloak.bzonfhir.com/auth/realms/subscription-service}
+      # No baked-in default — set SUBSCRIPTION_SERVICE_AUTH_ISSUER in .env. When
+      # AUTH_ENABLED=true and ISSUER is empty, HAPI fails fast at startup with a
+      # documented error (ticket #370). For local dev without Keycloak, set
+      # SUBSCRIPTION_SERVICE_AUTH_ENABLED=false instead.
+      SUBSCRIPTION_SERVICE_AUTH_ISSUER: ${SUBSCRIPTION_SERVICE_AUTH_ISSUER:-}
       SUBSCRIPTION_SERVICE_AUTH_JWKS_URL: ${SUBSCRIPTION_SERVICE_AUTH_JWKS_URL:-}
     volumes:
       - ../../hapi/application.yaml:/app/config/application.yaml:ro
