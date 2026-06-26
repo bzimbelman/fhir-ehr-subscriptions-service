@@ -75,12 +75,29 @@ dependencies {
     implementation("ca.uhn.hapi.fhir:hapi-fhir-client:$hapiFhirVersion")
     implementation("ca.uhn.hapi.fhir:hapi-fhir-structures-r4:$hapiFhirVersion")
 
+    // Postgres-backed durable inbound store (Epic #378). The interface engine
+    // owns its own database ("ipf" by default) on the same Postgres SERVER
+    // that HAPI uses, but a separate Spring datasource + Flyway migration
+    // history. Subsequent stories add JPA repositories on top of this base.
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    implementation("org.postgresql:postgresql:42.7.4")
+    implementation("org.flywaydb:flyway-core:10.20.1")
+    implementation("org.flywaydb:flyway-database-postgresql:10.20.1")
+
     // Tests.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.apache.camel:camel-test-spring-junit5:$camelVersion")
     testImplementation("org.apache.camel:camel-test-junit5:$camelVersion")
     testImplementation("org.awaitility:awaitility:4.2.2")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
+    // Testcontainers for Postgres-backed Flyway / JPA tests. Optional —
+    // skipped if Docker isn't reachable; the Spring context tests still
+    // run against H2 in-memory (Flyway has a PostgreSQL-flavor SQL we
+    // gate by profile).
+    testImplementation("org.testcontainers:testcontainers:1.20.3")
+    testImplementation("org.testcontainers:postgresql:1.20.3")
+    testImplementation("org.testcontainers:junit-jupiter:1.20.3")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {

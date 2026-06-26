@@ -128,6 +128,26 @@ externalPostgres:
   sslMode: require
 
 # ---------------------------------------------------------------------------
+# Interface-engine's own Postgres database (Epic #378). Lives on the same
+# Postgres server as HAPI but is a separate database + user. The init
+# script in templates/configmap-postgres-init.yaml creates the role + DB
+# on the Postgres StatefulSet's first boot. The password lives in a
+# separate Secret (templates/secret-ipf-db.yaml) with the same
+# auto-generate-and-preserve semantics as the HAPI postgres Secret.
+#
+# Skipped when externalPostgres.enabled. If you want a managed Postgres
+# for the interface engine too, override IPF_DB_* env vars on the
+# interface-engine Deployment directly.
+# ---------------------------------------------------------------------------
+interfaceEngineDb:
+  user: ipf
+  database: ipf
+  # When empty, the chart generates a random 32-char password on first
+  # install and stores it in the <release>-ipf-db Secret. Preserved across
+  # `helm upgrade`. Override here only for explicit test/dev passwords.
+  password: ""
+
+# ---------------------------------------------------------------------------
 # HAPI FHIR server.
 # ---------------------------------------------------------------------------
 hapi:
