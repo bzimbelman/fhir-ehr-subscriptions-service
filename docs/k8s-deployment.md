@@ -182,6 +182,27 @@ The same pattern works for any dev or production cluster:
 
 5. Configure auth (`featureToggles.auth.issuer` -> `https://your-keycloak.example.com/realms/subscription-service`) and feature toggles per environment.
 
+### TLS via cert-manager (ticket #415)
+
+If your cluster runs [cert-manager](https://cert-manager.io/) with a `ClusterIssuer` configured (typical on managed clusters), the chart can auto-provision the Ingress TLS cert via ACME / Let's Encrypt. The chart **does not install cert-manager** — that's a platform-level prerequisite — but once it's present you just flip a toggle.
+
+```yaml
+# values-dev.yaml (or values-prod.yaml)
+ingress:
+  enabled: true
+  className: nginx                          # or traefik, alb, etc.
+  hosts:
+    - host: subscription-service.example.com
+      paths: [{ path: /, pathType: Prefix }]
+  certManager:
+    enabled: true
+    clusterIssuer: letsencrypt-prod         # name of an existing ClusterIssuer
+```
+
+`helm upgrade --install` then renders an Ingress with `cert-manager.io/cluster-issuer: letsencrypt-prod` plus a `tls` block pointing at `<release>-hapi-tls`. cert-manager watches the Ingress, requests a cert from Let's Encrypt, and writes it to that Secret in the same namespace; the ingress controller picks up the new cert automatically.
+
+Use `issuer:` instead of `clusterIssuer:` if you've created a namespace-scoped `Issuer`. To bring your own Secret (sealed-secrets, external-secrets, etc.), leave `certManager.enabled: false` and populate `ingress.tls` directly — see the chart [README "TLS (cert-manager)"](../deploy/k8s/charts/subscription-service/README.md) section for the trade-off.
+
 ---
 
 ## Troubleshooting
