@@ -91,6 +91,20 @@ spec:
               value: {{ .Values.interfaceEngine.worker.batchSize | default 10 | quote }}
             - name: IPF_WORKER_TRANSFORMING_STALE_SECONDS
               value: {{ .Values.interfaceEngine.worker.transformingStaleSeconds | default 60 | quote }}
+            # Retry policy (Epic #378, ticket #383). After
+            # `retry.maxAttempts` failures a row hits DEAD_LETTER; until
+            # then each failure schedules a backoff retry. See
+            # interfaceEngine.worker.retry in values.yaml.
+            - name: IPF_MAX_ATTEMPTS
+              value: {{ .Values.interfaceEngine.worker.retry.maxAttempts | default 5 | quote }}
+            - name: IPF_BACKOFF_BASE_MS
+              value: {{ .Values.interfaceEngine.worker.retry.backoffBaseMs | default 1000 | quote }}
+            - name: IPF_BACKOFF_MAX_MS
+              value: {{ .Values.interfaceEngine.worker.retry.backoffMaxMs | default 300000 | quote }}
+            - name: IPF_BACKOFF_FACTOR
+              value: {{ .Values.interfaceEngine.worker.retry.backoffFactor | default "2.0" | quote }}
+            - name: IPF_DLQ_LOG_LEVEL
+              value: {{ .Values.interfaceEngine.worker.retry.dlqLogLevel | default "WARN" | quote }}
           readinessProbe:
             httpGet:
               path: /actuator/health
