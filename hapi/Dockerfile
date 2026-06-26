@@ -30,7 +30,7 @@ WORKDIR /work
 # Optional corporate-MITM CA injection. Off by default. To use:
 #   cp ~/cz/.netskope-ca/full-chain.pem hapi/ca-cert/cert.pem
 #   docker build -t subscription-service/hapi:dev hapi/
-# Mirrors the pattern in ipf-app/Dockerfile so devs use the same workflow.
+# Mirrors the pattern in interface-engine/Dockerfile so devs use the same workflow.
 # Files in /usr/local/share/ca-certificates are picked up by Debian's
 # update-ca-certificates AND by Java's `cacerts` (via the keytool import).
 COPY ca-cert/ /tmp/ca-cert/
