@@ -51,10 +51,16 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-hapi}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: ca.uhn.fhir.jpa.model.dialect.HapiFhirPostgresDialect
-      # Feature toggles — stubs today, wired up in follow-up tickets (#367-#369).
+      # Feature toggles. Validation/channel-security are stubs today (#367, #368);
+      # multi-tenancy is wired up by ticket #369 — see docs/multi-tenancy.md.
       SUBSCRIPTION_SERVICE_VALIDATION_MODE: ${SUBSCRIPTION_SERVICE_VALIDATION_MODE:-off}
       SUBSCRIPTION_SERVICE_CHANNEL_SECURITY: ${SUBSCRIPTION_SERVICE_CHANNEL_SECURITY:-strict}
       SUBSCRIPTION_SERVICE_MULTITENANCY: ${SUBSCRIPTION_SERVICE_MULTITENANCY:-disabled}
+      SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM:-tenant}
+      # TEST ONLY — when `true`, the partition interceptor reads the tenant from
+      # the `X-Test-Tenant` HTTP header instead of the JWT. Used by the e2e
+      # isolation suite. Never set this on a production deployment.
+      SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE:-false}
       # Auth toggle (#359). When `false`, the auth auto-configuration short-
       # circuits and HAPI behaves like the upstream image — useful for local
       # dev without a Keycloak. Default is `true`; flip to `false` via
