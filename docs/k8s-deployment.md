@@ -182,6 +182,8 @@ The same pattern works for any dev or production cluster:
 
 5. Configure auth (`featureToggles.auth.issuer` -> `https://your-keycloak.example.com/realms/subscription-service`) and feature toggles per environment.
 
+6. **For cloud deployments, point HAPI at a managed Postgres** (RDS, Cloud SQL, Azure DB for PostgreSQL, etc.) rather than running the in-cluster StatefulSet. This is the expected production path: managed services give you automated backups, point-in-time recovery, HA, and patch management out of the box. Flip `externalPostgres.enabled: true` in your values and pre-create the password Secret as described in the chart README's [External Postgres](../deploy/k8s/charts/subscription-service/README.md#external-postgres-ticket-416) section. The chart will skip its own Postgres StatefulSet/Service/Secret and wire HAPI to the host you specify.
+
 ---
 
 ## Troubleshooting
