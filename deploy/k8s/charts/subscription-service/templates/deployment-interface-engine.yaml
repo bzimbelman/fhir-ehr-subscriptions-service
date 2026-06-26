@@ -36,7 +36,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "interfaceEngine") | nindent 8 }}
       containers:
         - name: interface-engine
           image: "{{ .Values.image.interfaceEngine.repository }}:{{ .Values.image.interfaceEngine.tag }}"
@@ -74,7 +74,7 @@ spec:
           resources:
             {{- toYaml .Values.interfaceEngine.resources | nindent 12 }}
           securityContext:
-            {{- toYaml .Values.securityContext | nindent 12 }}
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "interfaceEngine") | nindent 12 }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

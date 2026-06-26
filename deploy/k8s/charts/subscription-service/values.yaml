@@ -69,6 +69,24 @@ postgres:
       memory: 1Gi
   service:
     port: 5432
+  # `postgres:16-alpine` runs as UID 70 (the alpine `postgres` user).
+  # fsGroup: 70 makes the PVC mount writable by the entrypoint's chown of
+  # PGDATA. Override here (not at chart level) so other workloads stay on
+  # their own UIDs.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+    runAsNonRoot: true
+    runAsUser: 70
 
 # ---------------------------------------------------------------------------
 # HAPI FHIR server.
@@ -107,6 +125,22 @@ hapi:
     periodSeconds: 10
     timeoutSeconds: 10
     failureThreshold: 30
+  # `hapiproject/hapi:v7.6.0` is a distroless image running as `nonroot`
+  # (UID 65532). fsGroup matches so the emptyDir for IGs is readable.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+    runAsNonRoot: true
+    runAsUser: 65532
 
 # ---------------------------------------------------------------------------
 # Matchbox (StructureMap engine).
@@ -130,6 +164,21 @@ matchbox:
       version: "1.0.0"
   igRegistry: https://packages.fhir.org
   igFetcherInsecure: false
+  # `ahdis/matchbox:v3.9.13` runs as USER `matchbox` (UID 1000).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+    runAsNonRoot: true
+    runAsUser: 1000
 
 # ---------------------------------------------------------------------------
 # Interface engine — Spring Boot + IPF (HL7 MLLP listener + Camel router).
@@ -157,6 +206,21 @@ interfaceEngine:
     limits:
       cpu: "1"
       memory: 1Gi
+  # interface-engine/Dockerfile pins USER `app` (UID 10001).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+    runAsNonRoot: true
+    runAsUser: 10001
 
 # ---------------------------------------------------------------------------
 # Feature toggles. These map 1:1 to the env vars HAPI reads. See
@@ -255,6 +319,49 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 podAnnotations: {}
+
+# ---------------------------------------------------------------------------
+# Security contexts (Pod Security Standards `restricted`-compatible).
+#
+# Defaults below satisfy the `restricted` PSA profile (the strictest of the
+# three: privileged | baseline | restricted) so the chart installs cleanly on
+# namespaces labeled `pod-security.kubernetes.io/enforce=restricted`. GKE
+# Autopilot, OpenShift, and many hardened production clusters enforce this
+# profile by default. See:
+#   https://kubernetes.io/docs/concepts/security/pod-security-standards/
+#
+# Chart-level `podSecurityContext` / `securityContext` are the BASE: every
+# Deployment / StatefulSet starts from these. Per-workload overrides (e.g.
+# `hapi.podSecurityContext`) deep-merge on top so each workload can use the
+# UID its image actually expects.
+#
+# Why the per-workload overrides exist:
+#   - HAPI's upstream `hapiproject/hapi:v7.6.0` is distroless with USER 65532
+#   - Matchbox's `ahdis/matchbox:v3.9.13` runs as USER 1000 (`matchbox`)
+#   - Postgres's `postgres:16-alpine` runs as USER 70 (`postgres`)
+#   - Interface engine builds USER 10001 (`app`) in interface-engine/Dockerfile
+#   - The IG-fetcher initContainer (`curlimages/curl`) runs as 100:101
+#
+# To LOOSEN for debugging (e.g. exec a shell as root), override on the CLI:
+#   helm upgrade ... --set podSecurityContext.runAsNonRoot=false \
+#                    --set securityContext.allowPrivilegeEscalation=true
+# Don't do that in production. The default is correct.
+# ---------------------------------------------------------------------------
 podSecurityContext:
-  runAsNonRoot: false
-securityContext: {}
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  # readOnlyRootFilesystem stays false because HAPI / IPF / Matchbox all write
+  # to /tmp (JVM scratch, Tomcat work dirs). To turn it on, mount tmpfs/emptyDir
+  # at /tmp and any other writable paths the JVMs need.
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+  runAsNonRoot: true
+  runAsUser: 1000
