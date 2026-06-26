@@ -40,3 +40,8 @@ featureToggles:
 
 networkPolicy:
   enabled: false
+
+# PDBs ON in dev/prod clusters: real k8s ships a PDB controller and we want
+# voluntary-eviction protection during node drains / cluster upgrades.
+podDisruptionBudgets:
+  enabled: true
