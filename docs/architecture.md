@@ -73,12 +73,20 @@ We will NOT run on R5 today. We will revisit when US Core 8.x publishes on R5 an
 
 ## Authentication & authorization
 
-**Decision: Reuse the existing Keycloak instance at `keycloak.bzonfhir.com`.** (v1, will use any oauth provider in future).
+**Decision: Any OIDC-conformant identity provider.** (Ticket #372 generalized
+this from the original Keycloak-only design.) The HAPI auth layer
+(`OidcJwtAuthenticationInterceptor`) is a pure JWT/JWKS validator with no
+provider-specific code paths.
 
 Approach:
 
-- Add a new realm (or new clients in an existing realm) for the subscription service.
-- HAPI FHIR validates bearer tokens via JWKS against the Keycloak realm's `.well-known/openid-configuration`.
+- The operator picks whichever OIDC IdP they already operate — Keycloak,
+  Auth0, Okta, Azure AD, AWS Cognito, Authentik, etc. — and points HAPI
+  at it via `SUBSCRIPTION_SERVICE_AUTH_ISSUER` (and, where the JWKS path
+  isn't Keycloak-shaped, `SUBSCRIPTION_SERVICE_AUTH_JWKS_URL`).
+- HAPI FHIR validates bearer tokens via JWKS against the IdP's
+  `.well-known/openid-configuration` (resolved by Nimbus JOSE+JWT, which
+  caches and refreshes the keys on its own schedule).
 - Token modes:
   - **Client credentials** (machine-to-machine) for systems that register Subscriptions, post bundles, or read resources programmatically. Each external system gets its own client + secret.
   - **SMART on FHIR / authorization code** (user-attributed) for any UI that needs to act on behalf of a clinician or patient. Optional; not required for the first cut.
@@ -88,8 +96,11 @@ Approach:
 What we explicitly do NOT want:
 
 - Wide-open FHIR endpoints in any environment.
-- HAPI's built-in basic auth — Keycloak owns identity.
+- HAPI's built-in basic auth — the IdP owns identity.
 - Per-service ad-hoc auth (e.g., a static API key just for this service).
+
+See [`docs/auth.md`](auth.md) for the full provider-agnostic contract and
+per-IdP recipes (Keycloak, Auth0, Okta, Authentik).
 
 ---
 
@@ -154,7 +165,7 @@ Approach:
 - **Disabled mode** — all requests resolve to HAPI's `DEFAULT` partition. URLs look like `/fhir/Patient/123`. From a subscriber's perspective the server is single-tenant and partitions are invisible. This is the model (1) and (4) shape.
 - **Enabled mode** — a small `Interceptor` (`TenantPartitionInterceptor` in `com.bzonfhir.subscriptionservice.multitenancy`) reads a `tenant` claim from the validated JWT and sets the HAPI partition context for the request. Resources, Subscriptions, and notifications are partition-scoped automatically — HAPI does the work. Tenants cannot see each other's resources, period. This is the model (2) and (3) shape.
 - The FHIR base URL shape is the same in both modes (`/fhir/Patient/123`). The starter's URL-based tenant strategy (`/fhir/{tenant}/Patient/...`) is explicitly unregistered at boot; the partition comes from the JWT, never from the URL path.
-- Tenant provisioning is operator-driven: a new tenant means a new HAPI partition (one API call) plus a Keycloak client that issues tokens with the matching `tenant` claim. No DDL, no schema changes.
+- Tenant provisioning is operator-driven: a new tenant means a new HAPI partition (one API call) plus an IdP client/application that issues tokens with the matching `tenant` claim. No DDL, no schema changes.
 - The Postgres schema gets HAPI's `partition_id` column whether multi-tenancy is enabled or not — `hapi.fhir.partitioning` is configured in `application.yaml` regardless of mode. This is what makes retrofitting unnecessary later — if a single-tenant deployment later wants to become multi-tenant, every existing resource is already in `DEFAULT` and stays there while new tenants get their own partitions.
 
 What this explicitly does NOT include in the first cut:
@@ -290,7 +301,7 @@ Remaining items will be worked through as the implementation progresses.
 ## Next steps
 
 1. Stand up Docker Compose target with HAPI + Postgres + Matchbox (no IPF yet), verify `/fhir/metadata` returns, register a test Subscription against an external webhook.
-2. Wire HAPI to Keycloak (JWKS validation, scope-based authorization).
+2. Wire HAPI to an OIDC IdP (JWKS validation, scope-based authorization).
 3. Add the IPF Spring Boot app with one MLLP listener and ADT^A01 transform via Matchbox. End-to-end smoke test: nc-piped v2 in, webhook fires.
 4. Add additional message types (ORU, ORM, SIU, MDM) once the first slice works.
 5. Mirror the deployment into a Helm chart and validate on Rancher Desktop.
