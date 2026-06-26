@@ -13,6 +13,7 @@ Ticket history:
 - #380 — `ingested_messages` table + JPA layer (the data model exposed below)
 - #382 — async worker (consumes the rows the retry endpoint resets to `RECEIVED`)
 - **#384** — *this* admin REST API
+- #383 — retry policy + DLQ transition consumed by the operator workflow below
 
 ## Auth model
 
@@ -221,6 +222,90 @@ Rationale:
 If you need to escape these rules (e.g. emergency surgery on a stuck
 TRANSFORMING row), do it with `psql` directly — the admin REST API
 deliberately doesn't expose that.
+
+## Retry policy
+
+When the async worker fails to process a row (matchbox transform raised, HAPI
+POST raised, etc.), one of two things happens:
+
+1. **Schedule a retry.** The row stays in `FAILED` with `attempt_count` bumped,
+   `last_error` recorded, and `next_attempt_at = now() + backoff`. The worker
+   picks it back up after that timestamp passes.
+2. **Move to DLQ.** Once `attempt_count` reaches `max-attempts`, the row goes
+   to `DEAD_LETTER` with `next_attempt_at = NULL`. The worker stops polling it;
+   only `POST /admin/messages/{id}/retry` will bring it back.
+
+### Configuration
+
+Five knobs, all configurable via env var (interface-engine) or
+`interfaceEngine.worker.retry.*` (Helm):
+
+| Env var | Helm key | Default | Meaning |
+|-|-|-|-|
+| `IPF_MAX_ATTEMPTS` | `maxAttempts` | `5` | DLQ when `attempt_count` reaches this. |
+| `IPF_BACKOFF_BASE_MS` | `backoffBaseMs` | `1000` | Delay after the 1st failure. |
+| `IPF_BACKOFF_MAX_MS` | `backoffMaxMs` | `300000` | Hard cap on any computed delay. |
+| `IPF_BACKOFF_FACTOR` | `backoffFactor` | `2.0` | Multiplier between consecutive failures. |
+| `IPF_DLQ_LOG_LEVEL` | `dlqLogLevel` | `WARN` | Severity of the per-DLQ log line. |
+
+### Backoff formula
+
+```
+next_attempt_at = now() + min(BASE * FACTOR^(N-1), MAX) ms
+```
+
+…where `N` is the **just-incremented** attempt count. With the default
+config (BASE=1s, FACTOR=2.0, MAX=5min, max-attempts=5):
+
+| Failure # | new attempt_count | delay before next try | running total wait |
+|-:|-:|-:|-:|
+| 1 | 1 | 1s | 1s |
+| 2 | 2 | 2s | 3s |
+| 3 | 3 | 4s | 7s |
+| 4 | 4 | 8s | 15s |
+| 5 | 5 | — (DLQ) | 15s wall + DLQ |
+
+A row that's failing consistently spends ~15s in flight before landing in DLQ.
+Adjust `BASE` and `FACTOR` together for a different retry budget; `MAX` only
+matters once `BASE * FACTOR^(N-1)` exceeds it.
+
+### Log events to monitor
+
+The worker emits two structured log lines that operators / alerts should
+key on. Both are single-line `key=value` formats so a `grep` or Loki query
+can extract them cleanly:
+
+- `event=retry_scheduled` (INFO) — fires once per scheduled retry. Includes
+  `message_id`, `source_system`, `source_id`, `message_type`, `attempt_count`,
+  `backoff_ms`, `last_error`. High-volume during an outage; useful for
+  diagnosing patterns, not for paging.
+
+- `event=dlq` (default WARN, overridable via `IPF_DLQ_LOG_LEVEL`) — fires
+  **once** when a row crosses into DEAD_LETTER. Includes `message_id`,
+  `source_system`, `source_id`, `message_type`, `attempt_count`, `last_error`.
+  This is the right line to alert on — every DLQ row needs operator
+  attention.
+
+Example grep against pod logs:
+
+```bash
+kubectl logs -n <ns> deploy/<release>-interface-engine | grep 'event=dlq'
+```
+
+### Admin retry resets the policy
+
+`POST /admin/messages/{id}/retry` (see endpoint #3 above) sets:
+
+- `status = RECEIVED`
+- `attempt_count = 0`
+- `next_attempt_at = null`
+- `last_error = null`
+
+A retried message therefore starts the backoff sequence from scratch —
+if it fails again, the first delay is `BASE`, not whatever delay the row
+last had. This is intentional: an operator retrying a row has implicitly
+declared that the upstream cause is fixed; charging the new attempt for
+the old failures would punish the operator's diagnosis.
 
 ## Pagination conventions
 
