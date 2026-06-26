@@ -65,10 +65,11 @@ services:
       # isolation suite. Never set this on a production deployment.
       SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE:-false}
       # Auth toggle (#359). When `false`, the auth auto-configuration short-
-      # circuits and HAPI behaves like the upstream image — useful for local
-      # dev without a Keycloak. Default is `true`; flip to `false` via
-      # .env or by exporting SUBSCRIPTION_SERVICE_AUTH_ENABLED=false.
-      SUBSCRIPTION_SERVICE_AUTH_ENABLED: ${SUBSCRIPTION_SERVICE_AUTH_ENABLED:-true}
+      # circuits and HAPI behaves like the upstream image — useful for the
+      # quickstart and for local dev without an OIDC provider configured.
+      # Default is `false` to match .env.example; flip to `true` once you
+      # have an issuer URL set below.
+      SUBSCRIPTION_SERVICE_AUTH_ENABLED: ${SUBSCRIPTION_SERVICE_AUTH_ENABLED:-false}
       # No baked-in default — set SUBSCRIPTION_SERVICE_AUTH_ISSUER in .env. When
       # AUTH_ENABLED=true and ISSUER is empty, HAPI fails fast at startup with a
       # documented error (ticket #370). For local dev without Keycloak, set
