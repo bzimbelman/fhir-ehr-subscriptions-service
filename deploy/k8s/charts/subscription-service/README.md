@@ -166,6 +166,63 @@ ingress:
 
 Routes `/` (and therefore `/fhir/*`) at the HAPI Service. The HAPI tester UI at `/` is intentionally reachable for ops convenience; restrict the path list if you don't want it.
 
+### TLS (cert-manager)
+
+Cloud k8s deployments typically auto-provision TLS via [cert-manager](https://cert-manager.io/) and an ACME issuer (Let's Encrypt, ZeroSSL, internal CA). The chart supports this with a single toggle that adds the right annotation to the Ingress and auto-populates the `tls` block so cert-manager knows which Secret to write the issued cert to.
+
+```yaml
+ingress:
+  enabled: true
+  hosts:
+    - host: subscription-service.example.com
+      paths: [{ path: /, pathType: Prefix }]
+  certManager:
+    enabled: true
+    clusterIssuer: letsencrypt-prod      # cluster-scoped ClusterIssuer (typical)
+    # issuer: my-namespace-issuer        # OR a namespaced Issuer; not both
+```
+
+What that renders:
+
+- Annotation `cert-manager.io/cluster-issuer: letsencrypt-prod` on the Ingress (or `cert-manager.io/issuer: <name>` if you set `issuer` instead).
+- Auto-populated TLS block when `ingress.tls` is empty:
+  ```yaml
+  tls:
+    - hosts:
+        - subscription-service.example.com
+      secretName: <release>-hapi-tls
+  ```
+  cert-manager watches the Ingress, requests a cert from the issuer, and writes it to `<release>-hapi-tls` in the same namespace.
+
+**Prerequisite — cert-manager is NOT installed by this chart.** It must already be running in the cluster, with a `ClusterIssuer` (or namespace-scoped `Issuer`) configured for the chosen ACME / DNS-01 provider. Most managed clusters install it once at the platform layer:
+
+```bash
+helm repo add jetstack https://charts.jetstack.io
+helm install cert-manager jetstack/cert-manager \
+  -n cert-manager --create-namespace \
+  --set installCRDs=true
+# then apply your ClusterIssuer (letsencrypt-prod, letsencrypt-staging, etc.)
+```
+
+**Precedence rules:**
+
+- If both `clusterIssuer` and `issuer` are set, `clusterIssuer` wins.
+- If `certManager.enabled: true` but neither is set, the chart fails at template time with a clear error rather than rendering a broken Ingress.
+- If the operator supplies their own `ingress.tls` block, it is **not** overridden — cert-manager integration only auto-populates when `tls` is empty. This lets you bring your own Secret name or list multiple cert/host groupings if needed.
+
+**Trade-off — when not to use this:**
+
+Operators who already manage TLS via an external secret manager (sealed-secrets, external-secrets, SOPS-encrypted Secrets, manual upload) should leave `certManager.enabled: false` and populate `ingress.tls` directly:
+
+```yaml
+ingress:
+  tls:
+    - hosts: [subscription-service.example.com]
+      secretName: subscription-service-tls    # pre-existing Secret in the namespace
+```
+
+The two paths are mutually exclusive; pick whichever matches your platform's TLS story.
+
 ### MLLP (port 2575)
 
 ```yaml

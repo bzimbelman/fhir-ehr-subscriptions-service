@@ -192,6 +192,19 @@ ingress:
   #   - hosts:
   #       - subscription-service.example.com
   #     secretName: subscription-service-tls
+  # cert-manager integration. Off by default — when enabled, the chart
+  # adds the appropriate cert-manager annotation to the Ingress and
+  # auto-populates ingress.tls if the operator didn't supply one.
+  #
+  # REQUIRES cert-manager to already be installed in the cluster with a
+  # ClusterIssuer (or Issuer) configured for the chosen ACME / DNS
+  # provider. The chart does NOT install cert-manager itself.
+  certManager:
+    enabled: false
+    # ONE of clusterIssuer or issuer must be set when enabled is true.
+    # clusterIssuer is the typical choice; issuer is namespace-scoped.
+    clusterIssuer: ""              # e.g. "letsencrypt-prod"
+    issuer: ""                     # e.g. "my-namespace-issuer"
 
 # ---------------------------------------------------------------------------
 # NetworkPolicy. OPTIONAL; off by default because k3s/Rancher Desktop ships
