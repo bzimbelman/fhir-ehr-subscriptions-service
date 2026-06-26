@@ -108,7 +108,7 @@ flowchart LR
 
     subgraph svc["subscription-service"]
         direction LR
-        ipf["Interface engine<br/>(IPF, Apache Camel)"]
+        ie["Interface engine<br/>(IPF, Apache Camel)"]
         raw[("Raw-message<br/>store")]
         matchbox["Matchbox<br/>(transformation)"]
         hapi["HAPI FHIR<br/>(FHIR server +<br/>Subscription engine)"]
@@ -120,12 +120,12 @@ flowchart LR
     int_sub["Internal subscribers"]
     ext_sub["External subscribers"]
 
-    sources -->|"HL7 v2 (MLLP)"| ipf
-    ipf -->|"persist + ACK<br/>(before transform)"| raw
-    raw --> ipf
-    ipf -->|"$transform"| matchbox
-    matchbox -->|"FHIR Bundle"| ipf
-    ipf -->|"POST transaction Bundle"| hapi
+    sources -->|"HL7 v2 (MLLP)"| ie
+    ie -->|"persist + ACK<br/>(before transform)"| raw
+    raw --> ie
+    ie -->|"$transform"| matchbox
+    matchbox -->|"FHIR Bundle"| ie
+    ie -->|"POST transaction Bundle"| hapi
     hapi <--> fhirdb
 
     int_sub -->|"register / read<br/>Subscriptions (FHIR REST)"| hapi

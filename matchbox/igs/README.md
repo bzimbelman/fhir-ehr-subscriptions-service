@@ -23,7 +23,7 @@ expect:
 
 | Package | Version | Notes |
 |---------|---------|-------|
-| `hl7.fhir.uv.v2-to-fhir` | — | Added in a later ticket alongside the IPF app |
+| `hl7.fhir.uv.v2-to-fhir` | — | Added in a later ticket alongside the interface engine |
 
-Until the IPF app lands, Matchbox starts with no IGs preloaded — it just
+Until the interface engine lands, Matchbox starts with no IGs preloaded — it just
 exposes its FHIR endpoint and waits.
