@@ -205,6 +205,10 @@ ingress:
 
 Use `issuer:` instead of `clusterIssuer:` if you've created a namespace-scoped `Issuer`. To bring your own Secret (sealed-secrets, external-secrets, etc.), leave `certManager.enabled: false` and populate `ingress.tls` directly — see the chart [README "TLS (cert-manager)"](../deploy/k8s/charts/subscription-service/README.md) section for the trade-off.
 
+### Pod Security Standards
+
+The chart's default `podSecurityContext` / `securityContext` blocks satisfy the [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/) `restricted` profile, so it installs cleanly on GKE Autopilot, OpenShift, and any namespace labeled `pod-security.kubernetes.io/enforce=restricted`. Each workload runs as its image's expected non-root UID (HAPI 65532, matchbox 1000, interface-engine 10001, postgres 70) with `allowPrivilegeEscalation: false`, all Linux capabilities dropped, and the `RuntimeDefault` seccomp profile. See the [chart README's Pod Security Standards section](../deploy/k8s/charts/subscription-service/README.md#pod-security-standards-ticket-420) for the per-workload UID table and override mechanics.
+
 ---
 
 ## Troubleshooting
