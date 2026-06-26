@@ -1,0 +1,74 @@
+# Rancher Desktop overrides (#364 validation target).
+#
+# Rancher Desktop ships:
+#   - k3s with the local-path StorageClass as default
+#   - traefik IngressClass on localhost:80 / :443
+#   - klipper-lb fronting LoadBalancer Services on the host
+#
+# Locally built images live in dockerd's image store, NOT k3s's containerd
+# namespace. Before `helm install`, load them into k8s.io:
+#
+#   docker save subscription-service/hapi:dev    | nerdctl --namespace k8s.io load
+#   docker save subscription-service/ipf-app:dev | nerdctl --namespace k8s.io load
+#
+# Then `helm install`. See chart README for the full dance.
+
+image:
+  hapi:
+    repository: subscription-service/hapi
+    tag: dev
+    pullPolicy: IfNotPresent
+  ipf:
+    repository: subscription-service/ipf-app
+    tag: dev
+    pullPolicy: IfNotPresent
+
+postgres:
+  password: hapi
+  storage:
+    size: 5Gi
+    storageClassName: local-path
+
+# Rancher Desktop on a corporate-managed Mac (Netskope, Zscaler, etc.) may
+# have a TLS-inspecting proxy in the path; skip cert verification in the
+# IG fetch initContainer. Off-cluster TLS to HAPI / Matchbox is unaffected.
+hapi:
+  igFetcherInsecure: true
+matchbox:
+  igFetcherInsecure: true
+
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: subscription-service.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Rancher Desktop's klipper-lb listens on the host network for LoadBalancer
+# Services, so port 2575 will be reachable at localhost:2575.
+ipf:
+  mllp:
+    service:
+      type: LoadBalancer
+      port: 2575
+
+# Auth OFF for the validation smoke test — we don't expect a Keycloak realm
+# to be provisioned on every laptop. The auth path is exercised in the
+# Compose e2e suite (scripts/e2e-validation.sh) and in dev.
+featureToggles:
+  auth:
+    enabled: false
+  validation:
+    mode: "off"
+  channelSecurity:
+    # Permissive: lets the smoke test POST a Subscription without HTTPS/auth
+    # headers. Production uses strict.
+    mode: permissive
+  multitenancy:
+    mode: disabled
+
+networkPolicy:
+  enabled: false
