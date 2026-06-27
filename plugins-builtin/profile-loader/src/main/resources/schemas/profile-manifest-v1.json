@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://bzonfhir.com/schemas/profile-manifest-v1.json",
+  "title": "Vendor profile manifest",
+  "description": "Schema for vendor-profile manifest YAML files consumed by the profile-loader plugin (ticket #435). See master plan §4.3.",
+  "type": "object",
+  "required": ["profile", "ingest", "mappings"],
+  "additionalProperties": false,
+  "properties": {
+    "profile": {
+      "type": "object",
+      "required": ["id", "version", "schemaVersion", "vendor", "fhirVersions"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Stable profile id, lowercase + hyphens."
+        },
+        "version": {
+          "type": "string",
+          "description": "Profile-author version tag. Free form."
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1,
+          "description": "Manifest schema version. v1 is the only value this engine release understands."
+        },
+        "vendor": {
+          "type": "object",
+          "required": ["name", "productLine", "productVersion"],
+          "additionalProperties": false,
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "productLine": {"type": "string", "minLength": 1},
+            "productVersion": {"type": "string", "minLength": 1}
+          }
+        },
+        "fhirVersions": {
+          "type": "array",
+          "items": {"type": "string", "enum": ["R4", "R4B", "R5"]},
+          "minItems": 1
+        },
+        "hl7Versions": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "ingest": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "type": {"type": "string", "minLength": 1},
+          "config": {"type": "object"}
+        }
+      }
+    },
+    "mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["map"],
+        "additionalProperties": false,
+        "properties": {
+          "messageType": {"type": "string"},
+          "sourceType": {"type": "string"},
+          "map": {"type": "string", "minLength": 1},
+          "tests": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "oneOf": [
+          {"required": ["messageType"]},
+          {"required": ["sourceType"]}
+        ]
+      }
+    },
+    "quirks": {
+      "type": "object",
+      "description": "Vendor-specific deviations. Each key MUST be a known quirk strategy id.",
+      "additionalProperties": false,
+      "properties": {
+        "msh3-format": {"type": "string"},
+        "empty-pid-strategy": {"type": "string"},
+        "attachment-encoding": {"type": "string"},
+        "athena-patient-id-namespace": {"type": "string"},
+        "athena-encounter-departmentid-required": {"type": ["string", "boolean"]},
+        "fhir-observation-missing-category-strategy": {"type": "string"}
+      }
+    },
+    "audit": {
+      "type": "object",
+      "required": ["agent-system"],
+      "additionalProperties": false,
+      "properties": {
+        "agent-system": {"type": "string", "minLength": 1},
+        "enrichments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "patternProperties": {
+              "^(addOriginatingUser|addPatientFacility|addPracticeId|addAthenaUser)$": {
+                "type": "string", "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+# Example Epic vendor profile manifest. Mirrors the example in
+# subscription-service-master-plan.md §4.3.
+#
+# This file ALSO serves as the canonical fixture vendor-profile authors
+# copy from when they bootstrap a new HL7 v2-style profile under
+# Epic #426 (the vendor-profile catalog).
+profile:
+  id: epic
+  version: "2024.1"
+  schemaVersion: 1
+  vendor:
+    name: Epic Systems
+    productLine: Epic
+    productVersion: "2024.x"
+  fhirVersions: [R4]
+  hl7Versions: [v2.5, v2.5.1, v2.7]
+
+ingest:
+  - id: mllp-default
+    type: hl7v2-mllp
+    config:
+      port: 2575
+      facilityResolver: epic-msh-3-facility
+
+mappings:
+  - messageType: ADT^A04
+    map: maps/hl7v2-ADT-A04-Epic.fml
+    tests: [tests/adt-a04/]
+  - messageType: ORM^O01
+    map: maps/hl7v2-ORM-O01-Epic.fml
+    tests: [tests/orm-o01/]
+  - messageType: ORU^R01
+    map: maps/hl7v2-ORU-R01-Epic.fml
+    tests: [tests/oru-r01/]
+
+quirks:
+  msh3-format: facility-shortcode-then-pipe
+  empty-pid-strategy: synthesize-from-mrn
+  attachment-encoding: base64-with-rtf-prefix-trim
+
+audit:
+  agent-system: epic
+  enrichments:
+    - addOriginatingUser: pv1.7
+    - addPatientFacility: msh.4
