@@ -34,6 +34,7 @@ class HapiSubscriptionStatusClientImplTest {
         val sub = Subscription().apply {
             setId("Subscription/123")
             status = Subscription.SubscriptionStatus.ACTIVE
+            criteria = "Patient?"
             channel = Subscription.SubscriptionChannelComponent().apply {
                 type = Subscription.SubscriptionChannelType.RESTHOOK
                 endpoint = "https://example.com/notify"
@@ -43,6 +44,9 @@ class HapiSubscriptionStatusClientImplTest {
 
         assertThat(view.subscriptionId).isEqualTo("Subscription/123")
         assertThat(view.active).isTrue()
+        // Ticket #404: raw status + criteria propagate through.
+        assertThat(view.status).isEqualTo("active")
+        assertThat(view.criteria).isEqualTo("Patient?")
         assertThat(view.channelType).isEqualTo("rest-hook")
         assertThat(view.endpoint).isEqualTo("https://example.com/notify")
         assertThat(view.deliverySuccessCount).isZero()

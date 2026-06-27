@@ -288,6 +288,111 @@ class SubscriptionsAdminControllerAuthOffTest {
         assertThat((items[1]["duration_ms"] as Number).toLong()).isEqualTo(40L)
     }
 
+    // ---------------------------------------------------------------------
+    // /resource endpoint (ticket #404)
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `resource for unknown id returns 404`() {
+        val resp = rest.getForEntity(url("/admin/subscriptions/nope/resource"), Map::class.java)
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.NOT_FOUND)
+        assertThat(resp.body!!["error"]).isEqualTo("not_found")
+    }
+
+    @Test
+    fun `resource for known id returns FHIR Subscription JSON`() {
+        fake().addSubscription(
+            id = "r1",
+            active = true,
+            channelType = "rest-hook",
+            endpoint = "https://example.com/notify",
+            successCount = 0,
+            failureCount = 0,
+            lastAttempt = null,
+            lastOutcome = null,
+            lastError = null,
+            status = "active",
+            criteria = "Patient?",
+        )
+        val resp = rest.getForEntity(url("/admin/subscriptions/r1/resource"), Map::class.java)
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.OK)
+        val body = resp.body!!
+        // HAPI's R4 JSON parser emits these top-level fields.
+        assertThat(body["resourceType"]).isEqualTo("Subscription")
+        assertThat(body["status"]).isEqualTo("active")
+        assertThat(body["criteria"]).isEqualTo("Patient?")
+    }
+
+    // ---------------------------------------------------------------------
+    // PATCH /status endpoint (ticket #404)
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `patch status flips a subscription to off`() {
+        fake().addSubscription(
+            id = "t1",
+            active = true,
+            channelType = "rest-hook",
+            endpoint = "https://example.com/notify",
+            successCount = 0,
+            failureCount = 0,
+            lastAttempt = null,
+            lastOutcome = null,
+            lastError = null,
+            status = "active",
+            criteria = "Patient?",
+        )
+        val headers = HttpHeaders().apply { contentType = org.springframework.http.MediaType.APPLICATION_JSON }
+        val body = """{"status":"off"}"""
+        val resp = rest.exchange(
+            url("/admin/subscriptions/t1/status"),
+            HttpMethod.PATCH,
+            HttpEntity(body, headers),
+            Map::class.java,
+        )
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.OK)
+        assertThat(resp.body!!["status"]).isEqualTo("off")
+        assertThat(resp.body!!["active"]).isEqualTo(false)
+    }
+
+    @Test
+    fun `patch status with unknown id returns 404`() {
+        val headers = HttpHeaders().apply { contentType = org.springframework.http.MediaType.APPLICATION_JSON }
+        val body = """{"status":"off"}"""
+        val resp = rest.exchange(
+            url("/admin/subscriptions/none/status"),
+            HttpMethod.PATCH,
+            HttpEntity(body, headers),
+            Map::class.java,
+        )
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.NOT_FOUND)
+    }
+
+    @Test
+    fun `patch status with invalid value returns 400`() {
+        fake().addSubscription(
+            id = "t2",
+            active = true,
+            channelType = "rest-hook",
+            endpoint = "https://example.com/notify",
+            successCount = 0,
+            failureCount = 0,
+            lastAttempt = null,
+            lastOutcome = null,
+            lastError = null,
+        )
+        val headers = HttpHeaders().apply { contentType = org.springframework.http.MediaType.APPLICATION_JSON }
+        val body = """{"status":"wat"}"""
+        val resp = rest.exchange(
+            url("/admin/subscriptions/t2/status"),
+            HttpMethod.PATCH,
+            HttpEntity(body, headers),
+            Map::class.java,
+        )
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.BAD_REQUEST)
+        assertThat(resp.body!!["error"]).isEqualTo("invalid_status")
+    }
+
     @Test
     fun `auth OFF allows requests without Authorization header`() {
         val resp = rest.exchange(
@@ -405,10 +510,14 @@ internal class FakeHapiSubscriptionStatusClient : HapiSubscriptionStatusClient {
         lastOutcome: String?,
         lastError: String?,
         events: List<DeliveryEvent> = emptyList(),
+        status: String = if (active) "active" else "off",
+        criteria: String = "Patient?",
     ) {
         views[id] = SubscriptionStatusView(
             subscriptionId = "Subscription/$id",
             active = active,
+            status = status,
+            criteria = criteria,
             channelType = channelType,
             endpoint = endpoint,
             deliverySuccessCount = successCount,
@@ -430,10 +539,46 @@ internal class FakeHapiSubscriptionStatusClient : HapiSubscriptionStatusClient {
 
     override fun readSubscription(id: String): org.hl7.fhir.r4.model.Subscription? =
         if (views.containsKey(id)) {
-            org.hl7.fhir.r4.model.Subscription().also { it.setId(id) }
+            // Populate the small surface the new /resource endpoint
+            // exposes — status enum and criteria — so the controller
+            // test for that endpoint can assert real values.
+            val view = views[id]!!
+            org.hl7.fhir.r4.model.Subscription().also { s ->
+                s.setId(id)
+                s.criteria = view.criteria.takeUnless { it.isBlank() }
+                s.status = try {
+                    org.hl7.fhir.r4.model.Subscription.SubscriptionStatus.fromCode(view.status)
+                } catch (_: Exception) {
+                    org.hl7.fhir.r4.model.Subscription.SubscriptionStatus.NULL
+                }
+                if (!view.endpoint.isNullOrBlank()) {
+                    s.channel = org.hl7.fhir.r4.model.Subscription.SubscriptionChannelComponent().apply {
+                        endpoint = view.endpoint
+                    }
+                }
+            }
         } else {
             null
         }
 
     override fun statusFor(id: String): SubscriptionStatusView? = views[id]
+
+    override fun setStatus(id: String, newStatus: String): SubscriptionStatusView? {
+        // Validate vocab the same way the real impl does, so behaviour
+        // (e.g. 400 on bad value) matches in the controller test.
+        try {
+            org.hl7.fhir.r4.model.Subscription.SubscriptionStatus.fromCode(newStatus)
+        } catch (ex: Exception) {
+            throw IllegalArgumentException(
+                "invalid Subscription.status value '$newStatus' (expected active|off|requested|error)",
+            )
+        }
+        val current = views[id] ?: return null
+        val updated = current.copy(
+            active = newStatus == "active",
+            status = newStatus,
+        )
+        views[id] = updated
+        return updated
+    }
 }
