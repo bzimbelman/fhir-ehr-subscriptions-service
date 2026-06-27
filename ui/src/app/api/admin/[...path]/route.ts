@@ -72,15 +72,54 @@ async function proxy(req: NextRequest, ctx: RouteContext): Promise<Response> {
     headers["Content-Type"] = contentType;
   }
 
+  const bodyText =
+    req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+
   const upstream = await fetch(upstreamUrl.toString(), {
     method: req.method,
     headers,
-    body:
-      req.method === "GET" || req.method === "HEAD"
-        ? undefined
-        : await req.text(),
+    body: bodyText,
     cache: "no-store",
   });
+
+  // Audit logging for state-changing actions on subscriptions
+  // (ticket #404). We emit a JSON line via console.log so the
+  // standard Next.js log pipeline captures it; ticket #407 will
+  // replace this with a structured AuditEvent resource on HAPI.
+  //
+  // Today only the status toggle (PATCH /admin/subscriptions/{id}/status)
+  // qualifies. The match is deliberately conservative — additional
+  // state-changing endpoints are added explicitly.
+  const isStatusPatch =
+    req.method === "PATCH" &&
+    path.length === 3 &&
+    path[0] === "subscriptions" &&
+    path[2] === "status";
+  if (isStatusPatch) {
+    const subscriptionId = path[1] ?? "";
+    let parsedStatus: string | null = null;
+    if (bodyText) {
+      try {
+        const parsed = JSON.parse(bodyText) as { status?: unknown };
+        if (typeof parsed.status === "string") parsedStatus = parsed.status;
+      } catch {
+        // Body wasn't JSON — leave parsedStatus null; the audit line
+        // still records the action and the upstream's response code.
+      }
+    }
+    const actor =
+      session.user?.username ?? session.user?.email ?? session.user?.name ?? null;
+    console.log(
+      JSON.stringify({
+        audit_event: "subscription_status_changed",
+        actor,
+        subscription_id: subscriptionId,
+        new_status: parsedStatus,
+        upstream_status: upstream.status,
+        timestamp: new Date().toISOString(),
+      }),
+    );
+  }
 
   // Stream the upstream body back, preserving status + the most relevant
   // headers. We deliberately do NOT forward Set-Cookie / WWW-Authenticate
@@ -107,3 +146,6 @@ export const GET = proxy;
 export const POST = proxy;
 export const PUT = proxy;
 export const DELETE = proxy;
+// Ticket #404: the status toggle uses PATCH; the proxy is shape-agnostic
+// so the same handler covers it.
+export const PATCH = proxy;
