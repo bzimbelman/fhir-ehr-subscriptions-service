@@ -52,11 +52,26 @@ RUN if [ -s /tmp/ca-cert/cert.pem ]; then \
 COPY settings.gradle.kts build.gradle.kts ./
 COPY interface-engine/build.gradle.kts ./interface-engine/
 COPY plugins-spi/build.gradle.kts ./plugins-spi/
+# Built-in plugin modules (Epic #425 tickets #431-#435). Each is its own
+# Gradle subproject referenced by the root `settings.gradle.kts` and
+# pulled into the interface-engine runtime classpath via the
+# `interface-engine/build.gradle.kts` dependencies. Their build files
+# must be present before the dependency-resolution warm-up.
+COPY plugins-builtin/hl7v2-mllp/build.gradle.kts ./plugins-builtin/hl7v2-mllp/
+COPY plugins-builtin/audit-event-fhir/build.gradle.kts ./plugins-builtin/audit-event-fhir/
+COPY plugins-builtin/observability-otel/build.gradle.kts ./plugins-builtin/observability-otel/
+COPY plugins-builtin/fhir-polling/build.gradle.kts ./plugins-builtin/fhir-polling/
+COPY plugins-builtin/profile-loader/build.gradle.kts ./plugins-builtin/profile-loader/
 RUN --mount=type=cache,target=/root/.gradle gradle --no-daemon --version
 
 # Now bring in the rest and build the executable jar.
 COPY interface-engine/src ./interface-engine/src
 COPY plugins-spi/src ./plugins-spi/src
+COPY plugins-builtin/hl7v2-mllp/src ./plugins-builtin/hl7v2-mllp/src
+COPY plugins-builtin/audit-event-fhir/src ./plugins-builtin/audit-event-fhir/src
+COPY plugins-builtin/observability-otel/src ./plugins-builtin/observability-otel/src
+COPY plugins-builtin/fhir-polling/src ./plugins-builtin/fhir-polling/src
+COPY plugins-builtin/profile-loader/src ./plugins-builtin/profile-loader/src
 RUN --mount=type=cache,target=/root/.gradle \
     gradle --no-daemon :interface-engine:clean :interface-engine:bootJar -x test
 
