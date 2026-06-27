@@ -128,6 +128,28 @@ describe("/api/admin/[...path] proxy route", () => {
     );
   });
 
+  it("forwards source_system + status filters verbatim (ticket #401)", async () => {
+    authMock.mockResolvedValueOnce({ user: { username: "alice" } });
+    const captured: { url?: string } = {};
+    global.fetch = vi.fn(async (url: string) => {
+      captured.url = url;
+      return new Response(JSON.stringify({ total: 0, items: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    const req = new NextRequest(
+      "http://ui.local/api/admin/messages?source_system=EPIC&status=DEAD_LETTER&limit=50",
+    ) as unknown as Parameters<typeof GET>[0];
+    const ctx = { params: Promise.resolve({ path: ["messages"] }) };
+    await GET(req, ctx);
+
+    expect(captured.url).toBe(
+      "http://interface-engine:8090/admin/messages?source_system=EPIC&status=DEAD_LETTER&limit=50",
+    );
+  });
+
   it("returns 500 when ADMIN_API_BASE_URL is missing", async () => {
     authMock.mockResolvedValueOnce({ user: { username: "alice" } });
     delete process.env.ADMIN_API_BASE_URL;
