@@ -3,6 +3,11 @@ import { auth, isOidcConfigured } from "@/lib/auth";
 import { SignOutButton } from "@/components/SignOutButton";
 import { DashboardView } from "@/components/DashboardView";
 
+// Ticket #423: force-dynamic so OIDC env is read at REQUEST time, not
+// build time. Next.js otherwise prerenders the unauthenticated redirect
+// branch and the page never re-checks auth() at runtime.
+export const dynamic = "force-dynamic";
+
 /**
  * Operator dashboard -- the default landing page after sign-in (Epic #398,
  * ticket #400).
@@ -29,7 +34,7 @@ import { DashboardView } from "@/components/DashboardView";
  * is the more useful message for an operator setting up the deployment.
  */
 export default async function DashboardPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

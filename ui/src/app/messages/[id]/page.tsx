@@ -16,7 +16,7 @@ interface PageProps {
 }
 
 export default async function MessageDetailPage({ params }: PageProps) {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();
