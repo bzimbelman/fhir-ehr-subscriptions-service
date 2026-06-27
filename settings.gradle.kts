@@ -69,3 +69,11 @@ project(":plugins-builtin:audit-event-fhir").projectDir =
 include("plugins-builtin:fhir-polling")
 project(":plugins-builtin:fhir-polling").projectDir =
     file("plugins-builtin/fhir-polling")
+
+// Ticket #435 — YAML vendor-profile loader. Reads manifest files at boot,
+// validates them against the JSON Schema, and registers parsed profiles
+// in a ProfileRegistry that the rest of the runtime can query. The bridge
+// from Epic #425 (plugin SPI) to Epic #426 (vendor profile catalog).
+include("plugins-builtin:profile-loader")
+project(":plugins-builtin:profile-loader").projectDir =
+    file("plugins-builtin/profile-loader")
