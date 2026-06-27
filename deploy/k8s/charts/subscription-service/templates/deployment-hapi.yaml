@@ -134,6 +134,44 @@ spec:
               value: {{ .Values.featureToggles.multitenancy.tenantClaim | quote }}
             - name: SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE
               value: {{ .Values.featureToggles.multitenancy.testMode | quote }}
+            # FHIR AuditEvent generator (ticket #391). See application.yaml /
+            # values.yaml for the full meaning of each knob.
+            - name: SUBSCRIPTION_SERVICE_AUDIT_ENABLED
+              value: {{ .Values.featureToggles.audit.enabled | quote }}
+            - name: SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS
+              value: {{ .Values.featureToggles.audit.captureReads | quote }}
+            - name: SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH
+              value: {{ .Values.featureToggles.audit.captureSearch | quote }}
+            - name: SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS
+              value: {{ .Values.featureToggles.audit.retentionDays | quote }}
+            # JSON log layout (Epic #387, ticket #388). Tells Spring Boot to
+            # load the logback config bundled inside the
+            # subscription-service-hapi-auth JAR (which is on the classpath
+            # via /app/extra-classes/) rather than the upstream HAPI image's
+            # default config. The file is uniquely named
+            # `logback-spring-subsvc.xml` so it can't clash with the
+            # upstream's logback.xml — see hapi/auth/.../logback-spring-subsvc.xml.
+            - name: LOGGING_CONFIG
+              value: "classpath:logback-spring-subsvc.xml"
+            # Pretty-print profile for human-readable JSON when running on
+            # a dev cluster. Set spring.profiles.active=dev via this env
+            # var when desired; default is the compact one-line-per-record
+            # production layout.
+            - name: SPRING_PROFILES_ACTIVE
+              value: {{ .Values.hapi.profiles | default "" | quote }}
+            # OpenTelemetry tracing (Epic #387, ticket #394). Same env-var
+            # surface as the interface-engine — see the comment block on
+            # the interface-engine Deployment template for semantics.
+            # Service name fixed to `subscription-service-hapi` so Jaeger
+            # can distinguish HAPI spans from interface-engine spans.
+            - name: OTEL_SDK_DISABLED
+              value: {{ not .Values.otel.enabled | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | default "" | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: subscription-service-hapi
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: {{ .Values.otel.resourceAttributes | default "" | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "subscription-service.hapi.fullname" . }}-auth
@@ -147,22 +185,28 @@ spec:
             - name: healthcheck
               mountPath: /app/healthcheck
               readOnly: true
+          # Liveness vs readiness split (Epic #387, ticket #393). Replaces
+          # the JEP-330 exec helper that lived here through epic #378. The
+          # subscription-service-hapi-auth JAR contributes `authIssuer`
+          # + `jwks` health indicators on top of Spring Boot's built-in
+          # `ping` and `db`; the two probe groups are defined under
+          # `management.endpoint.health.group` in the HAPI ConfigMap.
+          #
+          # Liveness: only `ping`. Slow + tolerant timings.
+          # Readiness: `ping` + `db` + `authIssuer` + `jwks`. Faster +
+          # stricter timings so a dead IdP / DB pulls us out of rotation.
           readinessProbe:
-            # Probe HAPI's CapabilityStatement via the JEP-330 helper. Java
-            # is the only binary present in the distroless image.
-            exec:
-              command:
-                - java
-                - /app/healthcheck/HapiHealthCheck.java
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
             initialDelaySeconds: {{ .Values.hapi.healthcheck.initialDelaySeconds }}
             periodSeconds: {{ .Values.hapi.healthcheck.periodSeconds }}
             timeoutSeconds: {{ .Values.hapi.healthcheck.timeoutSeconds }}
             failureThreshold: {{ .Values.hapi.healthcheck.failureThreshold }}
           livenessProbe:
-            exec:
-              command:
-                - java
-                - /app/healthcheck/HapiHealthCheck.java
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
             initialDelaySeconds: 180
             periodSeconds: 30
             timeoutSeconds: 10

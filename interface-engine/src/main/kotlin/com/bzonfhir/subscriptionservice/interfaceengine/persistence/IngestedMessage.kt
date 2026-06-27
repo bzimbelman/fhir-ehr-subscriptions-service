@@ -101,6 +101,85 @@ class IngestedMessage(
 
     @Column(name = "delivered_at")
     var deliveredAt: OffsetDateTime? = null,
+
+    /**
+     * Correlation id for the message (Epic #387, ticket #388).
+     *
+     * Server-assigned (UUID v4) by [com.bzonfhir.subscriptionservice
+     * .interfaceengine.routes.IngestRoutes] when an MLLP message lands.
+     * HL7 v2 has no transport-level correlation header, so every inbound
+     * row gets a fresh id at receive time. The same value is then:
+     *
+     *   - written to MDC for every log line emitted while the row is
+     *     being received / persisted / worked,
+     *   - sent as the `X-Correlation-Id` header on the matchbox
+     *     `$transform` and HAPI Bundle POST,
+     *   - exposed by the admin /messages/{id} endpoint so an operator
+     *     can paste it into `kubectl logs ... | grep` and pull the full
+     *     pipeline trace.
+     *
+     * Nullable because:
+     *
+     *   1. Rows persisted before this migration (V003) have no value.
+     *      The worker tolerates that by treating "no correlation_id" as
+     *      "generate one on first processing".
+     *   2. Future inbound channels (FHIR REST, EHR_NATIVE_API) might
+     *      legitimately carry an upstream-generated id; if none arrives
+     *      we fall back to a server-generated one, but the column itself
+     *      stays nullable so a sender that explicitly sends a null
+     *      header isn't blocked by a DB NOT NULL constraint.
+     */
+    @Column(name = "correlation_id")
+    var correlationId: String? = null,
+
+    /**
+     * W3C `traceparent`-encoded trace context (Epic #387, ticket #394).
+     *
+     * Captured at MLLP receive time so the async worker can restore the
+     * SAME trace context when it picks the row up later — the worker's
+     * `worker.process` span ends up as a CHILD of the receive span, not
+     * the root of its own trace.
+     *
+     * Format is the W3C-defined transport string `00-<trace-id>-<span-id>-<flags>`
+     * (53 ASCII chars for the v00 header). We store it as plain TEXT so
+     * the SDK's TextMapPropagator can parse it back without our app
+     * having to know the internal trace-id / span-id binary shape.
+     *
+     * Nullable for the same reasons [correlationId] is: rows persisted
+     * before this migration have no value, and a JVM with
+     * `OTEL_SDK_DISABLED=true` writes NULL here (no active span context
+     * to encode). The worker tolerates NULL by starting a fresh root
+     * span — same behaviour as if OTel wasn't configured at all.
+     */
+    @Column(name = "trace_context")
+    var traceContext: String? = null,
+
+    /**
+     * Canonical FHIR references for resources HAPI created when the worker
+     * POSTed the transaction Bundle (Epic #387, ticket #392). Populated
+     * AFTER the successful HAPI POST by parsing the TRANSACTION_RESPONSE
+     * bundle's `entry[].response.location` fields and normalizing each
+     * to `ResourceType/id` form (HAPI returns the version-history URL,
+     * e.g. `Patient/123/_history/1`, which we trim).
+     *
+     * Nullable to tolerate:
+     *
+     *   - Rows persisted before V005 — they have no list; the admin
+     *     effects view treats this as `effects_status="unknown"`.
+     *   - Rows in non-DELIVERED status — by definition no HAPI POST
+     *     succeeded so no refs to list. The list is `null`, NOT an empty
+     *     array, because "POSTed and got zero" is a distinguishable case
+     *     (rare; would be a transaction Bundle with no `entry[].response`).
+     *
+     * Mapped as TEXT[] via Hibernate's `SqlTypes.ARRAY`. The kotlin-noarg
+     * fallback (default-value-on-every-constructor-parameter) requires a
+     * default here too; emptyList() would be wrong because it implies
+     * "POSTed, zero refs" — so we default to null and require callers to
+     * pass the real list when they have one.
+     */
+    @Column(name = "created_resource_refs", columnDefinition = "text[]")
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    var createdResourceRefs: Array<String>? = null,
 ) {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

@@ -152,6 +152,10 @@ interfaceEngineDb:
 # ---------------------------------------------------------------------------
 hapi:
   replicaCount: 1
+  # Spring profiles to activate. Default is empty (compact JSON logs). Set to
+  # `dev` for pretty-printed JSON in non-prod clusters — see
+  # docs/observability/log-schema.md.
+  profiles: ""
   service:
     type: ClusterIP
     port: 8080
@@ -244,6 +248,9 @@ matchbox:
 # ---------------------------------------------------------------------------
 interfaceEngine:
   replicaCount: 1
+  # Spring profiles. Default empty (compact JSON logs). `dev` enables
+  # pretty-printed JSON — see docs/observability/log-schema.md.
+  profiles: ""
   http:
     service:
       type: ClusterIP
@@ -342,6 +349,17 @@ featureToggles:
     mode: disabled       # disabled | enabled
     tenantClaim: tenant
     testMode: false      # NEVER true outside the e2e isolation suite.
+  # FHIR AuditEvent generator (ticket #391, Epic #387). Every interesting REST
+  # operation produces an AuditEvent resource persisted back into HAPI so the
+  # audit trail is queryable via `GET /fhir/AuditEvent`. `enabled` defaults to
+  # `true` (production paranoia). `captureReads` / `captureSearch` are off by
+  # default — read traffic dwarfs write traffic; turn them on per deployment if
+  # compliance requires it.
+  audit:
+    enabled: true
+    captureReads: false
+    captureSearch: false
+    retentionDays: 365   # Informational only — purging is a separate job.
 
 # ---------------------------------------------------------------------------
 # FHIR HTTPS ingress. Disabled by default; enable per environment.
@@ -427,6 +445,25 @@ monitoring:
     labels: {}
     # Path that exposes Prometheus metrics on each service's HTTP port.
     path: /actuator/prometheus
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry distributed tracing (Epic #387, ticket #394).
+#
+# Default OFF — span recording is a no-op when `enabled: false`, with no
+# SDK threads, no exporter, no network connections. Flip on when you have
+# an OTLP collector reachable from the pods. Service-name is set
+# automatically per workload (`subscription-service-interface-engine`,
+# `subscription-service-hapi`) — operators don't have to override unless
+# they want a different naming convention.
+#
+# `endpoint`: OTLP gRPC endpoint (defaults to the standard 4317 port).
+# `resourceAttributes`: optional `key=value,key2=value2` string appended
+#   to OTEL_RESOURCE_ATTRIBUTES — handy for `deployment.environment=prod`.
+# ---------------------------------------------------------------------------
+otel:
+  enabled: false
+  endpoint: ""
+  resourceAttributes: ""
 
 # ---------------------------------------------------------------------------
 # Common pod scheduling knobs (apply to all four deployments).

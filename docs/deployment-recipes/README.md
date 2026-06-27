@@ -21,6 +21,12 @@ Concrete recipes for running subscription-service in different environments. The
 | [nginx](nginx.md) | Classic reverse proxy; full manual control |
 | [Direct port-forward](direct-port-forward.md) | Local dev only; no proxy in front |
 
+## Observability
+
+| Recipe | When to use |
+|---|---|
+| [Bundled Prometheus + Grafana + Jaeger](observability.md) | Local dev or a small Compose deployment that wants pipeline dashboards and tracing with zero config. Production operators on Kubernetes should use the bundled Helm `ServiceMonitor` against their existing Prometheus Operator instead. |
+
 ## Image registry
 
 [`image-registry.md`](image-registry.md) covers the workflow common to all OCI registries (Docker Hub, ECR, GCR/GAR, ACR, Harbor, etc.) — building, tagging, pushing, image-pull secrets, image signing. The cloud-specific recipes layer cloud-CLI helpers on top.

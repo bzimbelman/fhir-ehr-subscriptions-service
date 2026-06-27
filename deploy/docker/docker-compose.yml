@@ -86,6 +86,23 @@ services:
       # SUBSCRIPTION_SERVICE_AUTH_ENABLED=false instead.
       SUBSCRIPTION_SERVICE_AUTH_ISSUER: ${SUBSCRIPTION_SERVICE_AUTH_ISSUER:-}
       SUBSCRIPTION_SERVICE_AUTH_JWKS_URL: ${SUBSCRIPTION_SERVICE_AUTH_JWKS_URL:-}
+      # FHIR AuditEvent generator (ticket #391). Default ON. Reads/searches are
+      # opt-in via SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS / _CAPTURE_SEARCH.
+      SUBSCRIPTION_SERVICE_AUDIT_ENABLED: ${SUBSCRIPTION_SERVICE_AUDIT_ENABLED:-true}
+      SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS: ${SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS:-false}
+      SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH: ${SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH:-false}
+      SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS: ${SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS:-365}
+      # OpenTelemetry distributed tracing (Epic #387, ticket #394). Off by
+      # default — the SDK is built as a no-op, no spans recorded, no
+      # exporter. Flip OTEL_SDK_DISABLED=false (and set an endpoint via
+      # OTEL_EXPORTER_OTLP_ENDPOINT) when a collector is running. The
+      # `--profile observability` flag brings up the bundled jaeger
+      # service below; combined with OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      # in your .env, traces flow there end-to-end.
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: subscription-service-hapi
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     volumes:
       - ../../hapi/application.yaml:/app/config/application.yaml:ro
       - ../../hapi/igs:/app/igs:ro
@@ -185,6 +202,13 @@ services:
       IPF_BACKOFF_MAX_MS: ${IPF_BACKOFF_MAX_MS:-300000}
       IPF_BACKOFF_FACTOR: ${IPF_BACKOFF_FACTOR:-2.0}
       IPF_DLQ_LOG_LEVEL: ${IPF_DLQ_LOG_LEVEL:-WARN}
+      # OpenTelemetry tracing (#394). See the matching block on the `hapi`
+      # service above for the env-var semantics; same defaults apply here
+      # (OFF by default, no overhead unless OTEL_SDK_DISABLED=false).
+      OTEL_SDK_DISABLED: ${OTEL_SDK_DISABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: subscription-service-interface-engine
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
     ports:
       - "${INTERFACE_ENGINE_HTTP_HOST_PORT:-18090}:8090"
       - "${INTERFACE_ENGINE_MLLP_HOST_PORT:-2575}:2575"
@@ -193,6 +217,103 @@ services:
       interval: 15s
       timeout: 5s
       retries: 8
+      start_period: 30s
+    networks:
+      - subscription-service
+
+  # OpenTelemetry collector + UI (Epic #387, ticket #394).
+  #
+  # Optional — only brought up when you pass `--profile observability` to
+  # `docker compose up`. Without that flag this service is silently
+  # ignored, so the default `docker compose up -d` workflow is
+  # unchanged.
+  #
+  # Image: jaegertracing/jaeger:2.0.0 — the v2 monolith bundles the
+  # collector, query, and UI into one container. Set COLLECTOR_OTLP_ENABLED=true
+  # so the OTLP gRPC (:4317) and HTTP (:4318) receivers are wired.
+  #
+  # Wiring it into the rest of the stack: with this profile active, set
+  # OTEL_SDK_DISABLED=false and OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+  # in your .env. Then visit http://localhost:16686 to see traces.
+  jaeger:
+    profiles: [observability]
+    image: jaegertracing/jaeger:2.0.0
+    container_name: subscription-service-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+    networks:
+      - subscription-service
+
+  # Prometheus + Grafana (Epic #387, ticket #395).
+  #
+  # Like jaeger above, these are gated behind `--profile observability` —
+  # the default `docker compose up -d` skips them. They join the same
+  # `subscription-service` docker network so Prometheus can scrape
+  # interface-engine:8090 and hapi:8080 directly by service name.
+  #
+  # Scope reminder: this is a DEV / small-deployment recipe. Production
+  # operators on Kubernetes should use the bundled ServiceMonitor (#418)
+  # against a Prometheus Operator stack, NOT this compose Prometheus.
+  # See docs/deployment-recipes/observability.md.
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.0.1
+    container_name: subscription-service-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=14d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - subscription-service
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:11.4.0
+    container_name: subscription-service-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      # Default admin/admin — the docs call this out as MUST-rotate on
+      # first run. Operators set GRAFANA_ADMIN_PASSWORD in their .env.
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
+      # No public signup — local dev only, but lock it down anyway so a
+      # leaked port doesn't immediately become a self-serve account farm.
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Anonymous viewer access OFF by default. Operators who want a
+      # zero-friction read-only public dashboard view should flip this
+      # in their .env, not in this file.
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_ANONYMOUS_ENABLED:-false}"
+    volumes:
+      # Datasource + dashboard providers live under provisioning/.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboard JSON files; loaded by the provider in
+      # provisioning/dashboards/default.yaml.
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "${GRAFANA_HOST_PORT:-13000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
       start_period: 30s
     networks:
       - subscription-service

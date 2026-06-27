@@ -1,0 +1,394 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "subscription-service observability API",
+    "version": "1.0.0",
+    "description": "Agent-queryable observability surface. JSON-only, schema-stable, bearer-token gated.\n\nDistinct from Prometheus (which agents can scrape directly) and from the operator UI (which lives in a separate epic). This API answers structured questions like 'what's stuck in DLQ?', 'is the system healthy?', 'trace message X'.\n\nSchema stability: every response includes `schema_version`. Fields marked REQUIRED in this spec MUST NOT be removed or renamed without a MAJOR version bump. Fields added in later MINOR versions appear with `since: X.Y` in their description."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8090",
+      "description": "Interface engine local default"
+    },
+    {
+      "url": "https://your-deployment.example.com",
+      "description": "Production (whatever hostname the operator exposes)"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/admin/observe/system": {
+      "get": {
+        "summary": "System-wide snapshot",
+        "description": "Component health, feature toggles, queue state. The agent's 'is everything okay?' query.",
+        "responses": {
+          "200": {
+            "description": "Snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/admin/observe/throughput": {
+      "get": {
+        "summary": "Message throughput bucketed by hour or day",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "description": "Window like '1h', '24h', '7d'. Up to 24h buckets hourly; longer windows bucket daily.",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d+[hd]$",
+              "default": "24h"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Time-bucketed counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Throughput"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/admin/observe/dlq": {
+      "get": {
+        "summary": "Recent DEAD_LETTER messages",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "DLQ entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DlqResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/admin/observe/trace/{correlationId}": {
+      "get": {
+        "summary": "Find all messages with a given correlation_id",
+        "parameters": [
+          {
+            "name": "correlationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Messages with this correlation_id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No messages found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/admin/observe/openapi.json": {
+      "get": {
+        "summary": "This OpenAPI spec",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 spec",
+            "content": {
+              "application/json": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Set IPF_ADMIN_AUTH_TOKEN on the deployment; pass `Authorization: Bearer <token>` on each request. When the env var is unset (dev convenience), endpoints are unauthenticated."
+      }
+    },
+    "schemas": {
+      "SystemSnapshot": {
+        "type": "object",
+        "required": ["schema_version", "service", "uptime_seconds", "feature_toggles", "downstream", "queue"],
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "example": "1.0"
+          },
+          "service": {
+            "type": "string",
+            "example": "subscription-service-interface-engine"
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "feature_toggles": {
+            "type": "object",
+            "properties": {
+              "auth_enabled": {
+                "type": "boolean"
+              },
+              "validation_mode": {
+                "type": "string",
+                "enum": ["off", "warn", "enforce"]
+              },
+              "channel_security_mode": {
+                "type": "string",
+                "enum": ["strict", "relaxed", "permissive"]
+              },
+              "multitenancy_mode": {
+                "type": "string",
+                "enum": ["disabled", "enabled"]
+              }
+            }
+          },
+          "downstream": {
+            "type": "object",
+            "properties": {
+              "matchbox_base_url": {
+                "type": "string"
+              },
+              "hapi_base_url": {
+                "type": "string"
+              },
+              "auth_issuer": {
+                "type": "string"
+              }
+            }
+          },
+          "queue": {
+            "type": "object",
+            "properties": {
+              "received": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "transforming": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "failed": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "delivered": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "dead_letter": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        }
+      },
+      "Throughput": {
+        "type": "object",
+        "required": ["schema_version", "window", "bucket_width", "buckets"],
+        "properties": {
+          "schema_version": {
+            "type": "string"
+          },
+          "window": {
+            "type": "string"
+          },
+          "bucket_width": {
+            "type": "string",
+            "enum": ["hour", "day"]
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "bucket_start": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "counts": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "description": "Map of status (RECEIVED/TRANSFORMING/DELIVERED/FAILED/DEAD_LETTER) to count for this bucket."
+                }
+              }
+            }
+          }
+        }
+      },
+      "DlqResponse": {
+        "type": "object",
+        "required": ["schema_version", "total", "limit", "items"],
+        "properties": {
+          "schema_version": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageSummary"
+            }
+          }
+        }
+      },
+      "MessageSummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "source_protocol": {
+            "type": "string"
+          },
+          "source_system": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "message_type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "attempt_count": {
+            "type": "integer"
+          },
+          "last_error": {
+            "type": "string",
+            "nullable": true
+          },
+          "correlation_id": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "TraceResponse": {
+        "type": "object",
+        "required": ["schema_version", "correlation_id", "messages"],
+        "properties": {
+          "schema_version": {
+            "type": "string"
+          },
+          "correlation_id": {
+            "type": "string"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageSummary"
+            }
+          },
+          "trace_hint": {
+            "type": "string"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error", "message"],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid bearer token",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}
