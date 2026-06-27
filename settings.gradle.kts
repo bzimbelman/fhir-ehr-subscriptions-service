@@ -39,9 +39,9 @@ include("plugins-spi", "interface-engine")
 // Each built-in plugin lives under plugins-builtin/<id>/ and is its own
 // Gradle module so its dependency footprint stays self-contained — the
 // MLLP plugin pulls in Camel + HAPI v2; the observability plugin pulls in
-// only plugins-spi. Spring Boot auto-config under each plugin's
-// META-INF/spring/ wires the plugin into the interface-engine runtime
-// when the plugin's JAR is on the classpath.
+// only plugins-spi; the audit plugin pulls in HAPI FHIR R4. Spring Boot
+// auto-config under each plugin's META-INF/spring/ wires the plugin into
+// the interface-engine runtime when the plugin's JAR is on the classpath.
 //
 // Ticket #431 — HL7 v2 MLLP listener as an IngestSource plugin.
 include("plugins-builtin:hl7v2-mllp")
@@ -52,3 +52,10 @@ project(":plugins-builtin:hl7v2-mllp").projectDir = file("plugins-builtin/hl7v2-
 include("plugins-builtin:observability-otel")
 project(":plugins-builtin:observability-otel").projectDir =
     file("plugins-builtin/observability-otel")
+
+// Ticket #432 — AuditEvent emission as an AuditEventEnricher plugin. The
+// HAPI AuditEventInterceptor (Maven module hapi/auth) delegates to a Java
+// mirror of this plugin's contract; canonical implementation lives here.
+include("plugins-builtin:audit-event-fhir")
+project(":plugins-builtin:audit-event-fhir").projectDir =
+    file("plugins-builtin/audit-event-fhir")
