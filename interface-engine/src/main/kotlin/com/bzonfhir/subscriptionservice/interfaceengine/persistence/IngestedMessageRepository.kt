@@ -60,4 +60,26 @@ interface IngestedMessageRepository : JpaRepository<IngestedMessage, Long> {
      * so this method-name finder gives us the list shape directly.
      */
     fun findAllBy(pageable: Pageable): List<IngestedMessage>
+
+    /**
+     * Per-interface drill-down (#401). The operator UI lists messages for a
+     * single source system; the four method-name finders below cover the
+     * cross-product of (sourceSystem?, status?) filters so the controller
+     * can pick the right one without falling back to QueryDSL or
+     * Specifications. Order is supplied by the Pageable.
+     */
+    fun findBySourceSystem(sourceSystem: String, pageable: Pageable): List<IngestedMessage>
+
+    fun findBySourceSystemAndStatus(
+        sourceSystem: String,
+        status: IngestedMessageStatus,
+        pageable: Pageable,
+    ): List<IngestedMessage>
+
+    fun countBySourceSystem(sourceSystem: String): Long
+
+    fun countBySourceSystemAndStatus(
+        sourceSystem: String,
+        status: IngestedMessageStatus,
+    ): Long
 }

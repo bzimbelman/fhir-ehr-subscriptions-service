@@ -261,6 +261,66 @@ class AdminMessagesControllerAuthOffTest {
     }
 
     @Test
+    fun `list filtered by source_system returns only EPIC rows`() {
+        repeat(3) { repository.saveAndFlush(newMsg("EPIC", "epic-$it")) }
+        repeat(2) { repository.saveAndFlush(newMsg("CERNER", "cerner-$it")) }
+
+        val resp = rest.getForEntity(
+            url("/admin/messages?source_system=EPIC"),
+            Map::class.java,
+        )
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.OK)
+        assertThat(resp.body!!["total"]).isEqualTo(3)
+        @Suppress("UNCHECKED_CAST")
+        val items = resp.body!!["items"] as List<Map<String, Any>>
+        assertThat(items).hasSize(3)
+        assertThat(items).allSatisfy { item ->
+            assertThat(item["source_system"]).isEqualTo("EPIC")
+        }
+    }
+
+    @Test
+    fun `list filtered by source_system AND status returns intersection`() {
+        repeat(2) { repository.saveAndFlush(newMsg("EPIC", "epic-rcv-$it")) }
+        repeat(3) {
+            repository.saveAndFlush(
+                newMsg("EPIC", "epic-dead-$it", status = IngestedMessageStatus.DEAD_LETTER),
+            )
+        }
+        repeat(2) {
+            repository.saveAndFlush(
+                newMsg("CERNER", "cerner-dead-$it", status = IngestedMessageStatus.DEAD_LETTER),
+            )
+        }
+
+        val resp = rest.getForEntity(
+            url("/admin/messages?source_system=EPIC&status=DEAD_LETTER"),
+            Map::class.java,
+        )
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.OK)
+        assertThat(resp.body!!["total"]).isEqualTo(3)
+        @Suppress("UNCHECKED_CAST")
+        val items = resp.body!!["items"] as List<Map<String, Any>>
+        assertThat(items).hasSize(3)
+        assertThat(items).allSatisfy { item ->
+            assertThat(item["source_system"]).isEqualTo("EPIC")
+            assertThat(item["status"]).isEqualTo("DEAD_LETTER")
+        }
+    }
+
+    @Test
+    fun `list with blank source_system param falls through to unfiltered`() {
+        repeat(2) { repository.saveAndFlush(newMsg("EPIC", "e-$it")) }
+        repeat(3) { repository.saveAndFlush(newMsg("CERNER", "c-$it")) }
+        val resp = rest.getForEntity(
+            url("/admin/messages?source_system="),
+            Map::class.java,
+        )
+        assertThat(resp.statusCode).isEqualTo(HttpStatus.OK)
+        assertThat(resp.body!!["total"]).isEqualTo(5)
+    }
+
+    @Test
     fun `auth OFF allows requests without Authorization header`() {
         val headers = HttpHeaders()
         val resp = rest.exchange(
