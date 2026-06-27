@@ -1,0 +1,62 @@
+{{- if and .Values.ui.enabled .Values.ui.ingress.enabled -}}
+{{- /*
+Optional Ingress for the operator UI. Distinct from the HAPI ingress
+above so operators can run the UI on a separate hostname
+(`ops.subscription-service.example.com`) from the FHIR API.
+
+cert-manager integration: same pattern as the HAPI ingress. When
+`ui.ingress.certManager.enabled` is true the chart adds the appropriate
+cert-manager.io annotation and auto-populates the TLS secretName when
+the operator left it blank.
+*/ -}}
+{{- $cm := .Values.ui.ingress.certManager | default dict -}}
+{{- if and $cm.enabled (not $cm.clusterIssuer) (not $cm.issuer) -}}
+{{- fail "ui.ingress.certManager.enabled is true but neither clusterIssuer nor issuer is set. Set one or disable cert-manager integration." -}}
+{{- end -}}
+{{- $annotations := deepCopy (.Values.ui.ingress.annotations | default dict) -}}
+{{- if $cm.enabled -}}
+  {{- if $cm.clusterIssuer -}}
+    {{- $_ := set $annotations "cert-manager.io/cluster-issuer" $cm.clusterIssuer -}}
+  {{- else if $cm.issuer -}}
+    {{- $_ := set $annotations "cert-manager.io/issuer" $cm.issuer -}}
+  {{- end -}}
+{{- end -}}
+{{- $tls := list -}}
+{{- if .Values.ui.ingress.tls.enabled -}}
+  {{- $secretName := .Values.ui.ingress.tls.secretName -}}
+  {{- if and (not $secretName) $cm.enabled -}}
+    {{- $secretName = printf "%s-tls" (include "subscription-service.ui.fullname" .) -}}
+  {{- end -}}
+  {{- $tls = list (dict "hosts" (list .Values.ui.ingress.host) "secretName" $secretName) -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "subscription-service.ui.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ui.ingress.className }}
+  ingressClassName: {{ .Values.ui.ingress.className }}
+  {{- end }}
+  {{- with $tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ui.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ui.ingress.path }}
+            pathType: {{ .Values.ui.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "subscription-service.ui.fullname" . }}
+                port:
+                  number: {{ .Values.ui.service.port }}
+{{- end }}

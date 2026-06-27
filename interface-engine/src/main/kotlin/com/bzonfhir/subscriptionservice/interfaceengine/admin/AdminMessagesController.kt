@@ -53,6 +53,7 @@ class AdminMessagesController(
     @GetMapping
     fun list(
         @RequestParam(required = false) status: String?,
+        @RequestParam(name = "source_system", required = false) sourceSystem: String?,
         @RequestParam(required = false, defaultValue = "50") limit: Int,
         @RequestParam(required = false, defaultValue = "0") offset: Int,
     ): ResponseEntity<Any> {
@@ -74,6 +75,11 @@ class AdminMessagesController(
             }
         }
 
+        // Per-interface drill-down (#401) -- when source_system is supplied
+        // the list is scoped to that system. Blank string means "no filter"
+        // (mirrors how we treat the status param).
+        val sourceSystemFilter: String? = sourceSystem?.takeIf { it.isNotBlank() }
+
         // Row-offset pagination via Spring Data's @Query method —
         // [IngestedMessageRepository.findAdminWindow] uses the standard
         // Pageable mechanism, and Hibernate translates the page's
@@ -84,8 +90,13 @@ class AdminMessagesController(
         // page-aligned (the typical UI navigation pattern). Arbitrary
         // offsets are clamped to the nearest lower page boundary; we
         // document this on the docs/admin-api.md.
-        val total: Long = statusFilter?.let { repository.countByStatus(it) }
-            ?: repository.count()
+        val total: Long = when {
+            sourceSystemFilter != null && statusFilter != null ->
+                repository.countBySourceSystemAndStatus(sourceSystemFilter, statusFilter)
+            sourceSystemFilter != null -> repository.countBySourceSystem(sourceSystemFilter)
+            statusFilter != null -> repository.countByStatus(statusFilter)
+            else -> repository.count()
+        }
 
         val items: List<IngestedMessage> = if (total == 0L) {
             emptyList()
@@ -95,10 +106,13 @@ class AdminMessagesController(
             )
             val pageNumber = cappedOffset / cappedLimit
             val pageable = PageRequest.of(pageNumber, cappedLimit, sort)
-            if (statusFilter != null) {
-                repository.findByStatus(statusFilter, pageable)
-            } else {
-                repository.findAllBy(pageable)
+            when {
+                sourceSystemFilter != null && statusFilter != null ->
+                    repository.findBySourceSystemAndStatus(sourceSystemFilter, statusFilter, pageable)
+                sourceSystemFilter != null ->
+                    repository.findBySourceSystem(sourceSystemFilter, pageable)
+                statusFilter != null -> repository.findByStatus(statusFilter, pageable)
+                else -> repository.findAllBy(pageable)
             }
         }
         // Page-aligned offset actually used (see Pageable construction above).
