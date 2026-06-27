@@ -1,8 +1,17 @@
-# pnpm v11+ reads these settings here. `onlyBuiltDependencies` plus
-# `allowBuilds: <pkg>: true` greenlight the three native-binary postinstalls
-# we depend on; `strictDepBuilds: false` keeps the install from failing CI
-# when any *other* package has an ignored script (default in pnpm v11 is
+# pnpm workspace + builder allowlist for the operator UI.
+#
+# `packages:` makes the Next.js app and packages/ui-extensions share
+# one lockfile and one node_modules — the FOSS UI depends on the
+# workspace copy via `"@bzonfhir/ui-extensions": "workspace:*"`.
+#
+# `onlyBuiltDependencies` plus `allowBuilds: <pkg>: true` greenlight
+# the three native-binary postinstalls we depend on;
+# `strictDepBuilds: false` keeps the install from failing CI when any
+# *other* package has an ignored script (default in pnpm v11 is
 # strict, which breaks Docker builds).
+packages:
+  - .
+  - packages/*
 onlyBuiltDependencies:
   - esbuild
   - sharp
