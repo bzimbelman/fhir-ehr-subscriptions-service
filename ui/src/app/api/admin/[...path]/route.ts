@@ -82,6 +82,32 @@ async function proxy(req: NextRequest, ctx: RouteContext): Promise<Response> {
     cache: "no-store",
   });
 
+  // Audit breadcrumb for state-changing actions (ticket #403). Proper
+  // AuditEvent emission against HAPI lands in #407; here we just make sure
+  // the breadcrumb exists in the UI server logs so operators can correlate
+  // "who did what" against the inbound HTTP record. We log AFTER the
+  // upstream call so the upstream status is part of the record.
+  if (
+    req.method === "POST" ||
+    req.method === "DELETE" ||
+    req.method === "PUT"
+  ) {
+    const subject = subPath || "/";
+    const auditLine = {
+      event: "ui_admin_action",
+      method: req.method,
+      path: subject,
+      upstream_status: upstream.status,
+      user:
+        session.user?.username ??
+        session.user?.email ??
+        session.user?.name ??
+        "unknown",
+      ts: new Date().toISOString(),
+    };
+    console.log(JSON.stringify(auditLine));
+  }
+
   // Stream the upstream body back, preserving status + the most relevant
   // headers. We deliberately do NOT forward Set-Cookie / WWW-Authenticate
   // (the admin API doesn't issue cookies; if it ever returns

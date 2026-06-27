@@ -18,10 +18,11 @@ export const NAV_LINKS: readonly NavLink[] = [
   { href: "/dashboard", label: "Dashboard", ticket: "#400" },
   { href: "/interfaces", label: "Interfaces", ticket: "#401" },
   { href: "/messages", label: "Messages", ticket: "#402" },
-  { href: "/subscriptions", label: "Subscriptions", ticket: "#403" },
-  { href: "/matchbox", label: "Matchbox", ticket: "#404" },
-  { href: "/settings", label: "Settings", ticket: "#405" },
-  { href: "/audit", label: "Audit", ticket: "#406" },
+  { href: "/dlq", label: "DLQ", ticket: "#403" },
+  { href: "/subscriptions", label: "Subscriptions", ticket: "#404" },
+  { href: "/matchbox", label: "Matchbox", ticket: "#405" },
+  { href: "/settings", label: "Settings", ticket: "#406" },
+  { href: "/audit", label: "Audit", ticket: "#407" },
 ] as const;
 
 export function Navigation() {
