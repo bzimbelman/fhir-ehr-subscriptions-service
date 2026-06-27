@@ -72,25 +72,26 @@ async function proxy(req: NextRequest, ctx: RouteContext): Promise<Response> {
     headers["Content-Type"] = contentType;
   }
 
+  const bodyText =
+    req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+
   const upstream = await fetch(upstreamUrl.toString(), {
     method: req.method,
     headers,
-    body:
-      req.method === "GET" || req.method === "HEAD"
-        ? undefined
-        : await req.text(),
+    body: bodyText,
     cache: "no-store",
   });
 
-  // Audit breadcrumb for state-changing actions (ticket #403). Proper
-  // AuditEvent emission against HAPI lands in #407; here we just make sure
-  // the breadcrumb exists in the UI server logs so operators can correlate
-  // "who did what" against the inbound HTTP record. We log AFTER the
-  // upstream call so the upstream status is part of the record.
+  // Audit breadcrumb for state-changing actions (tickets #403, #404).
+  // Proper AuditEvent emission against HAPI lands in #407; here we just
+  // make sure the breadcrumb exists in the UI server logs so operators
+  // can correlate "who did what" against the inbound HTTP record. We log
+  // AFTER the upstream call so the upstream status is part of the record.
   if (
     req.method === "POST" ||
     req.method === "DELETE" ||
-    req.method === "PUT"
+    req.method === "PUT" ||
+    req.method === "PATCH"
   ) {
     const subject = subPath || "/";
     const auditLine = {
@@ -133,3 +134,6 @@ export const GET = proxy;
 export const POST = proxy;
 export const PUT = proxy;
 export const DELETE = proxy;
+// Ticket #404: the status toggle uses PATCH; the proxy is shape-agnostic
+// so the same handler covers it.
+export const PATCH = proxy;
