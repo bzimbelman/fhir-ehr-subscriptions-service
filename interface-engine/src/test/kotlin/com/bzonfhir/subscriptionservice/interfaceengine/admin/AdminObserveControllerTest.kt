@@ -93,6 +93,8 @@ class AdminObserveControllerAuthOffTest {
         val body = resp.body!!
         assertThat(body["schema_version"]).isEqualTo("1.0")
         assertThat(body["service"]).asString().isNotBlank()
+        // Ticket #406 surfaces a build version on the Settings view.
+        assertThat(body["version"]).asString().isNotBlank()
         // Jackson decodes small JSON numbers as Integer; treat all numerics uniformly via Number.
         assertThat((body["uptime_seconds"] as Number).toLong()).isGreaterThanOrEqualTo(0L)
 
