@@ -1,0 +1,26 @@
+# Grafana datasource provisioning — auto-loaded at boot.
+#
+# Points Grafana at the bundled Prometheus container (same compose
+# network). The URL uses the docker-compose service name `prometheus`,
+# not localhost, because each container has its own loopback. Operators
+# don't need to click through the datasource setup UI on first launch —
+# this file IS the setup.
+#
+# See https://grafana.com/docs/grafana/latest/administration/provisioning/#data-sources
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # Explicit uid so the dashboard JSON files can reference it stably.
+    # Without this, Grafana assigns a random uid on first boot and the
+    # dashboards fall back to the default datasource — works, but the
+    # dashboard JSON would no longer be portable to a Grafana that has
+    # multiple datasources.
+    uid: subscription-service-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s

@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback configuration for the interface-engine (Epic #387, ticket #388).
+
+  Produces one JSON record per log line, in a Logstash/ECS-flavored layout:
+
+    {"@timestamp":"2026-06-26T17:42:12.345Z","level":"INFO","logger_name":"...",
+     "message":"...","thread_name":"main","correlation_id":"...",
+     "schema_version":"1.0", ...mdc fields..., "stack_trace":"..."}
+
+  Why JSON: today, tracing one HL7 message through the system means grep-ing
+  across 4 different log streams in 4 different formats. After this change,
+  every log line carries a `correlation_id` MDC field and one
+  `grep <correlation_id>` returns the full pipeline trace. Log aggregators
+  (Loki, Elastic, Datadog) all consume one-JSON-per-line natively.
+
+  Two profiles:
+    - prod (default, also `default`): compact JSON, one record per line.
+    - dev: pretty-printed JSON for human readability when running locally.
+
+  Field schema (documented in docs/observability/log-schema.md):
+
+    @timestamp     REQUIRED ISO 8601 UTC
+    level          REQUIRED
+    logger_name    REQUIRED
+    message        REQUIRED
+    thread_name    OPTIONAL
+    correlation_id REQUIRED on per-message log lines (set by MDC)
+    schema_version REQUIRED, currently "1.0"
+    stack_trace    REQUIRED when an exception is logged
+    mdc.*          OPTIONAL extension — any additional MDC keys
+
+  The companion ticket #397 will define the stability promise around field
+  names and add a CI gate that diffs the schema doc against the appender
+  output.
+-->
+<configuration scan="false">
+
+    <!-- Spring Boot's logging-system bridge injects log level + profile info
+         when `logback-spring.xml` (not `logback.xml`) is the bootstrap config.
+         We keep both file names supported by deferring to Spring's variable
+         substitution for `springProfile`. -->
+
+    <!-- Common JSON encoder. Defined once at the top and referenced from
+         each appender so prod/dev only differ in `prettyPrint`. -->
+    <property name="LOG_SCHEMA_VERSION" value="1.0" />
+
+    <!--
+      Production-shaped JSON appender. One record per line. log-aggregator-
+      friendly. `customFields` injects `schema_version` literally so every
+      record carries it without each call-site having to add it to the MDC.
+    -->
+    <springProfile name="!dev">
+        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Include MDC values as top-level fields. correlation_id
+                     (set by the MDC filters / Camel processor) lands here. -->
+                <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                <!-- Schema version pinned via customFields so it appears on
+                     every record without polluting the MDC. -->
+                <customFields>{"schema_version":"${LOG_SCHEMA_VERSION}"}</customFields>
+                <!-- Stack traces as a single `stack_trace` field. Default
+                     formatter trims uninformative reflection frames. -->
+                <includeContext>false</includeContext>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!--
+      Developer-friendly profile. Same field set, but pretty-printed so
+      multi-line JSON is readable when tailing a local docker-compose stack.
+      Off by default; enable via SPRING_PROFILES_ACTIVE=dev or
+      `-Dspring.profiles.active=dev`.
+    -->
+    <springProfile name="dev">
+        <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeMdcKeyName>correlation_id</includeMdcKeyName>
+                <customFields>{"schema_version":"${LOG_SCHEMA_VERSION}"}</customFields>
+                <includeContext>false</includeContext>
+                <jsonGeneratorDecorator
+                    class="net.logstash.logback.decorate.PrettyPrintingJsonGeneratorDecorator" />
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <!-- Default levels. Mirrors the `logging.level.*` block in application.yaml;
+         leaving Spring Boot to apply property-driven overrides on top. -->
+    <logger name="com.bzonfhir.subscriptionservice" level="INFO" />
+    <logger name="org.apache.camel" level="INFO" />
+    <logger name="org.openehealth.ipf" level="INFO" />
+
+    <root level="INFO">
+        <appender-ref ref="STDOUT" />
+    </root>
+
+</configuration>

@@ -49,14 +49,83 @@ management:
   endpoints:
     web:
       exposure:
-        # Spring Boot 3.x exposes only /health by default; we add /info and /metrics
-        # so the Docker healthcheck + future Prometheus scrape both work.
-        include: health,info,metrics
+        # Spring Boot 3.x exposes only /health by default. We expose:
+        #   - health: liveness/readiness probes (k8s, Docker)
+        #   - info: build metadata
+        #   - metrics: queryable Micrometer metric names (debugging)
+        #   - prometheus: Prometheus exposition format for scraping (#389)
+        include: health,info,metrics,prometheus
   endpoint:
     health:
-      show-details: when-authorized
+      # ALWAYS show details on /actuator/health so the per-indicator
+      # status (matchbox, hapi, dlqBacklog, db, …) is visible to the
+      # Kubernetes probe consumers and to operators curling the endpoint
+      # for triage. The endpoint is on the same listener as the rest of
+      # the app — if you don't want clients seeing details, gate the
+      # actuator path at the ingress / NetworkPolicy layer rather than
+      # by stripping detail here. Ticket #393.
+      show-details: always
       probes:
+        # Exposes /actuator/health/liveness and /actuator/health/readiness
+        # as separate endpoints with their own indicator groupings below.
         enabled: true
+      group:
+        # Liveness probe (Kubernetes will RESTART a DOWN pod). Only
+        # JVM-internal stuff: if Matchbox is unreachable, restarting our
+        # pod doesn't help — Matchbox itself needs to come back. We
+        # include `ping` (always UP — proves the actuator endpoint is
+        # responsive) and `db` (a `SELECT 1` against the local Postgres
+        # via Spring Boot's built-in DataSourceHealthIndicator) so a
+        # totally wedged JVM or a corrupt local DB connection pool DOES
+        # trigger restart. Ticket #393.
+        liveness:
+          include: ping, db
+        # Readiness probe (Kubernetes will REMOVE a DOWN pod from
+        # Service endpoints but leave it running). Full health: if a
+        # downstream is unreachable, take this pod out of rotation so
+        # incoming traffic isn't sent to a pod that can't complete work.
+        # The `dlqBacklog` indicator NEVER returns DOWN (only DEGRADED),
+        # so including it here doesn't cause readiness flapping when
+        # operators leave DEAD_LETTER rows uncleared — it just surfaces
+        # the count in the response body for monitoring.
+        readiness:
+          include: ping, db, matchbox, hapi, dlqBacklog
+    # Spring Boot 3.4+ added an endpoint-level "access" gate that defaults
+    # to `read_only` for most endpoints — EXCEPT the prometheus endpoint,
+    # which defaults to `none` (registered but not reachable). Without
+    # this `read_only` override the /actuator/prometheus path 404s even
+    # when `management.endpoints.web.exposure.include` lists `prometheus`.
+    # Required for ticket #389.
+    prometheus:
+      access: read_only
+  prometheus:
+    # Spring Boot 3.5 added @ConditionalOnEnabledMetricsExport to the
+    # Prometheus auto-configuration; explicit enable required so the
+    # PrometheusMeterRegistry bean is created even though the registry
+    # JAR is on the classpath. Default is true at the framework level but
+    # we set it here so the contract is documented + local-dev overrides
+    # have one obvious knob to flip when debugging.
+    metrics:
+      export:
+        enabled: true
+  # Prometheus registry configuration (Epic #387, ticket #389). Histograms
+  # without explicit SLO buckets ship only count/sum/max, which is fine for
+  # alerts on rate / p99-vs-baseline but useless for cross-percentile
+  # comparison. Turn on percentile histograms globally for the custom
+  # timers below so query-time percentile (`histogram_quantile`) works in
+  # Prometheus without a separate "summary" type. Cost is modest — one
+  # bucket counter per default-bucket per timer.
+  metrics:
+    distribution:
+      percentiles-histogram:
+        interface_engine.transform.duration: true
+        interface_engine.hapi_post.duration: true
+        interface_engine.received_to_delivered: true
+    tags:
+      # Static application tag on every metric so a single Prometheus can
+      # scrape multiple services and disambiguate via `application="..."`.
+      # Matches the convention HAPI's own Micrometer setup uses.
+      application: ${spring.application.name}
 
 logging:
   level:
@@ -64,8 +133,63 @@ logging:
     com.bzonfhir.subscriptionservice: INFO
     org.apache.camel: INFO
     org.openehealth.ipf: INFO
+  # JSON log layout via Logback (Epic #387, ticket #388). The actual encoder
+  # is configured in `logback-spring.xml` on the classpath; Spring Boot
+  # picks that file up automatically when it's present. We keep the
+  # `logging.level.*` block here so SPRING_PROFILES_ACTIVE, env-var
+  # overrides, and the rest of Spring Boot's logging-property handling
+  # still work — only the appender/encoder is replaced.
+  #
+  # To run with pretty-printed logs locally: SPRING_PROFILES_ACTIVE=dev.
+  # The `dev` profile is wired in logback-spring.xml.
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry distributed tracing (Epic #387, ticket #394).
+#
+# The OTel SDK reads `OTEL_*` env vars on its own via
+# AutoConfiguredOpenTelemetrySdk. We ALSO expose the same knobs here as
+# Spring properties (`otel.*`) so they can be overridden via
+# @TestPropertySource and application-${profile}.yaml. The OtelConfig
+# bean bridges the two via addPropertiesCustomizer.
+#
+# Default is OFF (no spans, no exporter, no overhead). Operator flips
+# OTEL_SDK_DISABLED=false (or otel.sdk.disabled=false) and sets an
+# endpoint to turn tracing on.
+#
+# Relevant knobs:
+#   otel.sdk.disabled (default true here — explicit OFF)
+#   otel.exporter.otlp.endpoint
+#   otel.service.name (defaulted to subscription-service-interface-engine in OtelConfig)
+#   otel.resource.attributes (e.g. deployment.environment=prod)
+# ---------------------------------------------------------------------------
+otel:
+  sdk:
+    disabled: ${OTEL_SDK_DISABLED:true}
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:}
+  service:
+    name: ${OTEL_SERVICE_NAME:subscription-service-interface-engine}
+  resource:
+    attributes: ${OTEL_RESOURCE_ATTRIBUTES:}
 
 subscription-service:
+  # Observability config (Epic #387).
+  # ticket #389: Prometheus metrics. The custom-metrics emitters are unconditional
+  # (they're cheap and the registry handles unused metrics gracefully), but the
+  # DlqSizeGauge's scheduled poll IS conditional — operators in non-Prometheus
+  # environments can flip `enabled` off to skip the DB SELECT every poll
+  # interval. Default ON.
+  observability:
+    metrics:
+      enabled: ${SUB_SERVICE_METRICS_ENABLED:true}
+      # DlqSizeGauge poll interval (ms). Default 30s — chart scrapes at 30s
+      # by default so one poll per scrape is the right rhythm. Lower to 5s
+      # for high-frequency dashboards; raise to 60s to reduce DB load.
+      dlq-poll-ms: ${SUB_SERVICE_METRICS_DLQ_POLL_MS:30000}
+      # Initial delay before the first DlqSizeGauge poll. Kept short so a
+      # freshly-started pod reports a real value within ~1s of readiness.
+      dlq-poll-initial-ms: ${SUB_SERVICE_METRICS_DLQ_POLL_INITIAL_MS:1000}
   # MLLP listener port. Override with MLLP_PORT env var. 2575 is the de-facto
   # default for HL7v2 MLLP in the IPF / hapi-test-panel community.
   mllp:

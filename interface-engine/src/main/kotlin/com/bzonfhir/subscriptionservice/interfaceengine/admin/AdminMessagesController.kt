@@ -195,6 +195,12 @@ data class IngestedMessageSummary(
     @JsonProperty("last_attempt_at") val lastAttemptAt: OffsetDateTime?,
     @JsonProperty("last_error") val lastError: String?,
     @JsonProperty("delivered_at") val deliveredAt: OffsetDateTime?,
+    /**
+     * Correlation id for this row (Epic #387, ticket #388). Operators paste
+     * this into `kubectl logs ... | grep` to pull the full pipeline trace
+     * for a single message. Nullable for pre-V003 rows.
+     */
+    @JsonProperty("correlation_id") val correlationId: String?,
 )
 
 /**
@@ -216,6 +222,8 @@ data class IngestedMessageDetail(
     @JsonProperty("next_attempt_at") val nextAttemptAt: OffsetDateTime?,
     @JsonProperty("last_error") val lastError: String?,
     @JsonProperty("delivered_at") val deliveredAt: OffsetDateTime?,
+    /** See [IngestedMessageSummary.correlationId]. */
+    @JsonProperty("correlation_id") val correlationId: String?,
 )
 
 data class ListResponse(
@@ -237,6 +245,7 @@ internal fun IngestedMessage.toSummary() = IngestedMessageSummary(
     lastAttemptAt = lastAttemptAt,
     lastError = lastError,
     deliveredAt = deliveredAt,
+    correlationId = correlationId,
 )
 
 internal fun IngestedMessage.toDetail() = IngestedMessageDetail(
@@ -254,4 +263,5 @@ internal fun IngestedMessage.toDetail() = IngestedMessageDetail(
     nextAttemptAt = nextAttemptAt,
     lastError = lastError,
     deliveredAt = deliveredAt,
+    correlationId = correlationId,
 )
