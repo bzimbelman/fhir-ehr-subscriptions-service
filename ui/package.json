@@ -17,6 +17,7 @@
     "e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@bzonfhir/ui-extensions": "workspace:*",
     "next": "15.5.19",
     "next-auth": "5.0.0-beta.25",
     "react": "19.0.0",
