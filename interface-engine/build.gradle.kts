@@ -82,12 +82,16 @@ dependencies {
     // engine's receive path used to be inline Camel-MLLP code under
     // .routes.IngestRoutes; that work moved into the plugin module so the
     // SPI is self-demonstrating. Pulling the plugin in here activates its
-    // Spring Boot auto-config (see
-    // plugins-builtin/hl7v2-mllp/.../Hl7V2MllpAutoConfiguration.kt and
-    // its AutoConfiguration.imports descriptor) which registers the
-    // Hl7V2MllpIngestSource bean — the IngestSourceRegistry below
+    // Spring Boot auto-config (see Hl7V2MllpAutoConfiguration.kt) which
+    // registers the Hl7V2MllpIngestSource bean — IngestSourceRegistry
     // discovers it and starts it at boot.
     implementation(project(":plugins-builtin:hl7v2-mllp"))
+
+    // Built-in observability enricher plugin (ticket #433, Epic #425). The
+    // standard log-field / metric-label catalog moved into this plugin.
+    // Transport (this module) hosts the SDK + Prometheus actuator; the
+    // plugin owns the "what gets stamped" decisions.
+    implementation(project(":plugins-builtin:observability-otel"))
 
     // Spring Boot core + actuator for /actuator/health.
     implementation("org.springframework.boot:spring-boot-starter")
