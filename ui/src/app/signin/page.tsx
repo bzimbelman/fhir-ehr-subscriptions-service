@@ -27,6 +27,12 @@ export default function SignInPage() {
           See <code>docs/auth.md</code> in the repo root for per-provider
           recipes (Keycloak, Auth0, Okta, Authentik, etc.).
         </p>
+        <p className="text-sm text-gray-700">
+          The dashboard also needs <code>ADMIN_API_BASE_URL</code> and{" "}
+          <code>ADMIN_API_BEARER_TOKEN</code> to call the interface-engine
+          admin endpoints -- without those, the dashboard cards will render
+          per-section errors but the page itself stays up.
+        </p>
       </div>
     );
   }
@@ -40,7 +46,7 @@ export default function SignInPage() {
       <form
         action={async () => {
           "use server";
-          await signIn("oidc", { redirectTo: "/" });
+          await signIn("oidc", { redirectTo: "/dashboard" });
         }}
       >
         <button
