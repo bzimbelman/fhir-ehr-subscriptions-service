@@ -1,0 +1,14 @@
+# pnpm v11+ reads these settings here. `onlyBuiltDependencies` plus
+# `allowBuilds: <pkg>: true` greenlight the three native-binary postinstalls
+# we depend on; `strictDepBuilds: false` keeps the install from failing CI
+# when any *other* package has an ignored script (default in pnpm v11 is
+# strict, which breaks Docker builds).
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+  - unrs-resolver
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+strictDepBuilds: false
