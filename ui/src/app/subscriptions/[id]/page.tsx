@@ -15,7 +15,7 @@ interface PageProps {
 }
 
 export default async function SubscriptionDetailPage({ params }: PageProps) {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

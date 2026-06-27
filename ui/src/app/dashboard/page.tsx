@@ -29,7 +29,7 @@ import { DashboardView } from "@/components/DashboardView";
  * is the more useful message for an operator setting up the deployment.
  */
 export default async function DashboardPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

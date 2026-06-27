@@ -17,7 +17,7 @@ import { DlqView } from "@/components/DlqView";
  * proxied through /api/admin/[...path].
  */
 export default async function DlqPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

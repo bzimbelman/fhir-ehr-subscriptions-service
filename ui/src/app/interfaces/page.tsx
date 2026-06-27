@@ -15,7 +15,7 @@ import { InterfacesListView } from "@/components/InterfacesListView";
  * which is the same proxy route the dashboard uses.
  */
 export default async function InterfacesPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();
