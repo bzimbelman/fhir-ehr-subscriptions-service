@@ -225,7 +225,13 @@ More components will arrive as the project grows.
 
 ## Reference deployment
 
-The maintainer runs a reference instance at `https://subscription-service.bzonfhir.com` for development and testing. That URL is the maintainer's environment — your deployment will have its own URL. Don't point production traffic at it; it has no SLA and gets destroyed and rebuilt frequently.
+The maintainer runs a reference instance for development and testing. That deployment is the maintainer's environment — your deployment will have its own URL. Don't point production traffic at it; it has no SLA and gets destroyed and rebuilt frequently.
+
+| Component | URL | Notes |
+| --- | --- | --- |
+| HAPI FHIR R4 (subscription-service) | `https://subscription-service.bzonfhir.com` | JWT-gated; see `docs/auth.md`. |
+| Operator UI (ticket #423) | `https://subscription-service-ui.bzonfhir.com` | OIDC-protected (Keycloak Development realm). See `docs/auth-testing.md` for the test-user credentials. |
+| Keycloak (IdP) | `https://keycloak.bzonfhir.com/auth/realms/Development` | Realm: `Development`. Client: `subscription-service-ui`. |
 
 ## Contributing
 
