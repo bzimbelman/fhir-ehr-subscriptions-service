@@ -32,4 +32,11 @@
 
 rootProject.name = "subscription-service"
 
-include("plugins-spi", "interface-engine")
+include(
+    "plugins-spi",
+    "interface-engine",
+    // Ticket #432 (Epic #425). First built-in plugin: re-expresses the
+    // in-tree HAPI AuditEventInterceptor as a Kotlin/SPI-shaped plugin
+    // that implements AuditEventEnricher.
+    "plugins-builtin:audit-event-fhir",
+)
