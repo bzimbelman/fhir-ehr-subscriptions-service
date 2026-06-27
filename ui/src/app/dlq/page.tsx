@@ -2,6 +2,11 @@ import { redirect } from "next/navigation";
 import { auth, isOidcConfigured } from "@/lib/auth";
 import { DlqView } from "@/components/DlqView";
 
+// Ticket #423: force-dynamic so OIDC env is read at REQUEST time, not
+// build time. Next.js otherwise prerenders the unauthenticated redirect
+// branch and the page never re-checks auth() at runtime.
+export const dynamic = "force-dynamic";
+
 /**
  * Operator DLQ viewer (Epic #398, ticket #403).
  *
@@ -17,7 +22,7 @@ import { DlqView } from "@/components/DlqView";
  * proxied through /api/admin/[...path].
  */
 export default async function DlqPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();
