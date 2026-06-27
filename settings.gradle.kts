@@ -34,16 +34,21 @@ rootProject.name = "subscription-service"
 
 include("plugins-spi", "interface-engine")
 
-// Built-in plugins (Epic #425, ticket #431).
+// Built-in plugins (Epic #425).
 //
 // Each built-in plugin lives under plugins-builtin/<id>/ and is its own
 // Gradle module so its dependency footprint stays self-contained — the
-// MLLP plugin pulls in Camel + HAPI v2; future plugins (e.g. FHIR REST
-// polling) won't drag those in. Spring Boot auto-config under each
-// plugin's META-INF/spring/ wires the plugin into the interface-engine
-// runtime when the plugin's JAR is on the classpath.
+// MLLP plugin pulls in Camel + HAPI v2; the observability plugin pulls in
+// only plugins-spi. Spring Boot auto-config under each plugin's
+// META-INF/spring/ wires the plugin into the interface-engine runtime
+// when the plugin's JAR is on the classpath.
 //
-// First built-in: ticket #431 — the HL7 v2 MLLP listener refactored into
-// an IngestSource SPI implementation (was inline in interface-engine).
+// Ticket #431 — HL7 v2 MLLP listener as an IngestSource plugin.
 include("plugins-builtin:hl7v2-mllp")
 project(":plugins-builtin:hl7v2-mllp").projectDir = file("plugins-builtin/hl7v2-mllp")
+
+// Ticket #433 — OTel + Prometheus enrichment as an ObservabilityEnricher plugin.
+// Transport stays in interface-engine; the plugin owns "what gets stamped".
+include("plugins-builtin:observability-otel")
+project(":plugins-builtin:observability-otel").projectDir =
+    file("plugins-builtin/observability-otel")
