@@ -21,11 +21,12 @@ vi.mock("next/link", () => ({
 import { Navigation, NAV_LINKS } from "@/components/Navigation";
 
 describe("Navigation", () => {
-  it("renders the six expected nav links", () => {
+  it("renders the seven expected nav links", () => {
     render(<Navigation />);
 
     const expectedLabels = [
       "Dashboard",
+      "Interfaces",
       "Messages",
       "Subscriptions",
       "Matchbox",
@@ -38,7 +39,7 @@ describe("Navigation", () => {
   });
 
   it("exposes ticket metadata for each placeholder route", () => {
-    expect(NAV_LINKS).toHaveLength(6);
+    expect(NAV_LINKS).toHaveLength(7);
     for (const link of NAV_LINKS) {
       expect(link.ticket).toMatch(/^#\d+$/);
       expect(link.href).toMatch(/^\//);
