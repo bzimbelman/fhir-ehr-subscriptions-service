@@ -1,31 +1,23 @@
+"use client";
+
 import Link from "next/link";
+import { useExtensions } from "@/extensions/useExtensions";
 
 /**
- * Left-nav shell for the operator console. The links point at placeholder
- * routes today; subsequent UI tickets land the actual screens at the URLs
- * listed here. Renaming any of these requires a coordinated change with the
- * ticket that owns the page.
+ * Left-nav shell for the operator console. Reads the navigation
+ * entries from the `UiExtensionRegistry` -- this used to be a
+ * hard-coded `NAV_LINKS` constant; ticket #437 moved it into the
+ * extension registry so commercial bundles can register additional
+ * nav links beside the FOSS builtins without forking this file.
+ *
+ * The registry filters by entitlement, so a commercial nav link
+ * without a matching license simply doesn't appear here. Links are
+ * sorted by `order` (low first) with ties broken alphabetically by
+ * displayName.
  */
-
-interface NavLink {
-  href: string;
-  label: string;
-  /** The ticket that lands the real content at this route. */
-  ticket: string;
-}
-
-export const NAV_LINKS: readonly NavLink[] = [
-  { href: "/dashboard", label: "Dashboard", ticket: "#400" },
-  { href: "/interfaces", label: "Interfaces", ticket: "#401" },
-  { href: "/messages", label: "Messages", ticket: "#402" },
-  { href: "/dlq", label: "DLQ", ticket: "#403" },
-  { href: "/subscriptions", label: "Subscriptions", ticket: "#404" },
-  { href: "/matchbox", label: "Matchbox", ticket: "#405" },
-  { href: "/settings", label: "Settings", ticket: "#406" },
-  { href: "/audit", label: "Audit", ticket: "#407" },
-] as const;
-
 export function Navigation() {
+  const { navLinks } = useExtensions();
+
   return (
     <nav
       aria-label="Primary"
@@ -35,13 +27,13 @@ export function Navigation() {
         subscription-service
       </div>
       <ul className="space-y-1">
-        {NAV_LINKS.map((link) => (
-          <li key={link.href}>
+        {navLinks.map((link) => (
+          <li key={link.id}>
             <Link
               href={link.href}
               className="block rounded px-3 py-2 text-sm text-gray-800 hover:bg-gray-200"
             >
-              {link.label}
+              {link.displayName}
             </Link>
           </li>
         ))}
