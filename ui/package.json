@@ -1,0 +1,41 @@
+{
+  "name": "subscription-service-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Operator console for subscription-service. Next.js + NextAuth.js (OIDC).",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "15.5.19",
+    "next-auth": "5.0.0-beta.25",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "3.2.0",
+    "@tailwindcss/postcss": "4.3.1",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.1.0",
+    "@types/node": "22.10.5",
+    "@types/react": "19.0.4",
+    "@types/react-dom": "19.0.2",
+    "@vitejs/plugin-react": "4.3.4",
+    "eslint": "9.18.0",
+    "eslint-config-next": "15.5.19",
+    "jsdom": "26.0.0",
+    "tailwindcss": "4.3.1",
+    "typescript": "5.7.3",
+    "vitest": "2.1.8"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=22"
+  }
+}
