@@ -3,6 +3,15 @@
 Operator-facing REST surface for inspecting, retrying, and purging messages in
 the durable inbound store created by Epic #378.
 
+The primary consumer of these endpoints is the **operator UI** (Epic #398,
+in `./ui/`) — a Next.js console that proxies every admin call through a
+server-side `/api/admin/*` route so the bearer token never reaches the
+browser. The UI is shipped as a docker-compose service (port 3000) and as a
+Helm chart sibling Deployment (`ui.enabled` toggle); see the [Deployment
+targets](../README.md#deployment-targets) section of the root README for
+operator-facing setup. The endpoints below remain fully callable via curl
+or any other HTTP client — the UI is a convenience layer, not a gate.
+
 The endpoints live on the interface engine's existing HTTP port (default
 **8090** — the same port that serves `/actuator/health`) under the `/admin/`
 prefix. There is no separate listener, no separate Service, no separate
