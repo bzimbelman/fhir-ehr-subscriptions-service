@@ -1,0 +1,24 @@
+{{- if .Values.ui.enabled -}}
+{{- /*
+ClusterIP Service for the operator UI. Browser traffic enters via the
+optional Ingress in ui-ingress.yaml; in-cluster smoke tests can
+`kubectl port-forward svc/<release>-ui 3000:3000`.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "subscription-service.ui.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+spec:
+  type: {{ .Values.ui.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.ui.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "subscription-service.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+{{- end }}
