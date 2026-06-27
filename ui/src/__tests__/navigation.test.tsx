@@ -21,12 +21,13 @@ vi.mock("next/link", () => ({
 import { Navigation, NAV_LINKS } from "@/components/Navigation";
 
 describe("Navigation", () => {
-  it("renders the six expected nav links", () => {
+  it("renders the seven expected nav links", () => {
     render(<Navigation />);
 
     const expectedLabels = [
       "Dashboard",
       "Messages",
+      "DLQ",
       "Subscriptions",
       "Matchbox",
       "Settings",
@@ -38,10 +39,17 @@ describe("Navigation", () => {
   });
 
   it("exposes ticket metadata for each placeholder route", () => {
-    expect(NAV_LINKS).toHaveLength(6);
+    expect(NAV_LINKS).toHaveLength(7);
     for (const link of NAV_LINKS) {
       expect(link.ticket).toMatch(/^#\d+$/);
       expect(link.href).toMatch(/^\//);
     }
+  });
+
+  it("links DLQ to /dlq for ticket #403", () => {
+    const dlq = NAV_LINKS.find((l) => l.label === "DLQ");
+    expect(dlq).toBeDefined();
+    expect(dlq?.href).toBe("/dlq");
+    expect(dlq?.ticket).toBe("#403");
   });
 });
