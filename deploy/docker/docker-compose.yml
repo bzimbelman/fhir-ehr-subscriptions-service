@@ -160,8 +160,12 @@ services:
 
   interface-engine:
     build:
-      context: ../../interface-engine
-      dockerfile: Dockerfile
+      # Ticket #430: context moved from interface-engine/ to the repo root
+      # because interface-engine now depends on the sibling :plugins-spi
+      # Gradle module. The multi-project build needs both subprojects'
+      # sources on disk, so the build context must include them.
+      context: ../..
+      dockerfile: interface-engine/Dockerfile
     image: ${INTERFACE_ENGINE_IMAGE:-subscription-service/interface-engine:dev}
     container_name: subscription-service-interface-engine
     restart: unless-stopped
