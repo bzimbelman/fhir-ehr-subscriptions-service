@@ -69,6 +69,15 @@ dependencyManagement {
 }
 
 dependencies {
+    // plugins-spi (ticket #430, Epic #425) — the public extension surface.
+    // Bringing it in here doesn't activate any plugin yet; this dep just
+    // gives future stories in Epic #425 a compile-time path to refactor
+    // the existing ingest / observability / audit code into SPI-shaped
+    // bindings without further wiring changes. The SPI module itself is
+    // dep-light (Kotlin stdlib only; HAPI is compileOnly there) so
+    // pulling it in doesn't bloat the runtime classpath.
+    implementation(project(":plugins-spi"))
+
     // Spring Boot core + actuator for /actuator/health.
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-web")
