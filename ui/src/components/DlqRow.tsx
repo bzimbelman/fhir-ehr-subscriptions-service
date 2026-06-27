@@ -17,9 +17,11 @@ import { relativeTime } from "@/lib/dashboardMetrics";
  * Click on the row body (not the checkbox) toggles the expansion. The
  * checkbox controls selection for bulk actions.
  *
- * NOTE: clicking the link icon goes to /messages/{id} which is a
- * placeholder route landing in ticket #402. For v1, the inline expansion
- * is the operator's primary "see the payload" surface.
+ * NOTE: clicking the row id toggles the inline expansion (this row's
+ * primary "see the payload" surface). The dedicated single-message
+ * viewer at /messages/{id} (ticket #402) is the cross-page deep dive;
+ * we don't link to it from inside the table to keep one consistent
+ * triage flow per page.
  */
 interface DlqRowProps {
   row: MessageSummary;
