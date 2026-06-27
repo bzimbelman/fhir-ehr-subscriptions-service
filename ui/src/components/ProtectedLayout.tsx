@@ -19,7 +19,7 @@ export async function ProtectedLayout({
 }: {
   children: React.ReactNode;
 }) {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

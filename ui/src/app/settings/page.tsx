@@ -14,7 +14,7 @@ import { SettingsView } from "@/components/SettingsView";
  * /api/admin/[...path] proxy.
  */
 export default async function SettingsPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

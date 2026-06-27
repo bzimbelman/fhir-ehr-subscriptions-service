@@ -13,7 +13,7 @@ import { AuditView } from "@/components/AuditView";
  * /api/admin/[...path] proxy (which forwards to `/admin/audit*`).
  */
 export default async function AuditPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

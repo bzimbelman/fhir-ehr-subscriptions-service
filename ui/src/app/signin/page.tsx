@@ -8,7 +8,7 @@ import { isOidcConfigured, signIn } from "@/lib/auth";
  * NextAuth handles the redirect to the IdP.
  */
 export default function SignInPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     return (
       <div className="mx-auto max-w-2xl space-y-4">
         <h1 className="text-2xl font-semibold">OIDC is not configured</h1>
