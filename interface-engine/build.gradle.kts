@@ -93,6 +93,19 @@ dependencies {
     // plugin owns the "what gets stamped" decisions.
     implementation(project(":plugins-builtin:observability-otel"))
 
+    // Built-in FHIR R4 polling IngestSource plugin (ticket #434, Epic #425).
+    // Foundation for the Athena vendor profile in Epic #426 (Athena
+    // exposes some data via standard FHIR R4) and any future polling-
+    // based source. Pulling the plugin in here activates its Spring
+    // Boot auto-config (see FhirPollingAutoConfiguration.kt) which
+    // registers one FhirPollingIngestSource bean per configured source
+    // — IngestSourceRegistry discovers them and starts them at boot.
+    //
+    // No sources are configured out of the box; the plugin is dormant
+    // until an operator adds entries under
+    // `subscription-service.ingest.fhir-polling.sources[]`.
+    implementation(project(":plugins-builtin:fhir-polling"))
+
     // Spring Boot core + actuator for /actuator/health.
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-web")

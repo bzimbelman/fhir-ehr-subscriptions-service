@@ -260,6 +260,12 @@ class IngestSourceRegistry(
         when (protocol) {
             "hl7v2-mllp" -> IngestedMessageSourceProtocol.HL7V2_MLLP
             "fhir-rest" -> IngestedMessageSourceProtocol.FHIR_REST
+            // Ticket #434 — the fhir-polling plugin emits messages with
+            // this protocol string. They share the FHIR_REST persisted
+            // column value because, from the engine's perspective, both
+            // are "FHIR resources delivered over HTTP" — replay /
+            // mapping uses the same parser family.
+            "fhir-r4-polling" -> IngestedMessageSourceProtocol.FHIR_REST
             "ehr-native-api" -> IngestedMessageSourceProtocol.EHR_NATIVE_API
             else -> IngestedMessageSourceProtocol.OTHER
         }
