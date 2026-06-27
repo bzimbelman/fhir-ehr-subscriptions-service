@@ -1,0 +1,48 @@
+# Root .dockerignore — applies when a Docker build uses the repo root as
+# its context (currently: interface-engine/Dockerfile after ticket #430).
+#
+# Without this file every Docker build sends the full repo to the daemon
+# as build context (very large, slow). We allowlist the directories the
+# Dockerfile actually COPYs from and explicitly exclude common build
+# outputs and IDE clutter.
+
+# --- Exclude everything except the subprojects the Dockerfile copies --
+*
+
+# Allowlist files / dirs the Dockerfile references.
+!settings.gradle.kts
+!build.gradle.kts
+!interface-engine/
+!plugins-spi/
+
+# --- Sub-rules under the allowlisted dirs ---
+# Build outputs.
+interface-engine/build/
+interface-engine/out/
+interface-engine/.gradle/
+plugins-spi/build/
+plugins-spi/out/
+plugins-spi/.gradle/
+
+# IDE.
+**/.idea/
+**/*.iml
+**/.vscode/
+
+# OS.
+**/.DS_Store
+**/Thumbs.db
+
+# Logs.
+**/*.log
+**/logs/
+
+# Documentation that isn't part of the build artifact.
+interface-engine/README.md
+interface-engine/compose-snippet.yml
+plugins-spi/README.md
+
+# ca-cert/ is included intentionally (the Dockerfile copies it for the
+# optional corporate-CA injection), but the placeholder .gitkeep is
+# dropped so the COPY of `cert.pem` doesn't pick it up.
+interface-engine/ca-cert/.gitkeep
