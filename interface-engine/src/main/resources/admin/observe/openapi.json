@@ -182,6 +182,11 @@
             "type": "string",
             "example": "subscription-service-interface-engine"
           },
+          "version": {
+            "type": "string",
+            "description": "Build version of the running interface-engine. Surfaced on the Settings view (ticket #406).",
+            "example": "0.0.1-SNAPSHOT"
+          },
           "uptime_seconds": {
             "type": "integer",
             "format": "int64"
