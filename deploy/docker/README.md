@@ -8,7 +8,7 @@ For Kubernetes deployments, see [`../k8s/`](../k8s/) instead.
 
 ```
 deploy/docker/
-├── docker-compose.yml   ← all four services (Postgres, HAPI, Matchbox, interface-engine)
+├── docker-compose.yml   ← five services (Postgres, HAPI, Matchbox, interface-engine, operator UI)
 ├── .env.example         ← environment variables
 ├── postgres-data/       ← bind-mount target for Postgres data (gitignored)
 └── README.md            ← you are here
@@ -46,8 +46,15 @@ Default host ports:
 - Matchbox: `18081`
 - Interface engine HTTP (actuator): `18090`
 - Interface engine MLLP: `2575`
+- Operator UI: `3000`
 
 Matchbox v3 exposes FHIR under the `/matchboxv3/fhir` context path, NOT `/fhir`.
+
+The operator UI (Next.js + NextAuth) is built locally from `../../ui/` and
+proxies all admin API calls through `/api/admin/*` server routes so the
+bearer token stays out of the browser. Set `OIDC_ISSUER`, `OIDC_CLIENT_ID`,
+`OIDC_CLIENT_SECRET`, and `AUTH_SECRET` in `.env` to wire real sign-in;
+until then the UI boots and `/signin` shows a "configure OIDC first" banner.
 
 ## Persistent data
 
