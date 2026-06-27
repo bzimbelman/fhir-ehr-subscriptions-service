@@ -1,6 +1,14 @@
 import type { Metadata } from "next";
 import { Navigation } from "@/components/Navigation";
+import { Footer } from "@/extensions/Footer";
+import { LicenseProvider } from "@/extensions/LicenseProvider";
+import { seedDefaultRegistryWithBuiltins } from "@/extensions/defaultRegistrySetup";
+import { loadLicenseState } from "@/lib/license/licenseClient";
 import "./globals.css";
+
+// Wire the FOSS builtin manifest into the process-wide registry
+// once at module load. Idempotent -- safe across hot reloads.
+seedDefaultRegistryWithBuiltins();
 
 export const metadata: Metadata = {
   title: "subscription-service operator console",
@@ -23,18 +31,41 @@ export const metadata: Metadata = {
  */
 export const dynamic = "force-dynamic";
 
-export default function RootLayout({
+/**
+ * Resolve the boot-time license state. Errors fall back to FOSS so a
+ * license-server outage cannot prevent the UI from rendering -- the
+ * `loadLicenseState()` impl already encodes that policy for any
+ * customer who has actually configured a key. Wrapping in a
+ * try/catch here belt-and-suspenders the case where the cache file
+ * itself is corrupt or the surrounding Node environment is unusable.
+ */
+async function resolveInitialLicenseState() {
+  try {
+    return await loadLicenseState();
+  } catch {
+    return { kind: "foss" as const, reason: "no-license-key" as const };
+  }
+}
+
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const initialLicenseState = await resolveInitialLicenseState();
+
   return (
     <html lang="en">
       <body className="min-h-screen bg-white text-gray-900">
-        <div className="flex min-h-screen">
-          <Navigation />
-          <main className="flex-1 p-6">{children}</main>
-        </div>
+        <LicenseProvider initialState={initialLicenseState}>
+          <div className="flex min-h-screen flex-col">
+            <div className="flex flex-1">
+              <Navigation />
+              <main className="flex-1 p-6">{children}</main>
+            </div>
+            <Footer />
+          </div>
+        </LicenseProvider>
       </body>
     </html>
   );

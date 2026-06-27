@@ -18,11 +18,22 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import { Navigation, NAV_LINKS } from "@/components/Navigation";
+import { Navigation } from "@/components/Navigation";
+import { LicenseProvider } from "@/extensions/LicenseProvider";
+import { builtinNavLinks } from "@/extensions/builtinManifests";
+import { seedDefaultRegistryWithBuiltins } from "@/extensions/defaultRegistrySetup";
+
+// The default registry is process-wide; seed the builtins so the
+// hook inside <Navigation /> has something to return.
+seedDefaultRegistryWithBuiltins();
 
 describe("Navigation", () => {
-  it("renders the eight expected nav links", () => {
-    render(<Navigation />);
+  it("renders the eight expected nav links via the registry", () => {
+    render(
+      <LicenseProvider>
+        <Navigation />
+      </LicenseProvider>,
+    );
 
     const expectedLabels = [
       "Dashboard",
@@ -39,18 +50,17 @@ describe("Navigation", () => {
     }
   });
 
-  it("exposes ticket metadata for each placeholder route", () => {
-    expect(NAV_LINKS).toHaveLength(8);
-    for (const link of NAV_LINKS) {
-      expect(link.ticket).toMatch(/^#\d+$/);
+  it("registry exposes 8 builtin nav links, each at an absolute path", () => {
+    expect(builtinNavLinks).toHaveLength(8);
+    for (const link of builtinNavLinks) {
       expect(link.href).toMatch(/^\//);
+      expect(link.kind).toBe("nav-link");
     }
   });
 
-  it("links DLQ to /dlq for ticket #403", () => {
-    const dlq = NAV_LINKS.find((l) => l.label === "DLQ");
+  it("DLQ nav link points at /dlq", () => {
+    const dlq = builtinNavLinks.find((l) => l.displayName === "DLQ");
     expect(dlq).toBeDefined();
     expect(dlq?.href).toBe("/dlq");
-    expect(dlq?.ticket).toBe("#403");
   });
 });
