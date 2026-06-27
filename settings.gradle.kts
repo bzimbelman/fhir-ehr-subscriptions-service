@@ -59,3 +59,13 @@ project(":plugins-builtin:observability-otel").projectDir =
 include("plugins-builtin:audit-event-fhir")
 project(":plugins-builtin:audit-event-fhir").projectDir =
     file("plugins-builtin/audit-event-fhir")
+
+// Ticket #434 — FHIR R4 polling as an IngestSource plugin. Foundation
+// for the Athena vendor profile in Epic #426 (Athena exposes some data
+// via standard FHIR R4) and any future polling-based source. Multiple
+// configured sources per plugin instance (one per entry in `sources[]`)
+// — a customer can poll Observation, Encounter, and DocumentReference
+// on independent cadences.
+include("plugins-builtin:fhir-polling")
+project(":plugins-builtin:fhir-polling").projectDir =
+    file("plugins-builtin/fhir-polling")
