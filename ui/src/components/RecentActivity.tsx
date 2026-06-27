@@ -5,10 +5,9 @@ import { relativeTime } from "@/lib/dashboardMetrics";
 /**
  * Right column of the two-column section: the last 10 ingested messages.
  *
- * Each row links to `/messages/{id}` which is the placeholder route ticket
- * #402 will replace with the real message-detail viewer. Rendering the link
- * unconditionally is fine -- the destination is part of the agreed
- * information architecture from #399.
+ * Each row links to `/messages/{id}` — the real message-detail viewer
+ * (ticket #402). Rendering the link unconditionally is fine; the
+ * destination is part of the agreed information architecture from #399.
  *
  * `source_id` is HL7 MSH-10 and can be unbounded (vendors send absurd
  * strings); we truncate visually but keep the full value in `title` for
