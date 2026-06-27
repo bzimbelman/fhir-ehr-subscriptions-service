@@ -8,15 +8,26 @@ FROM gradle:8.11.1-jdk21 AS build
 
 WORKDIR /work
 
+# Build context note: ticket #430 moved this image's build context to the
+# REPO ROOT (was previously `interface-engine/`). The reason is the new
+# multi-project Gradle setup: `interface-engine` now depends on
+# `:plugins-spi` (a sibling Gradle module at the repo root), and the
+# multi-project resolution requires the root `settings.gradle.kts` plus
+# both subprojects' sources on disk. docker-compose / Helm builds that
+# previously used `context: interface-engine/` were updated to
+# `context: .` and `dockerfile: interface-engine/Dockerfile`. See
+# `deploy/docker/docker-compose.yml` for the canonical form.
+
 # Optional corporate-MITM CA injection. Off by default. To use:
 #   cp ~/.netskope-ca/full-chain.pem interface-engine/ca-cert/cert.pem
-#   docker build -t subscription-service/interface-engine:dev interface-engine/
+#   docker build -t subscription-service/interface-engine:dev \
+#       -f interface-engine/Dockerfile .
 # The COPY is conditional: if ca-cert/cert.pem is absent the import is a no-op.
 # The file may contain a CA chain (multiple PEM blocks); we split it and import
 # each cert into the JVM truststore individually because `keytool -importcert`
 # only reads the FIRST PEM block from a file. The OS truststore (`update-ca-
 # certificates`) handles chains correctly on its own.
-COPY ca-cert/ /tmp/ca-cert/
+COPY interface-engine/ca-cert/ /tmp/ca-cert/
 RUN if [ -s /tmp/ca-cert/cert.pem ]; then \
         cp /tmp/ca-cert/cert.pem /usr/local/share/ca-certificates/extra-ca.crt \
         && update-ca-certificates ; \
@@ -36,13 +47,18 @@ RUN if [ -s /tmp/ca-cert/cert.pem ]; then \
 
 # Copy only files that influence dependency resolution first; the Gradle layer
 # cache then survives unrelated source-code edits.
+#   - Root settings + build files (multi-project metadata)
+#   - Each subproject's build file
 COPY settings.gradle.kts build.gradle.kts ./
+COPY interface-engine/build.gradle.kts ./interface-engine/
+COPY plugins-spi/build.gradle.kts ./plugins-spi/
 RUN --mount=type=cache,target=/root/.gradle gradle --no-daemon --version
 
 # Now bring in the rest and build the executable jar.
-COPY src ./src
+COPY interface-engine/src ./interface-engine/src
+COPY plugins-spi/src ./plugins-spi/src
 RUN --mount=type=cache,target=/root/.gradle \
-    gradle --no-daemon clean bootJar -x test
+    gradle --no-daemon :interface-engine:clean :interface-engine:bootJar -x test
 
 # --- Stage 2: runtime --------------------------------------------------------
 # JRE 21 base. `-jammy` over `-alpine` because Camel MLLP / HAPI HL7v2 are not
@@ -58,7 +74,7 @@ RUN apt-get update \
 RUN useradd --system --uid 10001 --home /app --shell /usr/sbin/nologin app
 WORKDIR /app
 
-COPY --from=build /work/build/libs/*.jar /app/app.jar
+COPY --from=build /work/interface-engine/build/libs/*.jar /app/app.jar
 
 # 8090 = Spring Boot HTTP / actuator. 2575 = MLLP listener.
 EXPOSE 8090 2575
