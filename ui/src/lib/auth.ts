@@ -40,6 +40,11 @@ function buildConfig(): NextAuthConfig {
             clientId: env.clientId,
             clientSecret: env.clientSecret,
             authorization: { params: { scope: "openid profile email" } },
+            // Auth.js v5 defaults to PKCE-only when the provider supports
+            // it; strict OIDC providers (Keycloak in default config)
+            // require `state` per spec. Request both -- PKCE protects
+            // against code interception, `state` protects against CSRF.
+            checks: ["pkce", "state"],
           },
         ]
       : [],

@@ -6,7 +6,15 @@ import { isOidcConfigured, signIn } from "@/lib/auth";
  *
  * The "Sign in" action is a server action that calls `signIn("oidc")` --
  * NextAuth handles the redirect to the IdP.
+ *
+ * Ticket #423: `force-dynamic` so the OIDC env vars are read at REQUEST
+ * time, not build time. Otherwise Next.js prerenders this page during
+ * `next build` (when OIDC_* are not yet set) and bakes in the "OIDC is
+ * not configured" landing -- defeating the whole point of `isOidcConfigured()`
+ * being a runtime function.
  */
+export const dynamic = "force-dynamic";
+
 export default function SignInPage() {
   if (!isOidcConfigured()) {
     return (

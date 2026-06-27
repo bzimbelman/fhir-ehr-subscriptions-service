@@ -190,6 +190,66 @@ copy the `issuer` value into `SUBSCRIPTION_SERVICE_AUTH_ISSUER`, and the
 `jwks_uri` value into `SUBSCRIPTION_SERVICE_AUTH_JWKS_URL`. The HAPI side
 does not need to know which IdP is on the other end.
 
+## Operator UI (ticket #423)
+
+The operator UI (`ui/`) is a separate Next.js application that uses
+NextAuth v5 to authenticate users via the same OIDC layer. It is NOT
+the same as the HAPI auth interceptor above — the UI's OIDC env vars
+are independent.
+
+The UI reads four env vars at request time (NOT build time — see the
+note at the bottom of this section about why):
+
+| Env var               | Purpose                                                   |
+| --------------------- | --------------------------------------------------------- |
+| `OIDC_ISSUER`         | The IdP's issuer URL (same form as the HAPI setting).    |
+| `OIDC_CLIENT_ID`      | The OAuth client ID registered for the UI.                |
+| `OIDC_CLIENT_SECRET`  | The OAuth client secret. Keep out of source control.      |
+| `NEXTAUTH_URL`        | The public URL the browser sees (e.g. `https://...`).     |
+| `AUTH_SECRET`         | 32-byte random secret for cookie encryption (generate via `openssl rand -hex 32`). |
+
+### Keycloak client recipe
+
+Create a confidential client in your Keycloak realm with these
+properties:
+
+| Field                          | Value                                                                            |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| Client ID                      | `subscription-service-ui`                                                        |
+| Access Type                    | confidential                                                                     |
+| Standard Flow Enabled          | ON (Authorization Code + PKCE + state)                                          |
+| Valid Redirect URIs            | `http://localhost:3000/api/auth/callback/oidc` (local dev) <br> `https://<your-public-host>/api/auth/callback/oidc` (public) |
+| Web Origins                    | `http://localhost:3000` and your public origin                                  |
+
+After creating the client, copy the generated client secret into
+`OIDC_CLIENT_SECRET`. Rotate by clicking "Regenerate Secret" in the
+Keycloak admin UI (or via `kcadm.sh create clients/$ID/client-secret`).
+
+### Build-time vs request-time env (the bug fixed in #423)
+
+Next.js's standalone production build inlines module-level
+`process.env.X` reads at BUILD time. That means a generic UI image
+built in CI (without `OIDC_*` set, which is the only sane way to
+build it) would bake in empty strings for the OIDC env, and the
+runtime container's env would be ignored.
+
+The UI works around this in two layers:
+
+1. `ui/src/lib/oidc-env.ts` exposes `isOidcConfigured()` and
+   `readOidcEnv()` as FUNCTIONS that read `process.env` on every
+   call (Next.js does not inline env reads inside function bodies).
+2. NextAuth is configured with the v5 lazy-function form:
+   `NextAuth(() => buildConfig())`. The provider list is rebuilt
+   per request from the current env.
+3. Pages that branch on `isOidcConfigured()` (`/`, `/signin`, all
+   protected routes) declare `export const dynamic = "force-dynamic"`
+   so Next.js skips static prerendering and always runs the page on
+   every request.
+
+Regression-tested in
+`ui/src/__tests__/auth-runtime-env.test.ts`. Do NOT cache the result
+of `readOidcEnv()` at module scope — that would re-introduce the bug.
+
 ## Scope catalog
 
 Scopes follow the SMART on FHIR `system/<Resource>.<crud-flags>` naming
