@@ -49,6 +49,12 @@ class AdminObserveController(
     @Value("\${subscription-service.validation.mode:off}") private val validationMode: String,
     @Value("\${subscription-service.channel-security.mode:strict}") private val channelSecurityMode: String,
     @Value("\${subscription-service.multitenancy.mode:disabled}") private val multitenancyMode: String,
+    // Ticket #406: surface the running build version on /admin/observe/system.
+    // Defaults to APPLICATION_VERSION (the compile-time constant tracking
+    // Gradle's `version = "0.0.1-SNAPSHOT"`), but operators / tests can
+    // override via `subscription-service.version` if they want a custom value.
+    @Value("\${subscription-service.version:#{T(com.bzonfhir.subscriptionservice.interfaceengine.admin.AdminObserveController).APPLICATION_VERSION}}")
+    private val applicationVersion: String,
 ) {
 
     private val startedAt: Instant = Instant.now()
@@ -61,6 +67,12 @@ class AdminObserveController(
     fun system(): Map<String, Any?> = mapOf(
         "schema_version" to SCHEMA_VERSION,
         "service" to serviceName,
+        // Application build version. Sourced from `subscription-service.version`
+        // property when set; otherwise the Gradle `version` constant. Ticket
+        // #406 surfaces this in the Settings view so an operator can confirm
+        // which build is deployed without shelling into the pod. Bump alongside
+        // the Gradle `version` in build.gradle.kts.
+        "version" to applicationVersion,
         "uptime_seconds" to Duration.between(startedAt, Instant.now()).toSeconds(),
         "feature_toggles" to mapOf(
             "auth_enabled" to authEnabled,
@@ -253,5 +265,17 @@ class AdminObserveController(
         // adding any field. See docs/observability/log-schema.md for the
         // policy and #397 for the contract.
         const val SCHEMA_VERSION = "1.0"
+
+        /**
+         * Compile-time application version. Mirrors the Gradle `version`
+         * constant in `interface-engine/build.gradle.kts`; bump both
+         * together. Ticket #406 surfaces this on `/admin/observe/system`
+         * so the Settings view can display "you're running build X".
+         *
+         * If the project ever wires Spring Boot's `build-info` task, this
+         * constant becomes redundant and the `@Value` default can be
+         * dropped in favour of a `BuildProperties` bean.
+         */
+        const val APPLICATION_VERSION = "0.0.1-SNAPSHOT"
     }
 }
