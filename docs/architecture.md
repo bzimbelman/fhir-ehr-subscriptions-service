@@ -256,6 +256,38 @@ What this explicitly does NOT include in the first cut:
 
 ---
 
+## FHIR AuditEvent generation
+
+**Decision: Every interesting FHIR REST operation produces a FHIR `AuditEvent` resource persisted back into HAPI, so the audit trail is itself FHIR-queryable.**
+
+**Status (ticket #391, Epic #387): IMPLEMENTED.** See `hapi/auth/src/main/java/com/bzonfhir/subscriptionservice/audit/`.
+
+Compliance frameworks (HIPAA, SOC 2, ONC) require a tamper-evident audit trail of who accessed/modified what. JSON access logs (ticket #388) are good for operational debugging but unstructured for compliance review and disappear on container restart. By writing AuditEvent rows INTO HAPI itself, we get a standards-shaped trail that's queryable via `GET /fhir/AuditEvent?_count=10&_sort=-_lastUpdated` and retained alongside the data it audits.
+
+Approach:
+
+- A HAPI server interceptor (`AuditEventInterceptor`) hooks `SERVER_OUTGOING_RESPONSE` and `SERVER_HANDLE_EXCEPTION`. After every interesting operation, it builds an AuditEvent (type=DICOM `rest`, subtype=`create|read|update|delete|search|...`, action `C|R|U|D|E`, agent from JWT claims, entity referencing the affected resource, period covering request start→end) and persists it through HAPI's `DaoRegistry`.
+- **Skip-list** — `metadata` (capability statement), `AuditEvent` (otherwise GET on the audit log creates infinite recursion), `actuator/*`, `admin/*`. These never produce AuditEvents on either success or failure.
+- **Writes always audited; reads/searches opt-in.** Read traffic dwarfs write traffic; the env vars `SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS` and `SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH` (both `false` by default) flip read/search auditing on per deployment when compliance requires it. Writes (CREATE/UPDATE/PATCH/DELETE/TRANSACTION/BATCH) are audited regardless.
+- **Failures always audited** — including failed reads, because a failed read is itself a security signal. The outcome code distinguishes minor failure (`4`, 4xx) from serious failure (`8`, 401/5xx).
+- **Master toggle** — `SUBSCRIPTION_SERVICE_AUDIT_ENABLED=false` disables the whole subsystem (auto-config-gated via `@ConditionalOnProperty`). Default `true` — production paranoia.
+- **Audit-write failures are swallowed and logged.** The audit trail records what already happened; failing the caller's request because an audit row couldn't be written would be worse than missing one row. `DaoRegistryAuditEventPersister.persist()` catches every exception and logs at WARN.
+- **Persistence path** — internal `SystemRequestDetails` is used when writing AuditEvent rows so the scope-authorization interceptor doesn't reject the audit-write (otherwise an external caller without `system/AuditEvent.c` would also be unable to GENERATE their own audit row).
+
+Operator surface — env vars (all also Helm `featureToggles.audit.*`):
+
+- `SUBSCRIPTION_SERVICE_AUDIT_ENABLED` (default `true`)
+- `SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS` (default `false`)
+- `SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH` (default `false`)
+- `SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS` (default `365`, informational only — purging is a separate scheduled job, not yet implemented)
+
+What this explicitly does NOT include yet:
+
+- A scheduled purger for old AuditEvent rows. `retention-days` is recorded today but unused until that job lands.
+- Streaming AuditEvents to an external SIEM. The rows are in HAPI; downstream pipelines can poll `GET /fhir/AuditEvent?_lastUpdated=gt...` if they want them.
+
+---
+
 ## Mapping strategy
 
 **Decision: Start with the public HL7 v2-to-FHIR IG StructureMaps; layer custom maps on top.**
@@ -392,3 +424,21 @@ Remaining items will be worked through as the implementation progresses.
 4. Add additional message types (ORU, ORM, SIU, MDM) once the first slice works.
 5. Mirror the deployment into a Helm chart and validate on Rancher Desktop.
 6. Resolve MLLP ingress strategy.
+
+---
+
+## Observability
+
+The full operational observability story lives under Epic #387. Two
+contracts are load-bearing for downstream agents and dashboards and are
+documented out of this file's scope so they can be versioned and CI-gated
+independently:
+
+- [`observability/log-schema.md`](observability/log-schema.md) — JSON log
+  field-stability matrix, versioning policy, worked examples. Read this
+  before depending on any log field in an automation.
+- [`observability/metric-catalog.md`](observability/metric-catalog.md) —
+  Prometheus metric catalog with the same stability tiers, plus naming
+  conventions and label-cardinality rules.
+- [`observability/schema-stability-contract.md`](observability/schema-stability-contract.md)
+  — what the future CI gate will enforce against both docs.

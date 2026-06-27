@@ -1,6 +1,14 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.worker
 
 import ca.uhn.fhir.rest.client.api.IGenericClient
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.InterfaceEngineMetrics
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.OtelTracing
+import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageRepository
+import com.bzonfhir.subscriptionservice.interfaceengine.persistence.IngestedMessageStatus
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.context.Scope
 import jakarta.annotation.PostConstruct
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -10,6 +18,8 @@ import org.springframework.boot.context.event.ApplicationReadyEvent
 import org.springframework.context.event.EventListener
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
+import java.time.Duration
+import java.time.Instant
 import kotlin.math.min
 import kotlin.math.pow
 
@@ -113,6 +123,19 @@ class IngestedMessageWorker(
     private val gateway: WorkerJdbcGateway,
     private val matchboxClient: MatchboxClient,
     private val hapiClient: IGenericClient,
+    private val repository: IngestedMessageRepository,
+    // Metrics (Epic #387, ticket #389). Stamps timers for matchbox /
+    // HAPI calls and counters for terminal transitions. Constructor-
+    // injected; the bean is present in every Spring context that boots
+    // spring-boot-starter-actuator (which we always do).
+    private val metrics: InterfaceEngineMetrics,
+    // OpenTelemetry tracer (Epic #387, ticket #394). Decodes the row's
+    // stored trace_context into the parent for the `worker.process`
+    // span; the matchbox + HAPI calls below become CHILD spans of that
+    // through Context propagation. When the SDK is disabled this is a
+    // no-op end-to-end (encode returned null at receive, decode returns
+    // Context.root() here, span recording is a sequence of returns).
+    private val otelTracing: OtelTracing,
     @Value("\${subscription-service.worker.batch-size:10}") private val batchSize: Int,
     @Value("\${subscription-service.worker.transforming-stale-seconds:60}")
     private val staleSeconds: Long,
@@ -217,6 +240,15 @@ class IngestedMessageWorker(
         if (claimed.isEmpty()) return
         log.debug("worker poll: claimed {} rows", claimed.size)
         for (id in claimed) {
+            // Each row processes under its own MDC scope so its
+            // correlation_id ends up on every log line emitted while
+            // the row is in flight — and is cleared on exit so the
+            // next iteration of this for-loop doesn't inherit it.
+            // We don't yet know the correlation_id; processOne resolves
+            // it from the row and re-installs the MDC there. Clear up
+            // front so a leaked value from a prior poll thread is
+            // discarded.
+            org.slf4j.MDC.remove(CorrelationId.MDC_KEY)
             try {
                 processOne(id)
             } catch (ex: Exception) {
@@ -224,6 +256,10 @@ class IngestedMessageWorker(
                 // status updates itself; an exception out here means even
                 // *that* path failed (DB unreachable, etc.). Log + continue.
                 log.error("worker poll: row {} processing crashed: {}", id, ex.message)
+            } finally {
+                // Defensive cleanup — processOne sets MDC; clear on the
+                // way out regardless of success or throw.
+                org.slf4j.MDC.remove(CorrelationId.MDC_KEY)
             }
         }
     }
@@ -247,6 +283,67 @@ class IngestedMessageWorker(
             log.warn("worker: row {} vanished after claim?", id)
             return
         }
+
+        // Establish the correlation id BEFORE any other log line. Three
+        // cases:
+        //   (a) row has a stored correlation_id (post-#388 receive path) →
+        //       adopt it as-is.
+        //   (b) row has none (pre-#388 row, or future protocol that didn't
+        //       carry one in) → mint a fresh UUID and back-fill it so the
+        //       value persists across retries and is grep-able later.
+        // We set MDC + send the header to matchbox + HAPI from the same
+        // value either way.
+        val correlationId = row.correlationId ?: CorrelationId.generate().also {
+            // Best-effort back-fill — if the UPDATE races with another
+            // replica (unlikely under SKIP LOCKED but theoretically
+            // possible if a recovery sweep ran), the WHERE clause keeps
+            // it idempotent. We don't read back; the value we just
+            // generated is what THIS processOne uses.
+            runCatching { gateway.backfillCorrelationId(id, it) }.onFailure { ex ->
+                log.debug("worker: backfill correlation_id failed for id={} ({})", id, ex.message)
+            }
+        }
+        org.slf4j.MDC.put(CorrelationId.MDC_KEY, correlationId)
+
+        // Decode the row's stored trace_context (Epic #387, ticket #394)
+        // into the parent context for the `worker.process` span. When
+        // row.traceContext is null (pre-V004 row, or SDK was disabled at
+        // receive time) decodeContext returns Context.root() and we
+        // start a fresh root span — same code path as production, just
+        // unparented. The span is made-current so the HTTP-client
+        // interceptor (HapiClientConfig#OtelInjectingClientInterceptor)
+        // and the MatchboxClient's RestTemplate find the right context
+        // when they inject traceparent onto outbound requests.
+        val parentContext = otelTracing.decodeContext(row.traceContext)
+        val workerSpan: Span = otelTracing.startWorkerProcessSpan(
+            parentContext = parentContext,
+            messageId = id,
+            messageType = row.messageType,
+            correlationId = correlationId,
+        )
+        val scope: Scope = workerSpan.makeCurrent()
+        try {
+            processOneInSpan(id, row, correlationId, workerSpan)
+        } finally {
+            scope.close()
+            workerSpan.end()
+        }
+    }
+
+    /**
+     * Body of [processOne], extracted so the OTel span lifecycle in
+     * processOne is the only Span-tracking try/finally in this file.
+     * All matchbox + HAPI calls below run with [workerSpan] as the
+     * current span (it was made-current in the caller), so the
+     * downstream HTTP-client interceptors see it as the parent context
+     * for traceparent injection.
+     */
+    private fun processOneInSpan(
+        id: Long,
+        row: ClaimedRow,
+        correlationId: String,
+        workerSpan: Span,
+    ) {
         val messageType = row.messageType
         val rawMessage = row.rawMessage
 
@@ -259,6 +356,7 @@ class IngestedMessageWorker(
             // because the message was successfully *received* and we don't
             // intend to retry it — retry won't help if no map exists.)
             gateway.markDelivered(id, lastError = NO_TRANSFORM_SENTINEL)
+            recordDeliveredMetrics(row)
             log.info(
                 "worker: row {} type={} short-circuit DELIVERED ({})",
                 id,
@@ -269,26 +367,196 @@ class IngestedMessageWorker(
         }
 
         // -- Matchbox transform --
+        // The MatchboxClient implementation reads the current MDC
+        // correlation_id and sends it as `X-Correlation-Id` on the
+        // outbound POST. Same value goes on the HAPI Bundle post below.
+        //
+        // Wrapped in a wall-clock timer so we get latency p50/p95/p99 on
+        // `interface_engine_transform_duration_seconds{outcome="..."}`.
+        // We use `System.nanoTime()` (monotonic) rather than `Instant.now()`
+        // because the metric is a duration — not affected by NTP slews —
+        // and nanoTime is the canonical "how long did this take" clock.
+        val transformStart = System.nanoTime()
         val bundle = try {
-            matchboxClient.transformToBundle(structureMap, rawMessage)
+            val result = matchboxClient.transformToBundle(structureMap, rawMessage)
+            metrics.recordTransformDuration(
+                Duration.ofNanos(System.nanoTime() - transformStart),
+                success = true,
+            )
+            result
         } catch (ex: Exception) {
+            metrics.recordTransformDuration(
+                Duration.ofNanos(System.nanoTime() - transformStart),
+                success = false,
+            )
             val msg = "matchbox transform failed: ${ex.message ?: ex.javaClass.simpleName}"
+            // OTel: stamp the failure on the worker.process span so the
+            // trace in Jaeger shows red instead of silently succeeding.
+            // recordException attaches the stack trace as a span event.
+            workerSpan.recordException(ex)
+            workerSpan.setStatus(StatusCode.ERROR, msg)
             handleFailure(row, msg)
             return
         }
 
         // -- HAPI transaction POST --
-        try {
-            hapiClient.transaction().withBundle(bundle).execute()
+        // HAPI client sees the correlation id via an additional request
+        // header configured by [HapiClientConfig]'s ClientInterceptor that
+        // copies MDC.get(correlation_id) onto every outbound request.
+        //
+        // We capture the response Bundle because HAPI's TRANSACTION_RESPONSE
+        // carries the assigned resource IDs in `entry[].response.location`.
+        // Ticket #392 persists that list to the row so the admin /effects
+        // endpoint can report which FHIR resources this inbound message
+        // produced — no second cross-DB query, no HAPI-side lookup.
+        val hapiPostStart = System.nanoTime()
+        val responseBundle: org.hl7.fhir.r4.model.Bundle? = try {
+            val resp = hapiClient.transaction().withBundle(bundle).execute()
+            metrics.recordHapiPostDuration(
+                Duration.ofNanos(System.nanoTime() - hapiPostStart),
+                success = true,
+            )
+            resp
         } catch (ex: Exception) {
+            metrics.recordHapiPostDuration(
+                Duration.ofNanos(System.nanoTime() - hapiPostStart),
+                success = false,
+            )
             val msg = "HAPI transaction failed: ${ex.message ?: ex.javaClass.simpleName}"
+            workerSpan.recordException(ex)
+            workerSpan.setStatus(StatusCode.ERROR, msg)
             handleFailure(row, msg)
             return
         }
 
-        gateway.markDelivered(id, lastError = null)
-        log.info("worker: row {} DELIVERED type={}", id, messageType)
+        // Parse the response Bundle's `entry[].response.location` fields
+        // into normalized "ResourceType/id" references. The HAPI server
+        // returns either a bare reference ("Patient/123") or the version-
+        // history URL ("Patient/123/_history/1"); we normalize to the
+        // bare form so the stored values match what FHIR consumers put
+        // on `Reference.reference` elsewhere. A null/empty/garbled
+        // response Bundle yields an empty list — the row is still
+        // DELIVERED, but the effects view shows no resources.
+        val createdRefs = extractCreatedResourceRefs(responseBundle)
+        gateway.markDelivered(id, lastError = null, createdResourceRefs = createdRefs)
+        recordDeliveredMetrics(row)
+        log.info(
+            "worker: row {} DELIVERED type={} created_refs={}",
+            id,
+            messageType,
+            createdRefs.size,
+        )
     }
+
+    /**
+     * Extract `ResourceType/id` references from a HAPI TRANSACTION_RESPONSE
+     * bundle (Epic #387, ticket #392).
+     *
+     * For each entry whose `response.location` is set, normalize the
+     * location string by stripping the optional `/_history/N` suffix and
+     * any leading slash. Entries without a location are skipped silently
+     * (they're typically `OperationOutcome` entries HAPI inserts on
+     * non-create operations).
+     *
+     * Visible-for-testing rather than private so the unit test can drive
+     * it directly against a synthesized Bundle without round-tripping
+     * through the full worker stack.
+     */
+    internal fun extractCreatedResourceRefs(
+        responseBundle: org.hl7.fhir.r4.model.Bundle?,
+    ): List<String> {
+        if (responseBundle == null) return emptyList()
+        val result = mutableListOf<String>()
+        for (entry in responseBundle.entry) {
+            val location = entry.response?.location?.takeUnless { it.isNullOrBlank() }
+                ?: continue
+            result += normalizeFhirLocation(location)
+        }
+        return result
+    }
+
+    /**
+     * Normalize a HAPI `Location`-style FHIR reference to bare
+     * `ResourceType/id` form. Tolerates:
+     *
+     *   - `Patient/123`                       → `Patient/123`
+     *   - `Patient/123/_history/1`            → `Patient/123`
+     *   - `/Patient/123`                      → `Patient/123`
+     *   - `https://hapi.example.com/fhir/Patient/123/_history/1` → `Patient/123`
+     *
+     * Anything we can't parse is returned as-is so a future operator
+     * inspection sees the raw value rather than a misleading-shortened
+     * one. The effects endpoint then surfaces whatever is in the column.
+     */
+    private fun normalizeFhirLocation(raw: String): String {
+        // Drop a query string or fragment, if any.
+        val noQuery = raw.substringBefore('?').substringBefore('#')
+        // Drop the version-history suffix if present.
+        val noHistory = noQuery.substringBefore("/_history/")
+        // If the value contains the FHIR endpoint host, strip everything
+        // before the resource-type segment. We look for the last two-segment
+        // tail (`ResourceType/id`) by trimming trailing slashes and taking
+        // the last two non-empty path segments.
+        val trimmed = noHistory.trimEnd('/')
+        val segments = trimmed.split('/').filter { it.isNotEmpty() }
+        if (segments.size < 2) return raw
+        // The last two segments are the resource type + id. This works for
+        // both bare references ("Patient/123") and fully qualified URLs
+        // ("https://host/fhir/Patient/123").
+        val resourceType = segments[segments.size - 2]
+        val resourceId = segments.last()
+        return "$resourceType/$resourceId"
+    }
+
+    /**
+     * Stamp the per-row "delivered" metrics:
+     *
+     *   - `interface_engine_ingested_messages_total{status="DELIVERED"}` counter
+     *   - `interface_engine_received_to_delivered_seconds` histogram
+     *
+     * Latency comes from re-reading the row so we use the DB's `received_at`
+     * (the canonical timestamp), not the JVM's. The extra read is cheap and
+     * gauarantees we never report a misleadingly small latency just because
+     * the worker's clock drifted forward from the receive route's.
+     *
+     * The re-read is best-effort — a missing row (shouldn't happen, but
+     * defensively) just skips the latency metric; the counter still ticks.
+     */
+    private fun recordDeliveredMetrics(claimed: ClaimedRow) {
+        val sourceProtocol = lookupSourceProtocol(claimed.id)
+        metrics.incrementIngestedMessages(
+            sourceProtocol = sourceProtocol,
+            sourceSystem = claimed.sourceSystem,
+            messageType = claimed.messageType,
+            status = IngestedMessageStatus.DELIVERED.name,
+        )
+        // Re-fetch the row so we read the DB-side `received_at` and the
+        // just-written `delivered_at`. JPA's first-level cache may return
+        // the pre-update copy; for the latency math we want the freshest
+        // values, hence findById without a cache hint and `received_at`
+        // pulled from there.
+        runCatching {
+            val row = repository.findById(claimed.id).orElse(null) ?: return@runCatching
+            val received = row.receivedAt?.toInstant() ?: return@runCatching
+            val delivered = row.deliveredAt?.toInstant() ?: Instant.now()
+            val latency = Duration.between(received, delivered)
+            if (!latency.isNegative) {
+                metrics.recordReceivedToDelivered(latency)
+            }
+        }
+    }
+
+    /**
+     * Read the row's source_protocol from the DB. The [ClaimedRow] dto
+     * doesn't carry it (the worker doesn't need it for transform logic),
+     * but the metrics counter wants it as a label. Best-effort: if the
+     * lookup fails we stamp "UNKNOWN" rather than skip the increment
+     * entirely.
+     */
+    private fun lookupSourceProtocol(id: Long): String =
+        runCatching {
+            repository.findById(id).map { it.sourceProtocol.name }.orElse("UNKNOWN")
+        }.getOrDefault("UNKNOWN")
 
     /**
      * Apply the retry policy on failure (#383).
@@ -307,11 +575,27 @@ class IngestedMessageWorker(
      */
     internal fun handleFailure(row: ClaimedRow, lastError: String) {
         val newAttemptCount = row.attemptCount + 1
+        val sourceProtocol = lookupSourceProtocol(row.id)
         if (newAttemptCount >= maxAttempts) {
             gateway.markDeadLetter(
                 id = row.id,
                 newAttemptCount = newAttemptCount,
                 lastError = lastError,
+            )
+            // Metrics (#389): one terminal-status counter tick + one
+            // dlq-transition counter tick. The DLQ counter's `reason`
+            // label goes through normalization (UUIDs / URLs / long ints
+            // collapsed) to keep Prometheus cardinality bounded — see
+            // InterfaceEngineMetrics.normalizeDlqReason.
+            metrics.incrementIngestedMessages(
+                sourceProtocol = sourceProtocol,
+                sourceSystem = row.sourceSystem,
+                messageType = row.messageType,
+                status = IngestedMessageStatus.DEAD_LETTER.name,
+            )
+            metrics.incrementDlqTransitions(
+                sourceProtocol = sourceProtocol,
+                rawReason = lastError,
             )
             // Structured key=value pairs so a single grep can pull DLQ
             // events out of pod logs (`grep event=dlq`). Keep the field
@@ -335,6 +619,18 @@ class IngestedMessageWorker(
             newAttemptCount = newAttemptCount,
             lastError = lastError,
             backoffMillis = backoffMillis,
+        )
+        // Metrics (#389): one increment for the FAILED transition. Note
+        // this fires once per FAILED transition — i.e. once per failed
+        // attempt — which matches the worker's actual state model. A
+        // retry that succeeds will subsequently fire DELIVERED; a retry
+        // that fails again fires FAILED again. Operators can derive
+        // "retry pressure" from `rate(...{status="FAILED"}[1m])`.
+        metrics.incrementIngestedMessages(
+            sourceProtocol = sourceProtocol,
+            sourceSystem = row.sourceSystem,
+            messageType = row.messageType,
+            status = IngestedMessageStatus.FAILED.name,
         )
         log.info(
             "event=retry_scheduled message_id={} source_system={} source_id={} " +

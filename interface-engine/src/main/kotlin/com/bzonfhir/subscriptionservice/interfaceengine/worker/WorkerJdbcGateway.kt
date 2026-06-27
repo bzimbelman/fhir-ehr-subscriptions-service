@@ -86,7 +86,8 @@ open class WorkerJdbcGateway(
     open fun loadRow(id: Long): ClaimedRow? {
         val rows = jdbc.queryForList(
             """
-            SELECT id, source_system, source_id, message_type, raw_message, attempt_count
+            SELECT id, source_system, source_id, message_type, raw_message,
+                   attempt_count, correlation_id, trace_context
               FROM ingested_messages
              WHERE id = ?
             """.trimIndent(),
@@ -100,27 +101,100 @@ open class WorkerJdbcGateway(
             messageType = row["message_type"] as String,
             rawMessage = row["raw_message"] as String,
             attemptCount = (row["attempt_count"] as Number).toInt(),
+            correlationId = row["correlation_id"] as String?,
+            traceContext = row["trace_context"] as String?,
+        )
+    }
+
+    /**
+     * Backfill helper (#388): set `correlation_id` on a row that didn't
+     * have one (pre-migration rows, or future protocols that didn't carry
+     * one in). Used by the worker's first-time-processing-of-legacy-row
+     * path so the value persists for subsequent retries.
+     *
+     * No-op when the row already has a non-null correlation_id — the
+     * WHERE clause keeps this idempotent so a concurrent worker doesn't
+     * clobber a value another replica just wrote.
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    open fun backfillCorrelationId(id: Long, correlationId: String) {
+        jdbc.update(
+            """
+            UPDATE ingested_messages
+               SET correlation_id = ?
+             WHERE id = ?
+               AND correlation_id IS NULL
+            """.trimIndent(),
+            correlationId,
+            id,
         )
     }
 
     /**
      * Terminal update for the success path. Stamps `delivered_at = now()`,
      * sets `last_error` (usually null on success, but the "no transform
-     * configured" short-circuit writes the sentinel here for visibility).
+     * configured" short-circuit writes the sentinel here for visibility),
+     * and optionally records the FHIR references HAPI created from the
+     * transaction Bundle (Epic #387, ticket #392).
+     *
+     * The `createdResourceRefs` parameter is nullable rather than
+     * empty-on-default because we want to distinguish three states:
+     *
+     *   - `null` — pre-V005 row, or no-transform short-circuit (HAPI was
+     *      never called). The effects endpoint reports this as
+     *      `effects_status="unknown"`.
+     *   - empty array `{}` — HAPI was called and returned zero references
+     *      (unusual; happens if the transaction Bundle had no entries with
+     *      `response.location`). Effects endpoint reports
+     *      `effects_status="delivered"` and an empty resource list.
+     *   - non-empty array — the typical happy path.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    open fun markDelivered(id: Long, lastError: String?) {
-        jdbc.update(
-            """
-            UPDATE ingested_messages
-               SET status = 'DELIVERED',
-                   delivered_at = now(),
-                   last_error = ?
-             WHERE id = ?
-            """.trimIndent(),
-            lastError,
-            id,
-        )
+    open fun markDelivered(
+        id: Long,
+        lastError: String?,
+        createdResourceRefs: List<String>? = null,
+    ) {
+        // The JDBC array is built off the JVM Connection so the type name
+        // matches Postgres's local TEXT type. We pass `null` when the
+        // caller has no list — that maps to SQL NULL via the typed
+        // setObject path, which is what we want (distinct from "empty
+        // array").
+        if (createdResourceRefs == null) {
+            jdbc.update(
+                """
+                UPDATE ingested_messages
+                   SET status = 'DELIVERED',
+                       delivered_at = now(),
+                       last_error = ?
+                 WHERE id = ?
+                """.trimIndent(),
+                lastError,
+                id,
+            )
+            return
+        }
+        // Build a java.sql.Array via Connection.createArrayOf("text", …).
+        // JdbcTemplate's update(...vararg) path forwards the parameter as a
+        // PreparedStatement.setObject, and Postgres's JDBC driver maps
+        // java.sql.Array → TEXT[] correctly when the column type matches.
+        jdbc.update({ conn ->
+            val ps = conn.prepareStatement(
+                """
+                UPDATE ingested_messages
+                   SET status = 'DELIVERED',
+                       delivered_at = now(),
+                       last_error = ?,
+                       created_resource_refs = ?
+                 WHERE id = ?
+                """.trimIndent(),
+            )
+            ps.setString(1, lastError)
+            val sqlArray = conn.createArrayOf("text", createdResourceRefs.toTypedArray())
+            ps.setArray(2, sqlArray)
+            ps.setLong(3, id)
+            ps
+        })
     }
 
     /**
@@ -234,4 +308,21 @@ data class ClaimedRow(
     val messageType: String,
     val rawMessage: String,
     val attemptCount: Int,
+    /**
+     * Correlation id for the message (Epic #387, ticket #388).
+     *
+     * Nullable to tolerate rows persisted before the V003 migration,
+     * which have no value. The worker mints one and back-fills it
+     * before the first log line about this row is emitted.
+     */
+    val correlationId: String? = null,
+    /**
+     * W3C `traceparent`-encoded trace context (Epic #387, ticket #394).
+     *
+     * Captured at MLLP receive time so the worker can continue the
+     * SAME trace started there. Nullable: pre-V004 rows have no value,
+     * and rows persisted while OTEL_SDK_DISABLED=true store NULL (the
+     * no-op SDK injects nothing into the carrier).
+     */
+    val traceContext: String? = null,
 )

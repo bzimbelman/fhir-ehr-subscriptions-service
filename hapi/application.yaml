@@ -17,11 +17,64 @@ management:
     enabled-by-default: false
     web:
       exposure:
-        include: 'health'
+        # Ticket #389 adds `prometheus` here so the Prometheus Operator can
+        # scrape /actuator/prometheus. `metrics` follows for queryable
+        # metric-name debugging (`/actuator/metrics/jvm.memory.used`).
+        include: 'health,prometheus,metrics'
   endpoint:
     health:
       enabled: true
+      # Show per-indicator details in the body so probe consumers and
+      # operators can see WHICH indicator went DOWN (Epic #387, ticket #393).
+      show-details: always
+      # Disable Spring Boot 3.4+'s group-membership validation so the
+      # readiness group can list `authIssuer` + `jwks` even when auth is
+      # disabled (subscription-service.auth.enabled=false → those beans
+      # don't exist). With validation on, the application context fails
+      # to start with "Included health contributor 'authIssuer' in group
+      # 'readiness' does not exist". The default Spring Boot behaviour
+      # when a referenced indicator is absent at request time is to
+      # simply omit it from the response — which is what we want here:
+      # the readiness group degrades gracefully from "ping+db+auth+jwks"
+      # to "ping+db" when the auth layer is turned off. Ticket #393.
+      validate-group-membership: false
       probes:
+        # Exposes /actuator/health/liveness and /actuator/health/readiness.
+        enabled: true
+      group:
+        # Liveness probe (k8s restarts a DOWN pod). Only JVM-internal stuff
+        # — `ping` always returns UP, proving the actuator endpoint itself
+        # is responsive. We deliberately exclude `db` because if HAPI's
+        # local Postgres pool is unhealthy, a JVM restart can't recover
+        # it without manual intervention anyway (Postgres might be the
+        # one that's actually broken). The readiness probe below catches
+        # DB outages and removes the pod from rotation; liveness stays
+        # the most narrow possible. Ticket #393.
+        liveness:
+          include: ping
+        # Readiness probe (k8s removes a DOWN pod from Service endpoints
+        # but leaves it running). Full health, including `authIssuer` +
+        # `jwks` from the subscription-service-hapi-auth JAR. When auth
+        # is disabled those two indicators are absent and Spring Boot
+        # simply omits them from the response — see validate-group-membership
+        # note above. Ticket #393.
+        readiness:
+          include: ping, db, authIssuer, jwks
+    # Endpoints are gated individually because `endpoints.enabled-by-default`
+    # is false above. Without these per-endpoint `enabled: true` lines the
+    # exposure include is ignored. Ticket #389.
+    prometheus:
+      enabled: true
+    metrics:
+      enabled: true
+  # Spring Boot 3.x guards the actual Prometheus scrape behind a separate
+  # `metrics.export.enabled` flag (independent of the endpoint visibility).
+  # Default value is `true` upstream but we set it explicitly so the
+  # contract is documented and so a sub-service-specific override is one
+  # property edit away. Ticket #389.
+  prometheus:
+    metrics:
+      export:
         enabled: true
 
 spring:
@@ -149,3 +202,20 @@ subscription-service:
     mode: ${SUBSCRIPTION_SERVICE_MULTITENANCY:disabled}
     tenant-claim: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TENANT_CLAIM:tenant}
     test-mode: ${SUBSCRIPTION_SERVICE_MULTITENANCY_TEST_MODE:false}
+
+  # FHIR AuditEvent generator (ticket #391, Epic #387). Every interesting REST
+  # operation (writes by default; reads/searches opt-in) produces an AuditEvent
+  # resource persisted back into HAPI itself — so the audit trail is queryable
+  # via `GET /fhir/AuditEvent`. See hapi/auth/.../audit/AuditEventInterceptor.java
+  # for the full design.
+  #
+  # `enabled` is the master toggle. `capture-reads` / `capture-search` are off
+  # by default because read traffic dominates write traffic; flip them on per
+  # deployment when compliance requires it. `retention-days` is informational
+  # only — purging old AuditEvent rows is a separate scheduled job (not yet
+  # implemented).
+  audit:
+    enabled: ${SUBSCRIPTION_SERVICE_AUDIT_ENABLED:true}
+    capture-reads: ${SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_READS:false}
+    capture-search: ${SUBSCRIPTION_SERVICE_AUDIT_CAPTURE_SEARCH:false}
+    retention-days: ${SUBSCRIPTION_SERVICE_AUDIT_RETENTION_DAYS:365}

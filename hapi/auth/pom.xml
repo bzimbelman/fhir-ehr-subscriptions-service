@@ -58,6 +58,47 @@
     <assertj.version>3.25.3</assertj.version>
     <mockito.version>5.11.0</mockito.version>
     <wiremock.version>3.5.4</wiremock.version>
+
+    <!--
+      Micrometer core for the subscription-side metrics interceptor (Epic
+      #387, ticket #389). The upstream `hapiproject/hapi:v7.6.0` image
+      bundles `micrometer-core` 1.13.3 + `micrometer-registry-prometheus`
+      1.13.3 inside main.war (confirmed by inspecting WEB-INF/lib in the
+      image). We therefore declare it `provided` — the JAR we ship contains
+      no Micrometer classes, the runtime classpath finds them already on
+      the HAPI server's classpath. Version is pinned to the older 1.13.x
+      line that HAPI uses, not the 1.14.x line Spring Boot 3.5 brings —
+      our code compiles against the lowest-common Micrometer API surface
+      (Counter, Timer, MeterRegistry.gauge), all of which are stable
+      across both lines.
+    -->
+    <micrometer.version>1.13.3</micrometer.version>
+
+    <!--
+      JSON-formatted logs (Epic #387, ticket #388). The HAPI 7.6.0 base image
+      bundles slf4j + logback-classic, but NOT logstash-logback-encoder — so
+      this one dep is compile-scope (i.e. packaged into the JAR) rather than
+      `provided` like everything else above. Without it, the logback config
+      we ship under /app/extra-classes/logback-spring.xml would fail at boot
+      with `ClassNotFoundException: LogstashEncoder`.
+    -->
+    <logstash.encoder.version>7.4</logstash.encoder.version>
+
+    <!--
+      OpenTelemetry SDK (Epic #387, ticket #394). The HAPI 7.6.0 base
+      image does NOT bundle the OTel SDK, so we ship our own with the
+      JAR. `compile` scope (not `provided`) on every OTel artifact: the
+      maven-dependency-plugin's `copy-runtime-deps` step (already in
+      this pom for logstash-logback-encoder) copies them next to the
+      main JAR and the Dockerfile drops both into /app/extra-classes/
+      where PropertiesLauncher picks them up.
+
+      Pinned to 1.41.0 — same line the interface-engine uses, so the
+      two services speak the same trace propagation format (W3C v00
+      traceparent) at the SDK level. Compiles cleanly against the HAPI
+      starter image's Spring Boot 3.2.6 + Spring 6.1.14 baseline.
+    -->
+    <otel.version>1.41.0</otel.version>
   </properties>
 
   <dependencies>
@@ -86,10 +127,43 @@
       <scope>provided</scope>
     </dependency>
 
+    <!--
+      hapi-fhir-storage: contains CanonicalSubscription + ResourceDeliveryMessage,
+      which the SUBSCRIPTION_BEFORE_REST_HOOK_DELIVERY hook in
+      CorrelationIdInterceptor needs to read at compile time. Already bundled
+      in the upstream HAPI starter image so `provided` is correct — we don't
+      package an additional copy.
+
+      Ticket #388.
+    -->
+    <dependency>
+      <groupId>ca.uhn.hapi.fhir</groupId>
+      <artifactId>hapi-fhir-storage</artifactId>
+      <version>${hapi.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
     <!-- Spring Boot autoconfig + properties binding. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-autoconfigure</artifactId>
+      <version>${spring.boot.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      spring-boot-actuator: required at compile time for the
+      HealthIndicator / Health / Status types used by
+      AuthIssuerHealthIndicator and JwksHealthIndicator (Epic #387, ticket #393).
+      `provided` because the upstream HAPI starter image already brings
+      spring-boot-actuator transitively (the existing /actuator/health
+      probe relies on it). Listing it explicitly here so our compilation
+      doesn't depend on the version that happens to be on the HAPI
+      classpath via other deps.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-actuator</artifactId>
       <version>${spring.boot.version}</version>
       <scope>provided</scope>
     </dependency>
@@ -134,6 +208,65 @@
       <artifactId>slf4j-api</artifactId>
       <version>${slf4j.version}</version>
       <scope>provided</scope>
+    </dependency>
+
+    <!--
+      Micrometer Counter / Timer / MeterRegistry — ticket #389. `provided`
+      because the HAPI image already bundles micrometer-core under WEB-INF/lib.
+    -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+      <version>${micrometer.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <!--
+      logstash-logback-encoder: JSON layout for Logback. NOT in the HAPI base
+      image, so this one is `compile` scope and ends up packaged inside the
+      JAR — picked up off /app/extra-classes by the upstream PropertiesLauncher
+      classpath. See logback-spring.xml at the root of this JAR's resources.
+
+      Ticket #388 (Epic #387 observability).
+    -->
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>${logstash.encoder.version}</version>
+      <scope>compile</scope>
+    </dependency>
+
+    <!--
+      OpenTelemetry SDK (ticket #394). Compile scope: bundled into the
+      runtime classpath via the copy-runtime-deps step below. Versions
+      pinned via the otel.version property since this pom doesn't have
+      a <dependencyManagement> section to import the BOM into. The
+      autoconfigure module reads OTEL_* env vars and builds the SDK
+      (no-op when OTEL_SDK_DISABLED=true).
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-api</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+      <version>${otel.version}</version>
+      <scope>compile</scope>
     </dependency>
 
     <!-- ============================================================
@@ -185,12 +318,28 @@
       classpaths (per Maven's scope table). No duplicate declarations
       needed.
     -->
+    <!--
+      Logback-classic for tests instead of slf4j-simple: slf4j-simple ships
+      a NOPMDCAdapter (i.e. MDC.put / MDC.get are no-ops), which would
+      break CorrelationIdInterceptorTest's MDC assertions. Logback gives
+      us real MDC. Production runtime is unaffected — the HAPI base image
+      bundles logback already; this dep is test-scope only.
+    -->
     <dependency>
-      <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-simple</artifactId>
-      <version>${slf4j.version}</version>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <version>1.5.6</version>
       <scope>test</scope>
     </dependency>
+
+<!--
+      SimpleMeterRegistry / Counter / Timer for SubscriptionMetricsInterceptorTest
+      (ticket #389). `provided`-scope deps from above (micrometer-core) are
+      already on the test classpath per Maven's scope table, so no extra
+      declaration is needed here. The registry contract is a Micrometer one
+      and SimpleMeterRegistry implements it; production runtime uses the
+      PrometheusMeterRegistry from the HAPI image's classpath instead.
+    -->
 
     <!--
       Spring Boot's ApplicationContextRunner — the recommended way to test
@@ -242,6 +391,20 @@
       <version>${hapi.version}</version>
       <scope>test</scope>
     </dependency>
+
+    <!--
+      OTel in-memory span exporter for tests (ticket #394). Captures
+      spans into a list so OtelTraceTest can assert on names, attributes,
+      and parent-child relationships without standing up an OTLP
+      collector. Test scope only — production runtime uses the
+      OtlpGrpcSpanExporter via AutoConfiguredOpenTelemetrySdk.
+    -->
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-sdk-testing</artifactId>
+      <version>${otel.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -276,6 +439,37 @@
             </manifestEntries>
           </archive>
         </configuration>
+      </plugin>
+
+      <!--
+        Copy our compile-scope runtime dependencies (logstash-logback-encoder
+        + its transitives) next to the main JAR (Epic #387, ticket #388).
+        The Dockerfile then copies BOTH our JAR and these dependency JARs
+        into /app/extra-classes/ on the HAPI image so PropertiesLauncher
+        picks them up at runtime.
+
+        `provided` deps are deliberately excluded (`includeScope=runtime`):
+        the HAPI base image already ships those, and a second copy would
+        cause classpath conflicts. logstash-logback-encoder isn't bundled
+        upstream — that's why this step exists.
+      -->
+      <plugin>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>3.6.1</version>
+        <executions>
+          <execution>
+            <id>copy-runtime-deps</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/runtime-deps</outputDirectory>
+              <includeScope>runtime</includeScope>
+              <excludeTransitive>false</excludeTransitive>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
     </plugins>
   </build>

@@ -1,6 +1,14 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.worker
 
 import ca.uhn.fhir.context.FhirContext
+import com.bzonfhir.subscriptionservice.interfaceengine.observability.CorrelationId
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.SpanKind
+import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.api.trace.Tracer
+import io.opentelemetry.context.Context
+import io.opentelemetry.context.propagation.ContextPropagators
+import io.opentelemetry.context.propagation.TextMapSetter
 import org.hl7.fhir.r4.model.Bundle
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
@@ -47,6 +55,16 @@ class MatchboxClientImpl(
     @Value("\${subscription-service.matchbox.base-url}") private val matchboxBaseUrl: String,
     @Value("\${subscription-service.matchbox.timeout-ms:30000}") private val timeoutMs: Int,
     private val fhirContext: FhirContext,
+    // OpenTelemetry (Epic #387, ticket #394). The matchbox call gets
+    // wrapped in a CLIENT span and the W3C traceparent is injected onto
+    // the outbound HTTP headers via the SDK's TextMapPropagator. The
+    // span participates in the worker's `worker.process` parent context
+    // because IngestedMessageWorker.processOne made the worker span
+    // current before invoking us. When the SDK is disabled all three
+    // (Tracer.spanBuilder, makeCurrent, propagator.inject) collapse to
+    // no-ops and no traceparent header is added.
+    private val tracer: Tracer,
+    private val propagators: ContextPropagators,
 ) : MatchboxClient {
 
     private val log = LoggerFactory.getLogger(MatchboxClientImpl::class.java)
@@ -63,27 +81,71 @@ class MatchboxClientImpl(
     override fun transformToBundle(structureMapCanonical: String, rawHl7: String): Bundle {
         val sourceParam = URLEncoder.encode(structureMapCanonical, StandardCharsets.UTF_8)
         val url = "$matchboxBaseUrl/StructureMap/\$transform?source=$sourceParam"
-        val headers = HttpHeaders().apply {
-            // Matchbox's StructureMap engine recognizes this content-type
-            // as "interpret the body as HL7 v2 ER7 and parse before
-            // applying the source StructureMap". Same content-type the
-            // old Camel transform route used (see ticket #361 commit
-            // b81da654's IngestRoutes.kt prepareMatchboxCall()).
-            contentType = MediaType.parseMediaType("x-application/hl7-v2+er7")
-            accept = listOf(MediaType.parseMediaType("application/fhir+json"))
+
+        // OTel CLIENT span (Epic #387, ticket #394). Span name uses the
+        // canonical "<METHOD> <route>" shape from OTel's HTTP semantic-
+        // conventions reference; we don't yet emit `http.url` / `http.method`
+        // as separate attributes because the span name + the wrapping
+        // worker.process attributes are enough for our pipeline's needs.
+        // The active worker.process context (set by IngestedMessageWorker
+        // via Span.makeCurrent) is automatically the parent.
+        val httpSpan: Span = tracer.spanBuilder("HTTP POST matchbox/\$transform")
+            .setSpanKind(SpanKind.CLIENT)
+            .startSpan()
+        val scope = httpSpan.makeCurrent()
+        try {
+            val headers = HttpHeaders().apply {
+                // Matchbox's StructureMap engine recognizes this content-type
+                // as "interpret the body as HL7 v2 ER7 and parse before
+                // applying the source StructureMap". Same content-type the
+                // old Camel transform route used (see ticket #361 commit
+                // b81da654's IngestRoutes.kt prepareMatchboxCall()).
+                contentType = MediaType.parseMediaType("x-application/hl7-v2+er7")
+                accept = listOf(MediaType.parseMediaType("application/fhir+json"))
+                // Forward the current MDC correlation_id (set by the worker
+                // in processOne before invoking us) so matchbox can log
+                // server-side with the same id we use, and so any future
+                // matchbox->HAPI propagation continues the chain.
+                CorrelationId.current()?.let { set(CorrelationId.HEADER, it) }
+                // OTel W3C traceparent (+ tracestate when present). The
+                // propagator writes onto the HttpHeaders via the
+                // HttpHeaders-shaped setter below. When the SDK is
+                // disabled the active context is the no-op root and
+                // inject(...) is a no-op — no header added, no overhead.
+                propagators.textMapPropagator.inject(Context.current(), this, HttpHeadersSetter)
+            }
+            val request = HttpEntity(rawHl7, headers)
+
+            log.debug("matchbox transform url={} bytes={}", url, rawHl7.length)
+            val response = restTemplate.postForEntity(url, request, String::class.java)
+            val body = response.body
+                ?: error("matchbox returned empty body (status=${response.statusCode})")
+
+            // FhirContext.newJsonParser() is thread-safe per HAPI's own docs as
+            // long as we don't configure it mid-parse; we use the defaults so a
+            // single shared parser per call is fine. (Creating one per call is
+            // also cheap enough — the expensive part is the FhirContext init,
+            // which is a singleton bean.)
+            return fhirContext.newJsonParser().parseResource(Bundle::class.java, body)
+        } catch (ex: Exception) {
+            httpSpan.recordException(ex)
+            httpSpan.setStatus(StatusCode.ERROR, ex.message ?: ex.javaClass.simpleName)
+            throw ex
+        } finally {
+            scope.close()
+            httpSpan.end()
         }
-        val request = HttpEntity(rawHl7, headers)
+    }
 
-        log.debug("matchbox transform url={} bytes={}", url, rawHl7.length)
-        val response = restTemplate.postForEntity(url, request, String::class.java)
-        val body = response.body
-            ?: error("matchbox returned empty body (status=${response.statusCode})")
-
-        // FhirContext.newJsonParser() is thread-safe per HAPI's own docs as
-        // long as we don't configure it mid-parse; we use the defaults so a
-        // single shared parser per call is fine. (Creating one per call is
-        // also cheap enough — the expensive part is the FhirContext init,
-        // which is a singleton bean.)
-        return fhirContext.newJsonParser().parseResource(Bundle::class.java, body)
+    /**
+     * [TextMapSetter] for Spring's [HttpHeaders] type. Static so we
+     * don't allocate one per HTTP request. The SDK's W3C propagator
+     * calls `set("traceparent", "<value>")` and optionally
+     * `set("tracestate", "<value>")` here.
+     */
+    private object HttpHeadersSetter : TextMapSetter<HttpHeaders> {
+        override fun set(carrier: HttpHeaders?, key: String, value: String) {
+            carrier?.set(key, value)
+        }
     }
 }
