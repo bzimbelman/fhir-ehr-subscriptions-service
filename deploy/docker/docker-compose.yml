@@ -221,6 +221,83 @@ services:
     networks:
       - subscription-service
 
+  # Operator UI (Epic #398, ticket #408). Next.js 15 + NextAuth v5.
+  #
+  # Authenticates operators via OIDC against whatever IdP the rest of the
+  # platform uses (Keycloak, Auth0, Okta, Authentik, ...). All admin-API
+  # traffic is proxied through Next.js server routes so the
+  # `IPF_ADMIN_AUTH_TOKEN` bearer never leaves the cluster.
+  #
+  # When OIDC env vars are blank the UI still boots — `/signin` renders a
+  # "configure OIDC first" banner via the `isOidcConfigured` check in
+  # ui/src/lib/auth.ts. Useful for the quickstart; flip the OIDC_*
+  # variables to wire real auth.
+  #
+  # The UI defaults to publishing on host port 3000. Override
+  # `UI_HOST_PORT` in .env if that clashes with something else on your
+  # box. The interface-engine actuator is on 18090, HAPI on 18080, and
+  # Matchbox on 18081, so the UI is the only service competing for the
+  # "obvious" web port — kept that way intentionally.
+  ui:
+    build:
+      context: ../../ui
+      dockerfile: Dockerfile
+    image: ${UI_IMAGE:-subscription-service-ui:local}
+    container_name: subscription-service-ui
+    restart: unless-stopped
+    depends_on:
+      interface-engine:
+        condition: service_healthy
+    environment:
+      # In-cluster URL the Next.js server uses for /api/admin/* proxy
+      # calls. The browser NEVER talks to this directly; the bearer
+      # token stays server-side.
+      ADMIN_API_BASE_URL: ${ADMIN_API_BASE_URL:-http://interface-engine:8090}
+      # Bearer for the proxy → backend hop. Must match the value of
+      # IPF_ADMIN_AUTH_TOKEN on the interface-engine service above.
+      # Blank = unauthenticated (only OK for ephemeral local dev).
+      ADMIN_API_BEARER_TOKEN: ${IPF_ADMIN_AUTH_TOKEN:-}
+      # NextAuth v5 wants this set when running behind any proxy
+      # (including the Docker bridge that terminates :3000 on the host).
+      # See https://authjs.dev/getting-started/deployment#auth_trust_host.
+      AUTH_TRUST_HOST: "true"
+      # Session encryption secret. NextAuth v5 fails closed in
+      # NODE_ENV=production if unset, so the UI container will refuse
+      # to start until this is provided. Generate via
+      #   openssl rand -base64 32
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      # OIDC client config. When ALL THREE are blank the UI runs in
+      # "configure OIDC first" mode — bootable but unsignable-into.
+      # See deploy/docker/.env.example for per-IdP examples.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      # External URL the browser sees. NextAuth uses this to construct
+      # the redirect URI registered with the OIDC provider. For non-
+      # localhost deployments set this to the operator's actual URL.
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      # Optional human-readable deployment label shown in the top-bar.
+      NEXT_PUBLIC_DEPLOYMENT_NAME: ${UI_DEPLOYMENT_NAME:-}
+    ports:
+      - "${UI_HOST_PORT:-3000}:3000"
+    healthcheck:
+      # /api/health is a tiny synchronous endpoint that never touches
+      # the backend (see ui/src/app/api/health/route.ts). We only want
+      # pod restarts when the Node process itself is wedged.
+      test:
+        - CMD
+        - wget
+        - --quiet
+        - --tries=1
+        - --spider
+        - http://localhost:3000/api/health
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    networks:
+      - subscription-service
+
   # OpenTelemetry collector + UI (Epic #387, ticket #394).
   #
   # Optional — only brought up when you pass `--profile observability` to
