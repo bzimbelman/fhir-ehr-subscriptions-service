@@ -78,6 +78,17 @@ dependencies {
     // pulling it in doesn't bloat the runtime classpath.
     implementation(project(":plugins-spi"))
 
+    // Built-in HL7 v2 MLLP plugin (ticket #431, Epic #425). The interface
+    // engine's receive path used to be inline Camel-MLLP code under
+    // .routes.IngestRoutes; that work moved into the plugin module so the
+    // SPI is self-demonstrating. Pulling the plugin in here activates its
+    // Spring Boot auto-config (see
+    // plugins-builtin/hl7v2-mllp/.../Hl7V2MllpAutoConfiguration.kt and
+    // its AutoConfiguration.imports descriptor) which registers the
+    // Hl7V2MllpIngestSource bean — the IngestSourceRegistry below
+    // discovers it and starts it at boot.
+    implementation(project(":plugins-builtin:hl7v2-mllp"))
+
     // Spring Boot core + actuator for /actuator/health.
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-web")
