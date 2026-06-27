@@ -2,6 +2,11 @@ import { redirect } from "next/navigation";
 import { auth, isOidcConfigured } from "@/lib/auth";
 import { AuditView } from "@/components/AuditView";
 
+// Ticket #423: force-dynamic so OIDC env is read at REQUEST time, not
+// build time. Next.js otherwise prerenders the unauthenticated redirect
+// branch and the page never re-checks auth() at runtime.
+export const dynamic = "force-dynamic";
+
 /**
  * Operator audit log view (Epic #398, ticket #407).
  *
@@ -13,7 +18,7 @@ import { AuditView } from "@/components/AuditView";
  * /api/admin/[...path] proxy (which forwards to `/admin/audit*`).
  */
 export default async function AuditPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();
