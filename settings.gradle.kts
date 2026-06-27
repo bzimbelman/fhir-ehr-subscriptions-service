@@ -33,3 +33,12 @@
 rootProject.name = "subscription-service"
 
 include("plugins-spi", "interface-engine")
+
+// plugins-builtin/observability-otel (ticket #433, Epic #425). Re-expresses
+// the standard log-field / metric-label catalog as an
+// `ObservabilityEnricher` plugin. The transport (OTel SDK, Prometheus
+// actuator endpoint, Logback JSON encoder) stays in interface-engine as
+// infrastructure; the plugin only owns the "what gets stamped" decisions.
+include("plugins-builtin:observability-otel")
+project(":plugins-builtin:observability-otel").projectDir =
+    file("plugins-builtin/observability-otel")
