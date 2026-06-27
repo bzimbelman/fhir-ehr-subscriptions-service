@@ -518,3 +518,136 @@ securityContext:
     drop: ["ALL"]
   runAsNonRoot: true
   runAsUser: 1000
+
+# ---------------------------------------------------------------------------
+# Operator UI (Epic #398, ticket #408). Next.js 15 + NextAuth v5.
+#
+# Ships as a sibling Deployment inside this chart (chosen over an umbrella
+# chart for v1: simpler, one release name, identical lifecycle as the
+# interface engine). Disable cleanly with `ui.enabled=false` for operators
+# who don't want the UI surface — there's no other resource in the chart
+# that depends on its presence.
+#
+# Image: built locally from ui/Dockerfile (multistage, Next.js standalone,
+# UID 1001 nextjs:nodejs). For real clusters, push to a registry and
+# override `ui.image.repository/tag`. The compose tag `subscription-service-ui:local`
+# is intentional — it won't be in any registry, so the default chart
+# install on a non-Rancher cluster fails fast with ImagePullBackOff
+# instead of silently picking up a stale Docker Hub image.
+#
+# OIDC / admin-bearer secrets:
+#  - Default: `existingSecretName: ""` AND `createSecret: false`, so no
+#    Secret is referenced and the deployment renders without the
+#    sensitive env vars. The UI boots in "configure OIDC first" mode
+#    and the /api/admin/* proxy returns 401 (no bearer present).
+#  - Recommended: set `existingSecretName` to a pre-created Secret that
+#    holds ADMIN_API_BEARER_TOKEN, AUTH_SECRET, OIDC_CLIENT_SECRET. Lets
+#    you manage the secret with your usual tooling (sops, sealed-secrets,
+#    External Secrets Operator, vault-injector, etc.).
+#  - Dev only: set `createSecret: true` and supply `secretValues.*` to
+#    have the chart create the Secret inline. Don't ship production
+#    secrets through Helm values.
+# ---------------------------------------------------------------------------
+ui:
+  enabled: true
+  replicas: 1
+  image:
+    # Defaults match the docker-compose `build` output. Push to your
+    # registry and override these in your environment-specific values
+    # file (e.g. `repository: ghcr.io/your-org/subscription-service-ui`,
+    # `tag: 0.1.0`). The chart never reaches into the source tree to
+    # build the image — that's the deployer's job.
+    repository: subscription-service-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 3000
+  ingress:
+    # Off by default. When `enabled: true`, the chart renders a separate
+    # Ingress object distinct from the HAPI ingress above. Operators
+    # typically want a separate hostname for the operator UI
+    # (e.g. `ops.subscription-service.example.com`) so the public FHIR
+    # endpoint and the operator console aren't co-located on the same
+    # DNS name.
+    enabled: false
+    className: ""
+    annotations: {}
+    host: subscription-service-ui.example.com
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: false
+      # When TLS is on and `secretName` is empty AND cert-manager is on
+      # (see `certManager` below), the chart auto-populates the
+      # secretName to `<release>-ui-tls`.
+      secretName: ""
+    certManager:
+      enabled: false
+      clusterIssuer: ""
+      issuer: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  # ui/Dockerfile pins USER nextjs (UID 1001, GID 1001). Match those
+  # explicitly so PSA `restricted` namespaces accept the spec without
+  # falling back on the chart-level 1000:1000 defaults.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    # Next.js standalone writes a small amount to .next/cache at runtime
+    # (image optimizer / route cache). Turning this on is possible but
+    # needs an emptyDir mounted at /app/.next/cache — out of scope for
+    # the v1 ship.
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+    runAsNonRoot: true
+    runAsUser: 1001
+  env:
+    # In-cluster URL the Next.js server proxies admin calls to. Defaults
+    # to the in-release interface-engine service, which is what every
+    # bundled deployment wants. Override only when you've split the UI
+    # release out of the chart, or when the interface engine lives in
+    # another namespace and you want a fully-qualified DNS name.
+    adminApiBaseUrl: ""
+    # External URL the operator's browser sees. NextAuth uses this to
+    # construct redirect URIs. Leaving it blank is fine when the UI is
+    # only reached over `kubectl port-forward` for smoke tests; set it
+    # to the public ingress URL once the ingress block above is on.
+    nextauthUrl: ""
+    # OIDC issuer / client. Sensitive value (clientSecret) does NOT
+    # live here — it lives in the Secret referenced via
+    # `existingSecretName` or created via `createSecret` + `secretValues`.
+    oidcIssuer: ""
+    oidcClientId: "subscription-service-ui"
+    # Optional human-readable deployment label shown in the top-bar.
+    # Exposed to the browser as NEXT_PUBLIC_DEPLOYMENT_NAME, not secret.
+    deploymentName: ""
+  # Name of an EXISTING Secret in this release's namespace holding the
+  # sensitive UI env vars. When set, the chart renders an `envFrom`
+  # referencing this Secret. Required keys:
+  #   ADMIN_API_BEARER_TOKEN   matches IPF_ADMIN_AUTH_TOKEN on the engine
+  #   AUTH_SECRET              `openssl rand -base64 32`
+  #   OIDC_CLIENT_SECRET       from the OIDC provider
+  #
+  # Mutually exclusive with `createSecret`. Recommended in production.
+  existingSecretName: ""
+  # When `true`, the chart creates a Secret from `secretValues` below.
+  # Convenient for dev/test; DO NOT use for production secrets (Helm
+  # release history retains the rendered values).
+  createSecret: false
+  secretValues:
+    adminApiBearerToken: ""
+    authSecret: ""
+    oidcClientSecret: ""

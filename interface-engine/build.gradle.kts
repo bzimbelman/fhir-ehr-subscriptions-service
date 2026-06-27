@@ -171,6 +171,12 @@ dependencies {
 
     // Tests.
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // Apache HttpComponents 5 — needed so TestRestTemplate's
+    // HttpComponentsClientHttpRequestFactory can issue PATCH requests
+    // (ticket #404). The default JDK-backed client factory does NOT
+    // support PATCH; without this dep `rest.exchange(..., HttpMethod.PATCH, ...)`
+    // throws "Invalid HTTP method: PATCH".
+    testImplementation("org.apache.httpcomponents.client5:httpclient5")
     testImplementation("org.apache.camel:camel-test-spring-junit5:$camelVersion")
     testImplementation("org.apache.camel:camel-test-junit5:$camelVersion")
     testImplementation("org.awaitility:awaitility:4.2.2")

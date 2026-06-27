@@ -41,6 +41,8 @@ The system is designed to be deployable as either a Docker Compose stack or a Ku
    │             HAPI FHIR client: POST /fhir (Bundle)           │
    │                                                             │
    │  ◄── ACK back to sender (AA / AE / AR)                      │
+   │                                                             │
+   │  Admin HTTP :8090  ◄── operator UI (/admin/*, Bearer-gated) │
    └─────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -52,9 +54,25 @@ The system is designed to be deployable as either a Docker Compose stack or a Ku
                         │ matching topic
                         ▼
                   REST-hook / WebSocket / message subscribers
+
+
+   ┌─────────────────────────────────────────────────────────────┐
+   │  Operator UI (Next.js 15 + NextAuth v5)                     │
+   │                                                             │
+   │  Browser ──► /signin (OIDC) ──► /dashboard, /subscriptions, │
+   │              /messages, /dlq, /interfaces, /matchbox,       │
+   │              /audit, /settings                              │
+   │                                                             │
+   │  /api/admin/*  ─server-side proxy─►  interface-engine:8090  │
+   │                  (Bearer never leaves the cluster)          │
+   └─────────────────────────────────────────────────────────────┘
 ```
 
 The interface engine and Matchbox/HAPI run side by side. Matchbox is just another FHIR endpoint that exposes `$transform`; the interface engine calls it like any other FHIR server.
+
+The operator UI is a separate Next.js process (deployed as a docker-compose service in dev, a sibling Deployment in the Helm chart) that authenticates operators via OIDC and proxies every admin-API call server-side. The `IPF_ADMIN_AUTH_TOKEN` bearer used to call the interface engine's `/admin/*` endpoints lives in the UI pod's env (or mounted Secret in k8s) and is never exposed to the browser. See [`./admin-api.md`](./admin-api.md) for the contract.
+
+For HTTPS access from outside the host network, the maintainer's reference deployment fronts the UI with a Cloudflare tunnel (`subscription-service-ui.bzonfhir.com` → `http://localhost:3000`) — see [`./auth-testing.md`](./auth-testing.md) and the `README.md` reference-deployment table. The UI's OIDC env vars (`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `NEXTAUTH_URL`, `AUTH_SECRET`) are read at request time, never inlined at build time — see [`./auth.md`](./auth.md) for the design and ticket #423 for the regression-test that locks this in.
 
 ---
 

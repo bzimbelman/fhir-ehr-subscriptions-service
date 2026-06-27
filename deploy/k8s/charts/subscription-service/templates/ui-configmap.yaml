@@ -1,0 +1,25 @@
+{{- if .Values.ui.enabled -}}
+{{- /*
+Non-secret env vars for the operator UI. Sensitive values
+(ADMIN_API_BEARER_TOKEN, AUTH_SECRET, OIDC_CLIENT_SECRET) live in the
+Secret referenced via `subscription-service.ui.secretName`.
+
+ADMIN_API_BASE_URL defaults to the in-release interface-engine ClusterIP
+DNS; operators override `ui.env.adminApiBaseUrl` only when the engine
+lives in another namespace / release.
+*/ -}}
+{{- $adminApiBaseUrl := .Values.ui.env.adminApiBaseUrl | default (printf "http://%s:%v" (include "subscription-service.interfaceEngine.fullname" .) .Values.interfaceEngine.http.service.port) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "subscription-service.ui.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+data:
+  ADMIN_API_BASE_URL: {{ $adminApiBaseUrl | quote }}
+  NEXTAUTH_URL: {{ .Values.ui.env.nextauthUrl | quote }}
+  OIDC_ISSUER: {{ .Values.ui.env.oidcIssuer | quote }}
+  OIDC_CLIENT_ID: {{ .Values.ui.env.oidcClientId | quote }}
+  NEXT_PUBLIC_DEPLOYMENT_NAME: {{ .Values.ui.env.deploymentName | quote }}
+{{- end }}
