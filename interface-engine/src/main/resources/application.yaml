@@ -190,10 +190,34 @@ subscription-service:
       # Initial delay before the first DlqSizeGauge poll. Kept short so a
       # freshly-started pod reports a real value within ~1s of readiness.
       dlq-poll-initial-ms: ${SUB_SERVICE_METRICS_DLQ_POLL_INITIAL_MS:1000}
-  # MLLP listener port. Override with MLLP_PORT env var. 2575 is the de-facto
-  # default for HL7v2 MLLP in the IPF / hapi-test-panel community.
+  # MLLP listener (legacy keys, ticket #431 / Epic #425).
+  #
+  # The MLLP listener moved out of interface-engine and into the
+  # plugins-builtin/hl7v2-mllp module — see
+  # `plugins-builtin/hl7v2-mllp/README.md`. New property prefix is
+  # `subscription-service.ingest.hl7v2-mllp.*`; the auto-config there
+  # still honours `subscription-service.mllp.port` as a fallback so this
+  # block keeps working without a config rewrite.
   mllp:
     port: ${MLLP_PORT:2575}
+  # New-style ingest plugin config. The plugin's auto-config reads from
+  # this prefix and falls back to the legacy `mllp.port` above when no
+  # value is explicitly set. Operators are encouraged to migrate here;
+  # the legacy block stays around for transition compatibility and may
+  # be removed in a future epic-cleanup story.
+  ingest:
+    hl7v2-mllp:
+      enabled: ${SUBSCRIPTION_SERVICE_INGEST_HL7V2_MLLP_ENABLED:true}
+      host: ${SUBSCRIPTION_SERVICE_INGEST_HL7V2_MLLP_HOST:0.0.0.0}
+      character-set: ${SUBSCRIPTION_SERVICE_INGEST_HL7V2_MLLP_CHARACTER_SET:UTF-8}
+      # Port is INTENTIONALLY not set here: the auto-config uses the
+      # legacy `mllp.port` above when this property is absent. Pinning
+      # it here too would set both values to the same default and the
+      # legacy fallback would never trigger — which would break the ~20
+      # interface-engine tests that register `subscription-service.mllp.port`
+      # to a random free port via @DynamicPropertySource. To override
+      # in production, set `SUBSCRIPTION_SERVICE_INGEST_HL7V2_MLLP_PORT`
+      # explicitly.
   # Downstream services. Wired into the route in ticket #361.
   hapi:
     base-url: ${HAPI_BASE:http://hapi:8080/fhir}

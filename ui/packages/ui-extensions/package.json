@@ -1,0 +1,42 @@
+{
+  "name": "@bzonfhir/ui-extensions",
+  "version": "0.1.0",
+  "description": "TypeScript SPI for subscription-service UI extensions (NavLink, PageRoute, PanelWidget, RowAction, DetailTab).",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/bzonfhir/subscription-service/tree/main/ui/packages/ui-extensions",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bzonfhir/subscription-service.git",
+    "directory": "ui/packages/ui-extensions"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "pnpm clean && pnpm build && pnpm test"
+  },
+  "peerDependencies": {
+    "react": ">=19",
+    "react-dom": ">=19"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "react": "^19",
+    "react-dom": "^19",
+    "typescript": "^5.7",
+    "vitest": "^2.1"
+  }
+}

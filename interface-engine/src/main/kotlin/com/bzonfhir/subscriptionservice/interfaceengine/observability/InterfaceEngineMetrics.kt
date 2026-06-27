@@ -1,10 +1,13 @@
 package com.bzonfhir.subscriptionservice.interfaceengine.observability
 
+import com.bzonfhir.subscriptionservice.plugins.observabilityotel.StandardMetricLabels
+import com.bzonfhir.subscriptionservice.spi.meta.ObservabilityContext
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.Timer
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.stereotype.Component
 import java.time.Duration
 
@@ -54,9 +57,24 @@ import java.time.Duration
 @Component
 class InterfaceEngineMetrics(
     private val meterRegistry: MeterRegistry,
+    // Ticket #433: consult the ObservabilityEnricher chain for the per-metric
+    // label catalog instead of hard-coding tag names in this class. An
+    // ObjectProvider keeps the wiring optional during tests that boot a
+    // narrow context without the plugin loaded — the helper falls back to
+    // an empty chain in that case, and the tag-name constants below still
+    // ship the legacy hard-coded shape for backward compatibility.
+    enricherChain: ObjectProvider<ObservabilityEnricherChain>,
 ) {
 
     private val log = LoggerFactory.getLogger(InterfaceEngineMetrics::class.java)
+
+    /**
+     * Chain reference, resolved at construction time so the per-metric
+     * label catalog is captured once rather than re-resolved on every
+     * hot-path call. Nullable when no chain bean is present (very
+     * narrow test contexts only).
+     */
+    private val chain: ObservabilityEnricherChain? = enricherChain.ifAvailable
 
     // -------------------------------------------------------------------------
     // Counter: interface_engine_ingested_messages_total
@@ -87,12 +105,25 @@ class InterfaceEngineMetrics(
         messageType: String,
         status: String,
     ) {
+        // Build a context and consult the enricher chain for any
+        // plugin-contributed labels on top of the standard set. The chain
+        // honours the catalog: third-party plugins can stamp tenant /
+        // billing labels iff they explicitly opt in for this metric series.
+        val ctx = ObservabilityContext(
+            correlationId = "",
+            tenantId = null,
+            pipelineStage = "ingest.persist",
+            attributes = mapOf(
+                StandardMetricLabels.LABEL_SOURCE_PROTOCOL to sourceProtocol,
+                StandardMetricLabels.LABEL_SOURCE_SYSTEM to sourceSystem,
+                StandardMetricLabels.LABEL_MESSAGE_TYPE to messageType,
+                StandardMetricLabels.LABEL_STATUS to status,
+            ),
+        )
+        val tags = tagsFor(METRIC_INGESTED_MESSAGES, ctx)
         Counter.builder(METRIC_INGESTED_MESSAGES)
             .description("Count of inbound messages by status transition")
-            .tag("source_protocol", sourceProtocol)
-            .tag("source_system", sourceSystem)
-            .tag("message_type", messageType)
-            .tag("status", status)
+            .tags(tags)
             .register(meterRegistry)
             .increment()
     }
@@ -110,9 +141,18 @@ class InterfaceEngineMetrics(
      * 2 — far below any concerning threshold.
      */
     fun recordTransformDuration(duration: Duration, success: Boolean) {
+        val ctx = ObservabilityContext(
+            correlationId = "",
+            tenantId = null,
+            pipelineStage = "worker.transform",
+            attributes = mapOf(
+                StandardMetricLabels.LABEL_OUTCOME to if (success) "success" else "failure",
+            ),
+        )
+        val tags = tagsFor(METRIC_TRANSFORM_DURATION, ctx)
         Timer.builder(METRIC_TRANSFORM_DURATION)
             .description("Latency of one Matchbox StructureMap/\$transform call")
-            .tag("outcome", if (success) "success" else "failure")
+            .tags(tags)
             .register(meterRegistry)
             .record(duration)
     }
@@ -126,9 +166,18 @@ class InterfaceEngineMetrics(
      * the transform timer.
      */
     fun recordHapiPostDuration(duration: Duration, success: Boolean) {
+        val ctx = ObservabilityContext(
+            correlationId = "",
+            tenantId = null,
+            pipelineStage = "worker.deliver",
+            attributes = mapOf(
+                StandardMetricLabels.LABEL_OUTCOME to if (success) "success" else "failure",
+            ),
+        )
+        val tags = tagsFor(METRIC_HAPI_POST_DURATION, ctx)
         Timer.builder(METRIC_HAPI_POST_DURATION)
             .description("Latency of one HAPI Bundle transaction POST")
-            .tag("outcome", if (success) "success" else "failure")
+            .tags(tags)
             .register(meterRegistry)
             .record(duration)
     }
@@ -148,10 +197,19 @@ class InterfaceEngineMetrics(
      */
     fun incrementDlqTransitions(sourceProtocol: String, rawReason: String) {
         val normalizedReason = normalizeDlqReason(rawReason)
+        val ctx = ObservabilityContext(
+            correlationId = "",
+            tenantId = null,
+            pipelineStage = "worker.dlq",
+            attributes = mapOf(
+                StandardMetricLabels.LABEL_SOURCE_PROTOCOL to sourceProtocol,
+                StandardMetricLabels.LABEL_REASON to normalizedReason,
+            ),
+        )
+        val tags = tagsFor(METRIC_DLQ_TRANSITIONS, ctx)
         Counter.builder(METRIC_DLQ_TRANSITIONS)
             .description("Count of message rows transitioning to DEAD_LETTER")
-            .tag("source_protocol", sourceProtocol)
-            .tag("reason", normalizedReason)
+            .tags(tags)
             .register(meterRegistry)
             .increment()
     }
@@ -174,6 +232,31 @@ class InterfaceEngineMetrics(
             .description("End-to-end latency: row received → delivered")
             .register(meterRegistry)
             .record(duration)
+    }
+
+    /**
+     * Build the Micrometer [Tags] for a metric series by consulting the
+     * [ObservabilityEnricherChain]. The chain returns the union of
+     * plugin-contributed labels (the built-in `OtelObservabilityEnricher`
+     * stamps the standard catalog; third-party plugins can add tenant /
+     * billing labels on top).
+     *
+     * When no chain is wired (extremely narrow test contexts that boot
+     * `InterfaceEngineMetrics` without the observability plugin), this
+     * falls back to the legacy hard-coded label set — extracted from
+     * the context's attributes via [StandardMetricLabels.build]. The
+     * resulting tag set is identical to what `OtelObservabilityEnricher`
+     * would have returned, so series shape is stable across deployments.
+     */
+    private fun tagsFor(metricName: String, ctx: ObservabilityContext): Tags {
+        val labels = chain?.enrichMetricLabels(metricName, ctx)
+            ?: StandardMetricLabels.build(metricName, ctx)
+        if (labels.isEmpty()) return Tags.empty()
+        var tags = Tags.empty()
+        for ((k, v) in labels) {
+            tags = tags.and(k, v)
+        }
+        return tags
     }
 
     companion object {

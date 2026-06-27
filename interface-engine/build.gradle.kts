@@ -69,6 +69,43 @@ dependencyManagement {
 }
 
 dependencies {
+    // plugins-spi (ticket #430, Epic #425) — the public extension surface.
+    // Bringing it in here doesn't activate any plugin yet; this dep just
+    // gives future stories in Epic #425 a compile-time path to refactor
+    // the existing ingest / observability / audit code into SPI-shaped
+    // bindings without further wiring changes. The SPI module itself is
+    // dep-light (Kotlin stdlib only; HAPI is compileOnly there) so
+    // pulling it in doesn't bloat the runtime classpath.
+    implementation(project(":plugins-spi"))
+
+    // Built-in HL7 v2 MLLP plugin (ticket #431, Epic #425). The interface
+    // engine's receive path used to be inline Camel-MLLP code under
+    // .routes.IngestRoutes; that work moved into the plugin module so the
+    // SPI is self-demonstrating. Pulling the plugin in here activates its
+    // Spring Boot auto-config (see Hl7V2MllpAutoConfiguration.kt) which
+    // registers the Hl7V2MllpIngestSource bean — IngestSourceRegistry
+    // discovers it and starts it at boot.
+    implementation(project(":plugins-builtin:hl7v2-mllp"))
+
+    // Built-in observability enricher plugin (ticket #433, Epic #425). The
+    // standard log-field / metric-label catalog moved into this plugin.
+    // Transport (this module) hosts the SDK + Prometheus actuator; the
+    // plugin owns the "what gets stamped" decisions.
+    implementation(project(":plugins-builtin:observability-otel"))
+
+    // Built-in FHIR R4 polling IngestSource plugin (ticket #434, Epic #425).
+    // Foundation for the Athena vendor profile in Epic #426 (Athena
+    // exposes some data via standard FHIR R4) and any future polling-
+    // based source. Pulling the plugin in here activates its Spring
+    // Boot auto-config (see FhirPollingAutoConfiguration.kt) which
+    // registers one FhirPollingIngestSource bean per configured source
+    // — IngestSourceRegistry discovers them and starts them at boot.
+    //
+    // No sources are configured out of the box; the plugin is dormant
+    // until an operator adds entries under
+    // `subscription-service.ingest.fhir-polling.sources[]`.
+    implementation(project(":plugins-builtin:fhir-polling"))
+
     // Spring Boot core + actuator for /actuator/health.
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-web")

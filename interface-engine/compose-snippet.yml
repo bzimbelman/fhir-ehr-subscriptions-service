@@ -20,14 +20,15 @@
 #   2575:2575  MLLP listener for HL7 v2 over TCP.
 #
 # Build context:
-#   Built from the repo root with `interface-engine/Dockerfile` so the
-#   Dockerfile can reference the gradle wrapper and src/ tree without
-#   ".." escapes.
+#   Ticket #430 moved the build context to the REPO ROOT because the
+#   interface-engine now depends on the sibling `:plugins-spi` Gradle
+#   module. The Dockerfile copies BOTH `interface-engine/` and
+#   `plugins-spi/` from the root context.
 
 interface-engine:
   build:
-    context: ../../interface-engine
-    dockerfile: Dockerfile
+    context: ../..
+    dockerfile: interface-engine/Dockerfile
   image: subscription-service/interface-engine:dev
   container_name: subscription-service-interface-engine
   restart: unless-stopped
