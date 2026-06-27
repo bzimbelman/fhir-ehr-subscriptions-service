@@ -470,6 +470,19 @@ curl -s -H "Authorization: Bearer $IPF_ADMIN_AUTH_TOKEN" \
   "http://localhost:18090/admin/subscriptions/health" | jq .
 ```
 
+### 1a. New fields on `health` response items (ticket #404)
+
+The ticket #404 operator UI ships two additional fields on each item to
+power its detail page and status pill — no breaking change to the existing
+contract:
+
+- `status` — raw FHIR R4 `Subscription.status` code:
+  `"active"` / `"off"` / `"requested"` / `"error"`. The existing `active`
+  boolean stays as a convenience (`active == (status == "active")`).
+- `criteria` — the `Subscription.criteria` string (e.g. `"Patient?"`,
+  `"SubscriptionTopic?topic=https://example.com/Topic/foo"`). Empty
+  string when the resource has no criteria set.
+
 ### 2. `GET /admin/subscriptions/{id}/history`
 
 Recent delivery attempts for one Subscription. `{id}` is the bare HAPI
@@ -518,6 +531,47 @@ Example:
 curl -s -H "Authorization: Bearer $IPF_ADMIN_AUTH_TOKEN" \
   "http://localhost:18090/admin/subscriptions/123/history?limit=20" | jq .
 ```
+
+### 3. `GET /admin/subscriptions/{id}/resource` (ticket #404)
+
+Pretty-printed FHIR R4 `Subscription` resource JSON. Power-feature for
+the operator UI's detail panel — operators don't have to leave the
+console to inspect the registered configuration.
+
+Response (200): the full `Subscription` resource as JSON, exactly as
+HAPI's R4 parser emits it. `resourceType` is always `"Subscription"`.
+
+Errors:
+
+- `404 Not Found` — no Subscription with that id on HAPI.
+
+### 4. `PATCH /admin/subscriptions/{id}/status` (ticket #404)
+
+Flip a Subscription's `status` between `active` and `off` (or any other
+FHIR R4 status code) without round-tripping through a FHIR PUT. Used by
+the operator UI's one-click toggle.
+
+Request body (`application/json`):
+
+```json
+{ "status": "off" }
+```
+
+`status` must be one of `active` / `off` / `requested` / `error`.
+
+Response (200) is a `SubscriptionHealthItem` (same shape as the items
+in `/health`) reflecting the new state.
+
+Errors:
+
+- `400 Bad Request` — body missing `status`, or value not in the
+  R4 vocabulary.
+- `404 Not Found` — no Subscription with that id on HAPI.
+
+Audit: emits a single JSON log line at INFO with
+`audit_event=subscription_status_changed` so the action surfaces in the
+service's log pipeline. Ticket #407 will land a structured
+`AuditEvent` resource written to HAPI.
 
 ### Operator workflow — "is this subscriber receiving notifications?"
 
