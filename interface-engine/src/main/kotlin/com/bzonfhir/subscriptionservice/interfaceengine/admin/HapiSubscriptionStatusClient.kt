@@ -90,6 +90,19 @@ interface HapiSubscriptionStatusClient {
      * Returns null when the Subscription id is not found at all (HAPI 404).
      */
     fun statusFor(id: String): SubscriptionStatusView?
+
+    /**
+     * Update the `Subscription.status` field on HAPI. Used by the operator
+     * UI (ticket #404) to flip a subscription between `active` and `off`
+     * without requiring the operator to round-trip through a FHIR PUT
+     * themselves. Returns the updated [SubscriptionStatusView] on success,
+     * or null when the id is not found.
+     *
+     * `newStatus` must be one of `active`, `off`, `requested`, `error` —
+     * the FHIR R4 Subscription.status vocabulary. Other values throw
+     * [IllegalArgumentException]; the controller maps that to 400.
+     */
+    fun setStatus(id: String, newStatus: String): SubscriptionStatusView?
 }
 
 /**
@@ -100,6 +113,21 @@ interface HapiSubscriptionStatusClient {
 data class SubscriptionStatusView(
     val subscriptionId: String,
     val active: Boolean,
+    /**
+     * Raw HAPI Subscription.status code: `active` / `off` / `requested` /
+     * `error`. Useful for the operator UI which surfaces this as a pill
+     * with the same vocabulary the FHIR spec defines. `active` here is the
+     * derived boolean ([status] == "active"); keep both since callers
+     * which only need the boolean shouldn't have to know the string.
+     */
+    val status: String,
+    /**
+     * The Subscription.criteria string (the query that triggers
+     * notifications, e.g. `Patient?` or
+     * `SubscriptionTopic?topic=...`). Empty string when not set on the
+     * resource so the JSON shape stays predictable.
+     */
+    val criteria: String,
     val channelType: String,
     val endpoint: String?,
     val deliverySuccessCount: Long,
@@ -221,6 +249,38 @@ class HapiSubscriptionStatusClientImpl(
         return subscriptionStatusView(subscription, parameters)
     }
 
+    override fun setStatus(id: String, newStatus: String): SubscriptionStatusView? {
+        // Validate `newStatus` against the FHIR R4 vocabulary before
+        // round-tripping to HAPI. fromCode throws FHIRException on bad
+        // input; we surface that as IllegalArgumentException so the
+        // controller can map to 400 without leaking HAPI internals.
+        val statusEnum = try {
+            Subscription.SubscriptionStatus.fromCode(newStatus)
+        } catch (ex: Exception) {
+            throw IllegalArgumentException(
+                "invalid Subscription.status value '$newStatus' (expected active|off|requested|error)",
+            )
+        }
+
+        val existing = readSubscription(id) ?: return null
+        existing.status = statusEnum
+        // Clear `error` when transitioning out of an error state — keeping
+        // a stale error string on an active subscription is confusing.
+        if (statusEnum != Subscription.SubscriptionStatus.ERROR) {
+            existing.error = null
+        }
+
+        val updated = try {
+            hapiClient.update().resource(existing).execute().resource as? Subscription
+        } catch (ex: BaseServerResponseException) {
+            log.warn("HAPI update Subscription/{} failed status={}", id, ex.statusCode)
+            return null
+        }
+        // After a successful write, return a fresh status view so the
+        // UI doesn't have to chain a read.
+        return statusFor(id) ?: updated?.let { subscriptionStatusView(it, null) }
+    }
+
     companion object {
         /**
          * Hard cap on the size of the Subscription list returned to the admin
@@ -240,6 +300,11 @@ class HapiSubscriptionStatusClientImpl(
         val id = subscription.idElement?.idPart ?: ""
         val channel = subscription.channel
         val active = subscription.status == Subscription.SubscriptionStatus.ACTIVE
+        // Raw FHIR R4 code: active|off|requested|error. fromCode throws on
+        // null, so we fall back to "unknown" — the UI displays this as a
+        // neutral grey pill.
+        val statusCode = subscription.status?.toCode() ?: "unknown"
+        val criteria = subscription.criteria ?: ""
         val channelType = channel?.type?.toCode() ?: "unknown"
         val endpoint = channel?.endpoint?.takeUnless { it.isNullOrBlank() }
         val lastError = subscription.error?.takeUnless { it.isNullOrBlank() }
@@ -267,6 +332,8 @@ class HapiSubscriptionStatusClientImpl(
         return SubscriptionStatusView(
             subscriptionId = "Subscription/$id",
             active = active,
+            status = statusCode,
+            criteria = criteria,
             channelType = channelType,
             endpoint = endpoint,
             deliverySuccessCount = successCount,

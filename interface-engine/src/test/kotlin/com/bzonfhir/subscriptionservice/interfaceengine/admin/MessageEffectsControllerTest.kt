@@ -75,6 +75,8 @@ class StubHapiSubscriptionStatusClient : HapiSubscriptionStatusClient {
     override fun readSubscription(id: String): Subscription? =
         subscriptions.firstOrNull { it.idElement?.idPart == id }
     override fun statusFor(id: String): SubscriptionStatusView? = statusViews[id]
+    // Ticket #404 added this; this stub is read-only so a no-op is fine.
+    override fun setStatus(id: String, newStatus: String): SubscriptionStatusView? = statusViews[id]
 
     fun reset() {
         subscriptions = emptyList()
@@ -312,6 +314,9 @@ class MessageEffectsControllerAuthOffTest {
             "abc" to SubscriptionStatusView(
                 subscriptionId = "Subscription/abc",
                 active = true,
+                // Ticket #404: status + criteria fields added to the view.
+                status = "active",
+                criteria = "Patient?",
                 channelType = "rest-hook",
                 endpoint = "https://subscriber.example.com/notify",
                 deliverySuccessCount = 1,
