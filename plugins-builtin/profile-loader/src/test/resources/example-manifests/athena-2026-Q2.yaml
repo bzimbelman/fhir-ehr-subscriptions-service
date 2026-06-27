@@ -1,0 +1,64 @@
+# Example athenahealth vendor profile manifest. Mirrors the
+# non-HL7-v2 example in subscription-service-master-plan.md §4.3.
+#
+# Proves the manifest format isn't HL7 v2-shaped: this profile has zero
+# hl7Versions, two REST-shaped ingest entries, and `sourceType`-keyed
+# mappings instead of `messageType`-keyed ones.
+profile:
+  id: athena
+  version: "2026-Q2"
+  schemaVersion: 1
+  vendor:
+    name: athenahealth
+    productLine: athenaOne
+    productVersion: "21.x"
+  fhirVersions: [R4]
+  hl7Versions: []
+
+ingest:
+  # Athena native REST polling (proprietary API).
+  - id: athena-changed-resources
+    type: athena-native-rest
+    config:
+      pollIntervalSeconds: 60
+      practiceId: "${ATHENA_PRACTICE_ID}"
+      departmentIds: ["${ATHENA_DEPARTMENT_IDS}"]
+      auth:
+        type: oauth2-client-credentials
+        tokenUrl: https://api.athenahealth.com/oauth2/v1/token
+        clientId: "${ATHENA_CLIENT_ID}"
+        clientSecretEnv: ATHENA_CLIENT_SECRET
+      resources:
+        - changedPatients
+        - changedAppointments
+        - changedClinicalDocuments
+        - changedLabResults
+
+  # Standard FHIR R4 polling for the parts Athena exposes via FHIR.
+  - id: athena-fhir-poll
+    type: fhir-r4-polling
+    config:
+      baseUrl: https://api.platform.athenahealth.com/fhir/r4
+      pollIntervalSeconds: 300
+      searches:
+        - "Observation?_lastUpdated=gt{{lastRun}}"
+        - "Encounter?_lastUpdated=gt{{lastRun}}"
+
+mappings:
+  - sourceType: athena-changed-patients
+    map: maps/athena-patient-normalize.fml
+    tests: [tests/athena-patient/]
+  - sourceType: fhir-r4-observation
+    map: maps/fhir-r4-observation-uscore-normalize.fml
+    tests: [tests/observation-normalize/]
+
+quirks:
+  athena-patient-id-namespace: practice-scoped
+  athena-encounter-departmentid-required: "true"
+  fhir-observation-missing-category-strategy: derive-from-loinc
+
+audit:
+  agent-system: athena
+  enrichments:
+    - addPracticeId: query.practiceid
+    - addAthenaUser: response-header.X-Audit-User

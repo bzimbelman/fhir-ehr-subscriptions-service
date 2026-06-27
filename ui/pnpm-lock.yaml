@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@bzonfhir/ui-extensions':
+        specifier: workspace:*
+        version: link:packages/ui-extensions
       next:
         specifier: 15.5.19
         version: 15.5.19(@babel/core@7.29.7)(@playwright/test@1.49.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -65,6 +68,27 @@ importers:
         version: 5.7.3
       vitest:
         specifier: 2.1.8
+        version: 2.1.8(@types/node@22.10.5)(jsdom@26.0.0)(lightningcss@1.32.0)
+
+  packages/ui-extensions:
+    devDependencies:
+      '@types/react':
+        specifier: ^19
+        version: 19.0.4
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.0.2(@types/react@19.0.4)
+      react:
+        specifier: ^19
+        version: 19.0.0
+      react-dom:
+        specifier: ^19
+        version: 19.0.0(react@19.0.0)
+      typescript:
+        specifier: ^5.7
+        version: 5.7.3
+      vitest:
+        specifier: ^2.1
         version: 2.1.8(@types/node@22.10.5)(jsdom@26.0.0)(lightningcss@1.32.0)
 
 packages:
