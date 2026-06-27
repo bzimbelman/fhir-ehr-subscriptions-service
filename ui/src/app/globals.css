@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+/* Minimal app shell styles. Operators care about information density, not
+ * chrome. Visual polish lands in later tickets. */
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+}
