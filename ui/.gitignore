@@ -37,3 +37,9 @@ Thumbs.db
 # Test artifacts
 coverage/
 .vitest/
+
+# Playwright
+playwright/.auth/
+playwright-report/
+test-results/
+

@@ -126,6 +126,28 @@ ui/
 | `pnpm lint`         | ESLint (Next config + TS).                  |
 | `pnpm typecheck`    | `tsc --noEmit` against `tsconfig.json`.     |
 | `pnpm test`         | Vitest (component + API route tests).       |
+| `pnpm e2e`          | Playwright end-to-end tests (see `e2e/README.md`). |
+| `pnpm e2e:install`  | One-time: install Playwright's chromium.    |
+| `pnpm e2e:headed`   | Playwright with a visible browser.          |
+| `pnpm e2e:ui`       | Playwright's interactive runner.            |
+
+## End-to-end tests
+
+Playwright drives the operator UI against a live deployment (local
+docker-compose by default, or any OIDC-provisioned environment by setting
+`PLAYWRIGHT_BASE_URL`). The suite covers one smoke test per primary nav
+route plus a multi-user session-isolation test. See `e2e/README.md` for
+full setup instructions, environment variables, and known caveats.
+
+Quick start:
+
+```bash
+pnpm e2e:install                 # one-time: download chromium
+export TEST_USER_A_USERNAME=opsa  TEST_USER_A_PASSWORD='...'
+export TEST_USER_B_USERNAME=opsb  TEST_USER_B_PASSWORD='...'
+pnpm e2e                          # against http://localhost:3000
+PLAYWRIGHT_BASE_URL=https://subscription-service-ui.bzonfhir.com pnpm e2e
+```
 
 ## Docker
 

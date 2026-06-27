@@ -278,6 +278,19 @@ services:
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       # Optional human-readable deployment label shown in the top-bar.
       NEXT_PUBLIC_DEPLOYMENT_NAME: ${UI_DEPLOYMENT_NAME:-}
+      # Optional extra CA certificate (for corporate MITM / SSL inspection
+      # setups, e.g. Netskope on the developer's machine). The file path
+      # is INSIDE the container; the bind-mount below maps the host's
+      # CA bundle into place if NODE_EXTRA_CA_CERTS_HOST_PATH is set in
+      # the developer's local .env. Defaults to "" (no override).
+      NODE_EXTRA_CA_CERTS: ${NODE_EXTRA_CA_CERTS:-}
+    volumes:
+      # Maps the host's enterprise CA bundle into the container so the
+      # Node.js fetch() that NextAuth uses can validate the IdP's TLS
+      # chain. NOOP if NODE_EXTRA_CA_CERTS_HOST_PATH is unset (the path
+      # resolves to /dev/null) -- intentional, keeps the default
+      # behavior unchanged.
+      - ${NODE_EXTRA_CA_CERTS_HOST_PATH:-/dev/null}:/app/extra-ca.pem:ro
     ports:
       - "${UI_HOST_PORT:-3000}:3000"
     healthcheck:
