@@ -13,7 +13,7 @@ import { MessagesListView } from "@/components/MessagesListView";
  * proxied through /api/admin/[...path].
  */
 export default async function MessagesPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

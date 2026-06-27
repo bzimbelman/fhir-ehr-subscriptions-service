@@ -8,7 +8,7 @@ import { auth, isOidcConfigured } from "@/lib/auth";
  * an Interfaces index ahead of the dashboard.
  */
 export default async function Page() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();

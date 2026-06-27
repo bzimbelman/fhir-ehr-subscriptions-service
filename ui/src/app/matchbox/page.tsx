@@ -15,7 +15,7 @@ import { MatchboxView } from "@/components/MatchboxView";
  * proxied through /api/admin/[...path].
  */
 export default async function MatchboxPage() {
-  if (!isOidcConfigured) {
+  if (!isOidcConfigured()) {
     redirect("/signin");
   }
   const session = await auth();
