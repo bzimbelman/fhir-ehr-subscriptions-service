@@ -14,6 +14,7 @@
 !build.gradle.kts
 !interface-engine/
 !plugins-spi/
+!plugins-builtin/
 
 # --- Sub-rules under the allowlisted dirs ---
 # Build outputs.
@@ -23,6 +24,9 @@ interface-engine/.gradle/
 plugins-spi/build/
 plugins-spi/out/
 plugins-spi/.gradle/
+plugins-builtin/*/build/
+plugins-builtin/*/out/
+plugins-builtin/*/.gradle/
 
 # IDE.
 **/.idea/
