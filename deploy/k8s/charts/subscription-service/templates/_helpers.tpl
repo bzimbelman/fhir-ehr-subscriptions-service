@@ -71,6 +71,27 @@ SPRING_DATASOURCE_URL points at the postgres service by DNS name).
 {{- printf "%s-postgres" .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "subscription-service.ui.fullname" -}}
+{{- printf "%s-ui" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Resolved name of the Secret holding the UI's bearer + OIDC secret +
+NextAuth session key. Three sources, in priority order:
+  1. .Values.ui.existingSecretName   — operator manages the Secret out-of-band.
+  2. <release>-ui-secret             — when .Values.ui.createSecret is true,
+                                       the chart synthesizes one.
+  3. "" (empty)                      — no envFrom is rendered; env vars
+                                       requiring the secret stay unset.
+*/}}
+{{- define "subscription-service.ui.secretName" -}}
+{{- if .Values.ui.existingSecretName -}}
+{{- .Values.ui.existingSecretName -}}
+{{- else if .Values.ui.createSecret -}}
+{{- printf "%s-ui-secret" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
 {{/*
 External Postgres validation (ticket #416). When externalPostgres.enabled
 is true, both host and passwordSecret must be set — otherwise rendering

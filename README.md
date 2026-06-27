@@ -19,20 +19,25 @@ bash scripts/fetch-igs.sh
 cd deploy/docker
 cp .env.example .env
 
-# 3. Bring the stack up
+# 3. Bring the whole stack up (HAPI + Matchbox + interface-engine + operator UI)
 docker compose up -d
 
-# 4. Verify
+# 4. Verify the FHIR server
 curl http://localhost:18080/fhir/metadata | jq '.software'
 # {"name": "HAPI FHIR Server", "version": "7.6.0"}
 
-# 5. Send an HL7 v2 message and watch it ACK
+# 5. Visit the operator UI
+open http://localhost:3000
+# /signin renders a "configure OIDC first" banner until you fill in the
+# OIDC_* env vars in .env — see docs/auth.md for IdP recipes.
+
+# 6. Send an HL7 v2 message and watch it ACK
 printf '\x0bMSH|^~\\&|EPIC|HOSP|RECEIVER|CDS|20260626120000||ADT^A04|HELLO|P|2.5\rEVN|A04|20260626120000\rPID|1||MRN-HELLO^^^HOSP^MR||TEST^Quick^Start||19800101|M\rPV1|1|I|2000\r\x1c\r' \
   | nc -w 3 localhost 2575
 # expect: MSH|...|ACK^A04^ACK|...|...MSA|AA|HELLO
 ```
 
-That's it — you have a running FHIR server at `http://localhost:18080/fhir` and an HL7 v2 listener on port 2575.
+That's it — you have a running FHIR server at `http://localhost:18080/fhir`, an HL7 v2 listener on port 2575, and an operator UI at `http://localhost:3000` for browsing subscriptions, messages, the DLQ, audit log, and Matchbox transforms.
 
 Next steps:
 
@@ -166,6 +171,7 @@ R4 was chosen because every USCDI-conformant EHR (Epic, Cerner, Athena, etc.) ex
 - **Matchbox** — Off-the-shelf FHIR transform engine. Loads the public HL7 v2-to-FHIR IG plus any project-specific StructureMaps. Talks FHIR; the interface engine calls it via `$transform`.
 - **HAPI FHIR JPA server** — Off-the-shelf FHIR server with Postgres backend. Loads US Core 7.0 + Subscriptions Backport IGs at boot. Subscription matcher fires REST-hook / WebSocket / message channels.
 - **Postgres** — HAPI's persistence store. Lives on a persistent volume (bind mount in Docker, PVC in Kubernetes).
+- **Operator UI** — Next.js 15 + NextAuth v5 console for browsing subscriptions, messages, the dead-letter queue, audit log, and Matchbox transforms. Authenticates operators via OIDC and proxies all admin-API traffic server-side so the bearer never reaches the browser. Owned in this repo (`./ui`). See [`docs/admin-api.md`](docs/admin-api.md) for the contract.
 - **OIDC IdP** — Any OpenID Connect provider that exposes a JWKS endpoint. The repo ships a turn-key realm export at [`idp/keycloak/realms/`](idp/keycloak/realms/) for Keycloak users, but Auth0, Okta, Azure AD, Cognito, Authentik, etc. are all supported — see [`docs/auth.md`](docs/auth.md).
 
 ## Configuration toggles
@@ -198,6 +204,7 @@ subscription-service/
 ├── README.md                    ← you are here
 ├── docs/                        ← architecture, design notes, deployment recipes
 ├── interface-engine/            ← Interface engine: Spring Boot + IPF (Kotlin/Gradle)
+├── ui/                          ← Operator UI: Next.js 15 + NextAuth v5 (TypeScript)
 ├── matchbox/                    ← Custom IGs and StructureMaps for Matchbox
 ├── hapi/                        ← HAPI server config + derived image
 │   └── auth/                    ← OIDC JWT validation interceptor JAR
@@ -218,7 +225,13 @@ More components will arrive as the project grows.
 
 ## Reference deployment
 
-The maintainer runs a reference instance at `https://subscription-service.bzonfhir.com` for development and testing. That URL is the maintainer's environment — your deployment will have its own URL. Don't point production traffic at it; it has no SLA and gets destroyed and rebuilt frequently.
+The maintainer runs a reference instance for development and testing. That deployment is the maintainer's environment — your deployment will have its own URL. Don't point production traffic at it; it has no SLA and gets destroyed and rebuilt frequently.
+
+| Component | URL | Notes |
+| --- | --- | --- |
+| HAPI FHIR R4 (subscription-service) | `https://subscription-service.bzonfhir.com` | JWT-gated; see `docs/auth.md`. |
+| Operator UI (ticket #423) | `https://subscription-service-ui.bzonfhir.com` | OIDC-protected (Keycloak Development realm). See `docs/auth-testing.md` for the test-user credentials. |
+| Keycloak (IdP) | `https://keycloak.bzonfhir.com/auth/realms/Development` | Realm: `Development`. Client: `subscription-service-ui`. |
 
 ## Contributing
 

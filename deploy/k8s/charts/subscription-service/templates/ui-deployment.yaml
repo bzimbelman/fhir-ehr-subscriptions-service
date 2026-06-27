@@ -1,0 +1,140 @@
+{{- if .Values.ui.enabled -}}
+{{- /*
+Operator UI (Epic #398, ticket #408). Next.js 15 standalone-server.
+
+Stateless; talks to the in-release interface-engine via ClusterIP DNS
+(`{{ .Release.Name }}-interface-engine:8090`) for the /api/admin/*
+server-side proxy, and to the operator's OIDC IdP for sign-in. Browser
+traffic only ever hits the Next.js server, never the admin API directly.
+
+Sensitive env vars (ADMIN_API_BEARER_TOKEN, AUTH_SECRET, OIDC_CLIENT_SECRET)
+flow in via `envFrom: secretRef` so the chart doesn't render the values
+into the Deployment spec — see the helper
+`subscription-service.ui.secretName` for the precedence rules.
+*/ -}}
+{{- $adminApiBaseUrl := .Values.ui.env.adminApiBaseUrl | default (printf "http://%s:%v" (include "subscription-service.interfaceEngine.fullname" .) .Values.interfaceEngine.http.service.port) -}}
+{{- $secretName := include "subscription-service.ui.secretName" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "subscription-service.ui.fullname" . }}
+  labels:
+    {{- include "subscription-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+spec:
+  replicas: {{ .Values.ui.replicas }}
+  selector:
+    matchLabels:
+      {{- include "subscription-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        {{- include "subscription-service.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ui
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "subscription-service.podSecurityContext" (dict "ctx" . "workload" "ui") | nindent 8 }}
+      containers:
+        - name: ui
+          image: "{{ .Values.ui.image.repository }}:{{ .Values.ui.image.tag }}"
+          imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            # Non-secret config — pulled from the ConfigMap so operators
+            # can `kubectl edit configmap` to flip a value without
+            # touching the Deployment / restarting via Helm. (Pods still
+            # need a restart for env-var changes to take effect; the
+            # ConfigMap split is about IaC ergonomics, not hot reload.)
+            - name: ADMIN_API_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "subscription-service.ui.fullname" . }}
+                  key: ADMIN_API_BASE_URL
+            - name: NEXTAUTH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "subscription-service.ui.fullname" . }}
+                  key: NEXTAUTH_URL
+                  optional: true
+            - name: OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "subscription-service.ui.fullname" . }}
+                  key: OIDC_ISSUER
+                  optional: true
+            - name: OIDC_CLIENT_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "subscription-service.ui.fullname" . }}
+                  key: OIDC_CLIENT_ID
+                  optional: true
+            - name: NEXT_PUBLIC_DEPLOYMENT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "subscription-service.ui.fullname" . }}
+                  key: NEXT_PUBLIC_DEPLOYMENT_NAME
+                  optional: true
+            # AUTH_TRUST_HOST is a deployment-time flag, not a secret —
+            # we always want it true behind a cluster ingress. Pin it
+            # here rather than via the ConfigMap to keep it tamper-
+            # evident.
+            - name: AUTH_TRUST_HOST
+              value: "true"
+          {{- if $secretName }}
+          # Sensitive env vars: ADMIN_API_BEARER_TOKEN, AUTH_SECRET,
+          # OIDC_CLIENT_SECRET. The Secret is either pre-created by the
+          # operator (`existingSecretName`) or synthesized by the chart
+          # when `createSecret: true`. When neither is set, this
+          # envFrom block is omitted and the UI runs in the documented
+          # "configure OIDC first" mode.
+          envFrom:
+            - secretRef:
+                name: {{ $secretName }}
+          {{- end }}
+          # /api/health is a tiny sync endpoint — see ui/src/app/api/health/route.ts.
+          # No backend dependency, so a downstream outage doesn't trigger pod restarts.
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            {{- toYaml .Values.ui.resources | nindent 12 }}
+          securityContext:
+            {{- include "subscription-service.securityContext" (dict "ctx" . "workload" "ui") | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
