@@ -78,6 +78,12 @@ dependencies {
     // pulling it in doesn't bloat the runtime classpath.
     implementation(project(":plugins-spi"))
 
+    // plugins-builtin/observability-otel (ticket #433, Epic #425). Built-in
+    // ObservabilityEnricher implementation — the "what gets stamped on
+    // logs/metrics" decisions. The transport (this module) hosts it; the
+    // plugin owns the catalog.
+    implementation(project(":plugins-builtin:observability-otel"))
+
     // Spring Boot core + actuator for /actuator/health.
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-web")
