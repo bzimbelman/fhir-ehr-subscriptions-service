@@ -91,6 +91,23 @@ WORKDIR /app
 
 COPY --from=build /work/interface-engine/build/libs/*.jar /app/app.jar
 
+# External plugin loader (ticket #517, Epic #428).
+#
+# The bootJar's manifest declares `Main-Class:
+# org.springframework.boot.loader.launch.PropertiesLauncher`, which
+# reads `LOADER_PATH` and adds every JAR in those directories to the
+# application classloader BEFORE Spring's `Start-Class` runs. The FOSS
+# image ships `/app/plugins/` empty; the commercial image layer
+# (ticket #515) drops licensed plugin JARs into the same path, and
+# their `@AutoConfiguration` classes light up at boot — controllers
+# register, gated endpoints come alive, all without any code changes
+# to the engine. See `build.gradle.kts` bootJar config for the
+# manifest override that wires this together, and
+# `ExternalPluginLoaderTest` for the smoke test proving the
+# classloader topology works.
+RUN mkdir -p /app/plugins && chown app:app /app/plugins
+ENV LOADER_PATH=/app/plugins
+
 # 8090 = Spring Boot HTTP / actuator. 2575 = MLLP listener.
 EXPOSE 8090 2575
 
