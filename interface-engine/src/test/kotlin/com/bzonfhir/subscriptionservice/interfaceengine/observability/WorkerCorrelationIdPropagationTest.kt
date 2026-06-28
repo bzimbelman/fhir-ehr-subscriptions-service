@@ -58,6 +58,10 @@ import java.util.concurrent.atomic.AtomicReference
         "subscription-service.worker.transforming-stale-seconds=2",
         "subscription-service.hapi.base-url=http://stub.hapi.test/fhir",
         "subscription-service.matchbox.base-url=http://stub.matchbox.test",
+        // Ticket #520: stubs override the @Primary production
+        // `hapiFhirClient` bean by name. See IngestedMessageWorkerTest
+        // for the rationale.
+        "spring.main.allow-bean-definition-overriding=true",
     ],
 )
 class WorkerCorrelationIdPropagationTest {
@@ -127,9 +131,11 @@ class WorkerCorrelationIdPropagationTest {
         @Primary
         fun stubMatchbox(): MatchboxClient = CapturingMatchboxClient(adtA01Bundle())
 
+        // Name matches the production bean (FhirConfig.hapiFhirClient)
+        // so this overrides by name (ticket #520).
         @Bean
         @Primary
-        fun stubHapi(fhirContext: FhirContext): IGenericClient =
+        fun hapiFhirClient(fhirContext: FhirContext): IGenericClient =
             org.mockito.Mockito.mock(
                 IGenericClient::class.java,
                 org.mockito.Mockito.RETURNS_DEEP_STUBS,
