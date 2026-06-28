@@ -63,6 +63,10 @@ import java.util.concurrent.atomic.AtomicReference
         // via the same property source Spring exposes, so this works
         // without setting a real OS env var.
         "otel.sdk.disabled=true",
+        // Ticket #520: stubs override the @Primary production
+        // `hapiFhirClient` bean by name. See IngestedMessageWorkerTest
+        // for the rationale.
+        "spring.main.allow-bean-definition-overriding=true",
     ],
 )
 class OtelDisabledTest {
@@ -142,9 +146,11 @@ class OtelDisabledTest {
         fun stubMatchbox(propagators: io.opentelemetry.context.propagation.ContextPropagators): MatchboxClient =
             HeaderCapturingMatchbox(propagators)
 
+        // Name matches the production bean (FhirConfig.hapiFhirClient)
+        // so this overrides by name (ticket #520).
         @Bean
         @Primary
-        fun stubHapi(fhirContext: FhirContext): IGenericClient =
+        fun hapiFhirClient(fhirContext: FhirContext): IGenericClient =
             org.mockito.Mockito.mock(
                 IGenericClient::class.java,
                 org.mockito.Mockito.RETURNS_DEEP_STUBS,
