@@ -13,6 +13,7 @@ import io.opentelemetry.context.propagation.TextMapSetter
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Primary
 
 /**
  * Beans for the HAPI FHIR R4 client used to POST transaction Bundles to HAPI.
@@ -34,7 +35,20 @@ class FhirConfig {
         restfulClientFactory.serverValidationMode = ServerValidationModeEnum.NEVER
     }
 
+    /**
+     * Marked `@Primary` (ticket #520, Epic #428) so commercial plugins
+     * — most notably `audit-export`, which registers an
+     * `auditExportHapiClient` bean of the same type for AuditEvent
+     * queries — can contribute additional [IGenericClient] beans
+     * without triggering `NoUniqueBeanDefinitionException` for the
+     * engine's unqualified consumers
+     * ([HapiSubscriptionStatusClientImpl], `AdminAuditController`,
+     * `IngestedMessageWorker`). The plugin's named bean stays
+     * addressable via `@Qualifier("auditExportHapiClient")`. Regression
+     * test: [HapiClientPrimaryTest].
+     */
     @Bean
+    @Primary
     fun hapiFhirClient(
         fhirContext: FhirContext,
         @Value("\${subscription-service.hapi.base-url}") hapiBaseUrl: String,
