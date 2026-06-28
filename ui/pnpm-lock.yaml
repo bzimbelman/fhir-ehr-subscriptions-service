@@ -11,6 +11,9 @@ importers:
       '@bzonfhir/ui-extensions':
         specifier: workspace:*
         version: link:packages/ui-extensions
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       next:
         specifier: 15.5.19
         version: 15.5.19(@babel/core@7.29.7)(@playwright/test@1.49.1)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -2003,6 +2006,9 @@ packages:
 
   jose@5.10.0:
     resolution: {integrity: sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==}
+
+  jose@6.2.3:
+    resolution: {integrity: sha512-YYVDInQKFJfR/xa3ojUTl8c2KoTwiL1R5Wg9YCydwH0x0B9grbzlg5HC7mMjCtUJjbQ/YnGEZIhI5tCgfTb4Hw==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -4751,6 +4757,8 @@ snapshots:
   jiti@2.7.0: {}
 
   jose@5.10.0: {}
+
+  jose@6.2.3: {}
 
   js-tokens@4.0.0: {}
 
