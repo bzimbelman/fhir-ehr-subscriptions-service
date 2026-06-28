@@ -15,7 +15,6 @@ import {
   exportJWK,
   generateKeyPair,
   type JWK,
-  type KeyLike,
 } from "jose";
 import {
   createSignatureVerifier,
@@ -28,7 +27,7 @@ const JWKS_URL = `${LICENSE_SERVER_URL}/.well-known/jwks.json`;
 
 interface TestKeypair {
   publicJwk: JWK;
-  privateKey: KeyLike;
+  privateKey: CryptoKey;
   kid: string;
 }
 
@@ -133,7 +132,8 @@ describe("signatureVerifier", () => {
     await verifier.verify(jws);
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(JWKS_URL);
+    const mock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+    expect(mock.mock.calls[0]?.[0]).toBe(JWKS_URL);
   });
 
   it("re-fetches the JWKS once the 1h cache window expires", async () => {

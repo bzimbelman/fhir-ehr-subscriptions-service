@@ -99,9 +99,18 @@ export interface EntitlementResponse {
 /**
  * On-disk cache shape. We persist the raw response plus the timestamp it was
  * fetched at so we can compute freshness without trusting the file's mtime.
+ *
+ * `signatureKid` records the JWK `kid` that verified the cached response.
+ * On the next boot, the client uses it as a sanity check -- if the cached
+ * kid no longer resolves in the JWKS, the cache entry is treated as
+ * un-verifiable and we fall through to a fresh fetch (or FOSS). Older
+ * caches from ticket #438 do not have this field; readers MUST treat
+ * `signatureKid` as optional and accept missing-kid entries for backwards
+ * compatibility during the upgrade window.
  */
 export interface LicenseCacheEntry {
   fetchedAt: string;
   licenseKeyFingerprint: string;
   response: EntitlementResponse;
+  signatureKid?: string;
 }
