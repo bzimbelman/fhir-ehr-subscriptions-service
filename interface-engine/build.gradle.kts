@@ -279,4 +279,48 @@ tasks.withType<Test> {
     // push it into the test JVM's env explicitly so CI behaves the same way
     // as the developer machine.
     environment("TESTCONTAINERS_RYUK_DISABLED", "true")
+
+    // Make the bootJar available to ExternalPluginLoaderTest so it can
+    // inspect MANIFEST.MF and assert the launcher switch landed. The
+    // assertion is skipped when the jar isn't present, so a fast
+    // `:test` loop still works; CI runs both tasks via `:check` chains.
+    inputs.files(tasks.named("bootJar"))
+}
+
+// -----------------------------------------------------------------------------
+// External plugin loader (ticket #517, Epic #428).
+//
+// The commercial image (ticket #515) drops licensed plugin JARs into
+// `/app/plugins/*.jar`. Spring Boot's default `JarLauncher` only knows
+// how to load `BOOT-INF/lib/` from inside the fat JAR — `/app/plugins/`
+// is invisible to it, so even with a valid Pro license + verified
+// entitlements the plugins' Spring `@AutoConfiguration` never fires and
+// their controllers / beans never register.
+//
+// Switching the launcher to `PropertiesLauncher` (built into
+// spring-boot-loader since forever) fixes this: it reads `LOADER_PATH`
+// from the environment (or `loader.path` system property) and ADDs each
+// listed directory's JARs to the application classloader BEFORE
+// `Start-Class` is invoked. Setting `LOADER_PATH=/app/plugins` in the
+// Dockerfile means every `.jar` dropped there at image-build time
+// participates in Spring's auto-config + component-scan discovery, the
+// same way `BOOT-INF/lib/` deps do.
+//
+// We do NOT need to flip `loaderImplementation` to `CLASSIC`: the
+// default (Spring Boot 3.2+ "new" loader, jar resource =
+// `META-INF/loader/spring-boot-loader.jar`) already contains
+// `PropertiesLauncher` at the canonical FQN below. Verified by
+// inspecting `org.springframework.boot:spring-boot-loader-tools:3.5.14`.
+//
+// Test coverage: `ExternalPluginLoaderTest` asserts the produced JAR's
+// `META-INF/MANIFEST.MF` lists this exact `Main-Class`, plus reproduces
+// the downstream classloader topology with a synthesised plugin JAR and
+// asserts Spring's `ImportCandidates` mechanism surfaces an external
+// `@AutoConfiguration`.
+tasks.named<org.springframework.boot.gradle.tasks.bundling.BootJar>("bootJar") {
+    manifest {
+        attributes(
+            "Main-Class" to "org.springframework.boot.loader.launch.PropertiesLauncher",
+        )
+    }
 }
