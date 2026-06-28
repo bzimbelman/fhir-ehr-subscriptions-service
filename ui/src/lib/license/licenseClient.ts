@@ -32,6 +32,10 @@ import {
   writeCache,
 } from "./licenseCache";
 import {
+  createSignatureVerifier,
+  type SignatureVerifier,
+} from "./signatureVerifier";
+import {
   entitlementSetFromArray,
   type EntitlementResponse,
   type LicenseCacheEntry,
@@ -58,6 +62,12 @@ export interface LoadLicenseStateOptions {
   now?: Date;
   /** Override the structured logger (for capturing warnings in tests). */
   logger?: LicenseLogger;
+  /**
+   * Override the signature verifier. Tests use this rarely -- the default path
+   * builds a verifier bound to `licenseServerUrl` and `fetchImpl` so the same
+   * mock `fetch` serves both `/entitlements` and `/.well-known/jwks.json`.
+   */
+  signatureVerifier?: SignatureVerifier;
 }
 
 export interface LicenseLogger {
@@ -129,6 +139,7 @@ export async function loadLicenseState(options: LoadLicenseStateOptions = {}): P
   const logger = options.logger ?? defaultLogger;
   const now = options.now ?? new Date();
   const cachePath = options.cachePath ?? defaultCachePath();
+  const licenseServerUrl = options.licenseServerUrl ?? DEFAULT_LICENSE_SERVER_URL;
 
   const licenseKey =
     options.licenseKey === undefined ? readLicenseFromEnv() : options.licenseKey;
@@ -137,39 +148,84 @@ export async function loadLicenseState(options: LoadLicenseStateOptions = {}): P
   }
   const fingerprint = fingerprintLicenseKey(licenseKey);
 
+  // Build (or reuse) a verifier bound to this license server. The verifier
+  // owns its own JWKS cache, so we want to keep it across refresh ticks --
+  // but `loadLicenseState` is the only call site and is re-entered fresh.
+  // Caching the verifier across calls is Epic #428's optimisation; for #459
+  // we build it per call and rely on the fetch mock or HTTP cache to absorb
+  // the cost.
+  const verifier =
+    options.signatureVerifier ??
+    createSignatureVerifier({
+      licenseServerUrl,
+      fetchImpl: options.fetchImpl,
+      now: () => now,
+    });
+
+  // --- Step 1: fetch entitlements --------------------------------------------
+  let response: EntitlementResponse;
   try {
-    const response = await fetchEntitlements(licenseKey, {
-      licenseServerUrl: options.licenseServerUrl,
+    response = await fetchEntitlements(licenseKey, {
+      licenseServerUrl,
       fetchImpl: options.fetchImpl,
     });
-    const entry = buildCacheEntry(response, fingerprint, now);
-    try {
-      await writeCache(entry, cachePath);
-    } catch (err) {
-      // A cache write failure shouldn't prevent the UI from booting with the
-      // fresh entitlements we already have.
-      logger.warn("failed to persist license cache", {
-        error: err instanceof Error ? err.message : String(err),
-        cachePath,
-      });
-    }
-    return buildActiveState(entry);
   } catch (fetchErr) {
     logger.warn("license server unreachable; falling back to cache", {
       error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
       fingerprint,
     });
-
-    const cached = await readCache(cachePath);
-    if (cached && isFresh(cached, now)) {
-      return buildStaleActiveState(cached);
-    }
-    logger.warn("license server unreachable and cache is stale; running in FOSS mode", {
-      fingerprint,
-      hadCache: cached !== null,
-    });
-    return { kind: "foss", reason: "license-server-unreachable-and-stale-cache" };
+    return fallbackToCacheOrFoss(cachePath, now, logger, fingerprint);
   }
+
+  // --- Step 2: verify the signature -----------------------------------------
+  // Per ticket #459 spec: a verification failure is a SIGNAL, not a throw.
+  // We log a WARN and treat it like a failed fetch (cached fallback -> FOSS).
+  let verifiedKid: string;
+  try {
+    const { kid } = await verifier.verify(response.signature);
+    verifiedKid = kid;
+  } catch (verifyErr) {
+    logger.warn("license response signature verification failed; treating as failed fetch", {
+      error: verifyErr instanceof Error ? verifyErr.message : String(verifyErr),
+      fingerprint,
+    });
+    return fallbackToCacheOrFoss(cachePath, now, logger, fingerprint);
+  }
+
+  // --- Step 3: success -- persist and return active -------------------------
+  const entry: LicenseCacheEntry = {
+    ...buildCacheEntry(response, fingerprint, now),
+    signatureKid: verifiedKid,
+  };
+  try {
+    await writeCache(entry, cachePath);
+  } catch (err) {
+    // A cache write failure shouldn't prevent the UI from booting with the
+    // fresh entitlements we already have.
+    logger.warn("failed to persist license cache", {
+      error: err instanceof Error ? err.message : String(err),
+      cachePath,
+    });
+  }
+  return buildActiveState(entry);
+}
+
+/** Shared fallback path used by both the network-failure and signature-failure branches. */
+async function fallbackToCacheOrFoss(
+  cachePath: string,
+  now: Date,
+  logger: LicenseLogger,
+  fingerprint: string,
+): Promise<LicenseState> {
+  const cached = await readCache(cachePath);
+  if (cached && isFresh(cached, now)) {
+    return buildStaleActiveState(cached);
+  }
+  logger.warn("license server unreachable and cache is stale; running in FOSS mode", {
+    fingerprint,
+    hadCache: cached !== null,
+  });
+  return { kind: "foss", reason: "license-server-unreachable-and-stale-cache" };
 }
 
 /**
