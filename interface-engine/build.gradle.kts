@@ -111,6 +111,26 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")
 
+    // Spring AOP starter (ticket #460, Epic #428). Brings in
+    // spring-aop + aspectj-weaver so the entitlement runtime gate can
+    // declare an @Aspect (EntitlementGuardAspect) that intercepts every
+    // call to a method tagged with @RequiresEntitlement and checks the
+    // active EntitlementSet against the annotation's required string.
+    //
+    // We use the starter rather than declaring spring-aop directly so
+    // Spring Boot's auto-config (AopAutoConfiguration) wires the proxy
+    // factory + aspect post-processor without further setup, and the
+    // AspectJ runtime version stays pinned to Spring Boot's tested line.
+    implementation("org.springframework.boot:spring-boot-starter-aop")
+
+    // Nimbus JOSE+JWT (ticket #460, Epic #428). The license server (#458)
+    // already uses Nimbus 9.40 to sign entitlement responses as compact
+    // ES256 JWS; we use the matching verifier path here so the engine's
+    // signature check is byte-for-byte symmetric with the server's signer.
+    // Pinning to the same version avoids any compact-serialization or
+    // JWKS-parsing skew between issuer and consumer.
+    implementation("com.nimbusds:nimbus-jose-jwt:9.40")
+
     // Micrometer Prometheus registry (Epic #387, ticket #389).
     //
     // Spring Boot 3.5.x bundles micrometer-core (the metrics abstraction) via
@@ -225,6 +245,14 @@ dependencies {
     testImplementation("org.testcontainers:testcontainers:1.20.3")
     testImplementation("org.testcontainers:postgresql:1.20.3")
     testImplementation("org.testcontainers:junit-jupiter:1.20.3")
+
+    // OkHttp MockWebServer (ticket #460, Epic #428). Used by LicenseClientTest
+    // to stand up an in-process HTTP server that mimics the license server's
+    // /entitlements + /.well-known/jwks.json endpoints. okhttp itself is
+    // already on the runtime classpath transitively via the OTel OTLP HTTP
+    // exporter (com.squareup.okhttp3:okhttp:4.12.0), so adding the test-only
+    // mockwebserver artifact at the same line is free of version skew.
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
     // OTel in-memory test exporter (ticket #394). Captures emitted spans
     // into a list so OtelTraceTest can assert on their attributes,
