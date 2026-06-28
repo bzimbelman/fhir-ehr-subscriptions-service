@@ -3,6 +3,12 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import {
+  CompactSign,
+  exportJWK,
+  generateKeyPair,
+  type JWK,
+} from "jose";
+import {
   fetchEntitlements,
   loadLicenseState,
   readLicenseFromEnv,
@@ -10,6 +16,75 @@ import {
 } from "@/lib/license/licenseClient";
 import { buildCacheEntry, writeCache, CACHE_TTL_MS } from "@/lib/license/licenseCache";
 import type { EntitlementResponse } from "@/lib/license/types";
+
+// --- JWS signing helpers for the verifier-integration tests (ticket #459) --
+
+interface TestKeypair {
+  publicJwk: JWK;
+  privateKey: CryptoKey;
+  kid: string;
+}
+
+async function makeKeypair(kid: string): Promise<TestKeypair> {
+  const { publicKey, privateKey } = await generateKeyPair("ES256", { extractable: true });
+  const publicJwk = await exportJWK(publicKey);
+  publicJwk.alg = "ES256";
+  publicJwk.kid = kid;
+  publicJwk.use = "sig";
+  return { publicJwk, privateKey, kid };
+}
+
+async function signResponse(response: EntitlementResponse, kp: TestKeypair): Promise<string> {
+  // Sign the response body WITHOUT the signature field (we'll splice it in
+  // after). This mirrors what the real license server does: produce the body,
+  // sign it, attach the signature.
+  const body = {
+    entitlements: response.entitlements,
+    expiresAt: response.expiresAt,
+    tierName: response.tierName,
+  };
+  const raw = new TextEncoder().encode(JSON.stringify(body));
+  const encoded = new Uint8Array(raw);
+  return new CompactSign(encoded)
+    .setProtectedHeader({ alg: "ES256", kid: kp.kid })
+    .sign(kp.privateKey);
+}
+
+function jwksResponse(keys: JWK[]): Response {
+  return new Response(JSON.stringify({ keys }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function jsonResponse(body: unknown, init?: ResponseInit): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+    ...init,
+  });
+}
+
+/**
+ * Build a fetch mock that serves the JWKS at /.well-known/jwks.json and the
+ * entitlement response at /entitlements. Mirrors the two-endpoint shape the
+ * real license server exposes.
+ */
+function makeServerFetch(
+  jwks: JWK[],
+  entitlement: EntitlementResponse,
+): typeof fetch {
+  return vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : (input as URL).toString();
+    if (url.endsWith("/.well-known/jwks.json")) {
+      return jwksResponse(jwks);
+    }
+    if (url.endsWith("/entitlements")) {
+      return jsonResponse(entitlement);
+    }
+    return new Response("not found", { status: 404 });
+  }) as unknown as typeof fetch;
+}
 
 interface MockLogger extends LicenseLogger {
   warnings: Array<{ message: string; context?: Record<string, unknown> }>;
@@ -126,12 +201,11 @@ describe("loadLicenseState", () => {
 
   it("returns active when the server returns a valid response", async () => {
     const now = new Date("2026-06-27T12:00:00.000Z");
-    const fetchImpl = mockFetchOnce(
-      new Response(JSON.stringify(buildResponse()), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    const kp = await makeKeypair("key-1");
+    const base = buildResponse();
+    const signed = await signResponse(base, kp);
+    const response: EntitlementResponse = { ...base, signature: signed };
+    const fetchImpl = makeServerFetch([kp.publicJwk], response);
 
     const state = await loadLicenseState({
       licenseKey: "the-license-key",
@@ -217,12 +291,13 @@ describe("loadLicenseState", () => {
 
   it("updates the on-disk cache after a successful fetch", async () => {
     const now = new Date("2026-06-27T12:00:00.000Z");
-    const fetchImpl = mockFetchOnce(
-      new Response(JSON.stringify(buildResponse({ tierName: "Cloud" })), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    // After ticket #459: cache writes require a verifiable signature. Use the
+    // full two-endpoint mock so the verifier can fetch the JWKS too.
+    const kp = await makeKeypair("key-1");
+    const baseResp = buildResponse({ tierName: "Cloud" });
+    const signed = await signResponse(baseResp, kp);
+    const response: EntitlementResponse = { ...baseResp, signature: signed };
+    const fetchImpl = makeServerFetch([kp.publicJwk], response);
 
     await loadLicenseState({
       licenseKey: "the-license-key",
@@ -235,6 +310,7 @@ describe("loadLicenseState", () => {
     const onDisk = JSON.parse(await fs.readFile(cachePath, "utf-8")) as {
       fetchedAt: string;
       response: EntitlementResponse;
+      signatureKid?: string;
     };
     expect(onDisk.fetchedAt).toBe(now.toISOString());
     expect(onDisk.response.tierName).toBe("Cloud");
@@ -242,5 +318,132 @@ describe("loadLicenseState", () => {
       "compliance.iti20",
       "simulation.pack",
     ]);
+    // Ticket #459: cache MUST preserve the signature so a future boot can
+    // sanity-check it.
+    expect(onDisk.response.signature).toBe(signed);
+    expect(onDisk.signatureKid).toBe("key-1");
+  });
+
+  // --- Ticket #459: signature verification integration ---------------------
+
+  it("fetchEntitlements result is run through the signature verifier (active)", async () => {
+    const now = new Date("2026-06-27T12:00:00.000Z");
+    const kp = await makeKeypair("key-A");
+    const base = buildResponse();
+    const signed = await signResponse(base, kp);
+    const response: EntitlementResponse = { ...base, signature: signed };
+    const fetchImpl = makeServerFetch([kp.publicJwk], response);
+    const logger = makeLogger();
+
+    const state = await loadLicenseState({
+      licenseKey: "the-license-key",
+      licenseServerUrl: "https://license.example.com",
+      cachePath,
+      fetchImpl,
+      now,
+      logger,
+    });
+
+    expect(state.kind).toBe("active");
+    // The verifier was called -> JWKS endpoint was hit at least once.
+    const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.endsWith("/.well-known/jwks.json"))).toBe(true);
+    expect(urls.some((u) => u.endsWith("/entitlements"))).toBe(true);
+    // No signature-failure warning.
+    expect(logger.warnings.some((w) => /signature/i.test(w.message))).toBe(false);
+  });
+
+  it("treats an invalid signature like a failed fetch (stale-active when cache is fresh)", async () => {
+    const now = new Date("2026-06-27T12:00:00.000Z");
+    // Server publishes JWKS for kp1, but signs the response with kp2 -> unknown kid.
+    const kp1 = await makeKeypair("server-key");
+    const kp2 = await makeKeypair("attacker-key");
+    const base = buildResponse({ tierName: "Pro" });
+    const badSig = await signResponse(base, kp2);
+    const response: EntitlementResponse = { ...base, signature: badSig };
+    const fetchImpl = makeServerFetch([kp1.publicJwk], response);
+
+    // Pre-populate a fresh cache so we can prove we fell back to it.
+    const fetchedAt = new Date(now.getTime() - 60 * 60 * 1000);
+    await writeCache(
+      buildCacheEntry(
+        { ...buildResponse({ tierName: "PriorCacheTier" }), signature: "old-sig" },
+        "deadbeef",
+        fetchedAt,
+      ),
+      cachePath,
+    );
+
+    const logger = makeLogger();
+    const state = await loadLicenseState({
+      licenseKey: "the-license-key",
+      licenseServerUrl: "https://license.example.com",
+      cachePath,
+      fetchImpl,
+      now,
+      logger,
+    });
+
+    expect(state.kind).toBe("stale-active");
+    if (state.kind === "stale-active") {
+      // We fell back to the prior cache entry, not the unsigned/invalid response.
+      expect(state.info.tierName).toBe("PriorCacheTier");
+    }
+    // A WARN must be logged for the verification failure (separate from the
+    // generic "unreachable" warning).
+    expect(
+      logger.warnings.some((w) => /signature|verif/i.test(w.message)),
+    ).toBe(true);
+  });
+
+  it("falls back to FOSS when the signature is invalid AND no cache exists", async () => {
+    const now = new Date("2026-06-27T12:00:00.000Z");
+    const kp1 = await makeKeypair("server-key");
+    const kp2 = await makeKeypair("attacker-key");
+    const base = buildResponse();
+    const badSig = await signResponse(base, kp2);
+    const response: EntitlementResponse = { ...base, signature: badSig };
+    const fetchImpl = makeServerFetch([kp1.publicJwk], response);
+    const logger = makeLogger();
+
+    const state = await loadLicenseState({
+      licenseKey: "the-license-key",
+      licenseServerUrl: "https://license.example.com",
+      cachePath,
+      fetchImpl,
+      now,
+      logger,
+    });
+
+    expect(state.kind).toBe("foss");
+    if (state.kind === "foss") {
+      expect(state.reason).toBe("license-server-unreachable-and-stale-cache");
+    }
+    expect(logger.warnings.some((w) => /signature|verif/i.test(w.message))).toBe(true);
+  });
+
+  it("preserves the signature in the cached entry on a valid response", async () => {
+    const now = new Date("2026-06-27T12:00:00.000Z");
+    const kp = await makeKeypair("key-Z");
+    const base = buildResponse({ tierName: "Enterprise" });
+    const signed = await signResponse(base, kp);
+    const response: EntitlementResponse = { ...base, signature: signed };
+    const fetchImpl = makeServerFetch([kp.publicJwk], response);
+
+    await loadLicenseState({
+      licenseKey: "the-license-key",
+      licenseServerUrl: "https://license.example.com",
+      cachePath,
+      fetchImpl,
+      now,
+    });
+
+    const onDisk = JSON.parse(await fs.readFile(cachePath, "utf-8")) as {
+      response: EntitlementResponse;
+      signatureKid?: string;
+    };
+    expect(onDisk.response.signature).toBe(signed);
+    expect(onDisk.signatureKid).toBe("key-Z");
   });
 });
