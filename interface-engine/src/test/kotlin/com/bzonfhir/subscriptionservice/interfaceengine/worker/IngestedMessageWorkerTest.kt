@@ -78,6 +78,13 @@ import java.util.concurrent.atomic.AtomicInteger
         "subscription-service.worker.transforming-stale-seconds=2",
         "subscription-service.hapi.base-url=http://stub.hapi.test/fhir",
         "subscription-service.matchbox.base-url=http://stub.matchbox.test",
+        // Ticket #520: the production `hapiFhirClient` bean is now
+        // `@Primary` so commercial plugins (audit-export) can
+        // contribute additional `IGenericClient` beans. Test stubs
+        // override the production bean BY NAME (`hapiFhirClient`), so
+        // we need bean-definition override enabled. Without this
+        // Spring throws BeanDefinitionOverrideException at startup.
+        "spring.main.allow-bean-definition-overriding=true",
     ],
 )
 class IngestedMessageWorkerTest {
@@ -132,9 +139,15 @@ class IngestedMessageWorkerTest {
         fun stubMatchboxClient(fhirContext: FhirContext): MatchboxClient =
             StubMatchboxClient(fhirContext)
 
+        // Bean name matches the production bean (`hapiFhirClient` from
+        // FhirConfig) so this stub OVERRIDES it via Spring's
+        // bean-definition-override mechanism. With production now
+        // `@Primary` (ticket #520), giving the stub a different name
+        // would leave both beans in the registry and Spring would see
+        // two `@Primary` candidates of the same type.
         @Bean
         @Primary
-        fun stubHapiClient(): IGenericClient = StubHapiClient.build()
+        fun hapiFhirClient(): IGenericClient = StubHapiClient.build()
     }
 
     @Autowired private lateinit var jdbc: JdbcTemplate
