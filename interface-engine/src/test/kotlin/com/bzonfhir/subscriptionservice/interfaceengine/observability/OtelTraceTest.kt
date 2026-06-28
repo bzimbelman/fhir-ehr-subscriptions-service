@@ -214,9 +214,15 @@ class OtelTraceTest {
         fun stubMatchbox(propagators: ContextPropagators): MatchboxClient =
             CapturingMatchboxClient(propagators)
 
+        // Name matches the production bean (FhirConfig.hapiFhirClient)
+        // so this overrides by name. Required since ticket #520 made
+        // the production bean @Primary — two beans of the same type
+        // with @Primary on both would re-introduce ambiguity. The
+        // `allow-bean-definition-overriding=true` property above lets
+        // this same-named bean replace the production one.
         @Bean
         @Primary
-        fun stubHapi(fhirContext: FhirContext): IGenericClient =
+        fun hapiFhirClient(fhirContext: FhirContext): IGenericClient =
             org.mockito.Mockito.mock(
                 IGenericClient::class.java,
                 org.mockito.Mockito.RETURNS_DEEP_STUBS,
