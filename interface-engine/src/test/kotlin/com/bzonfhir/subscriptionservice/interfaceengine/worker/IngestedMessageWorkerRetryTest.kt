@@ -71,6 +71,10 @@ import java.time.Duration
         "subscription-service.worker.retry.dlq-log-level=WARN",
         "subscription-service.hapi.base-url=http://stub.hapi.test/fhir",
         "subscription-service.matchbox.base-url=http://stub.matchbox.test",
+        // Ticket #520: stubs override the @Primary production
+        // `hapiFhirClient` bean by name. See IngestedMessageWorkerTest
+        // for the rationale.
+        "spring.main.allow-bean-definition-overriding=true",
     ],
 )
 class IngestedMessageWorkerRetryTest {
@@ -111,9 +115,11 @@ class IngestedMessageWorkerRetryTest {
         fun stubMatchboxClient(fhirContext: FhirContext): MatchboxClient =
             StubMatchboxClient(fhirContext)
 
+        // Name matches the production bean (FhirConfig.hapiFhirClient)
+        // so this overrides by name (ticket #520).
         @Bean
         @Primary
-        fun stubHapiClient(): IGenericClient = StubHapiClient.build()
+        fun hapiFhirClient(): IGenericClient = StubHapiClient.build()
     }
 
     @Autowired private lateinit var jdbc: JdbcTemplate
