@@ -21,7 +21,7 @@
 #   KEYCLOAK_PATH_PREFIX      Path prefix for the Keycloak server.
 #                             Default: "" (Keycloak >= 17 / Quarkus default).
 #                             Set to "/auth" for legacy WildFly-based Keycloak
-#                             (Keycloak < 17, e.g. the historical the-deploy-host instance).
+#                             (Keycloak < 17, e.g. older self-hosted instances).
 #   KEYCLOAK_CLIENT_SECRET    When set, the placeholder
 #                             "CHANGE-ME-IN-DEPLOYMENT" inside the realm JSON
 #                             is rewritten to this value on a temp copy of
@@ -105,7 +105,7 @@ Examples:
   KEYCLOAK_ADMIN_USER=admin KEYCLOAK_ADMIN_PASSWORD=secret \\
     $(basename "$0")
 
-  # Dry-run against legacy the-deploy-host Keycloak to verify path-prefix handling
+  # Dry-run against a legacy WildFly Keycloak to verify path-prefix handling
   KEYCLOAK_URL=https://keycloak.bzonfhir.com KEYCLOAK_PATH_PREFIX=/auth \\
   KEYCLOAK_ADMIN_USER=admin KEYCLOAK_ADMIN_PASSWORD=secret \\
     $(basename "$0") --dry-run

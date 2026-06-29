@@ -30,8 +30,8 @@ COMPOSE_DIR="${REPO_ROOT}/deploy/docker"
 export COMPOSE_PROJECT_NAME="subsvc-validation-test"
 
 # Ports chosen so they don't collide with the default 18080/18081/18090/2575
-# stack, the cdstools-deployment stacks (3xxxx), or the-deploy-host's running
-# subscription-service prod stack (if any).
+# stack, the cdstools-deployment stacks (3xxxx), or any reference
+# subscription-service stack that might be running on the same host.
 export HAPI_HOST_PORT=48080
 export MATCHBOX_HOST_PORT=48081
 export INTERFACE_ENGINE_HTTP_HOST_PORT=48090

@@ -2,7 +2,7 @@
 #
 # Brings up a copy of just hapi-db + hapi (auth+multitenancy JAR) on a
 # dedicated Docker network and on host ports that don't collide with the
-# main subscription-service-* stack on the-deploy-host.
+# main subscription-service-* stack on the maintainer's reference host.
 #
 # Multi-tenancy is ENABLED, JWT auth is DISABLED, and TEST_MODE is on —
 # meaning the tenant comes from the `X-Test-Tenant` HTTP header. This
