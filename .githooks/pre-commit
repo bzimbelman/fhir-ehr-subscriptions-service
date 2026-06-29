@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+# Epic #547 #548 — gitleaks pre-commit hook
+# Blocks staged secrets before they enter the index.
+
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --config .gitleaks.toml --no-banner
+  status=$?
+  if [ $status -ne 0 ]; then
+    echo ""
+    echo "[pre-commit] gitleaks detected secrets in staged changes. Commit BLOCKED."
+    echo "[pre-commit] To bypass for documented false positives: edit .gitleaks.toml allowlist."
+    echo "[pre-commit] Emergency bypass (audit-logged): git commit --no-verify"
+    exit $status
+  fi
+else
+  echo "[pre-commit] gitleaks not installed. Install: brew install gitleaks"
+  echo "[pre-commit] BLOCKING commit until gitleaks is available."
+  exit 1
+fi

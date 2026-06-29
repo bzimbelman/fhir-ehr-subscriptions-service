@@ -1,0 +1,171 @@
+# Gitleaks config — Epic #547 #548 rollout
+# Shared baseline. Allowlist additions per-repo go in `.gitleaksignore`.
+
+title = "bzimbelman repos baseline"
+
+[allowlist]
+description = "Globally allowlisted paths and known-safe literals"
+paths = [
+  '''(^|/)tests?/''',
+  '''(^|/)__tests__/''',
+  '''(^|/)fixtures?/''',
+  '''(^|/)testdata/''',
+  '''(^|/)docs/observability/log-schema\.md$''',
+  '''\.example$''',
+  '''\.sample$''',
+  '''\.template$''',
+  '''\.gitleaks\.toml$''',
+  '''\.gitleaksignore$''',
+]
+regexes = [
+  '''00000000-0000-0000-0000-000000000000''',
+  '''whsec_test_synthetic''',
+  '''xxxx+''',
+  '''REDACTED''',
+  '''<your[-_].+>''',
+  '''placeholder''',
+  '''example\.com''',
+]
+
+[[rules]]
+id = "cloudflare-tunnel-uuid"
+description = "Cloudflare tunnel UUID shape"
+regex = '''\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b'''
+tags = ["secret", "cloudflare", "uuid"]
+[rules.allowlist]
+regexes = [
+  '''00000000-0000-0000-0000-000000000000''',
+]
+paths = [
+  '''(^|/)tests?/''',
+  '''(^|/)__tests__/''',
+  '''(^|/)fixtures?/''',
+  '''docs/observability/log-schema\.md$''',
+]
+
+[[rules]]
+id = "pem-private-key"
+description = "PEM private keys"
+regex = '''-----BEGIN ([A-Z ]+ )?PRIVATE KEY-----'''
+tags = ["secret", "pem", "key"]
+
+[[rules]]
+id = "pem-certificate"
+description = "PEM certificate (review for Natera-issued certs)"
+regex = '''-----BEGIN CERTIFICATE-----'''
+tags = ["cert"]
+
+[[rules]]
+id = "openssh-private-key"
+description = "OpenSSH private key block"
+regex = '''-----BEGIN OPENSSH PRIVATE KEY-----'''
+tags = ["secret", "ssh", "key"]
+
+[[rules]]
+id = "stripe-secret-key"
+description = "Stripe secret key"
+regex = '''\bsk_(test|live)_[A-Za-z0-9]{20,}\b'''
+tags = ["secret", "stripe"]
+
+[[rules]]
+id = "stripe-publishable-key"
+description = "Stripe publishable key"
+regex = '''\bpk_(test|live)_[A-Za-z0-9]{20,}\b'''
+tags = ["stripe"]
+
+[[rules]]
+id = "stripe-webhook-secret"
+description = "Stripe webhook signing secret"
+regex = '''\bwhsec_[A-Za-z0-9]{20,}\b'''
+tags = ["secret", "stripe"]
+[rules.allowlist]
+regexes = ['''whsec_test_synthetic''']
+
+[[rules]]
+id = "github-pat"
+description = "GitHub personal access token"
+regex = '''\bghp_[A-Za-z0-9]{36,}\b'''
+tags = ["secret", "github"]
+
+[[rules]]
+id = "github-oauth"
+description = "GitHub OAuth token"
+regex = '''\bgho_[A-Za-z0-9]{36,}\b'''
+tags = ["secret", "github"]
+
+[[rules]]
+id = "github-server-token"
+description = "GitHub server-to-server token"
+regex = '''\bghs_[A-Za-z0-9]{36,}\b'''
+tags = ["secret", "github"]
+
+[[rules]]
+id = "github-user-token"
+description = "GitHub user token"
+regex = '''\bghu_[A-Za-z0-9]{36,}\b'''
+tags = ["secret", "github"]
+
+[[rules]]
+id = "slack-token"
+description = "Slack token"
+regex = '''\bxox[abprs]-[A-Za-z0-9-]{10,}\b'''
+tags = ["secret", "slack"]
+
+[[rules]]
+id = "generic-password-assignment"
+description = "Likely credential assignment (password/secret/token/api_key = '...')"
+regex = '''(?i)(password|secret|token|api[_-]?key)\s*[:=]\s*['"][A-Za-z0-9+/=_-]{16,}['"]'''
+tags = ["secret", "generic"]
+[rules.allowlist]
+paths = [
+  '''\.example$''',
+  '''\.sample$''',
+  '''\.template$''',
+  '''(^|/)tests?/''',
+  '''(^|/)__tests__/''',
+  '''(^|/)fixtures?/''',
+]
+regexes = [
+  '''xxxx+''',
+  '''REDACTED''',
+  '''placeholder''',
+  '''example''',
+  '''changeme''',
+  '''your[-_]''',
+]
+
+[[rules]]
+id = "natera-cert-near-miss"
+description = "Natera-issued certificate marker (e.g. cert.pem)"
+regex = '''Natera,\s*Inc\.'''
+tags = ["natera"]
+
+[[rules]]
+id = "goskope-host"
+description = "goskope.com host"
+regex = '''goskope\.com'''
+tags = ["natera"]
+
+[[rules]]
+id = "zdock-hostname"
+description = "Internal zdock hostname"
+regex = '''\bzdock\b'''
+tags = ["internal", "host"]
+
+[[rules]]
+id = "brian-home-network"
+description = "Brian's home network 192.168.68.x"
+regex = '''\b192\.168\.68\.\d{1,3}\b'''
+tags = ["internal", "network"]
+
+[[rules]]
+id = "sshpass-literal"
+description = "sshpass -p with inline password"
+regex = '''sshpass\s+-p\s+['"]?[A-Za-z0-9]'''
+tags = ["secret", "ssh"]
+
+[[rules]]
+id = "zisme-literal"
+description = "Hardcoded zdock password literal"
+regex = '''\bzisme\b'''
+tags = ["secret", "internal"]
