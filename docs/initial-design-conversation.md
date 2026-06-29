@@ -74,7 +74,7 @@ Keeping the tool repo focused on the buildable artifact lets self-hosters (model
 
 - **FHIR version**: R4 with US Core 7.0 and the R5 Subscriptions Backport IG. Rationale: USCDI-conformant EHRs are on R4 + US Core; the Backport gives us R5's Topic-based subscription model without forcing the rest of the stack to R5.
 - **Auth (v1)**: Reuse Keycloak at `keycloak.bzonfhir.com`. New realm/clients; client-credentials for machine-to-machine, SMART on FHIR optional for user-attributed flows. Any OAuth2 provider that exposes JWKS will be supported in a later iteration.
-- **Persistence**: Postgres for HAPI, on a persistent volume (bind mount on the-deploy-host, PVC on Kubernetes).
+- **Persistence**: Postgres for HAPI, on a persistent volume (bind mount on a single-host deploy, PVC on Kubernetes).
 - **Mappings**: Start with the public HL7 v2-to-FHIR IG; layer custom FML files on top per deployment.
 - **Deployment targets**: Docker Compose and Kubernetes (Helm) — both first class. Same images in both. Single-machine all-in-one deferred.
 - **MLLP ingress strategy**: Deferred. The IPF app exposes MLLP listeners but the public hostname only covers HTTPS for the FHIR API.
