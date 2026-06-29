@@ -20,7 +20,7 @@ cloudflared tunnel login
 
 # Create a named tunnel (one per deployment is fine)
 cloudflared tunnel create subscription-service
-# Note the tunnel UUID it prints, e.g. REDACTED-TUNNEL-UUID
+# Note the tunnel UUID it prints (32 hex digits in 8-4-4-4-12 form, e.g. <your-tunnel-uuid>)
 
 # Create the DNS CNAME pointing your hostname at the tunnel
 cloudflared tunnel route dns subscription-service fhir.your-domain.com
