@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# Epic #547 #548 — gitleaks pre-push hook
+# Re-scans the commit range being pushed against the upstream branch.
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "[pre-push] gitleaks not installed. Install: brew install gitleaks"
+  echo "[pre-push] BLOCKING push until gitleaks is available."
+  exit 1
+fi
+
+# Determine the range to scan.
+# 1. If upstream is configured, scan @{u}..HEAD (commits not yet on the remote tracking ref).
+# 2. Otherwise, find a sensible base: origin/main (or origin/master) merge-base with HEAD.
+# 3. Fallback: scan only the most recent commit (HEAD~1..HEAD) — prevents flagging pre-existing
+#    history that this branch did not introduce.
+if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  RANGE='@{u}..HEAD'
+elif git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+  BASE="$(git merge-base origin/main HEAD 2>/dev/null)"
+  RANGE="${BASE}..HEAD"
+elif git rev-parse --verify --quiet refs/remotes/origin/master >/dev/null; then
+  BASE="$(git merge-base origin/master HEAD 2>/dev/null)"
+  RANGE="${BASE}..HEAD"
+elif git rev-parse --verify --quiet HEAD~1 >/dev/null 2>&1; then
+  RANGE='HEAD~1..HEAD'
+else
+  RANGE='HEAD'
+fi
+
+gitleaks detect --redact --config .gitleaks.toml --no-banner --log-opts="$RANGE"
+status=$?
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "[pre-push] gitleaks detected secrets in the push range. Push BLOCKED."
+  echo "[pre-push] Inspect and rewrite history before retrying."
+  exit $status
+fi
