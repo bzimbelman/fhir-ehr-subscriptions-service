@@ -7,7 +7,7 @@ import path from "node:path";
  *
  * The same test bodies run against:
  *   - local docker-compose stack:  http://localhost:3000   (default)
- *   - public zdock deployment:     https://subscription-service-ui.bzonfhir.com
+ *   - public reference deployment: https://subscription-service-ui.bzonfhir.com
  *
  * Select the target by exporting `PLAYWRIGHT_BASE_URL`. The default suits a
  * developer who's just run `docker compose up -d`.

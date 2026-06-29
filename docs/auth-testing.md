@@ -8,7 +8,7 @@ isolation tests on the maintainer's reference deployment.
 The test-user passwords are **NOT** stored in this repository. They live
 in the deployment's `.env` file:
 
-- Reference deployment (zdock): `/home/zman/cz/subscription-service/deploy/docker/.env`
+- Reference deployment: `$DEPLOY_ROOT/subscription-service/deploy/docker/.env` (on the maintainer's host; `$DEPLOY_ROOT` is operator-chosen)
 - Your deployment: wherever your `deploy/docker/.env` (or k8s `Secret`)
   lives.
 

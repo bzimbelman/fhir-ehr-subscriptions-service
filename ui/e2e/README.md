@@ -7,7 +7,7 @@ The same test bodies run against:
 
 - **Local** (default): the docker-compose stack at `http://localhost:3000`.
 - **Public** (`PLAYWRIGHT_BASE_URL=https://subscription-service-ui.bzonfhir.com`):
-  the zdock-hosted deployment landed by ticket #423.
+  the maintainer's hosted reference deployment landed by ticket #423.
 
 ## What's covered
 
