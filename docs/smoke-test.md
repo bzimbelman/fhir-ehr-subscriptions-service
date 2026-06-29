@@ -49,7 +49,7 @@ curl -fsS -X POST -H 'Content-Type: application/fhir+json' \
 
 ## 5. MLLP listener accepts an ADT message
 
-This step runs on the deploy host (the-deploy-host or laptop running compose), not over the public hostname (Cloudflare's tunnel is HTTP-only — MLLP is LAN-only by design).
+This step runs on the deploy host (whatever machine is running compose), not over the public hostname (Cloudflare's tunnel is HTTP-only — MLLP is LAN-only by design).
 
 ```bash
 printf '\x0bMSH|^~\\&|EPIC|HOSP|RECEIVER|CDS|20260625120000||ADT^A04|SMOKE001|P|2.5\rEVN|A04|20260625120000\rPID|1||MRN-SMOKE^^^HOSP^MR||TEST^E2E^Q||19800101|M\rPV1|1|I|2000^2012^01\r\x1c\r' \
