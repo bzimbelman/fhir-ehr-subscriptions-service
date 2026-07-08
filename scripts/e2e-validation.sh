@@ -64,6 +64,7 @@ log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2
 }
 
+# shellcheck disable=SC2329  # invoked via `trap teardown EXIT` below
 teardown() {
   log "tearing down compose project ${COMPOSE_PROJECT_NAME}"
   (cd "${COMPOSE_DIR}" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true)
