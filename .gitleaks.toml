@@ -169,3 +169,15 @@ id = "zisme-literal"
 description = "Hardcoded zdock password literal"
 regex = '''\bzisme\b'''
 tags = ["secret", "internal"]
+
+[[rules]]
+id = "aws-access-key-id"
+description = "AWS access key ID"
+regex = '''\bAKIA[0-9A-Z]{16}\b'''
+tags = ["secret", "aws"]
+
+[[rules]]
+id = "aws-secret-access-key"
+description = "AWS secret access key (assignment form, quoted or unquoted)"
+regex = '''(?i)aws[-_]?secret[-_]?access[-_]?key\s*[:=]\s*['"]?[A-Za-z0-9+/=]{40}['"]?'''
+tags = ["secret", "aws"]
