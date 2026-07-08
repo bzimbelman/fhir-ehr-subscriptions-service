@@ -166,7 +166,7 @@ post_non_conforming_patient() {
 ensure_igs
 
 log "tearing down any prior ${COMPOSE_PROJECT_NAME} stack"
-(cd "${COMPOSE_DIR}" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true)
+( cd "${COMPOSE_DIR}" && docker compose down -v --remove-orphans >/dev/null 2>&1 ) || true
 rm -rf "${POSTGRES_DATA_DIR}"
 
 results_ok=true
