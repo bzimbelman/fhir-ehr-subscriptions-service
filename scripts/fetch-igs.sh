@@ -51,7 +51,7 @@ download_one() {
   local out_file="${dest_dir}/${name}-${version}.tgz"
 
   if [[ -f "${out_file}" && -z "${FORCE}" ]]; then
-    echo "skip   ${name}@${version} (already at ${out_file#${REPO_ROOT}/})"
+    echo "skip   ${name}@${version} (already at ${out_file#"${REPO_ROOT}"/})"
     return 0
   fi
 
@@ -76,7 +76,7 @@ download_one() {
     # mode 600 by default, so without this chmod the IG load fails at boot
     # with "HAPI-2031: Error loading file:///app/igs/...".
     chmod 644 "${out_file}"
-    echo "ok     ${name}@${version} -> ${out_file#${REPO_ROOT}/} ($(wc -c <"${out_file}") bytes)"
+    echo "ok     ${name}@${version} -> ${out_file#"${REPO_ROOT}"/} ($(wc -c <"${out_file}") bytes)"
   else
     rm -f "${tmp}"
     echo "ERROR  ${name}@${version}: download failed from ${url}" >&2

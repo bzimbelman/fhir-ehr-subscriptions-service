@@ -1,0 +1,184 @@
+name: build-test
+
+# Root-repo CI. Ticket #761 (Phase 1 blocker from the 2026-07-08 review).
+#
+# Sibling repos (subscription-service-examples, -profiles, -plugins-community)
+# each ship a ci.yml — this repo previously only had gitleaks.yml, meaning
+# no evidence-of-build for adopters cloning the FOSS engine.
+#
+# Layout:
+#   gradle-build   — multi-project Gradle build + test (interface-engine,
+#                    plugins-spi, plugins-builtin/*)
+#   maven-hapi-auth — Maven build of hapi/auth/ (the HAPI FHIR interceptor
+#                    jar; not part of the Gradle multi-project because it
+#                    layers into an upstream HAPI image via hapi/Dockerfile)
+#   ui             — pnpm install / typecheck / test / build in ui/
+#   compose        — `docker compose config` validates deploy/docker/
+#                    docker-compose.yml. Full compose-up e2e is deferred
+#                    (see ticket #764) — needs Keycloak, out of scope here.
+#   helm           — helm lint + template against values.yaml, values-dev.yaml,
+#                    values-rancher.yaml
+#   yamllint       — every YAML in deploy/, docs/, .github/
+#   shellcheck     — every scripts/*.sh
+#
+# NEVER `continue-on-error: true`, NEVER `|| true`, NEVER `--no-verify`.
+# A green run means the build is actually green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gradle-build:
+    name: gradle build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Gradle build + test
+        run: ./gradlew --no-daemon build test
+
+  maven-hapi-auth:
+    name: maven hapi/auth build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Maven package
+        working-directory: hapi/auth
+        run: mvn -B -ntp package
+
+  ui:
+    name: ui — pnpm install, typecheck, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.3.0 --activate
+      - name: Install dependencies (frozen lockfile)
+        working-directory: ui
+        run: pnpm install --frozen-lockfile
+      - name: Build workspace package
+        working-directory: ui
+        run: pnpm --filter @bzonfhir/ui-extensions build
+      - name: Typecheck
+        working-directory: ui
+        run: pnpm typecheck
+      - name: Test
+        working-directory: ui
+        run: pnpm test
+      - name: Build (next build)
+        working-directory: ui
+        env:
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: pnpm build
+
+  compose-config:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deploy/docker/docker-compose.yml
+        working-directory: deploy/docker
+        # `docker compose config -q` renders the compose file with variable
+        # substitution and validates schema; -q suppresses stdout so the
+        # step's log is just any errors.
+        run: |
+          if [ ! -f .env ] && [ -f .env.example ]; then
+            cp .env.example .env
+          fi
+          docker compose config -q
+
+  helm-lint:
+    name: helm lint + template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.0
+      - name: helm lint (default values)
+        run: helm lint deploy/k8s/charts/subscription-service
+      - name: helm template (values.yaml)
+        run: helm template subsvc deploy/k8s/charts/subscription-service > /dev/null
+      - name: helm template (values-rancher.yaml)
+        run: |
+          helm template subsvc deploy/k8s/charts/subscription-service \
+            -f deploy/k8s/charts/subscription-service/values-rancher.yaml \
+            > /dev/null
+      - name: helm template (values-dev.yaml)
+        run: |
+          helm template subsvc deploy/k8s/charts/subscription-service \
+            -f deploy/k8s/charts/subscription-service/values-dev.yaml \
+            > /dev/null
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+      - name: Write relaxed config
+        # Same shape as subscription-service-examples/.github/workflows/ci.yml.
+        # Recipe files intentionally use long lines in comments and inline
+        # env defaults; comment-indent is inconsistent across upstream
+        # samples we've mirrored. Helm chart templates under
+        # deploy/k8s/charts/*/templates/ are Go-templated YAML, not pure
+        # YAML — those are covered by the `helm-lint` job above, not here.
+        run: |
+          cat > .yamllint <<'YAML'
+          extends: relaxed
+          ignore: |
+            deploy/k8s/charts/*/templates/**
+          rules:
+            line-length: disable
+            comments-indentation: disable
+            truthy:
+              check-keys: false
+          YAML
+      - name: Lint YAML under deploy/, docs/, .github/
+        run: yamllint deploy docs .github
+
+  shellcheck:
+    name: shellcheck scripts/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+      - name: shellcheck every scripts/*.sh
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            echo "==> shellcheck $f"
+            if ! shellcheck "$f"; then
+              fail=1
+            fi
+          done < <(find scripts -name '*.sh')
+          exit "$fail"
