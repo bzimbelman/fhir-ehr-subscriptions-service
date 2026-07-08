@@ -64,10 +64,10 @@ log() {
   printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2
 }
 
-# shellcheck disable=SC2329  # invoked via `trap teardown EXIT` below
+# shellcheck disable=SC2329,SC2317  # invoked via `trap teardown EXIT` below
 teardown() {
   log "tearing down compose project ${COMPOSE_PROJECT_NAME}"
-  (cd "${COMPOSE_DIR}" && docker compose down -v --remove-orphans >/dev/null 2>&1 || true)
+  ( cd "${COMPOSE_DIR}" && docker compose down -v --remove-orphans >/dev/null 2>&1 ) || true
   rm -rf "${POSTGRES_DATA_DIR}" 2>/dev/null || true
 }
 trap teardown EXIT
@@ -92,7 +92,7 @@ wait_for_hapi() {
   done
   log "HAPI did not become healthy after $(( attempts * 2 ))s"
   log "--- HAPI logs (tail) ---"
-  (cd "${COMPOSE_DIR}" && docker compose logs --tail=80 hapi >&2 || true)
+  ( cd "${COMPOSE_DIR}" && docker compose logs --tail=80 hapi >&2 ) || true
   return 1
 }
 
