@@ -17,7 +17,11 @@ RUN corepack enable && corepack prepare pnpm@11.3.0 --activate
 # Copy the pnpm config files alongside the manifest so the install picks up
 # `onlyBuiltDependencies` / `allowBuilds` (otherwise pnpm v11 fails the build
 # with ERR_PNPM_IGNORED_BUILDS on the native postinstalls).
+# Also copy every workspace package's package.json so pnpm can wire up the
+# `workspace:*` protocol during install. The workspace source itself is
+# copied in the build stage.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY packages/ui-extensions/package.json ./packages/ui-extensions/
 RUN pnpm install --frozen-lockfile
 
 # ---------- Stage 2: build ----------
@@ -26,10 +30,13 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.3.0 --activate
 
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages/ui-extensions/node_modules ./packages/ui-extensions/node_modules
 COPY . .
 
+# Build the workspace package first (produces dist/), which the Next.js
+# app's `@bzonfhir/ui-extensions` import resolves via package.json main.
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN pnpm build
+RUN pnpm --filter @bzonfhir/ui-extensions build && pnpm build
 
 # ---------- Stage 3: runtime ----------
 FROM node:22-alpine AS runtime
