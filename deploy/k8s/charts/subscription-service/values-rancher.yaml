@@ -23,6 +23,24 @@ image:
     tag: dev
     pullPolicy: IfNotPresent
 
+# Operator UI (Next.js). Built locally from ui/Dockerfile and left in
+# dockerd's image store (moby-mode Rancher Desktop shares that with k3s).
+# See templates/ui-*.yaml for the Deployment / Service / Ingress.
+ui:
+  enabled: true
+  image:
+    repository: subscription-service-ui
+    tag: local
+    pullPolicy: IfNotPresent
+  ingress:
+    enabled: true
+    className: traefik
+    host: subscription-service-ui.local
+    path: /
+    pathType: Prefix
+    tls:
+      enabled: false
+
 postgres:
   # Leave password empty so the chart auto-generates one on first install
   # and preserves it across `helm upgrade` (ticket #419).
